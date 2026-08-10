@@ -14,7 +14,7 @@
 | `context/standards/` | 設計標準・レビュー観点 |
 | `context/decisions/` | 判断記録(ADR) |
 
-`PROCESS-PROFILE.md` が未設定の場合、まず `/process-init` の実行を人へ促してください。プロセス構成が決まる前に実装を始めないでください。
+`PROCESS-PROFILE.md` が未設定の場合、まず `/process-init` の実行を人へ促してください。プロセス構成が決まる前に 実装を始めないでください。
 
 ## 作業の進め方
 
@@ -37,6 +37,17 @@
 | `/human-verify` | 人が差分を検証する手順を提示する |
 | `/gate-record` | ゲート判定を記録する |
 | `/adr-write` | 設計判断を記録する |
+
+### ロール間非同期メッセージング（Label Mailbox 連携）
+
+物理隔離された各ロール（PO, Dev, QM, Audit, Platform）は、直接の同期通信や割り込み（指示を直接仰ぐ行為）を行わず、GitHubラベルをメッセージバスとした非同期・ポーリングベースの連携（[Label Mailbox仕様](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/)）を使用する。
+
+- 開発に着手した際、Draft PR の状態では **`state:needs-dev`** ラベルを維持すること。
+- 実装・単体テスト（CI緑）が完了し、`human-verify` 用手順を提示する際、開発者（Dev）は `state:needs-dev` を剥がし、**`state:dev-done`** ラベルを付与して出荷判定者（QM）へ引き渡すこと。
+- 独立レビューにおいて差し戻し（`state:qm-blocked`）が発生した場合、Devは対応を最優先する。対応が完了しCIが全緑になったら、必ず `state:qm-blocked` を剥がして再度 **`state:dev-done`** に戻すこと（復路の徹底）。
+- 仕様や優先度の判断が不十分な場合、または不可逆4操作（削除/本番デプロイ/課金書き込み/スキーマ変更）が必要になった場合は、自走を停止し、**`state:needs-po`** または **`state:needs-owner`** を付与して人間（PO/Owner）の判断を待つこと。
+
+直接の指示やメッセージを待つのではなく、定期的に自分のメールボックス（`gh` polling コマンド）を自律的に監視し、仕事を拾って処理すること。
 
 ## 委譲できないもの
 
@@ -61,6 +72,8 @@
 | 4 | 差分を確認せずに承認する | 独立レビューの前提が崩れる |
 | 5 | **独立レビューの挙動要約を AI に生成させる** | 要約は理解の証拠であり、生成物は証拠にならない |
 | 6 | カバレッジ閾値・静的解析の重大度・除外設定を機能変更と同じ PR で変える | 以後のすべての通過を無効化する |
+| 7 | **`state:*` ラベルを貼らず、コメントや `@mention` だけで判断依頼や引き渡しを済ませる** | 相手の polling クエリに現れず、すべての受信箱から消えてタスクが滞留（orphan化）するため |
+| 8 | **差し戻し（`qm-blocked`）対応後に、そのラベルを剥がし忘れる、または `dev-done` を貼り忘れる** | 復路の伝達が不完全となり、QMの受信箱に現れずプロセスが完全停止するため |
 
 禁止事項3は `.claude/settings.json` の書き込み範囲でも遮断しています。指示への遵守だけに依存しません。
 
@@ -74,7 +87,7 @@
 
 これらは CI の `spec-lint` で検出し、G-5 を失敗させます。
 
-完了の条件を曖昧さなく書けない機能は、書けるところまで分解してから実装へ渡します。エージェントが停滞する原因の多くは能力の不足ではなく、完了条件の不在です。
+完了の条件を曖昧さなく書けない機能は、書けるところまで分解してから実装へ渡します。エージェントが停滞する原因の 多くは能力の不足ではなく、完了条件の不在です。
 
 ## タスクの粒度
 
@@ -121,6 +134,6 @@ AI によるレビューは**監査の入力**です。判定には使いませ�
 
 ## 参照
 
-- [ピットイン方式 標準本文](https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/)
+- [ピットイン方式 標準本文](https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/) 
 - [附属書E 開発者ガイド](https://takenori-kusaka.github.io/process-compass/phase4-process-design/developer-guide/)
-- [附属書B EARS 記法](https://takenori-kusaka.github.io/process-compass/phase4-process-design/ears-guide/)
+- [附属書B EARS 記法](https://takenori-kusaka.github.io/process-compass/phase4-process-design/ears-guide/)     
