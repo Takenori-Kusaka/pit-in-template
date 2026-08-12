@@ -4,7 +4,7 @@
 //   node scripts/gate/adapter.mjs print <phase>   コマンドを表示するだけ
 //   node scripts/gate/adapter.mjs runtime         セットアップに要る実行環境を JSON で出す
 //
-// phase: install / test / coverage / lint / audit / licenses
+// phase: install / test / coverage / lint / audit / licenses / secretScan
 //
 // コマンドが空の場合は失敗させます。「検査したことにする」経路を作らないためです。
 

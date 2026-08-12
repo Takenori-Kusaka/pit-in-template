@@ -123,8 +123,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/setup-stack
+        with:
+          install: 'false'
       - name: 秘匿情報の混入検査
-        run: npx --yes --package secretlint --package @secretlint/secretlint-rule-preset-recommend secretlint "**/*" --secretlintrcJSON '{"rules":[{"id":"@secretlint/secretlint-rule-preset-recommend"}]}'
+        run: node scripts/gate/adapter.mjs run secretScan
 
   # 基準8 依存関係の追加・更新の識別。合否は判定せず一覧を出す
   dependency-diff:

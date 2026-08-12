@@ -136,6 +136,12 @@ if (adapter) {
     if (!(adapter.commands?.licenses ?? '').trim()) {
       notes.push(`アダプタ ${adapter.id} の "licenses" が空です。依存関係のライセンス検査を実施しない扱いになります`);
     }
+    if (!(adapter.commands?.secretScan ?? '').trim()) {
+      problems.push(
+        `アダプタ ${adapter.id} の "secretScan" が空です。秘匿情報の検査は台帳記録による通過を認めない唯一の基準のため、` +
+          '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
+      );
+    }
   }
 }
 
@@ -190,6 +196,33 @@ if (config.gates?.g6?.state === 'required') {
 } else if (config.gates?.g6?.state === 'unmet') {
   notes.push('G-6 は未達です。ブランチ保護による承認の強制は行いません');
 }
+
+// ---------------------------------------------------------- 8. 二重エンコードの検査
+
+const GARBLED_CHARS = /[蠖縺繧繝蜿]/;
+
+function scanForGarbledJapanese(dir) {
+  if (!fs.existsSync(dir)) return;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      scanForGarbledJapanese(fullPath);
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const match = content.match(GARBLED_CHARS);
+      if (match) {
+        const rel = path.relative(ROOT, fullPath);
+        problems.push(
+          `ファイル "${rel}" に二重エンコードと思われる化け文字（蠖, 縺, 繧, 繝, 蜿 など）が検出されました。文字コードを UTF-8 で保存し直してください。`
+        );
+      }
+    }
+  }
+}
+
+scanForGarbledJapanese(path.join(ROOT, '.claude'));
+scanForGarbledJapanese(path.join(ROOT, 'templates'));
 
 // ---------------------------------------------------------- 出力
 

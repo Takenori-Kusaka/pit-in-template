@@ -9,7 +9,8 @@
     "coverage": "",
     "lint": "",
     "audit": "",
-    "licenses": ""
+    "licenses": "",
+    "secretScan": ""
   },
   "coverageSummary": null,
   "note": "必須の検査である「test」コマンドが空のままでは G-5 が失敗します。これはテスト未実施のまま通過することを防ぐためです。それ以外の任意の検査（lint/audit/licenses/coverage）は、コマンドが空の場合、未実施として証跡に記録した上で G-5 を通過させます。使う言語のコマンドをここへ書くか、adapters/ の他のファイル（node/python/go）を process.config.json の adapters.stack で選んでください"

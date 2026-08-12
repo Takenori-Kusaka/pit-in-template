@@ -235,7 +235,7 @@ export function buildConfig(answers, opts = {}) {
     ci: {
       coverageThreshold: ciStrengthened ? 90 : 80,
       failOnSeverity: ['critical', 'high'],
-      allowedLicenses: ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC'],
+      allowedLicenses: ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'],
       strengthened: ciStrengthened,
     },
     review: {

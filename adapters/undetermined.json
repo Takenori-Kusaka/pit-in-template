@@ -9,7 +9,8 @@
     "coverage": "",
     "lint": "",
     "audit": "",
-    "licenses": ""
+    "licenses": "",
+    "secretScan": ""
   },
   "coverageSummary": null,
   "note": "開発技術スタックが未確定の状態です。S0 探索を終え、SG-0 を通過するまでに、採用技術に合わせて node / python / go / none のいずれかへ切り替えてください。未確定のあいだは、テストや静的解析などの検査は「対象なし」として扱われます"
