@@ -589,6 +589,17 @@ const MAILBOX = {
 };
 
 /**
+ * エスカレーションの段階とラベルの対応(第7章 7.6 / 第5章 4.5.2)。
+ * 閾値は案件が企画承認(G-1)で確定するため、ここでは持たない。
+ */
+const ESCALATION = [
+  ['段階1', 'プロジェクト責任者', 'state:needs-po'],
+  ['段階2', '部門責任者・PMO', 'state:needs-owner'],
+  ['段階3', 'ステアリングコミッティ(B-2)', 'state:needs-owner'],
+  ['不可逆4操作', 'オーナー(事業決裁者)', 'state:needs-owner'],
+];
+
+/**
  * CLAUDE.md へ差し込む構成依存部分を組み立てる。
  *
  * エージェントが起動時に読む文書は CLAUDE.md である。手書きのままでは標準の改訂も
@@ -663,6 +674,54 @@ export function renderProcessRules(config) {
     });
     L.push(`- **${r.name}** が兼ねてはならない役割: ${names.join(' / ')}`);
   }
+  L.push('');
+
+  // --- 受信箱(ポーリングの範囲) ---
+  const polling = (config.roles ?? []).filter((r) => MAILBOX[r.id]);
+  if (polling.length) {
+    L.push('### 自分の受信箱を見る');
+    L.push('');
+    L.push(
+      '**自分のロールのブロックだけを実行してください**。他のロールの受信箱を見た時点で文脈は合流し、' +
+        '分離は成立しなくなります([第5章 4.5.1](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。'
+    );
+    L.push('');
+    L.push('```bash');
+    polling.forEach((r, i) => {
+      if (i) L.push('');
+      // 未達のロールは担い手がいない。受信箱を出すと、誰かが見ているように読める
+      if (r.gatesUnmet.length && !r.gatesOwned.length) {
+        L.push(`# ${r.name}: この構成では未達。担い手がいないため受信箱を置かない`);
+        return;
+      }
+      L.push(`# ${r.name}`);
+      for (const label of MAILBOX[r.id].inbox) {
+        L.push(`gh issue list --label "${label}" --state open`);
+        L.push(`gh pr list --label "${label}" --state open`);
+      }
+    });
+    L.push('```');
+    L.push('');
+    L.push(
+      '状態ラベルの付いていない Issues/PRs(孤児)の再配分は価値責任者の義務です。' +
+        '**再配分した仕事を自ら拾わないでください**。再配分の権限と、仕事を拾う権限は別です。'
+    );
+    L.push('');
+  }
+
+  // --- エスカレーション ---
+  L.push('### エスカレーションの段階とラベル');
+  L.push('');
+  L.push('| 段階 | 報告先 | 付与するラベル |');
+  L.push('| --- | --- | --- |');
+  for (const [stage, to, label] of ESCALATION) L.push(`| ${stage} | ${to} | \`${label}\` |`);
+  L.push('');
+  L.push(
+    '発火条件と閾値は[第7章 7.6](https://takenori-kusaka.github.io/process-compass/phase4-process-design/exception-escalation/)、' +
+      '実際の宛先は D-0 体制図の第4節によります。**ラベルの付与だけで報告を済ませないでください**。' +
+      'エスカレーションレポートの5項目(状態・原因・事業影響・リカバリ選択肢3案・推奨と決裁事項)を書きます。' +
+      '**推奨と決裁事項は人が記入します**。'
+  );
   L.push('');
   return L.join('\n');
 }
