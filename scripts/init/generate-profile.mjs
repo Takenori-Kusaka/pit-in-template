@@ -28,6 +28,18 @@ const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-
 const GATE_KEY = Object.fromEntries(KB.gates.map((g) => [g.id, g.label.replace('-', '').toLowerCase()]));
 const GATE_BY_KEY = Object.fromEntries(KB.gates.map((g) => [GATE_KEY[g.id], g]));
 
+/**
+ * D-0 体制図の版を読む。実行主体のロール宣言が体制図の改訂に追随しているかを
+ * 機械的に検査するための基準点になる(ADR-0035)。D-0 は G-1 の前提条件であり、
+ * 初期化の時点では存在しないことがある。その場合は null を返す。
+ */
+function readD0Version() {
+  const file = path.join(ROOT, 'docs/D-0-governance.md');
+  if (!fs.existsSync(file)) return null;
+  const m = fs.readFileSync(file, 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  return m?.[1].match(/^version:\s*(.+)$/m)?.[1].trim() ?? null;
+}
+
 /** どの構成でも省略できないゲート(附属書A / 第2章 2.5) */
 const NEVER_OMITTABLE = new Set(['g4', 'g5']);
 
@@ -160,6 +172,70 @@ export function detectDeviations(answers, gates) {
   return deviations;
 }
 
+/**
+ * ロールの構成を導出する。
+ *
+ * 役割の割り当てを人へ書いただけでは実行主体に届かないため、判定してよいゲートと
+ * 担ってはならない工程を機械可読の形で出す(標準 第3章 3.5.3 / ADR-0035)。
+ * 「担ってはならない工程」は知識ベースの兼務禁止表(separations)から**導出する**。
+ * 手で書かせる欄にしない。
+ */
+export function buildRoles(gates) {
+  const separations = KB.separations ?? [];
+  const gateKeyById = Object.fromEntries(KB.gates.map((g) => [g.id, GATE_KEY[g.id]]));
+  const owner = {};
+  const notes = {};
+  for (const g of KB.gates) {
+    if (g.approverRole) (owner[g.approverRole] ??= []).push(GATE_KEY[g.id]);
+  }
+
+  // 出荷判定者の兼務(3名未満の例外)。判定者が価値責任者へ移ることを構成へ反映する。
+  // 反映しないと、体制図の兼務不可と構成の導出が衝突したまま可視化されない(第3章 3.5.2 / ADR-0029)
+  if (gates.g7?.params?.approverMode === 'value-owner-merged') {
+    owner['qa-gatekeeper'] = (owner['qa-gatekeeper'] ?? []).filter((k) => k !== 'g7');
+    (owner['value-owner'] ??= []).push('g7');
+    notes['value-owner'] = ['G-7 を兼務する(代償措置つきの逸脱。判定記録と抜き取り確認を要する)'];
+    notes['qa-gatekeeper'] = ['この構成では分離できていない。判定は価値責任者が兼ねる'];
+  }
+
+  const isActive = (key) => {
+    const s = gates[key]?.state;
+    return s === 'required' || s === 'simplified' || String(s ?? '').startsWith('merged-into-');
+  };
+
+  return (KB.roles ?? []).map((r) => {
+    const owned = owner[r.id] ?? [];
+    const pairs = separations.filter((s) => (s.roles ?? []).includes(r.id));
+
+    // 相手方が判定するゲート。このロールは判定者になれない
+    const mustNotJudge = [];
+    for (const s of pairs) {
+      const key = s.gate ? gateKeyById[s.gate] : null;
+      if (key && !owned.includes(key)) mustNotJudge.push(key);
+    }
+    // AI はどのゲートの判定者にもなれない(第5章 役割境界。提案はするが承認しない)
+    if (r.id === 'ai-agent') mustNotJudge.push(...KB.gates.map((g) => GATE_KEY[g.id]));
+
+    return {
+      id: r.id,
+      name: r.name,
+      responsibility: r.responsibility,
+      gatesOwned: owned.filter(isActive),
+      gatesUnmet: owned.filter((k) => gates[k]?.state === 'unmet'),
+      mustNotAlso: pairs.map((s) => ({
+        separationId: s.id,
+        role: (s.roles ?? []).find((x) => x !== r.id) ?? null,
+        scope: s.scope,
+        reason: s.reason,
+        exception: s.exception ?? 'none',
+      })),
+      mustNotJudge,
+      selfApproval: 'forbidden',
+      notes: notes[r.id] ?? [],
+    };
+  });
+}
+
 export function buildConfig(answers, opts = {}) {
   const errors = checkConstraints(answers);
   if (errors.length) {
@@ -213,6 +289,9 @@ export function buildConfig(answers, opts = {}) {
     adapters: { stack: opts.stack ?? 'none' },
     ruleset,
     gates,
+    roles: buildRoles(gates),
+    separations: KB.separations ?? [],
+    d0Version: opts.d0Version ?? readD0Version(),
     unmet,
     deviations,
     ci: {
@@ -352,6 +431,44 @@ export function renderProfileMd(config, result) {
     L.push(`| ${g.label} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
   }
   L.push('');
+
+  // --- ブロック2.5: ロールと担ってはならない工程 ---
+  if (config.roles?.length) {
+    L.push('## ロールの構成');
+    L.push('');
+    L.push(
+      '**役割の割り当てを人へ書いただけでは、実行主体には届きません**。' +
+        '各セッション・作業領域は、自分が判定してよいゲートと、担ってはならない工程を起動時に参照してください' +
+        '(標準 第3章 3.5.3)。この表は兼務禁止表から導出したものです。**手で編集しないでください**。'
+    );
+    L.push('');
+    L.push(`- 追随している D-0 体制図の版: ${config.d0Version ? `\`${config.d0Version}\`` : '**未取得**(D-0 が未作成、または版の記載がない)'}`);
+    L.push('');
+    L.push('| ロール | 判定するゲート | 兼ねてはならない役割 | 判定してはならないゲート |');
+    L.push('| --- | --- | --- | --- |');
+    for (const r of config.roles) {
+      const owned = r.gatesOwned.map((k) => GATE_BY_KEY[k]?.label ?? k);
+      const unmetOwned = r.gatesUnmet.map((k) => `${GATE_BY_KEY[k]?.label ?? k}(**未達**)`);
+      const cells = [...owned, ...unmetOwned];
+      const also = r.mustNotAlso
+        .map((s) => {
+          const name = config.roles.find((x) => x.id === s.role)?.name ?? s.role ?? 'すべての役割';
+          return s.exception === 'none' ? name : `${name}(例外あり)`;
+        })
+        .filter(Boolean);
+      const notJudge = r.mustNotJudge.map((k) => GATE_BY_KEY[k]?.label ?? k);
+      const owns = [...(cells.length ? [cells.join(' / ')] : []), ...(r.notes ?? [])].join('。') || '—';
+      L.push(
+        `| ${r.name} | ${owns} | ${also.join(' / ') || '—'} | ${notJudge.join(' / ') || '—'} |`
+      );
+    }
+    L.push('');
+    L.push(
+      '**起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらず成立しない禁止です。' +
+        '分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します。'
+    );
+    L.push('');
+  }
 
   // --- ブロック3: 各判定の理由 ---
   L.push('## 各判定の理由');

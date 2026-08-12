@@ -1142,49 +1142,57 @@
       "id": "g-plan-approval",
       "label": "G-1",
       "name": "企画承認",
-      "approver": "事業決裁者(決裁権限規程どおりの職位)"
+      "approver": "事業決裁者(決裁権限規程どおりの職位)",
+      "approverRole": "biz-approver"
     },
     {
       "id": "g-req-agree",
       "label": "G-2",
       "name": "要件合意",
-      "approver": "価値責任者(単独。目安48時間以内に判定)"
+      "approver": "価値責任者(単独。目安48時間以内に判定)",
+      "approverRole": "value-owner"
     },
     {
       "id": "g-tech-design",
       "label": "G-3",
       "name": "技術設計判断",
-      "approver": "技術判断者(単独。目安48時間以内に判定)"
+      "approver": "技術判断者(単独。目安48時間以内に判定)",
+      "approverRole": "tech-lead"
     },
     {
       "id": "g-spec-cycle",
       "label": "G-4",
       "name": "機能仕様承認(反復内)",
-      "approver": "価値責任者(または明示的に委譲された機能責任者。委譲しても結果責任は価値責任者に残る)"
+      "approver": "価値責任者(または明示的に委譲された機能責任者。委譲しても結果責任は価値責任者に残る)",
+      "approverRole": "value-owner"
     },
     {
       "id": "g-ci",
       "label": "G-5",
       "name": "自動検証(CI)",
-      "approver": "CI(機械判定)"
+      "approver": "CI(機械判定)",
+      "approverRole": null
     },
     {
       "id": "g-indep-review",
       "label": "G-6",
       "name": "独立レビュー",
-      "approver": "独立レビュア(作成指示者本人は承認不可。ブランチ保護で強制)"
+      "approver": "独立レビュア(作成指示者本人は承認不可。ブランチ保護で強制)",
+      "approverRole": "independent-reviewer"
     },
     {
       "id": "g-ship",
       "label": "G-7",
       "name": "出荷判定",
-      "approver": "品質保証(第三者。署名する)"
+      "approver": "品質保証(第三者。署名する)",
+      "approverRole": "qa-gatekeeper"
     },
     {
       "id": "g-release",
       "label": "G-8",
       "name": "リリース決裁",
-      "approver": "事業決裁者"
+      "approver": "事業決裁者",
+      "approverRole": "biz-approver"
     }
   ],
   "roles": [
@@ -1237,6 +1245,49 @@
       "id": "ai-ops",
       "name": "AI運用担当者(AIOps)",
       "responsibility": "全社のAI実行基盤(モデル接続・実行予算・セキュリティ統制)の可用性と適合性に責任を持つ。開発ラインへは規程ではなく実行環境として統制を届ける"
+    }
+  ],
+  "separations": [
+    {
+      "id": "sep-self-approval",
+      "roles": null,
+      "scope": "same-work-product",
+      "reason": "起案した主体が判定すれば、判定は自己申告になる。役割の組み合わせによらず成立しない",
+      "exception": "none",
+      "gate": null
+    },
+    {
+      "id": "sep-author-reviewer",
+      "roles": [
+        "dev-verifier",
+        "independent-reviewer"
+      ],
+      "scope": "same-work-product",
+      "reason": "作成を指示した本人が見ても、作成時の思い込みは検出できない",
+      "exception": "none",
+      "gate": "g-indep-review"
+    },
+    {
+      "id": "sep-dev-shipping",
+      "roles": [
+        "dev-verifier",
+        "qa-gatekeeper"
+      ],
+      "scope": "same-project",
+      "reason": "第三者判定の独立性が崩れる",
+      "exception": "3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029)",
+      "gate": "g-ship"
+    },
+    {
+      "id": "sep-maintainer-ops",
+      "roles": [
+        "ai-maintainer",
+        "ai-ops"
+      ],
+      "scope": "always",
+      "reason": "案件の都合で全社の統制を緩める経路ができる",
+      "exception": "none",
+      "gate": null
     }
   ]
 }
