@@ -8,11 +8,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, loadAdapter, ROOT, fail, notice, warn } from './config.mjs';
+import { loadConfig, loadAdapter, ROOT, fail, notice, warn, hasTarget } from './config.mjs';
 
 const config = loadConfig();
 const adapter = loadAdapter(config);
 const threshold = config.ci?.coverageThreshold ?? 80;
+
+if (!hasTarget(adapter)) {
+  notice(`カバレッジ判定: 対象プロジェクトが見つかりません。未実施として記録します`);
+  writeResult({ measured: false, reason: 'No target project found' });
+  process.exit(0);
+}
 
 const rel = adapter.coverageSummary;
 if (!rel) {

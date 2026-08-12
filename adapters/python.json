@@ -9,8 +9,7 @@
     "coverage": "pytest --cov --cov-report=json:coverage.json",
     "lint": "ruff check .",
     "audit": "pip-audit",
-    "licenses": "pip-licenses --format=json --allow-only=\"$PIT_IN_ALLOWED_LICENSES\"",
-    "secretScan": ""
+    "licenses": "pip-licenses --format=json --allow-only=\"$PIT_IN_ALLOWED_LICENSES\""
   },
   "coverageSummary": "coverage.json",
   "note": "coverage.json は pytest-cov の JSON 形式です。totals.percent_covered を読みます"

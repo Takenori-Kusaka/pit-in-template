@@ -46,7 +46,8 @@ function toGateState(state) {
 function readAnswers(argv) {
   const i = argv.indexOf('--answers');
   if (i < 0) throw new Error('--answers <file> が必要です');
-  return JSON.parse(fs.readFileSync(argv[i + 1], 'utf8'));
+  const raw = JSON.parse(fs.readFileSync(argv[i + 1], 'utf8'));
+  return raw.answers ?? raw;
 }
 
 function arg(argv, name, fallback) {
@@ -94,7 +95,7 @@ export function checkConstraints(answers) {
  * 1〜2名で外部のレビュアがいない場合、この条件を満たす構成が存在しない。
  * 標準は AI を独立レビュアの代替に置くことを認めないため、省略ではなく未達として扱う。
  */
-export function detectUnmet(answers, gates) {
+export function detectUnmet(answers, gates, stack) {
   const unmet = [];
   const noReviewer =
     answers['q-team-size'] === 'size-1-2' && answers['q-external-reviewer'] === 'reviewer-no';
@@ -115,6 +116,22 @@ export function detectUnmet(answers, gates) {
         '他の個人開発者と相互レビューの取り決めをする',
         '有償のコードレビューを利用する',
         '体制が3名以上になったら /process-init を再実行する',
+      ],
+    });
+  }
+
+  if (stack === 'undetermined' && answers['q-biz-phase'] !== 'poc') {
+    if (gates.g3) gates.g3.state = 'unmet';
+    unmet.push({
+      gate: 'g3',
+      label: 'G-3 技術設計判断',
+      reason: 'MVP構築（S1以降）フェーズに入っていますが、技術スタックが未確定（undetermined）のままです',
+      whyNotAi: '技術スタックの決定および技術設計の判断は、AIに意思決定を委譲することができない極めて重要な設計・技術判断です。',
+      compensation: [],
+      reviewSourcing: null,
+      howToResolve: [
+        '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, go, none）を決定する',
+        '決定したアダプタスタックを process.config.json に反映し、generate-profile.mjs を再実行する',
       ],
     });
   }
@@ -146,7 +163,7 @@ export function buildConfig(answers, opts = {}) {
     };
   }
 
-  const unmet = detectUnmet(answers, gates);
+  const unmet = detectUnmet(answers, gates, opts.stack ?? 'none');
 
   // CI の強度。g-ci に strengthen が乗った場合、既定値を引き上げる
   const ciStrengthened = result.profile['gate:g-ci']?.state === 'strengthen';
@@ -274,6 +291,10 @@ export function renderProfileMd(config, result) {
   const phase = config.answers['q-biz-phase'];
   L.push('### 現在のステージ判定と確認');
   L.push('');
+  if (config.adapters.stack === 'undetermined') {
+    L.push('> ⚠️ **警告: 開発技術スタックが未確定です。SG-0 (技術的実現性の確認)を通過するまでに、技術スタックを確定させ、アダプタを設定してください。**');
+    L.push('');
+  }
   if (phase === 'poc') {
     L.push('- **現在の想定ステージ**: `S0 探索` (検証中(PoC)段階)');
     L.push('- **目指すゲート**: **SG-0** (技術的実現性の確認)');

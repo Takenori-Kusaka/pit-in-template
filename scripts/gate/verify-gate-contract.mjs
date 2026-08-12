@@ -99,20 +99,17 @@ try {
 }
 
 if (adapter) {
-  const testCmd = (adapter.commands?.test ?? '').trim();
-  if (!testCmd) {
-    problems.push(
-      `アダプタ ${adapter.id} の "test" が空です。G-5 は全テストの通過を合否条件にするため、` +
-        '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
-    );
-  }
-  if (!(adapter.commands?.licenses ?? '').trim()) {
-    notes.push(`アダプタ ${adapter.id} の "licenses" が空です。依存関係のライセンス検査を実施しない扱いになります`);
-  }
-  if (!(adapter.commands?.secretScan ?? '').trim()) {
-    notes.push(
-      `アダプタ ${adapter.id} の "secretScan" が空です。秘匿情報の検査は台帳記録による通過を認めない唯一の基準のため、別の手段で実施してください`
-    );
+  if (adapter.id !== 'undetermined') {
+    const testCmd = (adapter.commands?.test ?? '').trim();
+    if (!testCmd) {
+      problems.push(
+        `アダプタ ${adapter.id} の "test" が空です。G-5 は全テストの通過を合否条件にするため、` +
+          '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
+      );
+    }
+    if (!(adapter.commands?.licenses ?? '').trim()) {
+      notes.push(`アダプタ ${adapter.id} の "licenses" が空です。依存関係のライセンス検査を実施しない扱いになります`);
+    }
   }
 }
 

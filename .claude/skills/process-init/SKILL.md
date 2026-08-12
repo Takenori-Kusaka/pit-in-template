@@ -51,7 +51,9 @@ description: このプロジェクトのプロセス構成を対話で決め、P
 | `python` | Python |
 | `go` | Go |
 | `none` | 上記以外。コマンドを自分で書く |
+| `undetermined` | まだ決まっていない。S0 探索の完了(SG-0)までに確定させる |
 
+`undetermined` を選んだ場合、S0 探索の完了（SG-0を通過する）までにスタックを確定し、アダプタを切り替える（後述の手続）必要があります。
 `none` を選んだ場合、**あとで `adapters/none.json` にテストの実行コマンドを書く必要がある**ことを伝えてください。空のままでは G-5 が失敗します。検査を実施していない状態を通過した記録として残さないための設計です。
 
 ### 4. 案件 ID を聞く
@@ -88,7 +90,8 @@ node scripts/init/generate-profile.mjs --answers /tmp/answers.json --stack node 
 1. **未達のゲートがあるか**。ある場合は理由と、埋める方法を提示する
 2. どのゲートが省略されたか、その理由
 3. カバレッジの下限は初期値であり、実測に基づく値ではないこと
-4. 次にやること
+4. **スタックが未確定（undetermined）であるかどうか**。未確定の場合、**SG-0を通過するまでに確定させる必要があること（確定期限）**を伝える
+5. 次にやること
 
 ### 7. 構成に応じて後片付けをする
 
@@ -118,9 +121,23 @@ chore: プロセス構成を初期化する
 - PROCESS-PROFILE.md / process.config.json を生成
 ```
 
+## 技術スタックの確定・変更手続
+
+開発技術スタックを確定・変更する場合は、プロセス構成の再生成（`/process-init` の全ステップの再実行）ではなく、以下の手順で行います。技術選定は重要な意思決定のため、**ADR (Architecture Decision Record) の作成を伴います**。
+
+1. **意思決定の記録**: `/adr-write` を実行し、採用した技術スタックと選定理由、比較検討した選択肢（採らなかった選択肢）を `context/decisions/` へ記録します。
+2. **構成ファイルの更新**: `process.config.json` の `adapters.stack` の値を、決定したスタック（`node`, `python`, `go`, `none` のいずれか）へ直接編集します。
+3. **プロファイルの再生成**: `generate-profile.mjs` を実行して `PROCESS-PROFILE.md` のみを更新します。
+   ```bash
+   node scripts/init/generate-profile.mjs --answers process.config.json --stack <決定したスタック> --project-id <既存の案件ID>
+   ```
+   ※ `--answers` に `process.config.json` のパスを渡すことで、既存の5軸回答を保持したままプロファイルと構成を更新できます。
+4. **契約検査の実行**: `node scripts/gate/verify-gate-contract.mjs` を実行して、不整合がないことを確認します。
+
 ## やってはならないこと
 
 - 回答を推測して埋めること。5軸は利用者の状況であり、コードからは分からない
+- **構想メモや既存ファイルからスタックを推測して埋めること。決まっていない場合は `undetermined` を選択してください**
 - 不変条件の拒否を回避するために回答を変えること
 - 未達(`unmet`)を省略(`omitted`)へ書き換えること
 - `PROCESS-PROFILE.md` の未達の節を削除すること

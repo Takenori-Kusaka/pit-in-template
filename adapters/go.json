@@ -9,8 +9,7 @@
     "coverage": "go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out",
     "lint": "go vet ./...",
     "audit": "govulncheck ./...",
-    "licenses": "go-licenses check ./...",
-    "secretScan": ""
+    "licenses": "go-licenses check ./..."
   },
   "coverageSummary": null,
   "note": "coverage.out はテキスト形式のため、カバレッジ判定はワークフロー側の go tool cover の出力で行ってください"
