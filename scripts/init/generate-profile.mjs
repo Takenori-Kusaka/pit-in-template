@@ -72,8 +72,17 @@ export function checkConstraints(answers) {
 
   if (size === 'size-1-2' && ['cl1', 'cl2', 'cl3'].includes(cl)) {
     errors.push(
-      `安全重要度 ${cl.toUpperCase()} を 1〜2名の体制で扱えません。危害の深刻度は体制の都合で下がりません。` +
-        '外部の評価者を含めて体制を確保するか、当該の機能を実施しないかの二択です(第8章 軸E)。'
+      `安全重要度 ${cl.toUpperCase()} を 1〜2名の体制で扱えません。危害の深刻度は体制の都合で下がりません(第8章 軸E)。\n` +
+        '    選択肢は3つです。\n' +
+        '      1. 設計を変えて危害の帰結そのものを下げる(例: 物理削除を取り消し可能な方式へ変える)。\n' +
+        '         区分が実際に下がった場合に限り、下げた区分で回答し直せます。次の記録が必要です。\n' +
+        '           - 低減の前後の区分と根拠となる設計(CL2 以上は安全リスクアセスメント、CL1 以下は ADR)\n' +
+        '           - 設計上の制約を、該当機能の受入基準へ必須制約として書き込む\n' +
+        '           - 採らなかった選択肢(体制の確保・機能の非実施)とその理由を ADR へ含める\n' +
+        '         人体への危害・外部へ出た情報・確定した取引は、この経路で下げられません。\n' +
+        '      2. 外部の評価者を含めて体制を確保する。\n' +
+        '      3. 当該の機能を実施しない。\n' +
+        '    記録を伴わない引き下げは、回答の書き換えです。'
     );
   }
   if (size === 'size-1-2' && quality === 'quality-regulated') {
@@ -121,6 +130,36 @@ export function detectUnmet(answers, gates) {
   return unmet;
 }
 
+/**
+ * 代償措置つきの逸脱(deviation)の判定。
+ *
+ * 未達(unmet)と区別する。未達はゲートの目的を達成する構成が存在しない状態を指す。
+ * 逸脱は判定そのものは実施できるが、要求される属性(独立性など)を欠く状態を指す。
+ * 出荷判定(G-7)は、1〜2名の体制では価値責任者が兼ねる構成になる。判定と突合は
+ * 単独で実行できるため未達ではないが、開発ラインからの独立は失われる(第3章 3.5.2)。
+ */
+export function detectDeviations(answers, gates) {
+  const deviations = [];
+
+  if (gates.g7?.params?.approverMode === 'value-owner-merged' && gates.g7.state === 'required') {
+    deviations.push({
+      gate: 'g7',
+      label: 'G-7 出荷判定',
+      rule: '開発ライン × 出荷判定者(同一案件)の兼務の禁止(第3章 3.5)',
+      reason:
+        '3名未満の体制では、開発ラインから独立した出荷判定者を置けない。判定と基準の突合は単独で実行できるため未達ではないが、判定者の独立性は失われる',
+      compensation: [
+        'G-7 の判定記録を必須とし、基準の各項目との突合を記録に残す',
+        'リリース後の抜き取り確認を定常作業として置く',
+        '兼務の事実と代償措置を D-0 体制図へ明記する',
+      ],
+      resolveWhen: '体制が3名以上になり、開発ラインの外から出荷判定者を置けるようになった時点',
+      source: '第3章 3.5.2 / ADR-0029',
+    });
+  }
+  return deviations;
+}
+
 export function buildConfig(answers, opts = {}) {
   const errors = checkConstraints(answers);
   if (errors.length) {
@@ -147,6 +186,7 @@ export function buildConfig(answers, opts = {}) {
   }
 
   const unmet = detectUnmet(answers, gates);
+  const deviations = detectDeviations(answers, gates);
 
   // CI の強度。g-ci に strengthen が乗った場合、既定値を引き上げる
   const ciStrengthened = result.profile['gate:g-ci']?.state === 'strengthen';
@@ -174,6 +214,7 @@ export function buildConfig(answers, opts = {}) {
     ruleset,
     gates,
     unmet,
+    deviations,
     ci: {
       coverageThreshold: ciStrengthened ? 90 : 80,
       failOnSeverity: ['critical', 'high'],
@@ -252,6 +293,32 @@ export function renderProfileMd(config, result) {
       L.push(
         '調達先が決まったら `process.config.json` の `unmet[].reviewSourcing` へ記入してください。' +
           '未記入のまま運用している状態は、出荷判定の証跡にも残ります。'
+      );
+      L.push('');
+    }
+  }
+
+  // --- 代償措置つきの逸脱(未達の直下に置く。下位の節へ送らない) ---
+  if (config.deviations?.length) {
+    L.push('## 代償措置つきの逸脱');
+    L.push('');
+    L.push('次のゲートは**実施しますが、標準が要求する属性を欠いています**。未達ではありません。');
+    L.push('');
+    L.push('| ゲート | 抵触する規則 | 欠けるもの | 解消の時点 |');
+    L.push('| --- | --- | --- | --- |');
+    for (const d of config.deviations) {
+      L.push(`| ${d.label} | ${d.rule} | ${d.reason} | ${d.resolveWhen} |`);
+    }
+    L.push('');
+    for (const d of config.deviations) {
+      L.push(`### ${d.label} の代償措置`);
+      L.push('');
+      L.push('次をすべて満たす場合に限り、この構成で運用できます。');
+      L.push('');
+      for (const c of d.compensation) L.push(`- [ ] ${c}`);
+      L.push('');
+      L.push(
+        `**代償措置は独立性の回復ではありません**。判定が甘くなる可能性は残ります。記録と抜き取りが行うのは、甘さを後から検出できる状態にすることだけです(${d.source})。`
       );
       L.push('');
     }
@@ -408,6 +475,11 @@ if (isMain) {
       console.log('');
       console.log('[未達] 次のゲートは目的を達成する構成を示せていません:');
       for (const u of config.unmet) console.log(`  - ${u.label}: ${u.reason}`);
+    }
+    if (config.deviations.length) {
+      console.log('');
+      console.log('[逸脱] 次のゲートは実施しますが、標準が要求する属性を欠いています:');
+      for (const d of config.deviations) console.log(`  - ${d.label}: ${d.rule}`);
     }
   }
 }
