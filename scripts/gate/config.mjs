@@ -44,3 +44,25 @@ export function warn(msg) {
 export function fail(msg) {
   console.log(`::error::${msg}`);
 }
+
+export function hasTarget(adapter) {
+  const adapterId = adapter.id;
+  if (adapterId === 'node') {
+    return fs.existsSync(path.join(ROOT, 'package.json'));
+  }
+  if (adapterId === 'python') {
+    const pyFiles = ['pyproject.toml', 'setup.py', 'setup.cfg', 'requirements.txt', 'Pipfile'];
+    return pyFiles.some((f) => fs.existsSync(path.join(ROOT, f)));
+  }
+  if (adapterId === 'go') {
+    return fs.existsSync(path.join(ROOT, 'go.mod'));
+  }
+  if (adapterId === 'none') {
+    const cmds = Object.values(adapter.commands ?? {});
+    return cmds.some((c) => (c ?? '').trim().length > 0);
+  }
+  if (adapterId === 'undetermined') {
+    return false;
+  }
+  return true;
+}

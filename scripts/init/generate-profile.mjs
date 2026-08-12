@@ -46,7 +46,8 @@ function toGateState(state) {
 function readAnswers(argv) {
   const i = argv.indexOf('--answers');
   if (i < 0) throw new Error('--answers <file> が必要です');
-  return JSON.parse(fs.readFileSync(argv[i + 1], 'utf8'));
+  const raw = JSON.parse(fs.readFileSync(argv[i + 1], 'utf8'));
+  return raw.answers ?? raw;
 }
 
 function arg(argv, name, fallback) {
@@ -103,7 +104,7 @@ export function checkConstraints(answers) {
  * 1〜2名で外部のレビュアがいない場合、この条件を満たす構成が存在しない。
  * 標準は AI を独立レビュアの代替に置くことを認めないため、省略ではなく未達として扱う。
  */
-export function detectUnmet(answers, gates) {
+export function detectUnmet(answers, gates, stack) {
   const unmet = [];
   const noReviewer =
     answers['q-team-size'] === 'size-1-2' && answers['q-external-reviewer'] === 'reviewer-no';
@@ -124,6 +125,22 @@ export function detectUnmet(answers, gates) {
         '他の個人開発者と相互レビューの取り決めをする',
         '有償のコードレビューを利用する',
         '体制が3名以上になったら /process-init を再実行する',
+      ],
+    });
+  }
+
+  if (stack === 'undetermined' && answers['q-biz-phase'] !== 'poc') {
+    if (gates.g3) gates.g3.state = 'unmet';
+    unmet.push({
+      gate: 'g3',
+      label: 'G-3 技術設計判断',
+      reason: 'MVP構築（S1以降）フェーズに入っていますが、技術スタックが未確定（undetermined）のままです',
+      whyNotAi: '技術スタックの決定および技術設計の判断は、AIに意思決定を委譲することができない極めて重要な設計・技術判断です。',
+      compensation: [],
+      reviewSourcing: null,
+      howToResolve: [
+        '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, go, none）を決定する',
+        '決定したアダプタスタックを process.config.json に反映し、generate-profile.mjs を再実行する',
       ],
     });
   }
@@ -185,7 +202,7 @@ export function buildConfig(answers, opts = {}) {
     };
   }
 
-  const unmet = detectUnmet(answers, gates);
+  const unmet = detectUnmet(answers, gates, opts.stack ?? 'none');
   const deviations = detectDeviations(answers, gates);
 
   // CI の強度。g-ci に strengthen が乗った場合、既定値を引き上げる
@@ -259,7 +276,7 @@ export function renderProfileMd(config, result) {
 
   L.push('# プロセス構成書');
   L.push('');
-  L.push('このファイルは `/process-init` が生成しました。**手で編集してよいのは「未達」節の調達先だけです**。');
+  L.push('このファイルは `/process-init` が生成しました。**手での直接編集は行わず、調達先の記入は `node scripts/init/set-review-sourcing.mjs` を使用してください**。');
   L.push('構成を変えるときは `/process-init` を再実行してください。');
   L.push('');
   L.push(`- 案件 ID: \`${config.projectId}\``);
@@ -290,10 +307,12 @@ export function renderProfileMd(config, result) {
       L.push('');
       for (const h of u.howToResolve) L.push(`- ${h}`);
       L.push('');
-      L.push(
-        '調達先が決まったら `process.config.json` の `unmet[].reviewSourcing` へ記入してください。' +
-          '未記入のまま運用している状態は、出荷判定の証跡にも残ります。'
-      );
+      L.push('調達先が決まったら、次のコマンドを実行して記入してください。');
+      L.push('```bash');
+      L.push(`node scripts/init/set-review-sourcing.mjs --gate ${u.gate} --sourcing "ここに調達先を記入"`);
+      L.push('```');
+      L.push('');
+      L.push('未記入のまま運用している状態は、出荷判定の証跡にも残ります。');
       L.push('');
     }
   }
@@ -323,6 +342,42 @@ export function renderProfileMd(config, result) {
       L.push('');
     }
   }
+
+  // --- 事業ステージとステージ移行ゲート(SG) ---
+  L.push('## 事業ステージとステージ移行ゲート(SG)');
+  L.push('');
+  L.push('標準プロセスには、開発の工程ゲート(G-1〜G-8)とは別に、投資継続を判断する**ステージ移行ゲート(SG-0〜SG-2)**が定義されています。');
+  L.push('');
+  L.push('| ステージ | 目的 | 移行ゲート | 対象とする状態 |');
+  L.push('| --- | --- | --- | --- |');
+  L.push('| **S0 探索** | 事業仮説と技術的実現性の検証 | **SG-0** | 技術的実現性が確認され、次ステージの投資・体制が示されている |');
+  L.push('| **S1 構築** | 最初の顧客向け(MVP)の構築とビジネス検証 | **SG-1** | 期待効果の検証、初期顧客の獲得、継続的な開発体制の確立 |');
+  L.push('| **S2 拡大・運用** | プロダクトの成長、組織拡大、安定運用 | **SG-2** | 投資対効果の最大化、非機能要件 of ... |');
+  L.push('');
+
+  const phase = config.answers['q-biz-phase'];
+  L.push('### 現在のステージ判定と確認');
+  L.push('');
+  if (config.adapters.stack === 'undetermined') {
+    L.push('> ⚠️ **警告: 開発技術スタックが未確定です。SG-0 (技術的実現性の確認)を通過するまでに、技術スタックを確定させ、アダプタを設定してください。**');
+    L.push('');
+  }
+  if (phase === 'poc') {
+    L.push('- **現在の想定ステージ**: `S0 探索` (検証中(PoC)段階)');
+    L.push('- **目指すゲート**: **SG-0** (技術的実現性の確認)');
+    L.push('- **確認事項**: PoCは使い捨てる前提で最速で学ぶ段階です。次の MVP 構築へ移る前に、必ず技術的実現性と事業仮説の検証を終え、SG-0 の判定を受けてください。');
+  } else if (phase === 'mvp') {
+    L.push('- **現在の想定ステージ**: `S1 構築` (最初の顧客向け(MVP)段階)');
+    L.push('- **通過済みの前提**: **SG-0** (技術的実現性の確認)');
+    L.push('- **目指すゲート**: **SG-1** (ビジネス実証)');
+    L.push('- **注意**: 技術的実現性(採用技術が自社ドメインで実用精度を出すことなど)が未検証のまま MVP 工程に入ると、大きな手戻りリスクがあります。**「まだ一度も技術的実現性を検証していない(SG-0を通せる状態にない)」場合は、実態は S0 探索ステージです。** その場合、先に PoC(検証中) として `/process-init` を再実行し、SG-0 を目指すことを強く推奨します。');
+  } else {
+    L.push(`- **現在の想定ステージ**: \`S2 拡大・運用\` (${a['q-biz-phase'] || 'グロース/安定運用'} 段階)`);
+    L.push('- **通過済みの前提**: **SG-1** (ビジネス実証)');
+    L.push('- **目指すゲート**: **SG-2** (持続的な価値最大化)');
+    L.push('- **注意**: すでに顧客へ価値が届き、ビジネスモデルが実証されている(SG-1通過済み)ことを想定しています。もし初期の顧客価値やリリース後の効果検証が未完了の場合は、まず \`S1 構築\` として MVP での検証を終える必要があります。');
+  }
+  L.push('');
 
   // --- ブロック1: 診断結果の要約 ---
   L.push('## あなたの状況');

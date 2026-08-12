@@ -1,0 +1,16 @@
+{
+  "id": "undetermined",
+  "name": "未確定 (SG-0 までに確定すること)",
+  "runtime": null,
+  "runtimeVersion": null,
+  "commands": {
+    "install": "",
+    "test": "",
+    "coverage": "",
+    "lint": "",
+    "audit": "",
+    "licenses": ""
+  },
+  "coverageSummary": null,
+  "note": "開発技術スタックが未確定の状態です。S0 探索を終え、SG-0 を通過するまでに、採用技術に合わせて node / python / go / none のいずれかへ切り替えてください。未確定のあいだは、テストや静的解析などの検査は「対象なし」として扱われます"
+}

@@ -20,7 +20,7 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ fromJSON(steps.rt.outputs.json).runtimeVersion }}
-        cache: npm
+        cache: ${{ (inputs.install == 'true' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock') != '') && 'npm' || '' }}
 
     - name: Python
       if: fromJSON(steps.rt.outputs.json).runtime == 'python'

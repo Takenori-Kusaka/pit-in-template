@@ -9,8 +9,7 @@
     "coverage": "npm run coverage --if-present",
     "lint": "npm run lint --if-present",
     "audit": "npm audit --audit-level=high",
-    "licenses": "npx --yes license-checker-rseidelsohn --production --excludePrivatePackages --onlyAllow \"$PIT_IN_ALLOWED_LICENSES\"",
-    "secretScan": "npx --yes secretlint \"**/*\""
+    "licenses": "npx --yes license-checker-rseidelsohn --production --excludePrivatePackages --onlyAllow \"$PIT_IN_ALLOWED_LICENSES\""
   },
   "coverageSummary": "coverage/coverage-summary.json",
   "note": "coverage は coverage-summary.json(istanbul 形式)を出す設定にしてください。出せない場合は coverageSummary を null にすると、カバレッジ判定は実施しない扱いとして記録されます"

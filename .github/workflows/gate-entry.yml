@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'docs/D-0-governance.md'
+      - 'docs/project-brief.md'
       - 'process.config.json'
   schedule:
     - cron: '0 0 * * 1'
@@ -43,3 +44,11 @@ jobs:
             gh label create d0-review --description "D-0 体制図の見直し" --color FBCA04 || true
             gh issue create --title "D-0 体制図の見直しが必要です" --label d0-review --body "$body"
           fi
+
+  g1-check:
+    name: g1-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: node scripts/gate/check-g1.mjs
