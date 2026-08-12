@@ -264,6 +264,12 @@ export function buildConfig(answers, opts = {}) {
   const unmet = detectUnmet(answers, gates);
   const deviations = detectDeviations(answers, gates);
 
+  // 兼務を認めた場合、判定者の表示も移す。表示が分離されたままだと、構成と体制図が
+  // 食い違ったまま可視化されない(#209)
+  if (gates.g7?.params?.approverMode === 'value-owner-merged') {
+    gates.g7.approver = '価値責任者(出荷判定者を兼務。代償措置つきの逸脱)';
+  }
+
   // CI の強度。g-ci に strengthen が乗った場合、既定値を引き上げる
   const ciStrengthened = result.profile['gate:g-ci']?.state === 'strengthen';
   const reviewerCount =
@@ -552,6 +558,108 @@ export function renderProfileMd(config, result) {
   return L.join('\n');
 }
 
+// ------------------------------------------------ CLAUDE.md の構成依存部分
+
+export const RULES_BEGIN = '<!-- generated:process-rules start -->';
+export const RULES_END = '<!-- generated:process-rules end -->';
+
+/**
+ * ロールと Label Mailbox の対応(第5章 4.3 / 4.3.1)。
+ * ラベルは状態であり、常に「次に動く人」を指す。
+ */
+const MAILBOX = {
+  'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner'] },
+  'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-owner', 'state:needs-platform'] },
+  'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
+  'qa-gatekeeper': { inbox: ['state:dev-done', 'state:ready-to-merge'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
+  'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done'] },
+  'biz-approver': { inbox: ['state:needs-owner'], hands: ['state:needs-po', 'state:needs-dev'] },
+};
+
+/**
+ * CLAUDE.md へ差し込む構成依存部分を組み立てる。
+ *
+ * エージェントが起動時に読む文書は CLAUDE.md である。手書きのままでは標準の改訂も
+ * 案件の構成も届かないため、構成へ依存する部分は導出物として差し替える(#220 / ADR-0035)。
+ */
+export function renderProcessRules(config) {
+  const L = [];
+  L.push('## このプロジェクトの構成(自動生成)');
+  L.push('');
+  L.push(
+    'この節は `process.config.json` から生成しています。**手で編集しないでください**。' +
+      '内容を変えるときは `/process-init` を再実行します。手で編集すると `check-process-rules` が失敗します。'
+  );
+  L.push('');
+  L.push(`- 案件 ID: \`${config.projectId}\``);
+  L.push(`- 追随している D-0 体制図の版: ${config.d0Version ? `\`${config.d0Version}\`` : '**未取得**(D-0 が未作成、または版の記載がない)'}`);
+  L.push('');
+
+  L.push('### 有効なゲートと判定者');
+  L.push('');
+  L.push('| ゲート | 判定 | 判定者 |');
+  L.push('| --- | --- | --- |');
+  for (const g of Object.values(config.gates)) {
+    L.push(`| ${g.label} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
+  }
+  L.push('');
+
+  if (config.unmet?.length) {
+    L.push('**未達のゲート**: ' + config.unmet.map((u) => `${u.label}(${u.reason})`).join(' / '));
+    L.push('');
+    L.push('未達は省略ではありません。**AI で埋めてはなりません**。');
+    L.push('');
+  }
+  if (config.deviations?.length) {
+    L.push('**代償措置つきの逸脱**: ' + config.deviations.map((d) => `${d.label}(${d.rule})`).join(' / '));
+    L.push('');
+  }
+
+  L.push('### ロールごとの権限');
+  L.push('');
+  L.push('**自分がどのロールのセッションかを確認してから作業を始めてください**。');
+  L.push('分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します(標準 第3章 3.5.3)。');
+  L.push('');
+  L.push('| ロール | 判定するゲート | 判定してはならないゲート | 受信箱 | 引き渡しに使うラベル |');
+  L.push('| --- | --- | --- | --- | --- |');
+  for (const r of config.roles ?? []) {
+    const mb = MAILBOX[r.id];
+    if (!mb && !r.gatesOwned.length && !r.gatesUnmet.length) continue;
+    const owned = [...r.gatesOwned, ...r.gatesUnmet.map((k) => `${k}*`)]
+      .map((k) => GATE_BY_KEY[k.replace('*', '')]?.label + (k.endsWith('*') ? '(未達)' : ''))
+      .join(' / ');
+    const notJudge = r.mustNotJudge.map((k) => GATE_BY_KEY[k]?.label ?? k).join(' / ');
+    const inbox = (mb?.inbox ?? []).map((s) => `\`${s}\``).join(' ');
+    const hands = (mb?.hands ?? []).map((s) => `\`${s}\``).join(' ');
+    const ownedCell = [...(owned ? [owned] : []), ...(r.notes ?? [])].join('。') || '—';
+    L.push(`| ${r.name} | ${ownedCell} | ${notJudge || '—'} | ${inbox || '—'} | ${hands || '—'} |`);
+  }
+  L.push('');
+  L.push('- **起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらない禁止です');
+  L.push('- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します');
+  L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します');
+  L.push('');
+  for (const r of config.roles ?? []) {
+    if (!r.mustNotAlso?.length) continue;
+    const names = r.mustNotAlso.map((s) => {
+      const n = config.roles.find((x) => x.id === s.role)?.name ?? s.role;
+      return s.exception === 'none' ? n : `${n}(例外: ${s.exception})`;
+    });
+    L.push(`- **${r.name}** が兼ねてはならない役割: ${names.join(' / ')}`);
+  }
+  L.push('');
+  return L.join('\n');
+}
+
+/** CLAUDE.md のマーカー区間を差し替える。マーカーがなければ null を返す */
+export function applyProcessRules(text, config) {
+  const b = text.indexOf(RULES_BEGIN);
+  const e = text.indexOf(RULES_END);
+  if (b < 0 || e < 0 || e < b) return null;
+  const body = renderProcessRules(config);
+  return text.slice(0, b) + RULES_BEGIN + '\n\n' + body + '\n' + text.slice(e);
+}
+
 // ---------------------------------------------------------------- 実行
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -588,6 +696,18 @@ if (isMain) {
     fs.writeFileSync(path.join(ROOT, 'process.config.json'), JSON.stringify(config, null, 2) + '\n', 'utf8');
     fs.writeFileSync(path.join(ROOT, 'PROCESS-PROFILE.md'), md, 'utf8');
     console.log('wrote process.config.json / PROCESS-PROFILE.md');
+
+    // エージェントが起動時に読む文書へ、構成から導出した権限と経路を差し込む
+    const claudeMd = path.join(ROOT, 'CLAUDE.md');
+    if (fs.existsSync(claudeMd)) {
+      const applied = applyProcessRules(fs.readFileSync(claudeMd, 'utf8'), config);
+      if (applied === null) {
+        console.warn(`[警告] CLAUDE.md に ${RULES_BEGIN} / ${RULES_END} がありません。構成依存部分を差し込めませんでした`);
+      } else {
+        fs.writeFileSync(claudeMd, applied, 'utf8');
+        console.log('wrote CLAUDE.md (構成依存部分)');
+      }
+    }
     if (config.unmet.length) {
       console.log('');
       console.log('[未達] 次のゲートは目的を達成する構成を示せていません:');

@@ -81,6 +81,8 @@ node scripts/init/generate-profile.mjs --answers /tmp/answers.json --stack node 
 
 不変条件に反する回答(1〜2名で CL1 以上、1〜2名で規制業など)は、スクリプトが理由つきで拒否します。**拒否されたら回答を勝手に変えないでください**。利用者へ理由を伝え、体制を確保するか対象を外すかを選んでもらいます。
 
+生成物は3つです。`PROCESS-PROFILE.md`、`process.config.json`、そして **`CLAUDE.md` のマーカー区間**(`<!-- generated:process-rules -->`)です。区間には有効なゲートと判定者、ロールごとの権限、担ってはならない工程、受信箱のラベルが入ります。**区間の中を手で編集しないでください**。`scripts/gate/check-process-rules.mjs` が乖離を検出して失敗します。
+
 ### 6. 生成物を確認して伝える
 
 生成後、次を必ず利用者へ伝えてください。
@@ -116,7 +118,7 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team.json
 chore: プロセス構成を初期化する
 
 - ピットイン方式のテーラリング(軸A〜E)を適用
-- PROCESS-PROFILE.md / process.config.json を生成
+- PROCESS-PROFILE.md / process.config.json / CLAUDE.md の構成依存部分を生成
 ```
 
 ## やってはならないこと
