@@ -242,7 +242,7 @@
         }
       ],
       "reason": "PoCの本質は捨てる前提で速く学ぶこと。ただし「PoCがそのまま本番化する事故」が最頻の失敗パターンのため、復活の条件をあらかじめ決めておく",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-business-phase.yaml"
     },
@@ -294,7 +294,7 @@
         }
       ],
       "reason": "最初の顧客がつく段階から、守るべき範囲(コア)を最小限で定義し始める",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-business-phase.yaml"
     },
@@ -326,7 +326,7 @@
         }
       ],
       "reason": "グロース期は参照モデルをほぼそのまま適用する段階。負債を返し始めないと拡大速度が落ちる",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-business-phase.yaml"
     },
@@ -366,7 +366,7 @@
         }
       ],
       "reason": "安定運用期は新規開発より変更影響の統制が重要になる",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-business-phase.yaml"
     },
@@ -400,7 +400,7 @@
         }
       ],
       "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
     },
@@ -454,7 +454,7 @@
         }
       ],
       "reason": "適合性評価または第三者認証の対象になる場合、危険源の同定から検証記録までの追跡が要求される",
-      "source": "/process-compass/phase4-process-design/safety-verification/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/safety-verification/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
     },
@@ -511,7 +511,7 @@
         }
       ],
       "reason": "死亡または重篤な傷害が起こりうる場合、機能安全の枠組みが要求する独立性と検証の網を満たす必要がある",
-      "source": "/process-compass/phase4-process-design/safety-verification/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/safety-verification/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
     },
@@ -571,7 +571,7 @@
         }
       ],
       "reason": "発注側が価値の責任を持たない外注は、AI時代には「誰も中身を理解していないシステム」を最速で生む",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 20,
       "sourceFile": "rules-dev-form.yaml"
     },
@@ -629,7 +629,7 @@
         }
       ],
       "reason": "AI生成コードの瑕疵担保責任は未整備の論点。検収を仕様適合に限定すれば既存の検収実務に載せられる",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 20,
       "sourceFile": "rules-dev-form.yaml"
     },
@@ -677,7 +677,7 @@
         }
       ],
       "reason": "停止・誤動作が社会・金銭に影響する場合、検証の網を参照モデルより厚くする",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 30,
       "sourceFile": "rules-quality.yaml"
     },
@@ -737,7 +737,7 @@
         }
       ],
       "reason": "規制業では「AIがどこを生成し、誰が承認したか」の追跡が監査要件になる。最初から監査書式で運用しないと後から再構成できない",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 30,
       "sourceFile": "rules-quality.yaml"
     },
@@ -777,7 +777,7 @@
         }
       ],
       "reason": "独立レビューの担い手が誰もいない場合、人的検証の代替は機械検証しかない。前提が満たせないことを隠さず明示する",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 40,
       "sourceFile": "rules-supplementary.yaml"
     },
@@ -799,7 +799,7 @@
         }
       ],
       "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計(変更は2点のみの原則)",
-      "source": "/process-compass/phase4-process-design/integrated-process/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
     },
@@ -821,7 +821,7 @@
         }
       ],
       "reason": "ゲートがない組織では、重い会議体でなく「記録の残る判定」として最小構成で導入する",
-      "source": "/process-compass/phase4-process-design/gate-criteria/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
     },
@@ -843,7 +843,7 @@
         }
       ],
       "reason": "ツール制約がある組織では、解禁条件つきの段階的な自律度引き上げが現実的",
-      "source": "/process-compass/phase5-implementation/ai-environment/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/ai-environment/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
     },
@@ -874,7 +874,7 @@
         }
       ],
       "reason": "ピットイン方式の外殻はAIの有無に依存しない設計。AI解禁時にループを足すだけで移行できる",
-      "source": "/process-compass/phase4-process-design/integrated-process/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 40,
       "sourceFile": "rules-supplementary.yaml"
     },
@@ -928,7 +928,7 @@
         }
       ],
       "reason": "最小体制では「作成指示者・レビュア・判定者の分離」がチーム内で成立しない。独立レビューを外部に求めることが唯一の必須要件になる",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-team-size.yaml"
     },
@@ -978,7 +978,7 @@
         }
       ],
       "reason": "分離の最低条件は満たせる規模。責任の所在を名前で明示することが形骸化の予防になる",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-team-size.yaml"
     },
@@ -1032,7 +1032,7 @@
         }
       ],
       "reason": "規模が大きいほど判定者の帯域がボトルネックになる。分離と委譲で承認の滞留を防ぐ",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-team-size.yaml"
     }
@@ -1043,42 +1043,42 @@
       "name": "結果責任は1人",
       "description": "A(結果責任)を2人以上に割り当てない",
       "rationale": "責任の分散は「全員の責任=誰の責任でもない」状態を生み、承認の滞留と形骸化の温床になる(フェーズ1の日本ガバナンス分析)",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
     },
     {
       "id": "c-ai-not-accountable",
       "name": "AIは責任者になれない",
       "description": "AIをA(結果責任)に割り当てない。AIはどこまでもR(実行)",
       "rationale": "AIは結果への説明責任を負えない。人が承認し責任を持つ構造がピットイン方式の成立条件",
-      "source": "/process-compass/phase4-process-design/roles-responsibilities/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "c-gate-needs-criteria",
       "name": "ゲートには差し戻し基準",
       "description": "差し戻し基準(チェックリスト)のないゲートを作らない",
       "rationale": "基準のないゲートは判定者の属人判断になり、滞留と素通し(rubber stamp)の両方を招く",
-      "source": "/process-compass/phase4-process-design/gate-criteria/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/"
     },
     {
       "id": "c-safety-autonomy-cap",
       "name": "安全関連部の自律度はL1",
       "description": "安全重要度CL3の安全関連部で、AI自律レベルをL1より上げない",
       "rationale": "生成物を未検証の入力として扱い、決定論的な後段検証で捕捉しきる構成が、機能安全の枠組みで成立する唯一の経路",
-      "source": "/process-compass/phase4-process-design/safety-verification/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/safety-verification/"
     },
     {
       "id": "c-safety-assessment-not-omittable",
       "name": "安全リスクアセスメントは省略しない",
       "description": "安全重要度CL2以上で、安全リスクアセスメント(テンプレ9)と安全適合性の検証記録を省略しない",
       "rationale": "人員・期日の制約は、危害の深刻度を下げない。省略するなら安全重要度の判定自体を見直す",
-      "source": "/process-compass/phase4-process-design/deliverable-templates/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/"
     },
     {
       "id": "c-tailoring-must-be-declared",
       "name": "調整は宣言する",
       "description": "標準から外した項目を、理由と承認者とともに提案書へ記載せずに運用しない",
       "rationale": "規格の世界でも、テーラリングは適合の放棄ではなく「差分の宣言」を条件に認められる。宣言のない省略は追跡できない",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
     }
   ],
   "practices": [
@@ -1086,55 +1086,55 @@
       "id": "core-designation",
       "name": "コア機能の指定",
       "description": "人が深い理解を維持する対象(コア)と使い捨てを許容する対象(非コア)の区分",
-      "source": "/process-compass/phase3-gap-analysis/insourcing-bcp/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase3-gap-analysis/insourcing-bcp/"
     },
     {
       "id": "debt-management",
       "name": "負債台帳の運用",
       "description": "技術負債の記録・トリアージ・返却サイクル",
-      "source": "/process-compass/phase6-operation/debt-payback/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase6-operation/debt-payback/"
     },
     {
       "id": "ai-usage",
       "name": "AIの利用範囲",
       "description": "AIに委譲する範囲と自律度(L1〜L3)、人が判断を保持する箇所",
-      "source": "/process-compass/phase5-implementation/ai-environment/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/ai-environment/"
     },
     {
       "id": "traceability",
       "name": "AI生成箇所の追跡",
       "description": "どこをAIが生成し誰が承認したかの記録(監査対応)",
-      "source": "/process-compass/phase5-implementation/git-strategy/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/git-strategy/"
     },
     {
       "id": "acceptance",
       "name": "検収の基準",
       "description": "受託開発における検収対象の定義(受入基準への適合に限定し生成手段を問わない)",
-      "source": "/process-compass/phase4-process-design/tailoring-guide/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
     },
     {
       "id": "outer-gates",
       "name": "外殻ゲートの対応づけ",
       "description": "組織の既存決裁ゲートと参照モデルの外殻ゲートの接続方法",
-      "source": "/process-compass/phase4-process-design/integrated-process/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/"
     },
     {
       "id": "core-understanding",
       "name": "コア理解の維持",
       "description": "コア機能の理解保持者の確保と理解共有の作業化",
-      "source": "/process-compass/phase3-gap-analysis/insourcing-bcp/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase3-gap-analysis/insourcing-bcp/"
     },
     {
       "id": "handover",
       "name": "引き継ぎ文書",
       "description": "運用引き継ぎ・委託解消時の引き継ぎに使う文書の粒度",
-      "source": "/process-compass/phase4-process-design/deliverable-templates/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/"
     },
     {
       "id": "role-delegation",
       "name": "承認の委譲",
       "description": "価値責任者から機能責任者への仕様承認の委譲",
-      "source": "/process-compass/phase4-process-design/roles-responsibilities/"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
   ],
   "gates": [
@@ -1143,108 +1143,126 @@
       "label": "G-1",
       "name": "企画承認",
       "approver": "事業決裁者(決裁権限規程どおりの職位)",
-      "approverRole": "biz-approver"
+      "approverRole": "biz-approver",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-1-企画承認事業決裁者既存規程どおり"
     },
     {
       "id": "g-req-agree",
       "label": "G-2",
       "name": "要件合意",
       "approver": "価値責任者(単独。目安48時間以内に判定)",
-      "approverRole": "value-owner"
+      "approverRole": "value-owner",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-2-要件合意価値責任者48時間"
     },
     {
       "id": "g-tech-design",
       "label": "G-3",
       "name": "技術設計判断",
       "approver": "技術判断者(単独。目安48時間以内に判定)",
-      "approverRole": "tech-lead"
+      "approverRole": "tech-lead",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-3-技術設計判断技術判断者48時間"
     },
     {
       "id": "g-spec-cycle",
       "label": "G-4",
       "name": "機能仕様承認(反復内)",
       "approver": "価値責任者(または明示的に委譲された機能責任者。委譲しても結果責任は価値責任者に残る)",
-      "approverRole": "value-owner"
+      "approverRole": "value-owner",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-4-機能仕様承認価値責任者または委譲先24時間"
     },
     {
       "id": "g-ci",
       "label": "G-5",
       "name": "自動検証(CI)",
       "approver": "CI(機械判定)",
-      "approverRole": null
+      "approverRole": null,
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-5-自動検証-ci機械判定即時"
     },
     {
       "id": "g-indep-review",
       "label": "G-6",
       "name": "独立レビュー",
       "approver": "独立レビュア(作成指示者本人は承認不可。ブランチ保護で強制)",
-      "approverRole": "independent-reviewer"
+      "approverRole": "independent-reviewer",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-6-独立レビュー独立レビュア応答1営業日--判定2営業日"
     },
     {
       "id": "g-ship",
       "label": "G-7",
       "name": "出荷判定",
       "approver": "品質保証(第三者。署名する)",
-      "approverRole": "qa-gatekeeper"
+      "approverRole": "qa-gatekeeper",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-7-出荷判定qa3営業日"
     },
     {
       "id": "g-release",
       "label": "G-8",
       "name": "リリース決裁",
       "approver": "事業決裁者",
-      "approverRole": "biz-approver"
+      "approverRole": "biz-approver",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-8-リリース決裁事業決裁者48時間"
     }
   ],
   "roles": [
     {
       "id": "value-owner",
       "name": "価値責任者(Value Owner)",
-      "responsibility": "What/Why の決定と価値の説明責任を単独で持つ。要件合意・仕様承認の判定者。委譲しても結果責任は残る"
+      "responsibility": "What/Why の決定と価値の説明責任を単独で持つ。要件合意・仕様承認の判定者。委譲しても結果責任は残る",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "tech-lead",
       "name": "技術判断者(Tech Lead)",
-      "responsibility": "アーキテクチャ・技術選定・技術的トレードオフの判定を単独で持つ。技術設計ゲートの判定者"
+      "responsibility": "アーキテクチャ・技術選定・技術的トレードオフの判定を単独で持つ。技術設計ゲートの判定者",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "dev-verifier",
       "name": "開発者(検証者)",
-      "responsibility": "AI生成物の検証、挙動の理解、実装の細部判断。コア機能では設計レベルまで読み解き判断記録を残す"
+      "responsibility": "AI生成物の検証、挙動の理解、実装の細部判断。コア機能では設計レベルまで読み解き判断記録を残す",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "ai-agent",
       "name": "AIエージェント",
-      "responsibility": "仕様の起案支援、実装、テスト生成、ドキュメント生成、負債候補の検出。提案はするが承認しない"
+      "responsibility": "仕様の起案支援、実装、テスト生成、ドキュメント生成、負債候補の検出。提案はするが承認しない",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/"
     },
     {
       "id": "independent-reviewer",
       "name": "独立レビュア",
-      "responsibility": "作成を指示した本人とは別の人間として PR をレビューし、仕様との一致と理解可能性を確認する"
+      "responsibility": "作成を指示した本人とは別の人間として PR をレビューし、仕様との一致と理解可能性を確認する",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "qa-gatekeeper",
       "name": "品質保証(出荷判定者)",
-      "responsibility": "第三者として出荷判定を行い署名する。プロセス実行記録と品質エビデンスの確認が任務(再テストではない)"
+      "responsibility": "第三者として出荷判定を行い署名する。プロセス実行記録と品質エビデンスの確認が任務(再テストではない)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "biz-approver",
       "name": "事業決裁者",
-      "responsibility": "予算・スコープ・リリース可否という事業判断のみを行う。技術判断には関与しない"
+      "responsibility": "予算・スコープ・リリース可否という事業判断のみを行う。技術判断には関与しない",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "context-owner",
       "name": "コンテキストオーナー",
-      "responsibility": "恒久層コンテキスト(規約・用語・判断基準・判断記録)の保守と正しさに責任を持つ"
+      "responsibility": "恒久層コンテキスト(規約・用語・判断基準・判断記録)の保守と正しさに責任を持つ",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "ai-maintainer",
       "name": "AI維持管理者(AI Maintainer)",
-      "responsibility": "エージェント指示資産の一貫性と鮮度に責任を持つ。矛盾の除去・統合・削除の権限を単独で持ち、エージェントが用いる外部ツールの採用可否を承認する"
+      "responsibility": "エージェント指示資産の一貫性と鮮度に責任を持つ。矛盾の除去・統合・削除の権限を単独で持ち、エージェントが用いる外部ツールの採用可否を承認する",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "ai-ops",
       "name": "AI運用担当者(AIOps)",
-      "responsibility": "全社のAI実行基盤(モデル接続・実行予算・セキュリティ統制)の可用性と適合性に責任を持つ。開発ラインへは規程ではなく実行環境として統制を届ける"
+      "responsibility": "全社のAI実行基盤(モデル接続・実行予算・セキュリティ統制)の可用性と適合性に責任を持つ。開発ラインへは規程ではなく実行環境として統制を届ける",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
   ],
   "separations": [
@@ -1254,7 +1272,8 @@
       "scope": "same-work-product",
       "reason": "起案した主体が判定すれば、判定は自己申告になる。役割の組み合わせによらず成立しない",
       "exception": "none",
-      "gate": null
+      "gate": null,
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "sep-author-reviewer",
@@ -1265,7 +1284,8 @@
       "scope": "same-work-product",
       "reason": "作成を指示した本人が見ても、作成時の思い込みは検出できない",
       "exception": "none",
-      "gate": "g-indep-review"
+      "gate": "g-indep-review",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "sep-dev-shipping",
@@ -1276,7 +1296,8 @@
       "scope": "same-project",
       "reason": "第三者判定の独立性が崩れる",
       "exception": "3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029)",
-      "gate": "g-ship"
+      "gate": "g-ship",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
       "id": "sep-maintainer-ops",
@@ -1287,7 +1308,8 @@
       "scope": "always",
       "reason": "案件の都合で全社の統制を緩める経路ができる",
       "exception": "none",
-      "gate": null
+      "gate": null,
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
   ]
 }

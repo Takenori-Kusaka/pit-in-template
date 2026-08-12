@@ -131,6 +131,8 @@ export function detectUnmet(answers, gates) {
         '同一のモデルを用いる限り、エージェントを分けても事前学習の知識という共通の原因が残る。生成物の確認を生成器へ委ねる構成は自動化バイアスによって見落としを増やす',
       compensation: ['ci-strict', 'post-release-audit'],
       reviewSourcing: null,
+      source: 'ADR-0028(未達と省略の区別)',
+      sourceUrl: 'https://takenori-kusaka.github.io/process-compass/adr/0028-unmet-gate-distinct-from-omitted/',
       howToResolve: [
         'リポジトリを公開し、コミュニティのレビューを受ける',
         '他の個人開発者と相互レビューの取り決めをする',
@@ -167,6 +169,7 @@ export function detectDeviations(answers, gates) {
       ],
       resolveWhen: '体制が3名以上になり、開発ラインの外から出荷判定者を置けるようになった時点',
       source: '第3章 3.5.2 / ADR-0029',
+      sourceUrl: 'https://takenori-kusaka.github.io/process-compass/adr/0029-shipping-approver-merge-exception/',
     });
   }
   return deviations;
@@ -220,6 +223,7 @@ export function buildRoles(gates) {
       id: r.id,
       name: r.name,
       responsibility: r.responsibility,
+      source: r.source ?? null,
       gatesOwned: owned.filter(isActive),
       gatesUnmet: owned.filter((k) => gates[k]?.state === 'unmet'),
       mustNotAlso: pairs.map((s) => ({
@@ -255,6 +259,7 @@ export function buildConfig(answers, opts = {}) {
     gates[key] = {
       label: `${g.label} ${g.name}`,
       approver: g.approver ?? null,
+      source: g.source ?? null,
       state,
       params: p?.params ?? {},
       why: (p?.notes ?? []).filter(Boolean),
@@ -338,6 +343,11 @@ function stateLabel(state) {
   return STATE_LABEL[state] ?? state;
 }
 
+/** 標準の該当節へのリンク。参照先がない項目は素のまま出す(#221) */
+function link(text, url) {
+  return url ? `[${text}](${url})` : text;
+}
+
 export function renderProfileMd(config, result) {
   const L = [];
   const a = config.answerLabels;
@@ -358,11 +368,11 @@ export function renderProfileMd(config, result) {
     L.push('');
     L.push('次のゲートは、**目的を達成する構成を示せていません**。省略ではありません。');
     L.push('');
-    L.push('| ゲート | 未達の理由 | 代償措置 | 外部レビューの調達先 |');
-    L.push('| --- | --- | --- | --- |');
+    L.push('| ゲート | 未達の理由 | 代償措置 | 外部レビューの調達先 | 根拠 |');
+    L.push('| --- | --- | --- | --- | --- |');
     for (const u of config.unmet) {
       L.push(
-        `| ${u.label} | ${u.reason} | ${u.compensation.join(' / ')} | ${u.reviewSourcing ?? '**未記入**'} |`
+        `| ${u.label} | ${u.reason} | ${u.compensation.join(' / ')} | ${u.reviewSourcing ?? '**未記入**'} | ${link(u.source ?? '—', u.sourceUrl)} |`
       );
     }
     L.push('');
@@ -389,10 +399,10 @@ export function renderProfileMd(config, result) {
     L.push('');
     L.push('次のゲートは**実施しますが、標準が要求する属性を欠いています**。未達ではありません。');
     L.push('');
-    L.push('| ゲート | 抵触する規則 | 欠けるもの | 解消の時点 |');
-    L.push('| --- | --- | --- | --- |');
+    L.push('| ゲート | 抵触する規則 | 欠けるもの | 解消の時点 | 根拠 |');
+    L.push('| --- | --- | --- | --- | --- |');
     for (const d of config.deviations) {
-      L.push(`| ${d.label} | ${d.rule} | ${d.reason} | ${d.resolveWhen} |`);
+      L.push(`| ${d.label} | ${d.rule} | ${d.reason} | ${d.resolveWhen} | ${link(d.source, d.sourceUrl)} |`);
     }
     L.push('');
     for (const d of config.deviations) {
@@ -434,8 +444,10 @@ export function renderProfileMd(config, result) {
   L.push('| ゲート | 判定 | 判定者 |');
   L.push('| --- | --- | --- |');
   for (const [key, g] of Object.entries(config.gates)) {
-    L.push(`| ${g.label} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
+    L.push(`| ${link(g.label, g.source)} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
   }
+  L.push('');
+  L.push('ゲート名は標準の該当節へのリンクです。**構成の根拠は標準にあります**。');
   L.push('');
 
   // --- ブロック2.5: ロールと担ってはならない工程 ---
@@ -465,7 +477,7 @@ export function renderProfileMd(config, result) {
       const notJudge = r.mustNotJudge.map((k) => GATE_BY_KEY[k]?.label ?? k);
       const owns = [...(cells.length ? [cells.join(' / ')] : []), ...(r.notes ?? [])].join('。') || '—';
       L.push(
-        `| ${r.name} | ${owns} | ${also.join(' / ') || '—'} | ${notJudge.join(' / ') || '—'} |`
+        `| ${link(r.name, r.source)} | ${owns} | ${also.join(' / ') || '—'} | ${notJudge.join(' / ') || '—'} |`
       );
     }
     L.push('');
@@ -600,8 +612,10 @@ export function renderProcessRules(config) {
   L.push('| ゲート | 判定 | 判定者 |');
   L.push('| --- | --- | --- |');
   for (const g of Object.values(config.gates)) {
-    L.push(`| ${g.label} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
+    L.push(`| ${link(g.label, g.source)} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
   }
+  L.push('');
+  L.push('**判定の基準を確認するときは、ゲート名のリンク先(標準の該当節)を読んでください**。');
   L.push('');
 
   if (config.unmet?.length) {
@@ -632,12 +646,14 @@ export function renderProcessRules(config) {
     const inbox = (mb?.inbox ?? []).map((s) => `\`${s}\``).join(' ');
     const hands = (mb?.hands ?? []).map((s) => `\`${s}\``).join(' ');
     const ownedCell = [...(owned ? [owned] : []), ...(r.notes ?? [])].join('。') || '—';
-    L.push(`| ${r.name} | ${ownedCell} | ${notJudge || '—'} | ${inbox || '—'} | ${hands || '—'} |`);
+    L.push(`| ${link(r.name, r.source)} | ${ownedCell} | ${notJudge || '—'} | ${inbox || '—'} | ${hands || '—'} |`);
   }
   L.push('');
   L.push('- **起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらない禁止です');
   L.push('- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します');
-  L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します');
+  L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します([第5章 Label Mailbox](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))');
+  L.push('');
+  L.push('**規定の全文は標準にあります**。判断に迷ったら、表のリンク先を読んでから進めてください。推測で補わないでください。');
   L.push('');
   for (const r of config.roles ?? []) {
     if (!r.mustNotAlso?.length) continue;
