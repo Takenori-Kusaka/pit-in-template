@@ -65,6 +65,32 @@ for (const [key, g] of Object.entries(config.gates ?? {})) {
   }
 }
 
+// -------------------------------------------------- 2.5 代償措置つきの逸脱
+
+// 逸脱はゲートを実施したうえで属性を欠く状態のため、state は required のままになる。
+// 「逸脱の記録を消して普通の required に見せる」書き換えを検出する(第3章 3.5.2 / ADR-0029)
+for (const d of config.deviations ?? []) {
+  const s = config.gates?.[d.gate]?.state;
+  if (s !== 'required') {
+    problems.push(
+      `deviations に ${d.gate} があるのに、gates.${d.gate}.state が "${s}" です。逸脱は実施を伴います`
+    );
+  }
+  if (!d.reason) problems.push(`deviations の ${d.gate} に reason がありません`);
+  if (!(d.compensation ?? []).length) {
+    problems.push(`deviations の ${d.gate} に代償措置がありません。代償措置のない逸脱は認められません`);
+  }
+  if (!d.resolveWhen) problems.push(`deviations の ${d.gate} に解消の時点(resolveWhen)がありません`);
+}
+if (
+  config.gates?.g7?.params?.approverMode === 'value-owner-merged' &&
+  !(config.deviations ?? []).some((d) => d.gate === 'g7')
+) {
+  problems.push(
+    'G-7 の判定者が価値責任者との兼務ですが、deviations[] に逸脱の記録がありません(第3章 3.5.2)'
+  );
+}
+
 // ---------------------------------------------------------- 3. 不変条件
 
 const a = config.answers ?? {};

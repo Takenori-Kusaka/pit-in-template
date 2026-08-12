@@ -130,6 +130,17 @@ const unmet = (config.unmet ?? []).map((u) => ({
   reviewSourcing: u.reviewSourcing ?? null,
 }));
 
+// --- 代償措置つきの逸脱(未達と区別して載せる) ------------------------------
+
+const deviations = (config.deviations ?? []).map((d) => ({
+  gate: d.gate,
+  label: d.label ?? d.gate,
+  rule: d.rule ?? null,
+  reason: d.reason,
+  compensation: d.compensation ?? [],
+  resolveWhen: d.resolveWhen ?? null,
+}));
+
 const evidence = {
   range: { from: from || null, to },
   generatedAt: new Date().toISOString(),
@@ -148,6 +159,7 @@ const evidence = {
   adrs,
   ipClearance: licenseScan,
   unmet,
+  deviations,
   gaps,
 };
 
@@ -171,6 +183,21 @@ if (unmet.length) {
   R.push('| --- | --- | --- | --- |');
   for (const u of unmet) {
     R.push(`| ${u.label} | ${u.reason} | ${u.compensation.join(' / ') || '—'} | ${u.reviewSourcing ?? '**未記入**'} |`);
+  }
+  R.push('');
+}
+
+if (deviations.length) {
+  R.push('## 代償措置つきの逸脱');
+  R.push('');
+  R.push('**実施したうえで、標準が要求する属性を欠いているゲートがあります。未達ではありません。**');
+  R.push('');
+  R.push('| ゲート | 抵触する規則 | 欠けるもの | 代償措置 | 解消の時点 |');
+  R.push('| --- | --- | --- | --- | --- |');
+  for (const d of deviations) {
+    R.push(
+      `| ${d.label} | ${d.rule ?? '—'} | ${d.reason} | ${d.compensation.join(' / ') || '**なし**'} | ${d.resolveWhen ?? '**未記入**'} |`
+    );
   }
   R.push('');
 }
