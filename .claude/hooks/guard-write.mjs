@@ -93,8 +93,11 @@ function main() {
   };
 
   // 1. 強制層そのもの
-  for (const p of guard.protectedPatterns ?? []) {
-    if (match(p, rel)) deny(guard.protectedReason, 'protected');
+  for (const item of guard.protectedPatterns ?? []) {
+    const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
+    const p = isObj ? item.pattern : item;
+    const reason = isObj ? (item.reason ?? guard.protectedReason) : guard.protectedReason;
+    if (match(p, rel)) deny(reason, 'protected');
   }
 
   // 2. 自己修正ループ中のテスト

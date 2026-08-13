@@ -526,6 +526,79 @@ if (isMain) {
     fs.writeFileSync(path.join(ROOT, 'process.config.json'), JSON.stringify(config, null, 2) + '\n', 'utf8');
     fs.writeFileSync(path.join(ROOT, 'PROCESS-PROFILE.md'), md, 'utf8');
     console.log('wrote process.config.json / PROCESS-PROFILE.md');
+
+    // .claude/guard.json & settings.json の自動テーラリング（Issue #19）
+    try {
+      const guardPath = path.join(ROOT, '.claude/guard.json');
+      const settingsPath = path.join(ROOT, '.claude/settings.json');
+      
+      if (fs.existsSync(guardPath) && fs.existsSync(settingsPath)) {
+        const guardObj = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
+        const settingsObj = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        
+        // 1. 安全重要度が高い（CL2/CL3）または規制対象（quality-regulated）であるかを判定
+        const isHighCriticality = ['cl2', 'cl3'].includes(answers['q-criticality']) || answers['q-quality'] === 'quality-regulated';
+        
+        // 2. 最小限の保護パターン（Category A & B）
+        const baseProtectedPatterns = [
+          { "pattern": ".claude/settings.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
+          { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
+          { "pattern": ".claude/hooks/**", "reason": "書き込み遮断フック。書き換えられると遮断が無効になります" },
+          { "pattern": "process.config.json", "reason": "有効なゲートと品質閾値（カバレッジ等）の正本" },
+          { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱の記録）" },
+          { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
+          { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
+        ];
+        
+        // 最小限のdenyルール
+        const baseDeny = [
+          "Read(./.env)",
+          "Read(./.env.*)",
+          "Read(./**/*.pem)",
+          "Read(./**/*.key)",
+          "Read(./**/id_rsa*)",
+          "Read(./**/.aws/**)",
+          "Read(./**/.ssh/**)",
+          "Edit(./.claude/settings.json)",
+          "Edit(./.claude/guard.json)",
+          "Edit(./.claude/hooks/**)",
+          "Edit(./process.config.json)"
+        ];
+        
+        if (isHighCriticality) {
+          // 高重要度の場合は、検査スクリプトやワークフローなどの Category C も保護・遮断する
+          guardObj.protectedPatterns = [
+            ...baseProtectedPatterns,
+            { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
+            { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
+            { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
+            { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
+            { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
+          ];
+          
+          settingsObj.permissions.deny = [
+            ...baseDeny,
+            "Edit(./.github/rulesets/**)",
+            "Edit(./.github/workflows/**)",
+            "Edit(./adapters/**)",
+            "Edit(./scripts/gate/**)",
+            "Edit(./scripts/vendor/**)",
+            "Write(./scripts/vendor/**)"
+          ];
+          console.log('[プロセス構成] 安全重要度 CL2 以上または規制対象のため、検査コードやワークフロー（Category C）への書き込み制限を有効化しました。');
+        } else {
+          // 通常時は最小限の保護のみ
+          guardObj.protectedPatterns = baseProtectedPatterns;
+          settingsObj.permissions.deny = baseDeny;
+          console.log('[プロセス構成] 探索/通常フェーズのため、検査コードやワークフロー（Category C）への直接編集を許可しました。');
+        }
+        
+        fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
+        fs.writeFileSync(settingsPath, JSON.stringify(settingsObj, null, 2) + '\n', 'utf8');
+      }
+    } catch (e) {
+      console.warn(`[警告] .claude/guard.json または settings.json のカスタマイズ中にエラーが発生しました: ${e.message}`);
+    }
     if (config.unmet.length) {
       console.log('');
       console.log('[未達] 次のゲートは目的を達成する構成を示せていません:');
