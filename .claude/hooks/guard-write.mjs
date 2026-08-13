@@ -68,6 +68,11 @@ function main() {
   if (!fs.existsSync(guardPath)) process.exit(0);
   const guard = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
 
+  // 探索フェーズ（S0）や未初期化状態などで、強制層が無効化されている場合はバイパスする
+  if (guard.enabled === false) {
+    process.exit(0);
+  }
+
   let input;
   try {
     input = JSON.parse(readStdin() || '{}');

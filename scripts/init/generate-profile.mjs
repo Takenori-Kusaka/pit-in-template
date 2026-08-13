@@ -926,32 +926,44 @@ if (isMain) {
           "Edit(./process.config.json)"
         ];
         
-        if (isHighCriticality) {
-          // 高重要度の場合は、検査スクリプトやワークフローなどの Category C も保護・遮断する
-          guardObj.protectedPatterns = [
-            ...baseProtectedPatterns,
-            { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
-            { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
-            { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
-            { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
-            { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
-          ];
-          
-          settingsObj.permissions.deny = [
-            ...baseDeny,
-            "Edit(./.github/rulesets/**)",
-            "Edit(./.github/workflows/**)",
-            "Edit(./adapters/**)",
-            "Edit(./scripts/gate/**)",
-            "Edit(./scripts/vendor/**)",
-            "Write(./scripts/vendor/**)"
-          ];
-          console.log('[プロセス構成] 安全重要度 CL2 以上または規制対象のため、検査コードやワークフロー（Category C）への書き込み制限を有効化しました。');
-        } else {
-          // 通常時は最小限の保護のみ
+        // 0. 事業ステージが PoC（S0）か、それ以降（S1/S2）かを判定して guard のオンオフを設定
+        const isPoc = answers['q-biz-phase'] === 'poc';
+        
+        if (isPoc) {
+          guardObj.enabled = false;
+          // PoC時は permissions も緩和する（settings.jsonのdenyを最小限に）
           guardObj.protectedPatterns = baseProtectedPatterns;
           settingsObj.permissions.deny = baseDeny;
-          console.log('[プロセス構成] 探索/通常フェーズのため、検査コードやワークフロー（Category C）への直接編集を許可しました。');
+          console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、柔軟なカスタマイズを許可しました。');
+        } else {
+          guardObj.enabled = true;
+          if (isHighCriticality) {
+            // 高重要度の場合は、検査スクリプトやワークフローなどの Category C も保護・遮断する
+            guardObj.protectedPatterns = [
+              ...baseProtectedPatterns,
+              { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
+              { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
+              { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
+              { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
+              { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
+            ];
+            
+            settingsObj.permissions.deny = [
+              ...baseDeny,
+              "Edit(./.github/rulesets/**)",
+              "Edit(./.github/workflows/**)",
+              "Edit(./adapters/**)",
+              "Edit(./scripts/gate/**)",
+              "Edit(./scripts/vendor/**)",
+              "Write(./scripts/vendor/**)"
+            ];
+            console.log('[プロセス構成] 構築・拡大ステージかつ高安全重要度の要求に基づき、エージェント用ガードを有効化し、検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にしました。');
+          } else {
+            // 通常時（S1/S2標準）は最小限の保護のみ
+            guardObj.protectedPatterns = baseProtectedPatterns;
+            settingsObj.permissions.deny = baseDeny;
+            console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）しました。ただし通常フェーズのため、検査コードやワークフロー（Category C）への直接編集は許可されています（Light保護）。');
+          }
         }
         
         fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
