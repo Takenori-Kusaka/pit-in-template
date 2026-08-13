@@ -13,5 +13,5 @@
     "secretScan": ""
   },
   "coverageSummary": null,
-  "note": "必須の検査である「test」コマンドが空のままでは G-5 が失敗します。これはテスト未実施のまま通過することを防ぐためです。それ以外の任意の検査（lint/audit/licenses/coverage）は、コマンドが空の場合、未実施として証跡に記録した上で G-5 を通過させます。使う言語のコマンドをここへ書くか、adapters/ の他のファイル（node/python/go）を process.config.json の adapters.stack で選んでください"
+  "note": "実装スタックが未確定の状態です。探索ステージ(S0)の期間中はこのままでかまいません。スタックは S0 の出力であり、入力ではありません。確定の期限は SG-0 です。テストのコマンドが空のあいだ G-5 は失敗します(他の検査は未実施として証跡へ残り、通過します)。実装に着手する段階で、使う言語のコマンドをここへ書くか、adapters/ の他のファイルを process.config.json の adapters.stack で選んでください"
 }
