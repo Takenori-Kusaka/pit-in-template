@@ -340,6 +340,10 @@ export function buildConfig(answers, opts = {}) {
     warnings: result.warnings,
   };
 
+  if (opts.guard) {
+    config.guard = opts.guard;
+  }
+
   return { config, result };
 }
 
@@ -861,7 +865,20 @@ if (isMain) {
 
   // 表示条件を満たさない質問への回答は落とす(engine と同じ扱い)
   const visible = new Set(visibleQuestions(KB.questions, answers).map((q) => q.id));
-  for (const k of Object.keys(answers)) if (!visible.has(k)) delete answers[k];
+  for (const k of Object.keys(answers)) if (k !== 'q-product-type' && !visible.has(k)) delete answers[k];
+
+  let guardOverride = null;
+  try {
+    const configPath = path.join(ROOT, 'process.config.json');
+    if (fs.existsSync(configPath)) {
+      const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (existing.guard) {
+        guardOverride = existing.guard;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
 
   let built;
   try {
@@ -869,6 +886,7 @@ if (isMain) {
       stack: arg(argv, '--stack', 'none'),
       projectId: arg(argv, '--project-id', 'P-001'),
       profileName: arg(argv, '--profile-name', null),
+      guard: guardOverride,
     });
   } catch (e) {
     console.error(`[エラー] ${e.message}`);
@@ -928,15 +946,26 @@ if (isMain) {
           "Bash(gh api repos/*/rulesets:*)"
         ];
         
-        // 2. 事業ステージが PoC（S0）か、それ以降（S1/S2）かを判定して guard のオンオフを設定
-        const isPoc = answers['q-biz-phase'] === 'poc';
+        // 2. guard.enabled の設定。process.config.json の上書き設定があればそれを最優先する
+        let guardEnabled = answers['q-biz-phase'] !== 'poc';
+        let isOverridden = false;
         
-        if (isPoc) {
+        if (config.guard && typeof config.guard.enabled === 'boolean') {
+          guardEnabled = config.guard.enabled;
+          isOverridden = true;
+        }
+        
+        if (!guardEnabled) {
           guardObj.enabled = false;
-          // PoC時は permissions も緩和する（settings.jsonのdenyを最小限に）
+          // ガード無効化時は permissions も緩和する（settings.jsonのdenyを最小限に）
           guardObj.protectedPatterns = baseProtectedPatterns;
           settingsObj.permissions.deny = baseDeny;
-          console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、柔軟なカスタマイズを許可しました。');
+          
+          if (isOverridden) {
+            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。理由: ${config.guard.reason || '未記入'}`);
+          } else {
+            console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、柔軟なカスタマイズを許可しました。');
+          }
         } else {
           // S1/S2（構築・拡大ステージ）では、エージェント用ガードを有効化（enabled: true）し、
           // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
@@ -960,7 +989,12 @@ if (isMain) {
             "Edit(./scripts/vendor/**)",
             "Write(./scripts/vendor/**)"
           ];
-          console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。');
+          
+          if (isOverridden) {
+            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持しました。理由: ${config.guard.reason || '未記入'}`);
+          } else {
+            console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。');
+          }
         }
         
         fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
@@ -968,6 +1002,20 @@ if (isMain) {
       }
     } catch (e) {
       console.warn(`[警告] .claude/guard.json または settings.json のカスタマイズ中にエラーが発生しました: ${e.message}`);
+    }
+
+    // 3. 案件タイプ (revenue, internal, oss) に応じた 06-project-brief.md テンプレートの選択的コピー（Issue #21）
+    try {
+      const productType = answers['q-product-type'] || 'revenue';
+      const sourceBrief = path.join(ROOT, `profiles/${productType}/templates/06-project-brief.md`);
+      const targetBrief = path.join(ROOT, 'templates/06-project-brief.md');
+      
+      if (fs.existsSync(sourceBrief)) {
+        fs.copyFileSync(sourceBrief, targetBrief);
+        console.log(`[プロセス構成] 案件タイプ "${productType}" に合わせた 06-project-brief.md テンプレートを配置しました。`);
+      }
+    } catch (e) {
+      console.warn(`[警告] 案件タイプ別テンプレートのコピー中にエラーが発生しました: ${e.message}`);
     }
 
     // エージェントが起動時に読む文書へ、構成から導出した権限と経路を差し込む

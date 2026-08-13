@@ -224,6 +224,32 @@ function scanForGarbledJapanese(dir) {
 scanForGarbledJapanese(path.join(ROOT, '.claude'));
 scanForGarbledJapanese(path.join(ROOT, 'templates'));
 
+// ---------------------------------------------------------- 9. 強制層の一時緩和期限の検査
+
+if (config.guard && config.guard.enabled === false) {
+  if (config.guard.reviewBy) {
+    const deadline = new Date(config.guard.reviewBy);
+    const now = new Date();
+    if (isNaN(deadline.getTime())) {
+      problems.push(`process.config.json の guard.reviewBy に設定された日付 "${config.guard.reviewBy}" が不正です。YYYY-MM-DD 形式で記述してください。`);
+    } else if (now > deadline) {
+      problems.push(
+        `process.config.json において、強制層の緩和期限（guard.reviewBy: ${config.guard.reviewBy}）を過ぎています。` +
+          'ガードを有効化（guard.enabled: true）するか、必要に応じて期限と理由（guard.reason）を見直して再設定してください。'
+      );
+    } else {
+      notes.push(
+        `強制層の緩和設定（guard.enabled = false）が有効です。期限: ${config.guard.reviewBy}。理由: ${config.guard.reason || '未記入'}`
+      );
+    }
+  } else {
+    problems.push(
+      'process.config.json の guard.enabled が false ですが、緩和期限（guard.reviewBy）が設定されていません。' +
+        '恒久的な緩和を防ぐため、"YYYY-MM-DD" 形式で期限を記述してください。'
+    );
+  }
+}
+
 // ---------------------------------------------------------- 出力
 
 for (const n of notes) warn(n);
