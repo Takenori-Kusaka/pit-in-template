@@ -897,10 +897,7 @@ if (isMain) {
         const guardObj = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
         const settingsObj = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
         
-        // 1. 安全重要度が高い（CL2/CL3）または規制対象（quality-regulated）であるかを判定
-        const isHighCriticality = ['cl2', 'cl3'].includes(answers['q-criticality']) || answers['q-quality'] === 'quality-regulated';
-        
-        // 2. 最小限の保護パターン（Category A & B）
+        // 1. 最小限の保護パターン（Category A & B）
         const baseProtectedPatterns = [
           { "pattern": ".claude/settings.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
           { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
@@ -911,7 +908,7 @@ if (isMain) {
           { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
         ];
         
-        // 最小限のdenyルール
+        // 最小限のdenyルール（ベースラインとして必須の統制）
         const baseDeny = [
           "Read(./.env)",
           "Read(./.env.*)",
@@ -923,10 +920,15 @@ if (isMain) {
           "Edit(./.claude/settings.json)",
           "Edit(./.claude/guard.json)",
           "Edit(./.claude/hooks/**)",
-          "Edit(./process.config.json)"
+          "Edit(./process.config.json)",
+          "Bash(git push --force:*)",
+          "Bash(git push -f:*)",
+          "Bash(gh pr review:*)",
+          "Bash(gh pr merge:*)",
+          "Bash(gh api repos/*/rulesets:*)"
         ];
         
-        // 0. 事業ステージが PoC（S0）か、それ以降（S1/S2）かを判定して guard のオンオフを設定
+        // 2. 事業ステージが PoC（S0）か、それ以降（S1/S2）かを判定して guard のオンオフを設定
         const isPoc = answers['q-biz-phase'] === 'poc';
         
         if (isPoc) {
@@ -936,34 +938,29 @@ if (isMain) {
           settingsObj.permissions.deny = baseDeny;
           console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、柔軟なカスタマイズを許可しました。');
         } else {
+          // S1/S2（構築・拡大ステージ）では、エージェント用ガードを有効化（enabled: true）し、
+          // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
           guardObj.enabled = true;
-          if (isHighCriticality) {
-            // 高重要度の場合は、検査スクリプトやワークフローなどの Category C も保護・遮断する
-            guardObj.protectedPatterns = [
-              ...baseProtectedPatterns,
-              { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
-              { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
-              { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
-              { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
-              { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
-            ];
-            
-            settingsObj.permissions.deny = [
-              ...baseDeny,
-              "Edit(./.github/rulesets/**)",
-              "Edit(./.github/workflows/**)",
-              "Edit(./adapters/**)",
-              "Edit(./scripts/gate/**)",
-              "Edit(./scripts/vendor/**)",
-              "Write(./scripts/vendor/**)"
-            ];
-            console.log('[プロセス構成] 構築・拡大ステージかつ高安全重要度の要求に基づき、エージェント用ガードを有効化し、検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にしました。');
-          } else {
-            // 通常時（S1/S2標準）は最小限の保護のみ
-            guardObj.protectedPatterns = baseProtectedPatterns;
-            settingsObj.permissions.deny = baseDeny;
-            console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）しました。ただし通常フェーズのため、検査コードやワークフロー（Category C）への直接編集は許可されています（Light保護）。');
-          }
+          
+          guardObj.protectedPatterns = [
+            ...baseProtectedPatterns,
+            { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
+            { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
+            { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
+            { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
+            { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
+          ];
+          
+          settingsObj.permissions.deny = [
+            ...baseDeny,
+            "Edit(./.github/rulesets/**)",
+            "Edit(./.github/workflows/**)",
+            "Edit(./adapters/**)",
+            "Edit(./scripts/gate/**)",
+            "Edit(./scripts/vendor/**)",
+            "Write(./scripts/vendor/**)"
+          ];
+          console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。');
         }
         
         fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
