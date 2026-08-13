@@ -1311,5 +1311,19 @@
       "gate": null,
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
+  ],
+  "clauseScopes": [
+    {
+      "title": "AIエージェント安全リスクアセスメント",
+      "range": "物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか"
+    },
+    {
+      "title": "5.7.3 選択肢の比較",
+      "range": "R1 の決定・例外承認",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#573-選択肢の比較適用-r1-の決定例外承認"
+    }
   ]
 }

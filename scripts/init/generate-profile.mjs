@@ -665,6 +665,29 @@ export function renderProcessRules(config) {
   L.push('- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します');
   L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します([第5章 Label Mailbox](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))');
   L.push('');
+  L.push('#### 標準の条項を課す前に、適用範囲を確認する');
+  L.push('');
+  L.push(
+    '**条項番号だけを根拠にしないでください**。適用範囲を書けない条項は課さないでください。' +
+      '箇条書きだけを読んで限定を落とすと、適用されない条項を課すことになります' +
+      '([適用範囲の書き方](https://takenori-kusaka.github.io/process-compass/community/scope-marking/))。'
+  );
+  L.push('');
+  const scopes = KB.clauseScopes ?? [];
+  if (scopes.length) {
+    L.push('| 条項 | 適用範囲 | 判定の単位 |');
+    L.push('| --- | --- | --- |');
+    for (const s of scopes) {
+      const unit = s.unit === 'per-change' ? '**変更ごと**' : s.unit === 'per-project' ? '案件ごと' : 'その他';
+      L.push(`| [${s.title}](${s.source}) | ${s.range} | ${unit} |`);
+    }
+    L.push('');
+  }
+  L.push(
+    '**リスク区分(R)は変更ごとに判定します**。この案件の安全重要度から「適用されない」を導いてはなりません。' +
+      'CL0 の案件でも、認証・認可・個人データ・外部インタフェースに触れる変更は R1 です。'
+  );
+  L.push('');
   L.push('#### 統制の弱化を見つけたら');
   L.push('');
   L.push(
