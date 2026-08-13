@@ -51,12 +51,14 @@
 
 ### ロール間非同期メッセージング（Label Mailbox 連携）
 
-物理隔離された各ロール（PO, Dev, QM, Audit, Platform）は、直接の同期通信や割り込み（指示を直接仰ぐ行為）を行わず、GitHubラベルをメッセージバスとした非同期・ポーリングベースの連携（[Label Mailbox仕様](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/)）を使用する。
+物理隔離された各ロール（PO, Dev, QM, Audit, Platform。技術判断者はレーンの写像による）は、直接の同期通信や割り込み（指示を直接仰ぐ行為）を行わず、GitHubラベルをメッセージバスとした非同期・ポーリングベースの連携（[Label Mailbox仕様](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/)）を使用する。
 
 - 開発に着手した際、Draft PR の状態では **`state:needs-dev`** ラベルを維持すること。
 - 実装・単体テスト（CI緑）が完了し、`human-verify` 用手順を提示する際、開発者（Dev）は `state:needs-dev` を剥がし、**`state:dev-done`** ラベルを付与して出荷判定者（QM）へ引き渡すこと。
 - 独立レビューにおいて差し戻し（`state:qm-blocked`）が発生した場合、Devは対応を最優先する。対応が完了しCIが全緑になったら、必ず `state:qm-blocked` を剥がして再度 **`state:dev-done`** に戻すこと（復路の徹底）。
 - 仕様や優先度の判断が不十分な場合、または不可逆4操作（削除/本番デプロイ/課金書き込み/スキーマ変更）が必要になった場合は、自走を停止し、**`state:needs-po`** または **`state:needs-owner`** を付与して人間（PO/Owner）の判断を待つこと。
+- 技術設計の判断（G-3。アーキテクチャ・技術選定・ADRの採否）が必要になった場合は、**`state:needs-tech`** を付与して技術判断者へ引き渡すこと。技術判断者が開発者とレーンを共有する体制でも、**セッションを分けて**受け取ること。
+- **遮断の解除・閾値の緩和・強制層の縮小**を見つけた場合は、差分が主張と一致するかまでを確認し、許容してよいかは判断しないこと。引き渡し先は `state:needs-platform`（不可逆4操作に該当する場合は `state:needs-owner` も併記）。**引き渡し先が分からないことを、自分で決める理由にしないこと**（特定できない場合は `state:needs-po`）。
 
 直接の指示やメッセージを待つのではなく、定期的に自分のメールボックス（`gh` polling コマンド）を自律的に監視し、仕事を拾って処理すること。
 

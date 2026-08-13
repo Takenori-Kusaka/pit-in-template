@@ -580,8 +580,9 @@ export const RULES_END = '<!-- generated:process-rules end -->';
  * ラベルは状態であり、常に「次に動く人」を指す。
  */
 const MAILBOX = {
-  'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner'] },
-  'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-owner', 'state:needs-platform'] },
+  'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner'] },
+  'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner'] },
+  'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform'] },
   'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
   'qa-gatekeeper': { inbox: ['state:dev-done', 'state:ready-to-merge'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
   'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done'] },
@@ -663,6 +664,25 @@ export function renderProcessRules(config) {
   L.push('- **起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらない禁止です');
   L.push('- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します');
   L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します([第5章 Label Mailbox](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))');
+  L.push('');
+  L.push('#### 統制の弱化を見つけたら');
+  L.push('');
+  L.push(
+    '**遮断の解除・閾値の緩和・強制層の縮小**を見つけた場合は、差分が変更の主張と一致するかまでを確認し、' +
+      '**許容してよいかは判断しないでください**。'
+  );
+  L.push('');
+  L.push('| 対象 | 付与するラベル |');
+  L.push('| --- | --- |');
+  L.push('| 強制層(`.claude/**` 等)の縮小 | `state:needs-platform` |');
+  L.push('| 不可逆4操作に該当する(ガード・検証ゲート・重要テストの削除を含む) | 上に加えて `state:needs-owner` |');
+  L.push('| 弱化の範囲そのものの適否 | `state:needs-po` |');
+  L.push('');
+  L.push(
+    '**引き渡し先が分からないことを、自分で決める理由にしないでください**。特定できない場合は `state:needs-po` を付与します。' +
+      '兼務していても、ラベルを経由させて引き渡しを記録します' +
+      '([第5章 4.7](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。'
+  );
   L.push('');
   L.push('**規定の全文は標準にあります**。判断に迷ったら、表のリンク先を読んでから進めてください。推測で補わないでください。');
   L.push('');
