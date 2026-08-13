@@ -926,25 +926,51 @@ if (isMain) {
           { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
         ];
         
-        // 最小限のdenyルール（ベースラインとして必須の統制）
-        const baseDeny = [
+        const standardSecrets = [
           "Read(./.env)",
           "Read(./.env.*)",
           "Read(./**/*.pem)",
           "Read(./**/*.key)",
           "Read(./**/id_rsa*)",
           "Read(./**/.aws/**)",
-          "Read(./**/.ssh/**)",
+          "Read(./**/.ssh/**)"
+        ];
+
+        const standardCategoryAB = [
           "Edit(./.claude/settings.json)",
           "Edit(./.claude/guard.json)",
           "Edit(./.claude/hooks/**)",
-          "Edit(./process.config.json)",
+          "Edit(./process.config.json)"
+        ];
+
+        const standardCategoryC = [
+          "Edit(./.github/rulesets/**)",
+          "Edit(./.github/workflows/**)",
+          "Edit(./adapters/**)",
+          "Edit(./scripts/gate/**)",
+          "Edit(./scripts/vendor/**)",
+          "Write(./scripts/vendor/**)"
+        ];
+
+        const standardBash = [
           "Bash(git push --force:*)",
           "Bash(git push -f:*)",
           "Bash(gh pr review:*)",
           "Bash(gh pr merge:*)",
           "Bash(gh api repos/*/rulesets:*)"
         ];
+
+        // テンプレート標準プロセスが管理する全遮断パターンの集合
+        const allStandardRules = [
+          ...standardSecrets,
+          ...standardCategoryAB,
+          ...standardCategoryC,
+          ...standardBash
+        ];
+
+        // 既存の deny リストを取得し、カスタム（手動追加）されたルールを抽出（Issue #23 解決）
+        const existingDeny = Array.isArray(settingsObj.permissions?.deny) ? settingsObj.permissions.deny : [...standardSecrets];
+        const customDenyRules = existingDeny.filter(rule => !allStandardRules.includes(rule));
         
         // 2. guard.enabled の設定。process.config.json の上書き設定があればそれを最優先する
         let guardEnabled = answers['q-biz-phase'] !== 'poc';
@@ -957,14 +983,19 @@ if (isMain) {
         
         if (!guardEnabled) {
           guardObj.enabled = false;
-          // ガード無効化時は permissions も緩和する（settings.jsonのdenyを最小限に）
           guardObj.protectedPatterns = baseProtectedPatterns;
-          settingsObj.permissions.deny = baseDeny;
+          
+          // guard.enabled: false（一時緩和・探索フェーズ）の時は、標準の編集・書き込み遮断や Bash 遮断を一切適用せず、
+          // 最小限の秘匿ファイル Read 遮断および利用者が手動で追加したカスタムルールのみを残します（Issue #23 解決）。
+          settingsObj.permissions.deny = [
+            ...standardSecrets,
+            ...customDenyRules
+          ];
           
           if (isOverridden) {
-            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。理由: ${config.guard.reason || '未記入'}`);
+            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
           } else {
-            console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、柔軟なカスタマイズを許可しました。');
+            console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、settings.json の編集遮断や Bash 遮断も一時的に解放しました。');
           }
         } else {
           // S1/S2（構築・拡大ステージ）では、エージェント用ガードを有効化（enabled: true）し、
@@ -981,17 +1012,15 @@ if (isMain) {
           ];
           
           settingsObj.permissions.deny = [
-            ...baseDeny,
-            "Edit(./.github/rulesets/**)",
-            "Edit(./.github/workflows/**)",
-            "Edit(./adapters/**)",
-            "Edit(./scripts/gate/**)",
-            "Edit(./scripts/vendor/**)",
-            "Write(./scripts/vendor/**)"
+            ...standardSecrets,
+            ...standardCategoryAB,
+            ...standardCategoryC,
+            ...standardBash,
+            ...customDenyRules
           ];
           
           if (isOverridden) {
-            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持しました。理由: ${config.guard.reason || '未記入'}`);
+            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持し、全ファイルを厳格にロックダウン（遮断）しました。理由: ${config.guard.reason || '未記入'}`);
           } else {
             console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。');
           }
