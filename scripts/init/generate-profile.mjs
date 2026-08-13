@@ -325,7 +325,7 @@ export function buildConfig(answers, opts = {}) {
     ci: {
       coverageThreshold: ciStrengthened ? 90 : 80,
       failOnSeverity: ['critical', 'high'],
-      allowedLicenses: ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'],
+      allowedLicenses: opts.allowedLicenses ?? ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'],
       strengthened: ciStrengthened,
     },
     review: {
@@ -868,12 +868,16 @@ if (isMain) {
   for (const k of Object.keys(answers)) if (k !== 'q-product-type' && !visible.has(k)) delete answers[k];
 
   let guardOverride = null;
+  let allowedLicensesOverride = null;
   try {
     const configPath = path.join(ROOT, 'process.config.json');
     if (fs.existsSync(configPath)) {
       const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (existing.guard) {
         guardOverride = existing.guard;
+      }
+      if (existing.ci && existing.ci.allowedLicenses) {
+        allowedLicensesOverride = existing.ci.allowedLicenses;
       }
     }
   } catch (e) {
@@ -887,6 +891,7 @@ if (isMain) {
       projectId: arg(argv, '--project-id', 'P-001'),
       profileName: arg(argv, '--profile-name', null),
       guard: guardOverride,
+      allowedLicenses: allowedLicensesOverride,
     });
   } catch (e) {
     console.error(`[エラー] ${e.message}`);

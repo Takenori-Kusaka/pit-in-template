@@ -38,39 +38,156 @@ if (!myProjectName) {
   myProjectName = path.basename(ROOT).toLowerCase();
 }
 
-// Map common PyPI classifier strings to simplified forms or standard SPDX identifiers
-function normalizeLicense(lic) {
-  if (!lic) return [];
-  const l = lic.toLowerCase().trim();
-
-  // If it's a known non-SPDX PyPI classifier string, map it
-  if (l.includes('mit license') || l === 'mit') return ['mit'];
-  if (l.includes('apache software license') || l.includes('apache license') || l === 'apache-2.0' || l === 'apache') return ['apache-2.0'];
-  if (l.includes('bsd license') || l === 'bsd') return ['bsd-2-clause', 'bsd-3-clause'];
-  if (l.includes('isc license') || l === 'isc') return ['isc'];
-  if (l.includes('python software foundation') || l.includes('psf') || l === 'psf license') return ['python-2.0', 'psf'];
-  if (l.includes('mozilla public license 2.0') || l.includes('mpl 2.0') || l === 'mpl-2.0') return ['mpl-2.0'];
-
-  // Handle SPDX expressions like "Apache-2.0 OR BSD-2-Clause" or "Apache-2.0 AND BSD-2-Clause"
-  // Split by logical operators/separators
-  const parts = l.split(/\s+or\s+|\s+and\s+|[|/;,]/i).map(p => p.trim());
-  return parts;
+// Map common PyPI classifier strings or raw strings to standard/SPDX license identifiers
+function mapClassifier(l) {
+  if (!l) return '';
+  const lic = l.toLowerCase().trim();
+  
+  if (lic === 'mit-0') return 'mit-0';
+  if (lic.includes('mit license') || lic === 'mit') return 'mit';
+  if (lic.includes('apache software license') || lic.includes('apache license') || lic.startsWith('apache-2.0') || lic === 'apache') return 'apache-2.0';
+  if (lic.includes('bsd-2-clause') || lic === 'bsd-2-clause') return 'bsd-2-clause';
+  if (lic.includes('bsd-3-clause') || lic === 'bsd-3-clause') return 'bsd-3-clause';
+  if (lic.includes('bsd license') || lic === 'bsd') return 'bsd-3-clause'; // default fallback for raw 'BSD'
+  if (lic.includes('isc license') || lic === 'isc') return 'isc';
+  if (lic.includes('python software foundation') || lic.includes('psf') || lic === 'psf license' || lic === 'python-2.0') return 'python-2.0';
+  if (lic.includes('mozilla public license 2.0') || lic.includes('mpl 2.0') || lic === 'mpl-2.0') return 'mpl-2.0';
+  
+  return lic;
 }
 
-function checkLicense(licStr) {
-  const normalizedParts = normalizeLicense(licStr);
-  if (normalizedParts.length === 0) return false;
+// Check if a single license component is in the allowed list (exact matching)
+function checkSingleLicense(lic) {
+  if (!lic) return false;
+  const mapped = mapClassifier(lic);
+  
+  // Exact match
+  if (allowedLicenses.includes(mapped)) return true;
+  
+  // Strip trailing '+' if present and check exact match
+  if (mapped.endsWith('+')) {
+    const base = mapped.slice(0, -1).trim();
+    if (allowedLicenses.includes(base)) return true;
+  }
+  
+  return false;
+}
 
-  // For "OR" conditions or simple cases, if any part is allowed, we accept it.
-  return normalizedParts.some(part => {
-    // Exact match
-    if (allowedLicenses.includes(part)) return true;
-    // Substring or prefix match
-    for (const allowed of allowedLicenses) {
-      if (part.includes(allowed) || allowed.includes(part)) return true;
+// Tokenize SPDX expression
+function tokenize(str) {
+  const tokens = [];
+  let i = 0;
+  while (i < str.length) {
+    const char = str[i];
+    if (/\s/.test(char)) {
+      i++;
+      continue;
     }
-    return false;
-  });
+    if (char === '(' || char === ')') {
+      tokens.push({ type: 'PAREN', value: char });
+      i++;
+      continue;
+    }
+    // Read identifier word
+    let word = '';
+    while (i < str.length && /[a-zA-Z0-9\-._\+]/.test(str[i])) {
+      word += str[i];
+      i++;
+    }
+    if (word.toUpperCase() === 'AND') {
+      tokens.push({ type: 'AND', value: 'AND' });
+    } else if (word.toUpperCase() === 'OR') {
+      tokens.push({ type: 'OR', value: 'OR' });
+    } else if (word.toUpperCase() === 'WITH') {
+      tokens.push({ type: 'WITH', value: 'WITH' });
+    } else {
+      tokens.push({ type: 'LICENSE', value: word });
+    }
+  }
+  return tokens;
+}
+
+// Evaluate SPDX license expression with exact logic (AND requires both, OR requires at least one)
+function evaluateSPDX(str, checkFn) {
+  const tokens = tokenize(str);
+  if (tokens.length === 0) return false;
+
+  let current = 0;
+
+  function peek() {
+    return tokens[current];
+  }
+
+  function consume(type) {
+    const t = peek();
+    if (t && t.type === type) {
+      current++;
+      return t;
+    }
+    return null;
+  }
+
+  function parseExpr() {
+    return parseOr();
+  }
+
+  function parseOr() {
+    let node = parseAnd();
+    while (true) {
+      const op = consume('OR');
+      if (!op) break;
+      const right = parseAnd();
+      const leftNode = node;
+      node = () => leftNode() || right();
+    }
+    return node;
+  }
+
+  function parseAnd() {
+    let node = parsePrimary();
+    while (true) {
+      const op = consume('AND');
+      if (!op) break;
+      const right = parsePrimary();
+      const leftNode = node;
+      node = () => leftNode() && right();
+    }
+    return node;
+  }
+
+  function parsePrimary() {
+    const token = peek();
+    if (!token) return () => false;
+
+    if (token.type === 'PAREN' && token.value === '(') {
+      consume('PAREN'); // (
+      const expr = parseExpr();
+      consume('PAREN'); // )
+      return expr;
+    }
+
+    if (token.type === 'LICENSE') {
+      consume('LICENSE');
+      if (peek() && peek().type === 'WITH') {
+        consume('WITH');
+        consume('LICENSE'); // Skip exception name
+      }
+      return () => checkFn(token.value);
+    }
+
+    current++;
+    return () => false;
+  }
+
+  try {
+    const evalFn = parseExpr();
+    return evalFn();
+  } catch (e) {
+    // Fail-safe: if SPDX parsing fails, fall back to evaluating all licenses present in expression with AND
+    return tokens
+      .filter(t => t.type === 'LICENSE')
+      .every(t => checkFn(t.value));
+  }
 }
 
 // Read from stdin
@@ -80,9 +197,10 @@ process.stdin.on('data', chunk => {
   input += chunk;
 });
 process.stdin.on('end', () => {
-  if (!input.trim()) {
-    console.log('No input received on stdin');
-    process.exit(0);
+  // Empty stdin indicates pipeline failure (Issue #25 Defect 3)
+  if (!input) {
+    console.error('::error::標準入力からデータを受け取れませんでした。パイプラインの接続状態または pip-licenses の動作を確認してください。');
+    process.exit(1);
   }
 
   let packages = [];
@@ -104,7 +222,7 @@ process.stdin.on('end', () => {
     }
 
     const lic = (pkg.License || pkg.license || '').trim();
-    if (!checkLicense(lic)) {
+    if (!evaluateSPDX(lic, checkSingleLicense)) {
       violations.push({ name, version: pkg.Version || pkg.version || 'unknown', license: lic });
     }
   }
@@ -117,6 +235,6 @@ process.stdin.on('end', () => {
     process.exit(1);
   }
 
-  console.log('依存ライセンス検証合格 (すべて許可されたライセンスです)');
+  console.log(`依存ライセンス検証合格 (検証パッケージ数: ${packages.length} 件, すべて許可されたライセンスです)`);
   process.exit(0);
 });
