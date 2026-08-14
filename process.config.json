@@ -4,6 +4,10 @@
   "note": "未設定です。Claude Code で /process-init を実行すると、このファイルと PROCESS-PROFILE.md が生成されます。",
   "projectId": "P-000",
   "adapters": { "stack": "none" },
+  "platform": {
+    "host": "local-markdown",
+    "hostUrl": null
+  },
   "gates": {
     "g1": { "label": "G-1 企画承認", "state": "required", "params": {}, "why": [] },
     "g2": { "label": "G-2 要件合意", "state": "required", "params": {}, "why": [] },
