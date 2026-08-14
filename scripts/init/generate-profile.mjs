@@ -351,6 +351,10 @@ export function buildConfig(answers, opts = {}) {
       Object.entries(answers).map(([k, v]) => [k, labelOf(k, v)])
     ),
     adapters: { stack: opts.stack ?? 'none' },
+    platform: {
+      host: opts.platformHost ?? 'local-markdown',
+      hostUrl: opts.platformHostUrl ?? null,
+    },
     ruleset,
     gates,
     roles: buildRoles(gates),
@@ -673,6 +677,19 @@ export function renderProfileMd(config, result) {
     L.push('');
   }
 
+  // --- ブロック6: 成果物の配布・共有先（Platform構成） ---
+  L.push('## 成果物の配布・共有先（Platform構成）');
+  L.push('');
+  L.push('ピットイン方式で生成される成果物（決裁資料、レビュー資料、判定提示物など）のホスト・配布先設定です。');
+  L.push('');
+  L.push('| 項目 | 設定値 |');
+  L.push('| --- | --- |');
+  L.push(`| 配布先ホスト | \`${config.platform.host}\` |`);
+  L.push(`| ホスト URL | ${config.platform.hostUrl ? `\`${config.platform.hostUrl}\`` : '*未指定（リポジトリ内管理）*'} |`);
+  L.push('');
+  L.push('**セキュリティポリシー**: 生成した成果物を組織外のパブリックなホスト（個人用 Claude Artifacts や公開 Pastebin など）へ置くことは、共有範囲の事前承認がない限り厳格に禁止されています（CLAUDE.md「行ってはならない作業」）。');
+  L.push('');
+
   L.push('## 根拠');
   L.push('');
   L.push('この構成は [ピットイン方式 第8章 テーラリング](https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/) の規則から導出しました。');
@@ -791,7 +808,18 @@ export function renderProcessRules(config) {
     L.push('| 条項 | 適用範囲 | 判定の単位 |');
     L.push('| --- | --- | --- |');
     for (const s of scopes) {
-      const unit = s.unit === 'per-change' ? '**変更ごと**' : s.unit === 'per-project' ? '案件ごと' : 'その他';
+      let unit = 'その他';
+      if (s.unit === 'per-change') {
+        unit = '**変更ごと**';
+      } else if (s.unit === 'per-project') {
+        unit = '案件ごと（開始時に判定）';
+      } else if (s.unit === 'per-stage') {
+        unit = 'ステージごと（移行ゲートで再判定が必要）';
+      } else if (s.unit === 'per-spec' || s.unit === 'per-feature') {
+        unit = '機能ごと（G-4承認時に判定）';
+      } else if (s.title.includes('設計審査会')) {
+        unit = 'ステージ/機能ごと（S2移行またはG-4時に判定）';
+      }
       L.push(`| [${s.title}](${s.source}) | ${s.range} | ${unit} |`);
     }
     L.push('');
@@ -903,13 +931,15 @@ if (isMain) {
   const visible = new Set(visibleQuestions(KB.questions, answers).map((q) => q.id));
   for (const k of Object.keys(answers)) if (k !== 'q-product-type' && !visible.has(k)) delete answers[k];
 
-  let guardOverride = null;
-  let allowedLicensesOverride = null;
-  let coverageThresholdOverride = null;
-  let failOnSeverityOverride = null;
-  let maxChangedLinesOverride = null;
-  let maxChangedFilesOverride = null;
-  let selfHealMaxIterationsOverride = null;
+  let guardOverride = undefined;
+  let allowedLicensesOverride = undefined;
+  let coverageThresholdOverride = undefined;
+  let failOnSeverityOverride = undefined;
+  let maxChangedLinesOverride = undefined;
+  let maxChangedFilesOverride = undefined;
+  let selfHealMaxIterationsOverride = undefined;
+  let platformHostOverride = undefined;
+  let platformHostUrlOverride = undefined;
 
   try {
     const configPath = path.join(ROOT, 'process.config.json');
@@ -917,6 +947,10 @@ if (isMain) {
       const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (existing.guard) {
         guardOverride = existing.guard;
+      }
+      if (existing.platform) {
+        if (existing.platform.host) platformHostOverride = existing.platform.host;
+        if (existing.platform.hostUrl !== undefined) platformHostUrlOverride = existing.platform.hostUrl;
       }
       if (existing.ci) {
         if (existing.ci.allowedLicenses) allowedLicensesOverride = existing.ci.allowedLicenses;
@@ -946,6 +980,8 @@ if (isMain) {
       maxChangedLines: maxChangedLinesOverride,
       maxChangedFiles: maxChangedFilesOverride,
       selfHealMaxIterations: selfHealMaxIterationsOverride,
+      platformHost: platformHostOverride,
+      platformHostUrl: platformHostUrlOverride,
     });
   } catch (e) {
     console.error(`[エラー] ${e.message}`);

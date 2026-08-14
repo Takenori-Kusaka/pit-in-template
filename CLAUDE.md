@@ -20,9 +20,127 @@
 
 ## このプロジェクトの構成(自動生成)
 
-この節は `/process-init` が `process.config.json` から生成します。**手で編集しないでください**。
+この節は `process.config.json` から生成しています。**手で編集しないでください**。内容を変えるときは `/process-init` を再実行します。手で編集すると `check-process-rules` が失敗します。
 
-プロセス構成が未設定のため、まだ生成されていません。`/process-init` を実行すると、有効なゲートと判定者、ロールごとの権限、担ってはならない工程、受信箱のラベルがここへ入ります。
+- 案件 ID: `P-001`
+- 追随している D-0 体制図の版: **未取得**(D-0 が未作成、または版の記載がない)
+
+### 有効なゲートと判定者
+
+| ゲート | 判定 | 判定者 |
+| --- | --- | --- |
+| [G-1 企画承認](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-1-企画承認事業決裁者既存規程どおり) | 適用する | 事業決裁者(決裁権限規程どおりの職位) |
+| [G-2 要件合意](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-2-要件合意価値責任者48時間) | 適用する | 価値責任者(単独。目安48時間以内に判定) |
+| [G-3 技術設計判断](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-3-技術設計判断技術判断者48時間) | 適用する | 技術判断者(単独。目安48時間以内に判定) |
+| [G-4 機能仕様承認(反復内)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-4-機能仕様承認価値責任者または委譲先24時間) | 適用する | 価値責任者(または明示的に委譲された機能責任者。委譲しても結果責任は価値責任者に残る) |
+| [G-5 自動検証(CI)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-5-自動検証-ci機械判定即時) | 適用する | CI(機械判定) |
+| [G-6 独立レビュー](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-6-独立レビュー独立レビュア応答1営業日--判定2営業日) | 適用する | 独立レビュア(作成指示者本人は承認不可。ブランチ保護で強制) |
+| [G-7 出荷判定](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-7-出荷判定qa3営業日) | 簡略化して適用する | 品質保証(第三者。署名する) |
+| [G-8 リリース決裁](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-8-リリース決裁事業決裁者48時間) | 適用する | 事業決裁者 |
+
+**判定の基準を確認するときは、ゲート名のリンク先(標準の該当節)を読んでください**。
+
+### ロールごとの権限
+
+**自分がどのロールのセッションかを確認してから作業を始めてください**。
+分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します(標準 第3章 3.5.3)。
+
+| ロール | 判定するゲート | 判定してはならないゲート | 受信箱 | 引き渡しに使うラベル |
+| --- | --- | --- | --- | --- |
+| [価値責任者(Value Owner)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | G-2 / G-4 | — | `state:needs-po` | `state:needs-dev` `state:needs-tech` `state:needs-audit` `state:needs-platform` `state:needs-owner` |
+| [技術判断者(Tech Lead)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | G-3 | — | `state:needs-tech` | `state:needs-dev` `state:needs-po` `state:needs-owner` |
+| [開発者(検証者)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | — | G-6 / G-7 | `state:needs-dev` `state:qm-blocked` | `state:dev-done` `state:needs-po` `state:needs-tech` `state:needs-owner` `state:needs-platform` |
+| [独立レビュア](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | G-6 | — | `state:dev-done` | `state:qm-blocked` `state:ready-to-merge` |
+| [品質保証(出荷判定者)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | G-7 | — | `state:dev-done` `state:ready-to-merge` | `state:qm-blocked` `state:ready-to-merge` |
+| [事業決裁者](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | G-1 / G-8 | — | `state:needs-owner` | `state:needs-po` `state:needs-dev` |
+| [AI維持管理者(AI Maintainer)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/) | — | — | `state:needs-platform` | `state:dev-done` |
+
+- **起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらない禁止です
+- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します
+- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します([第5章 Label Mailbox](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))
+
+#### 標準の条項を課す前に、適用範囲を確認する
+
+**条項番号だけを根拠にしないでください**。適用範囲を書けない条項は課さないでください。箇条書きだけを読んで限定を落とすと、適用されない条項を課すことになります([適用範囲の書き方](https://takenori-kusaka.github.io/process-compass/community/scope-marking/))。
+
+| 条項 | 適用範囲 | 判定の単位 |
+| --- | --- | --- |
+| [AIエージェント安全リスクアセスメント](https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか) | 物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか | **変更ごと** |
+| [5.7.3 選択肢の比較](https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#573-選択肢の比較適用-r1-の決定例外承認) | R1 の決定・例外承認 | **変更ごと** |
+| [B-3 設計審査会](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#b-3-設計審査会適用-s2-スケールまたは安全法規制の対象となる機能) | S2 スケール、または安全・法規制の対象となる機能 | ステージ/機能ごと（S2移行またはG-4時に判定） |
+
+**リスク区分(R)は変更ごとに判定します**。この案件の安全重要度から「適用されない」を導いてはなりません。CL0 の案件でも、認証・認可・個人データ・外部インタフェースに触れる変更は R1 です。
+
+#### 統制の弱化を見つけたら
+
+**遮断の解除・閾値の緩和・強制層の縮小**を見つけた場合は、差分が変更の主張と一致するかまでを確認し、**許容してよいかは判断しないでください**。
+
+| 対象 | 付与するラベル |
+| --- | --- |
+| 強制層(`.claude/**` 等)の縮小 | `state:needs-platform` |
+| 不可逆4操作に該当する(ガード・検証ゲート・重要テストの削除を含む) | 上に加えて `state:needs-owner` |
+| 弱化の範囲そのものの適否 | `state:needs-po` |
+
+**引き渡し先が分からないことを、自分で決める理由にしないでください**。特定できない場合は `state:needs-po` を付与します。兼務していても、ラベルを経由させて引き渡しを記録します([第5章 4.7](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。
+
+**規定の全文は標準にあります**。判断に迷ったら、表のリンク先を読んでから進めてください。推測で補わないでください。
+
+- **開発者(検証者)** が兼ねてはならない役割: 独立レビュア / 品質保証(出荷判定者)(例外: 3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029))
+- **独立レビュア** が兼ねてはならない役割: 開発者(検証者)
+- **品質保証(出荷判定者)** が兼ねてはならない役割: 開発者(検証者)(例外: 3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029))
+- **AI維持管理者(AI Maintainer)** が兼ねてはならない役割: AI運用担当者(AIOps)
+- **AI運用担当者(AIOps)** が兼ねてはならない役割: AI維持管理者(AI Maintainer)
+
+### 自分の受信箱を見る
+
+**自分のロールのブロックだけを実行してください**。他のロールの受信箱を見た時点で文脈は合流し、分離は成立しなくなります([第5章 4.5.1](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。
+
+```bash
+# 価値責任者(Value Owner)
+gh issue list --label "state:needs-po" --state open
+gh pr list --label "state:needs-po" --state open
+
+# 技術判断者(Tech Lead)
+gh issue list --label "state:needs-tech" --state open
+gh pr list --label "state:needs-tech" --state open
+
+# 開発者(検証者)
+gh issue list --label "state:needs-dev" --state open
+gh pr list --label "state:needs-dev" --state open
+gh issue list --label "state:qm-blocked" --state open
+gh pr list --label "state:qm-blocked" --state open
+
+# 独立レビュア
+gh issue list --label "state:dev-done" --state open
+gh pr list --label "state:dev-done" --state open
+
+# 品質保証(出荷判定者)
+gh issue list --label "state:dev-done" --state open
+gh pr list --label "state:dev-done" --state open
+gh issue list --label "state:ready-to-merge" --state open
+gh pr list --label "state:ready-to-merge" --state open
+
+# 事業決裁者
+gh issue list --label "state:needs-owner" --state open
+gh pr list --label "state:needs-owner" --state open
+
+# AI維持管理者(AI Maintainer)
+gh issue list --label "state:needs-platform" --state open
+gh pr list --label "state:needs-platform" --state open
+```
+
+状態ラベルの付いていない Issues/PRs(孤児)の再配分は価値責任者の義務です。**再配分した仕事を自ら拾わないでください**。再配分の権限と、仕事を拾う権限は別です。
+
+### エスカレーションの段階とラベル
+
+| 段階 | 報告先 | 付与するラベル |
+| --- | --- | --- |
+| 段階1 | プロジェクト責任者 | `state:needs-po` |
+| 段階2 | 部門責任者・PMO | `state:needs-owner` |
+| 段階3 | ステアリングコミッティ(B-2) | `state:needs-owner` |
+| 不可逆4操作 | オーナー(事業決裁者) | `state:needs-owner` |
+
+発火条件と閾値は[第7章 7.6](https://takenori-kusaka.github.io/process-compass/phase4-process-design/exception-escalation/)、実際の宛先は D-0 体制図の第4節によります。**ラベルの付与だけで報告を済ませないでください**。エスカレーションレポートの5項目(状態・原因・事業影響・リカバリ選択肢3案・推奨と決裁事項)を書きます。**推奨と決裁事項は人が記入します**。
 
 <!-- generated:process-rules end -->
 
@@ -140,18 +258,24 @@
 | 変更ファイル数 | 10未満 | 15 |
 | レビュー所要時間 | — | 30分で読み切れること |
 
-1つの変更に複数の関心事を混ぜません。上限を超える場合は実装計画へ差し戻します。
+1つの変更に複数の関心事を混ぜません。
 
-### 適用する範囲
+### 適用する範囲と除外規定
 
-**この既定値は、逐行読解しか手段がない場合の値です。** 対象は実装コードの差分です。
+**この既定値は、逐行読解しか手段がない場合の値です。** 対象は実装コード（ソースコードおよびテストコード）の差分です。
 
 行数の算定から次を除外します。
-
 - 自動生成ファイル・ロックファイル・一括整形
-- 機械的な変換(決定論的であり、テストで正しさを検出でき、部分的に取り消せるものに限る)
+- 機械的な変換（決定論的であり、テストで正しさを検出でき、部分的に取り消せるものに限る）
 
-**判断記録(ADR)・設計文書には、この行数上限を適用しません。** ADR は「採らなかった選択肢とその理由」を含めることを求めており、検討した選択肢が多い判断ほど長くなります。上限に合わせて分割すると1つの判断が複数ファイルに割れ、上限に合わせて削ると検討の記録から先に失われます。**ADR の分量の目安は、行数ではなくレビューの所要時間(30分で読み切れること)で判定します。**
+**判断記録（ADR）・機能仕様書・設計文書には、この行数上限を適用しません。** これらは「検討した選択肢と採らなかった理由」などを含める必要があり、行数制限に合わせて削ると重要な検討痕跡が失われるためです。これらの設計ドキュメントの分量の目安は、行数ではなく「判定完了時間の SLA（レビュー所要時間：30分で読み切れること）」で判定します。
+
+### 上限超過時のルール（ADR-0047）
+
+変更が上限を超える場合は、**実装計画（plan.md）への差し戻しを既定（デフォルト）**とします。
+- 原則として、レビューを行数上限に合わせる目的で**細切れに分割して対処してはなりません**（意味を成さない分割の禁止）。
+- ただし、標準第7章 7.3 の**例外承認**を経た場合に限り、上限を超過したままレビューを実施（超過レビュー）してよいものとします。
+- 超過レビューを実施した場合は、**判定完了時間と変更規模（行数・ファイル数）を必ず記録し、較正の母集団（統計データ）に含めてください**（上限が適切に較正・拡張される機会を確保するためです）。
 
 ### この数値は暫定です
 
