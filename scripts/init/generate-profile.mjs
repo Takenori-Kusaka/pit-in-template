@@ -737,6 +737,14 @@ const ESCALATION = [
  * 案件の構成も届かないため、構成へ依存する部分は導出物として差し替える(#220 / ADR-0035)。
  */
 export function renderProcessRules(config) {
+  if (config.configured === false) {
+    return `## このプロジェクトの構成(自動生成)
+
+この節は \`/process-init\` が \`process.config.json\` から生成します。**手で編集しないでください**。
+
+プロセス構成が未設定のため、まだ生成されていません。\`/process-init\` を実行すると、有効なゲートと判定者、ロールごとの権限、担ってはならない工程、受信箱のラベルがここへ入ります。`.trim();
+  }
+
   const L = [];
   L.push('## このプロジェクトの構成(自動生成)');
   L.push('');
