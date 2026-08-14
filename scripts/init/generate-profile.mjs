@@ -304,6 +304,42 @@ export function buildConfig(answers, opts = {}) {
     reviewerCount >= 2;
   const ruleset = gates.g6.state === 'required' ? (strict ? 'regulated' : 'team') : null;
 
+  const derivedCoverage = ciStrengthened ? 90 : 80;
+  const coverageThreshold = opts.coverageThreshold ?? derivedCoverage;
+  if (opts.coverageThreshold !== undefined && opts.coverageThreshold !== derivedCoverage) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（ci.coverageThreshold: ${opts.coverageThreshold}%）を検出し、引き継ぎました（標準の導出初期値: ${derivedCoverage}%）`);
+  }
+
+  const derivedAllowedLicenses = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'];
+  const allowedLicenses = opts.allowedLicenses ?? derivedAllowedLicenses;
+  if (opts.allowedLicenses !== undefined && JSON.stringify(opts.allowedLicenses) !== JSON.stringify(derivedAllowedLicenses)) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（ci.allowedLicenses: ${JSON.stringify(opts.allowedLicenses)}）を検出し、引き継ぎました（標準の導出初期値: ${JSON.stringify(derivedAllowedLicenses)}）`);
+  }
+
+  const derivedFailOnSeverity = ['critical', 'high'];
+  const failOnSeverity = opts.failOnSeverity ?? derivedFailOnSeverity;
+  if (opts.failOnSeverity !== undefined && JSON.stringify(opts.failOnSeverity) !== JSON.stringify(derivedFailOnSeverity)) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（ci.failOnSeverity: ${JSON.stringify(opts.failOnSeverity)}）を検出し、引き継ぎました（標準の導出初期値: ${JSON.stringify(derivedFailOnSeverity)}）`);
+  }
+
+  const derivedMaxChangedLines = 400;
+  const maxChangedLines = opts.maxChangedLines ?? derivedMaxChangedLines;
+  if (opts.maxChangedLines !== undefined && opts.maxChangedLines !== derivedMaxChangedLines) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（task.maxChangedLines: ${opts.maxChangedLines}）を検出し、引き継ぎました（標準の導出初期値: ${derivedMaxChangedLines}）`);
+  }
+
+  const derivedMaxChangedFiles = 15;
+  const maxChangedFiles = opts.maxChangedFiles ?? derivedMaxChangedFiles;
+  if (opts.maxChangedFiles !== undefined && opts.maxChangedFiles !== derivedMaxChangedFiles) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（task.maxChangedFiles: ${opts.maxChangedFiles}）を検出し、引き継ぎました（標準の導出初期値: ${derivedMaxChangedFiles}）`);
+  }
+
+  const derivedSelfHealMaxIterations = 3;
+  const selfHealMaxIterations = opts.selfHealMaxIterations ?? derivedSelfHealMaxIterations;
+  if (opts.selfHealMaxIterations !== undefined && opts.selfHealMaxIterations !== derivedSelfHealMaxIterations) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（task.selfHealMaxIterations: ${opts.selfHealMaxIterations}）を検出し、引き継ぎました（標準の導出初期値: ${derivedSelfHealMaxIterations}）`);
+  }
+
   const config = {
     schemaVersion: 0,
     configured: true,
@@ -323,9 +359,9 @@ export function buildConfig(answers, opts = {}) {
     unmet,
     deviations,
     ci: {
-      coverageThreshold: ciStrengthened ? 90 : 80,
-      failOnSeverity: ['critical', 'high'],
-      allowedLicenses: opts.allowedLicenses ?? ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'],
+      coverageThreshold,
+      failOnSeverity,
+      allowedLicenses,
       strengthened: ciStrengthened,
     },
     review: {
@@ -335,7 +371,7 @@ export function buildConfig(answers, opts = {}) {
       recordFormat: gates.g6.params.recordFormat ?? 'standard',
     },
     aiReview: { enabled: true, canApprove: false, requiredCheck: false },
-    task: { maxChangedLines: 400, maxChangedFiles: 15, selfHealMaxIterations: 3 },
+    task: { maxChangedLines, maxChangedFiles, selfHealMaxIterations },
     matchedRuleIds: result.matchedRuleIds,
     warnings: result.warnings,
   };
@@ -869,6 +905,12 @@ if (isMain) {
 
   let guardOverride = null;
   let allowedLicensesOverride = null;
+  let coverageThresholdOverride = null;
+  let failOnSeverityOverride = null;
+  let maxChangedLinesOverride = null;
+  let maxChangedFilesOverride = null;
+  let selfHealMaxIterationsOverride = null;
+
   try {
     const configPath = path.join(ROOT, 'process.config.json');
     if (fs.existsSync(configPath)) {
@@ -876,8 +918,15 @@ if (isMain) {
       if (existing.guard) {
         guardOverride = existing.guard;
       }
-      if (existing.ci && existing.ci.allowedLicenses) {
-        allowedLicensesOverride = existing.ci.allowedLicenses;
+      if (existing.ci) {
+        if (existing.ci.allowedLicenses) allowedLicensesOverride = existing.ci.allowedLicenses;
+        if (existing.ci.coverageThreshold !== undefined) coverageThresholdOverride = existing.ci.coverageThreshold;
+        if (existing.ci.failOnSeverity) failOnSeverityOverride = existing.ci.failOnSeverity;
+      }
+      if (existing.task) {
+        if (existing.task.maxChangedLines !== undefined) maxChangedLinesOverride = existing.task.maxChangedLines;
+        if (existing.task.maxChangedFiles !== undefined) maxChangedFilesOverride = existing.task.maxChangedFiles;
+        if (existing.task.selfHealMaxIterations !== undefined) selfHealMaxIterationsOverride = existing.task.selfHealMaxIterations;
       }
     }
   } catch (e) {
@@ -892,6 +941,11 @@ if (isMain) {
       profileName: arg(argv, '--profile-name', null),
       guard: guardOverride,
       allowedLicenses: allowedLicensesOverride,
+      coverageThreshold: coverageThresholdOverride,
+      failOnSeverity: failOnSeverityOverride,
+      maxChangedLines: maxChangedLinesOverride,
+      maxChangedFiles: maxChangedFilesOverride,
+      selfHealMaxIterations: selfHealMaxIterationsOverride,
     });
   } catch (e) {
     console.error(`[エラー] ${e.message}`);
