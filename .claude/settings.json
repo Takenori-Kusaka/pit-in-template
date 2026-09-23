@@ -14,7 +14,15 @@
       "Bash(gh pr view:*)",
       "Bash(gh pr diff:*)",
       "Bash(node scripts/gate/:*)",
-      "Bash(node scripts/init/:*)"
+      "Bash(node scripts/init/:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 ask:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 grep:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 skeleton:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 callers:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 map:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 blast:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 check:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 build:*)"
     ],
     "deny": [
     ],

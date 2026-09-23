@@ -19,6 +19,10 @@
 
 拒否された操作は記録に残り、確認の対象になります。拒否の発生そのものが、タスクの範囲設定と実態が合っていない兆候です。
 
+## コードの探索
+
+シンボルの定義位置・呼び出し関係・変更の影響範囲は、grep や全文 Read より先に graft で調べてください。使い方と clone ごとの初回セットアップは [`.claude/skills/graft/SKILL.md`](./.claude/skills/graft/SKILL.md) にあります。`graft init` は実行しないでください。
+
 ## 詳細
 
 [`CLAUDE.md`](./CLAUDE.md) を読んでください。

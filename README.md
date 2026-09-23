@@ -14,6 +14,14 @@ F1 のピット作業は 18〜20 名が2秒以下で終えます。レースそ�
 
 GitHub 上部の **Use this template** から新しいリポジトリを作ります。
 
+手元に clone したら、コード knowledge graph の [graft](https://github.com/trailhq/Graft) でグラフを1回作ります。
+
+```
+npx -y @nanonets/graft@0.12.1 build
+```
+
+グラフ(`/graft/`)は clone ごとのローカルキャッシュで、commit しません。以後はどのコマンドも差分だけを取り込みます。使い方は `.claude/skills/graft/SKILL.md` にあります。
+
 ### 2. プロセス構成を決める
 
 Claude Code でリポジトリを開き、次を実行します。
@@ -58,7 +66,7 @@ Claude Code でリポジトリを開き、次を実行します。
 ├── CLAUDE.md / AGENTS.md   恒久層コンテキストの入口
 ├── .claude/
 │   ├── settings.json       強制層。書き込み・ネットワーク・コマンドの既定拒否
-│   └── skills/             作業スキル7種
+│   └── skills/             作業スキル7種 + graft(コード探索)
 ├── .github/
 │   ├── workflows/          gate-g5 / gate-entry / ship-evidence / ai-review ほか
 │   ├── rulesets/           ブランチ保護(プロファイル別)
@@ -70,6 +78,23 @@ Claude Code でリポジトリを開き、次を実行します。
 ├── specs/                  機能仕様(F-NNN)
 └── docs/gates/             ゲート判定記録
 ```
+
+### コードの探索は graft を通す
+
+[graft](https://github.com/trailhq/Graft) がリポジトリを tree-sitter で解析し、シンボルと呼び出し関係のグラフを `/graft/` に置きます。エージェントは grep や全文 Read の前に、`ask` / `grep` / `callers` / `skeleton` / `blast` / `map` でグラフを引きます。LLM も API キーも使わず、費用はかかりません。
+
+| 場所 | 中身 | commit |
+| --- | --- | --- |
+| `.claude/skills/graft/SKILL.md` | 使い方と版の固定。ここが正本 | する |
+| `.claude/settings.json` の allow | 読み取り系コマンドの許可(版つき) | する |
+| `.ignore` | Grep / Glob の結果から `graft/` のカードを外す | する |
+| `/graft/` | グラフ本体。clone ごとに `build` で作る | しない |
+
+hook・statusLine・`.mcp.json` は入れていません。`graft init` は hook と statusLine を `.claude/settings.json` に、MCP サーバーを `.mcp.json` に書き込みます。既定では `~/.claude/settings.json` と `~/.claude.json` にも書いて、その端末で開く全リポジトリへ波及させます。そのため `graft init` は実行しません。MCP で使いたい人は、各自の local scope に登録します(手順は SKILL.md)。
+
+版は 0.12.1 に固定しています。0.13.0 以降は、C のビルド環境が無い Windows 端末で起動できないためです([trailhq/Graft#323](https://github.com/trailhq/Graft/issues/323))。
+
+graft は匿名の利用統計を送ります。止めるときは `npx -y @nanonets/graft@0.12.1 telemetry disable` を実行するか、環境変数 `DO_NOT_TRACK=1` を設定してください(端末単位の設定で、リポジトリには含まれません)。
 
 ### 言語に依存しません
 

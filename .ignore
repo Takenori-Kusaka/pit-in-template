@@ -1,0 +1,9 @@
+# graft のローカルグラフ (/graft/、.gitignore 済み) を ripgrep 系の検索 (Claude の Grep / Glob) から外したままにする。
+# `graft build` は下の `!graft/` 行が無いと graft/ を検索対象に戻す block をこのファイルへ追記する
+# (カードが Grep / Glob の結果に混ざり、編集直後は古い行番号を返す)。`!graft/` を先に置いて追記を止め、
+# 次の行で再び除外する (後の行が勝つ)。グラフは graft の CLI で引く: .claude/skills/graft/SKILL.md
+!graft/
+graft/
+# 上の `graft/` は前置スラッシュが無いため、どの階層の graft ディレクトリにも一致し、
+# graft の使い方の SSOT `.claude/skills/graft/SKILL.md` まで Grep / Glob から消える。skill だけ検索対象に戻す。
+!/.claude/skills/graft/

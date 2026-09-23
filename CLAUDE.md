@@ -27,6 +27,13 @@
 <!-- generated:process-rules end -->
 
 
+## コードの探索は graft を通す
+
+シンボルの定義位置・呼び出し関係・変更の影響範囲を調べるときは、grep や全文 Read より先に graft を使ってください。使い方・版・clone ごとの初回セットアップは `.claude/skills/graft/SKILL.md` が正本です。グラフは clone ごとのローカルキャッシュ(`/graft/`、git 追跡しない)で、CI・git hook・Claude hook からは再生成しません。
+
+- `graft init` を実行してはなりません。hook と statusLine を `.claude/settings.json` に書き込み、既定では `~/.claude/settings.json` と `~/.claude.json` にも hook と MCP サーバーを登録して、端末の全リポジトリへ波及させます
+- graft の出力は探索の入力です。ゲートの判定や独立レビューの挙動要約を、この出力で代替してはなりません
+
 ## 作業の進め方
 
 1機能あたりのサイクルは次のとおりです。
