@@ -14,14 +14,13 @@ F1 のピット作業は 18〜20 名が2秒以下で終えます。レースそ�
 
 GitHub 上部の **Use this template** から新しいリポジトリを作ります。
 
-手元に clone したら、[Graft](https://github.com/NanoNets/context-graph-engine) の CLI を入れます。テンプレートに同梱した Graft の配線(`.claude/` のフック・スキル・`.mcp.json`)が、この CLI を呼びます。
+手元に clone したら、コード knowledge graph の [graft](https://github.com/trailhq/Graft) でグラフを1回作ります。
 
 ```
-npm install -g @nanonets/graft
-graft build
+npx -y @nanonets/graft@0.12.1 build
 ```
 
-グラフ本体(`graft/`)は commit しないので、clone した端末ごとに `graft build` を1回だけ実行します。以後は `graft ask` を含む問い合わせの時に差分を取り込み、ファイル編集を含むターンの終了時にフックがバックグラウンドで再構築します。CLI が無い環境では、フックは何もせずに終わります。
+グラフ(`/graft/`)は clone ごとのローカルキャッシュで、commit しません。以後はどのコマンドも差分だけを取り込みます。使い方は `.claude/skills/graft/SKILL.md` にあります。
 
 ### 2. プロセス構成を決める
 
@@ -66,10 +65,8 @@ Claude Code でリポジトリを開き、次を実行します。
 ├── process.config.json     機械が読むプロセス構成
 ├── CLAUDE.md / AGENTS.md   恒久層コンテキストの入口
 ├── .claude/
-│   ├── settings.json       強制層。書き込み・ネットワーク・コマンドの既定拒否。Graft のフックもここ
-│   ├── helpers/            Graft のフック・ステータスラインの薄い呼び出し口
+│   ├── settings.json       強制層。書き込み・ネットワーク・コマンドの既定拒否
 │   └── skills/             作業スキル7種 + graft(コード探索)
-├── .mcp.json               Graft の MCP サーバー登録
 ├── .github/
 │   ├── workflows/          gate-g5 / gate-entry / ship-evidence / ai-review ほか
 │   ├── rulesets/           ブランチ保護(プロファイル別)
@@ -82,24 +79,22 @@ Claude Code でリポジトリを開き、次を実行します。
 └── docs/gates/             ゲート判定記録
 ```
 
-### コードの探索は Graft を通す
+### コードの探索は graft を通す
 
-[Graft](https://github.com/NanoNets/context-graph-engine) がリポジトリをパースし、関数・ファイル・呼び出し関係のグラフを `graft/` に置きます。エージェントはソースを読み下す前に `graft ask` / `graft grep` / `graft callers` / `graft skeleton` / `graft map` でグラフへ問い合わせます。LLM も API キーも使わず、費用はかかりません。
+[graft](https://github.com/trailhq/Graft) がリポジトリを tree-sitter で解析し、シンボルと呼び出し関係のグラフを `/graft/` に置きます。エージェントは grep や全文 Read の前に、`ask` / `grep` / `callers` / `skeleton` / `blast` / `map` でグラフを引きます。LLM も API キーも使わず、費用はかかりません。
 
 | 場所 | 中身 | commit |
 | --- | --- | --- |
-| `.claude/skills/graft/SKILL.md` | エージェントへの手順 | する |
-| `.claude/helpers/graft-*.cjs` | フックとステータスラインの呼び出し口 | する |
-| `.claude/settings.json` の hooks / statusLine | セッション開始時の案内注入と、編集を含むターン末の再構築 | する |
-| `.mcp.json` | MCP サーバー登録(`npx -y @nanonets/graft mcp`)。有効化すると CLI 未導入でも npx が取得・実行する | する |
-| `.ignore` | ripgrep が `graft/` を検索できるようにする。Grep の結果にカードが混ざり、編集直後はターン末の再構築まで古い | する |
-| `graft/` | グラフ本体。端末ごとに再生成する | しない |
+| `.claude/skills/graft/SKILL.md` | 使い方と版の固定。ここが正本 | する |
+| `.claude/settings.json` の allow | 読み取り系コマンドの許可(版つき) | する |
+| `.ignore` | Grep / Glob の結果から `graft/` のカードを外す | する |
+| `/graft/` | グラフ本体。clone ごとに `build` で作る | しない |
 
-初回のセッション開始時と Graft のアップグレード時に、Graft は `.claude/helpers/*.cjs` を端末向けに書き直します(その端末の絶対パスが入ります)。この差分は commit しないでください。動作は変わりませんが、端末固有のパスがリポジトリへ入ります。
+hook・statusLine・`.mcp.json` は入れていません。`graft init` は hook と statusLine を `.claude/settings.json` に、MCP サーバーを `.mcp.json` に書き込みます。既定では `~/.claude/settings.json` と `~/.claude.json` にも書いて、その端末で開く全リポジトリへ波及させます。そのため `graft init` は実行しません。MCP で使いたい人は、各自の local scope に登録します(手順は SKILL.md)。
 
-`graft init` / `uninstall` / `upgrade` / `push` / `pull` / `connect` と `graft build --deep` は、設定の書き換え・外部ホストへの送信・API 課金を伴うため、`.claude/settings.json` の ask に置いてあります。エージェントが実行しようとすると確認が出ます。
+版は 0.12.1 に固定しています。0.13.0 以降は、C のビルド環境が無い Windows 端末で起動できないためです([trailhq/Graft#323](https://github.com/trailhq/Graft/issues/323))。
 
-Graft は匿名の利用統計を送ります。止めるときは `graft telemetry disable` を実行するか、環境変数 `DO_NOT_TRACK=1` を設定してください(端末単位の設定で、リポジトリには含まれません)。
+graft は匿名の利用統計を送ります。止めるときは `npx -y @nanonets/graft@0.12.1 telemetry disable` を実行するか、環境変数 `DO_NOT_TRACK=1` を設定してください(端末単位の設定で、リポジトリには含まれません)。
 
 ### 言語に依存しません
 

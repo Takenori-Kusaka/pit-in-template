@@ -21,7 +21,7 @@
 
 ## コードの探索
 
-コードの所在・呼び出し関係・変更の影響範囲は、ソースを読み下す前に [`.claude/skills/graft/SKILL.md`](./.claude/skills/graft/SKILL.md) の手順(`graft ask` / `graft grep` / `graft callers`)で調べてください。前提は `npm install -g @nanonets/graft` と、端末ごとに1回の `graft build` です。`graft/` は commit しないローカルキャッシュで、編集を含むターンの終了時にフックが再構築します。
+シンボルの定義位置・呼び出し関係・変更の影響範囲は、grep や全文 Read より先に graft で調べてください。使い方と clone ごとの初回セットアップは [`.claude/skills/graft/SKILL.md`](./.claude/skills/graft/SKILL.md) にあります。`graft init` は実行しないでください。
 
 ## 詳細
 
