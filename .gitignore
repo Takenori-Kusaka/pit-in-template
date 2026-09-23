@@ -32,3 +32,6 @@ Thumbs.db
 tmp/
 .cache/
 *.log
+
+# Graft のローカルグラフキャッシュ。再生成できるため commit しない(`graft build` で作る)
+/graft/

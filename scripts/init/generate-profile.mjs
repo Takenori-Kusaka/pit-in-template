@@ -1023,6 +1023,8 @@ if (isMain) {
           { "pattern": ".claude/settings.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
           { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
           { "pattern": ".claude/hooks/**", "reason": "書き込み遮断フック。書き換えられると遮断が無効になります" },
+          { "pattern": ".claude/helpers/**", "reason": "セッション開始・編集後にハーネスが自動実行するコード(Graft の呼び出し口)。書き換えられると任意コードが人の確認なしに実行されます" },
+          { "pattern": ".mcp.json", "reason": "MCP サーバーの起動コマンド。書き換えられると任意コマンドが人の確認なしに起動します" },
           { "pattern": "process.config.json", "reason": "有効なゲートと品質閾値（カバレッジ等）の正本" },
           { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱の記録）" },
           { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
@@ -1043,6 +1045,8 @@ if (isMain) {
           "Edit(./.claude/settings.json)",
           "Edit(./.claude/guard.json)",
           "Edit(./.claude/hooks/**)",
+          "Edit(./.claude/helpers/**)",
+          "Edit(./.mcp.json)",
           "Edit(./process.config.json)"
         ];
 

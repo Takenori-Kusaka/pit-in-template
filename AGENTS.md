@@ -19,6 +19,10 @@
 
 拒否された操作は記録に残り、確認の対象になります。拒否の発生そのものが、タスクの範囲設定と実態が合っていない兆候です。
 
+## コードの探索
+
+コードの所在・呼び出し関係・変更の影響範囲は、ソースを読み下す前に [`.claude/skills/graft/SKILL.md`](./.claude/skills/graft/SKILL.md) の手順(`graft ask` / `graft grep` / `graft callers`)で調べてください。前提は `npm install -g @nanonets/graft` と、端末ごとに1回の `graft build` です。`graft/` は commit しないローカルキャッシュで、編集を含むターンの終了時にフックが再構築します。
+
 ## 詳細
 
 [`CLAUDE.md`](./CLAUDE.md) を読んでください。

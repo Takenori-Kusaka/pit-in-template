@@ -27,6 +27,15 @@
 <!-- generated:process-rules end -->
 
 
+## コードの探索は Graft を通す
+
+このリポジトリは [Graft](https://github.com/NanoNets/context-graph-engine) でグラフ化しています。コードの所在・呼び出し関係・変更の影響範囲を調べるときは、ソースを読み下す前に `graft` スキルの手順(`graft ask` / `graft grep` / `graft callers` / `graft skeleton` / `graft map`)を使ってください。`--deep` を付けない限り LLM も API キーも使わず、費用はかかりません。
+
+- 前提は `npm install -g @nanonets/graft` と、端末ごとに1回の `graft build` です。CLI が無い環境ではフックは何もせずに終わるので、探索は従来どおり行ってください
+- `graft/` は commit しないローカルキャッシュです。問い合わせ時に差分を取り込み、編集を含むターンの終了時にフックが再構築します。`graft ask` が「graft/ is empty」を返したときだけ `graft build` を実行してください
+- `graft init` / `uninstall` / `upgrade` / `push` / `pull` / `connect` は設定の書き換えや外部ホストへの送信を伴います。人の指示なしに実行してはなりません
+- Graft の出力は探索の入力です。ゲートの判定や独立レビューの挙動要約を、この出力で代替してはなりません
+
 ## 作業の進め方
 
 1機能あたりのサイクルは次のとおりです。
