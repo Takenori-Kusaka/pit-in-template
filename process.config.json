@@ -27,5 +27,15 @@
   },
   "review": { "requiredApprovals": 1, "reviewerCount": 1, "mode": null, "recordFormat": "standard" },
   "aiReview": { "enabled": true, "canApprove": false, "requiredCheck": false },
+  "phaseAdvisor": {
+    "enabled": false,
+    "provider": "TypeSafe Jev (System One API)",
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "model": "jev-1.13.0",
+    "timeoutMs": 2500,
+    "phaseMinConfidence": 0.8,
+    "flagThresholds": { "irreversible": 0.8, "weakens_control": 0.8, "tech_decision": 0.9, "test_side_fix": 0.7, "delegated_judgment": 0.3, "skip_spec": 0.9 },
+    "approval": { "dataTransfer": { "record": null, "endpoint": null }, "toolAdoption": null, "modelAdoption": null }
+  },
   "task": { "maxChangedLines": 400, "maxChangedFiles": 15, "selfHealMaxIterations": 3 }
 }

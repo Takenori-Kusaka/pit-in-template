@@ -20,6 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
+// 助言AIのフックは任意機能。案件が削除しても構成を生成できるよう、読めなければ無効の既定値にする
+let PHASE_ADVISOR_DEFAULT = { enabled: false };
+try { ({ DEFAULT_CONFIG: PHASE_ADVISOR_DEFAULT } = await import('../../.claude/hooks/phase-advisor.mjs')); } catch { /* 無効のまま */ }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-kb.json'), 'utf8'));
@@ -340,6 +343,12 @@ export function buildConfig(answers, opts = {}) {
     console.log(`[較正引き継ぎ] 既存の較正設定（task.selfHealMaxIterations: ${opts.selfHealMaxIterations}）を検出し、引き継ぎました（標準の導出初期値: ${derivedSelfHealMaxIterations}）`);
   }
 
+  // 助言AIの有効化・閾値・決裁記録は人が決めた値なので、再生成で初期値へ戻さない
+  const phaseAdvisor = opts.phaseAdvisor ?? structuredClone(PHASE_ADVISOR_DEFAULT);
+  if (opts.phaseAdvisor !== undefined && JSON.stringify(opts.phaseAdvisor) !== JSON.stringify(PHASE_ADVISOR_DEFAULT)) {
+    console.log(`[較正引き継ぎ] 既存の助言AI設定（phaseAdvisor.enabled: ${opts.phaseAdvisor.enabled}、閾値と決裁記録を含む）を検出し、引き継ぎました`);
+  }
+
   const config = {
     schemaVersion: 0,
     configured: true,
@@ -375,6 +384,7 @@ export function buildConfig(answers, opts = {}) {
       recordFormat: gates.g6.params.recordFormat ?? 'standard',
     },
     aiReview: { enabled: true, canApprove: false, requiredCheck: false },
+    phaseAdvisor,
     task: { maxChangedLines, maxChangedFiles, selfHealMaxIterations },
     matchedRuleIds: result.matchedRuleIds,
     warnings: result.warnings,
@@ -948,6 +958,7 @@ if (isMain) {
   let selfHealMaxIterationsOverride = undefined;
   let platformHostOverride = undefined;
   let platformHostUrlOverride = undefined;
+  let phaseAdvisorOverride = undefined;
 
   try {
     const configPath = path.join(ROOT, 'process.config.json');
@@ -956,6 +967,7 @@ if (isMain) {
       if (existing.guard) {
         guardOverride = existing.guard;
       }
+      if (existing.phaseAdvisor) phaseAdvisorOverride = existing.phaseAdvisor;
       if (existing.platform) {
         if (existing.platform.host) platformHostOverride = existing.platform.host;
         if (existing.platform.hostUrl !== undefined) platformHostUrlOverride = existing.platform.hostUrl;
@@ -990,6 +1002,7 @@ if (isMain) {
       selfHealMaxIterations: selfHealMaxIterationsOverride,
       platformHost: platformHostOverride,
       platformHostUrl: platformHostUrlOverride,
+      phaseAdvisor: phaseAdvisorOverride,
     });
   } catch (e) {
     console.error(`[エラー] ${e.message}`);
