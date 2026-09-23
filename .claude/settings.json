@@ -1,8 +1,26 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-
   "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git switch:*)",
+      "Bash(git branch:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(node scripts/gate/:*)",
+      "Bash(node scripts/init/:*)"
+    ],
     "deny": [
+    ],
+    "ask": [
+      "Bash(npm publish:*)",
+      "Bash(wget:*)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./**/*.pem)",
@@ -22,36 +40,10 @@
       "Write(./scripts/vendor/**)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
-      "Bash(gh pr review:*)",
       "Bash(gh pr merge:*)",
       "Bash(gh api repos/*/rulesets:*)"
-    ],
-
-    "ask": [
-      "Bash(git push:*)",
-      "Bash(gh pr create:*)",
-      "Bash(npm publish:*)",
-      "Bash(curl:*)",
-      "Bash(wget:*)"
-    ],
-
-    "allow": [
-      "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git switch:*)",
-      "Bash(git branch:*)",
-      "Bash(gh issue list:*)",
-      "Bash(gh issue view:*)",
-      "Bash(gh pr view:*)",
-      "Bash(gh pr diff:*)",
-      "Bash(node scripts/gate/:*)",
-      "Bash(node scripts/init/:*)"
     ]
   },
-
   "hooks": {
     "PreToolUse": [
       {

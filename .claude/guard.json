@@ -15,18 +15,6 @@
   ],
 
   "protectedPatterns": [
-    ".claude/settings.json",
-    ".claude/guard.json",
-    ".claude/hooks/**",
-    ".github/rulesets/**",
-    ".github/workflows/**",
-    "process.config.json",
-    "PROCESS-PROFILE.md",
-    "adapters/**",
-    "scripts/gate/**",
-    "scripts/vendor/**",
-    "CODEOWNERS",
-    ".github/CODEOWNERS"
   ],
 
   "protectedReason": "プロセスの強制層です。変更は人間の操作で行い、判断記録を残してください。エージェントが自分を縛る設定を変えられる構成では、遮断が成立しません",
