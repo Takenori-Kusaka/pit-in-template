@@ -66,7 +66,7 @@ Claude Code でリポジトリを開き、次を実行します。
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── adapters/               言語ごとの検査コマンド(node / python / go / none)
 ├── scripts/gate/           ゲートの実装(Node 22、依存パッケージなし)
-├── scripts/advisor/        助言AI のテストと説明
+├── scripts/advisor/        助言AI のテスト・適合性評価・日本語の評価セット
 ├── templates/              成果物テンプレート11種
 ├── context/                恒久層コンテキスト(用語集・判断記録・設計標準)
 ├── specs/                  機能仕様(F-NNN)
