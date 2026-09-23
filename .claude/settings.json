@@ -56,6 +56,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/phase-advisor.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

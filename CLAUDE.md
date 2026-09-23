@@ -228,6 +228,15 @@
 
 AI によるレビューは**監査の入力**です。判定には使いません。承認(approve)もしません。独立レビュー(G-6)の代替にはなりません。
 
+## 助言AI(phase-advisor)の扱い
+
+`process.config.json` の `phaseAdvisor` を有効にすると、発話ごとに `[phase-advisor]` で始まる助言が文脈へ入ります。既定は無効です。
+
+- 助言は**注意を向ける材料**です。ゲートの合否・承認・完了方向のラベル遷移(`state:dev-done` / `state:ready-to-merge` ほか)の根拠にしません
+- 注意が出たら、発話が該当するかを自分で確かめます。該当すれば、引き上げの経路(`state:needs-owner` / `state:needs-platform` / `state:needs-tech`、禁止事項)に従います。該当しないと考える場合も、その理由を人へ伝えてから進めます
+- **注意が出ないことを、問題が無いことの根拠にしません**。確率で判定する分類器であり、取りこぼしがあります
+- 有効化・閾値・送信先の変更は、人が `process.config.json` で行います。3つの記録(`approval` の外部送信の決裁と決裁した送信先・ツールの採用・モデルの採用)がそろうまで、フックは送信しません
+
 ## 参照
 
 - [ピットイン方式 標準本文](https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/) 
