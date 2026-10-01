@@ -7,7 +7,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice, warn } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, warn, chainStarted } from './config.mjs';
+import { d0SectionProblems, d0GovernanceProblems, D0_VERSION_FORMAT } from '../init/generate-profile.mjs';
 
 const config = loadConfig();
 const D0 = path.join(ROOT, 'docs/D-0-governance.md');
@@ -18,7 +19,10 @@ if (config.configured === false) {
 }
 
 if (!fs.existsSync(D0)) {
-  fail('docs/D-0-governance.md がありません。templates/00-d0-governance.md を写して作成してください');
+  fail(
+    'docs/D-0-governance.md がありません。templates/00-d0-governance.md を写して作成してください。' +
+      '責任者の表・担い手と運用形態・改訂履歴(生成区間)は、`node scripts/init/generate-profile.mjs --answers process.config.json` と /process-change が書き込みます'
+  );
   process.exit(1);
 }
 
@@ -47,6 +51,32 @@ if (fm.next_review) {
   else if (due < Date.now()) problems.push(`next_review ${fm.next_review} が過ぎています。体制図の見直しを行ってください`);
 }
 
+// 版の形式は N.N に限る(構成を生成する側と同じ検査。1.0.0・v1.1 は前後を比べられない)
+if (fm.version && !D0_VERSION_FORMAT.test(fm.version)) {
+  problems.push(`frontmatter の version "${fm.version}" は、版の形式(N.N。例: 1.3)ではありません`);
+}
+
+// 構成が追随している D-0 の版とのずれ(標準 第3章 3.13.5)。D-0 を改訂したら、
+// 最初のゲート判定より前に構成を再生成する。ずれたままの構成は、改訂前の体制で判定させる
+if (fm.version && config.d0Version && String(config.d0Version) !== fm.version) {
+  problems.push(
+    `D-0 の版(${fm.version})と、構成が追随している版(${config.d0Version})が一致しません。` +
+      '体制の変化点として /process-change で構成を再生成してください'
+  );
+} else if (fm.version && !config.d0Version) {
+  warn(
+    '構成が D-0 の版に追随していません(d0Version が未取得)。D-0 を作成した直後は、`node scripts/init/generate-profile.mjs --answers process.config.json` を実行すると、版を取得し、生成区間を書き込みます。席の責任者と人の名簿は /process-change(種別 accountable)で反映します'
+  );
+}
+
+// 生成区間(席・責任者・担い手・運用形態の表、委任の範囲、改訂履歴)が、構成と一致するか。
+// 構成から導ける欄は /process-change が書く。構成を正とし、体制図との二重記入を無くす。
+// D-0 を改訂せずに変化点を適用した状態と、D-0 だけを手で書き換えた状態を、ここで検出する。
+// 要約値の連鎖を持たない旧い構成は、最初の /process-change までは注意にとどめる
+const generated = [...d0SectionProblems(text, config), ...d0GovernanceProblems(text, config)];
+if (chainStarted(config)) problems.push(...generated);
+else for (const p of generated) warn(`${p}(旧い構成のため注意にとどめています。最初の /process-change の後は失敗します)`);
+
 // 本文の表に空欄が残っていないか(| — | や | | を空欄とみなす)
 const emptyCells = text
   .split(/\r?\n/)
@@ -54,6 +84,9 @@ const emptyCells = text
 if (emptyCells.length) {
   problems.push(`本文に未記入の欄が ${emptyCells.length} 件あります(TBD / 未定 / ???)`);
 }
+
+// 出荷できない状態は、体制図の検査でも表示する(体制が最小体制を割っている)
+if (config.shipBlocked) warn(`出荷できない状態です(${config.shipBlocked.since} から): ${config.shipBlocked.reason}`);
 
 for (const p of problems) fail(p);
 if (problems.length) {

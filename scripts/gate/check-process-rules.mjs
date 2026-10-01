@@ -24,7 +24,10 @@ const b = text.indexOf(RULES_BEGIN);
 const e = text.indexOf(RULES_END);
 
 if (b < 0 || e < 0 || e < b) {
-  fail(`CLAUDE.md に ${RULES_BEGIN} / ${RULES_END} の区間がありません。/process-init を再実行してください`);
+  fail(
+    `CLAUDE.md に ${RULES_BEGIN} / ${RULES_END} の区間がありません。テンプレートの CLAUDE.md から区間の目印を戻し、` +
+      '構成が未設定なら /process-init、設定済みなら /process-change で再生成してください'
+  );
   process.exit(1);
 }
 
@@ -39,8 +42,10 @@ if (actual !== expected) {
   } else {
     fail('CLAUDE.md の構成依存部分が process.config.json と一致しません');
     console.log('');
-    console.log('この区間は導出物です。手で編集せず、`/process-init` を再実行してください。');
-    console.log('構成を変えたい場合は、回答を変えて再生成します。');
+    console.log('この区間は導出物です。手で編集しないでください。');
+    console.log('構成を変えたい場合は、`/process-change` で体制の変化点として反映します。`/process-init` の再実行では、失効と発生を特定できません。');
+    console.log('構成を変えずに区間だけを戻す場合: node scripts/init/generate-profile.mjs --answers process.config.json');
+    console.log('process.config.json を手で編集した場合は、編集を戻してください。構成を書き換えるのは /process-change だけです(契約検査が、変化点を経ない書き換えを検出します)。');
   }
   process.exit(1);
 }

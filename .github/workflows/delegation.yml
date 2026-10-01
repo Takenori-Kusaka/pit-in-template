@@ -1,0 +1,80 @@
+# 委任した変更のマージの経路(標準 第5章 5.5.4)
+#
+# 委任の範囲に当たるかどうかを、機械の規則で判定します。行為する AI 自身には判定させません。
+# 判定の結果は、必須でないステータス(delegation-eligibility)として PR へ出します。
+#
+# **判定のコードと構成は、既定ブランチから読みます**。PR の側のコードを実行しません。
+# PR の先頭を checkout する手順を、このワークフローへ足してはなりません。
+# 行為する側が、判定と構成を書き換えられるようになるためです。
+#
+# **マージの実行は、既定で無効です**。次の2つを組織が用意したときだけ動きます。
+#   - リポジトリの変数 DELEGATED_MERGE_ENABLED = true
+#   - シークレット DELEGATED_MERGE_TOKEN(必須承認を回避できる権限を持つ、専用のトークン)
+# 無効のあいだ、委任の範囲の変更も協働として扱い、人の承認を待ちます。
+#
+# 機械は承認のレビューを付けません。先へ進めた変更には「人の事前確認を経ていない変更(G-6 の判定を
+# 事後の抜き取りへ移した変更)として、規則 <ID> により先へ進めた。承認ではない」と PR へ記録します。
+# G-6 を事後へ移す変更で、開発者の席がその変更について協働である場合は、開発者の席の責任者(人)の承認が
+# あるときだけマージします(第5章 5.5.6)。承認の後は、このワークフローを手動で実行して判定し直します。
+# 承認(gh pr review --approve)を行う手順を、このワークフローへ足してはなりません。
+#
+# 2026-10-01 時点で、このワークフローは実際の GitHub 上で実行して確かめていません(手動実行の経路を含む)。
+# 有効化する前に、試験用のリポジトリで該当する変更と該当しない変更を流して確かめてください。
+# 手順と、有効化する組織が負う責任は README.md「委任した変更のマージの経路」にあります。
+
+name: delegation
+
+on:
+  # pull_request_target は、ワークフローの定義を基底ブランチから読む。PR の側の定義では動かない
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  # G-5 の完了後に判定し直す。workflow_run は既定ブランチの定義で動く
+  workflow_run:
+    workflows: [gate-g5]
+    types: [completed]
+  # 開発者の席の責任者が承認した後などに、判定し直す。定義は既定ブランチから読む。
+  # pull_request_review は PR の側の定義で動くため、使ってはならない(マージのトークンに届く定義を PR が書き換えられる)
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 判定し直す PR の番号
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  checks: read
+
+concurrency:
+  group: delegation-${{ github.event.pull_request.number || inputs.pr || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  eligibility:
+    name: delegation-check
+    if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # PR の題名・本文・ブランチ名は信頼できない入力である。シェルへ展開しない。
+      # 渡すのは PR の番号とコミットの識別子だけで、残りはスクリプトが API から取得する
+      - name: 委任の範囲への該当を判定する
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DELEGATED_MERGE_ENABLED: ${{ vars.DELEGATED_MERGE_ENABLED }}
+          DELEGATED_MERGE_TOKEN: ${{ secrets.DELEGATED_MERGE_TOKEN }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            node scripts/gate/check-delegation.mjs --pr "$PR_NUMBER" --status --merge
+          else
+            node scripts/gate/check-delegation.mjs --head-sha "$HEAD_SHA" --status --merge
+          fi

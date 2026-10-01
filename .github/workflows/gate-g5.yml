@@ -10,6 +10,11 @@ name: gate-g5
 
 on:
   pull_request:
+  # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
+  # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
+  # 既定ブランチの名前が main でない場合は、ここを改める(このファイルは強制層であり、変更は AI維持管理者の承認を要する)
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -39,7 +44,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: node scripts/gate/verify-gate-contract.mjs
+      # 契約検査は、PR では基底ブランチの構成(process.config.json)と比べる。
+      # 変化点の記録を経ない構成の書き換えを検出するためである。基底ブランチは GITHUB_BASE_REF から読む
+      - if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+      - if: github.event_name != 'push'
+        run: node scripts/gate/verify-gate-contract.mjs
+      # 既定ブランチへの push では、push の直前のコミット(github.event.before)の構成と比べる。
+      # ブランチの作成(直前のコミットが無い push)では、比べる相手が無いため、連鎖の検査だけを行う
+      - if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            node scripts/gate/verify-gate-contract.mjs
+          else
+            git fetch --no-tags --depth=1 origin "$BEFORE" || true
+            node scripts/gate/verify-gate-contract.mjs --base "$BEFORE"
+          fi
+      # 委任した変更のマージの経路の判定を、フィクスチャで試験する。
+      # ワークフロー(delegation.yml)が PR の先頭を checkout していないこと、承認を付けていないことも確かめる
+      - run: node scripts/gate/test-check-delegation.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:
@@ -132,6 +159,8 @@ jobs:
   # 基準8 依存関係の追加・更新の識別。合否は判定せず一覧を出す
   dependency-diff:
     name: dependency-diff
+    # 基底ブランチとの差分を出す。基底を持たない push では実行しない
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

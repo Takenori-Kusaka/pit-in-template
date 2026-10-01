@@ -1,0 +1,82 @@
+# 委任で先へ進めた変更の、期間ごとの保証の開示(標準 第4章 G-7・G-8「期間ごとの保証の開示」/ 第5章 5.5.4)
+#
+# 出荷の範囲によらず、期間の起点と終点で区切って保証の開示を出します。既定は月次で、前月の1日から末日までです。
+# 期間は、事後の抜き取りの周期に合わせます。周期が月次でない場合は、cron を改めるか、手動で期間を指定して実行します。
+#
+# 期間の開示は、委任を使っている構成(委任の席、または承認済みの委任の規則がある構成)に限り出します。
+# 委任を使っていない構成では「委任を使っていないため、期間の開示は要らない」と出して成功で終えます
+# (scripts/gate/period-needed.mjs。起点の時点・期間中・現在の構成と、期間中のトレーラ Delegated を見ます)。
+# 期間は、コミットの日付を手元の時刻帯(このジョブでは UTC)の日付に直して切ります。
+#
+# 開示に対応する受容と異議の記録(リリース決裁 G-8 の判定記録の「対象」に、期間の起点と終点を書いたもの)が
+# 無い間は、記録の欠落としてジョブが失敗します。記録は開示を読んでから書くため、初回の実行は失敗します。
+# 記録を書いた後に、同じ期間を指定して手動で実行し直すと通ります(出荷の証跡の集約と同じ扱い)。
+#
+# 2026-10-01 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
+# 確かめたのは、手元での集約(--period-from / --period-to)に留まります。
+
+name: assurance-period
+
+on:
+  schedule:
+    - cron: '30 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      from:
+        description: 期間の起点(YYYY-MM-DD)。省略すると前月の1日
+        required: false
+      to:
+        description: 期間の終点(YYYY-MM-DD)。省略すると前月の末日
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  period:
+    name: assurance-period
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 入力は日付の形だけを受け付ける。シェルへ展開する前に形を確かめる
+      - name: 期間を決める
+        id: range
+        env:
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+        run: |
+          from="${IN_FROM:-$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m-%d)}"
+          to="${IN_TO:-$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m-%d)}"
+          for d in "$from" "$to"; do
+            echo "$d" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || { echo "::error::日付の形が不正です: $d"; exit 2; }
+          done
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+          echo "to=$to" >> "$GITHUB_OUTPUT"
+
+      - name: 期間の開示が要るかを判定する
+        id: needed
+        env:
+          PERIOD_FROM: ${{ steps.range.outputs.from }}
+          PERIOD_TO: ${{ steps.range.outputs.to }}
+        run: node scripts/gate/period-needed.mjs --period-from "$PERIOD_FROM" --period-to "$PERIOD_TO"
+
+      - name: 期間の保証の開示を集約する
+        if: steps.needed.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PERIOD_FROM: ${{ steps.range.outputs.from }}
+          PERIOD_TO: ${{ steps.range.outputs.to }}
+        run: node scripts/gate/aggregate-evidence.mjs --period-from "$PERIOD_FROM" --period-to "$PERIOD_TO"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.needed.outputs.needed == 'true'
+        with:
+          name: assurance-period-${{ steps.range.outputs.from }}_${{ steps.range.outputs.to }}
+          # assurance-disclosure.external.md は、組織の外へ渡す形(氏名と自由記述を出さない)
+          path: evidence/period-*/
+          if-no-files-found: error

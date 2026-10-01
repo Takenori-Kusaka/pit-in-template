@@ -1,6 +1,10 @@
 {
   "schemaVersion": 0,
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
+  "source": {
+    "repository": "https://github.com/Takenori-Kusaka/process-compass",
+    "commit": "be3d5536dcfc084451425fd25af6d8b6dcd191c7"
+  },
   "questions": [
     {
       "id": "q-team-size",
@@ -117,8 +121,8 @@
     {
       "id": "q-external-reviewer",
       "axis": "supplement",
-      "text": "レビューを頼める相手はチームの外にいる?",
-      "help": "他チーム・別部門・社外コミュニティなど、コードや仕様を見てもらえる相手",
+      "text": "作成を指示した本人以外に、確認できる人はいる?",
+      "help": "2名体制の相手、他チーム・別部門・社外コミュニティなど、コードや仕様を見てもらえる相手。AI の確認は数えない",
       "appliesWhen": {
         "q-team-size": [
           "size-1-2"
@@ -507,7 +511,7 @@
             "id": "ai-usage"
           },
           "action": "note",
-          "note": "実装とテストを同一のAIに同一の文脈で書かせない。テスト生成の独立性は最強(組織的独立)を適用する"
+          "note": "実装とテストを同一のAIに同一の文脈で書かせない。テスト生成の分離の段階は最強(組織的な独立)を適用する"
         }
       ],
       "reason": "死亡または重篤な傷害が起こりうる場合、機能安全の枠組みが要求する独立性と検証の網を満たす必要がある",
@@ -758,7 +762,7 @@
             "id": "g-indep-review"
           },
           "action": "omit",
-          "note": "独立レビューは実施できないため省略する"
+          "note": "作成を指示した本人以外の確認者を置けない。省略ではなく未達として表示する(ADR-0028)"
         },
         {
           "target": {
@@ -766,17 +770,17 @@
             "id": "g-ci"
           },
           "action": "strengthen",
-          "note": "代替としてCI基準を厳格化する(カバレッジ+静的解析の基準を引き上げ)"
+          "note": "代償措置としてCI基準を厳格化する(カバレッジ+静的解析の基準を引き上げ)。未達の解消にも、独立レビューの代替にも数えない"
         },
         {
           "target": {
             "type": "process"
           },
           "action": "note",
-          "note": "この構成は参照モデルの成立条件(独立した検証)を満たしていない。外部レビュアの確保を継続課題として提案書に記載する"
+          "note": "この構成は参照モデルの成立条件(独立した検証)を満たしていない。独立レビューは未達のまま表示し、作成を指示した本人以外の確認者の確保を継続課題として提案書に記載する"
         }
       ],
-      "reason": "独立レビューの担い手が誰もいない場合、人的検証の代替は機械検証しかない。前提が満たせないことを隠さず明示する",
+      "reason": "独立レビューの担い手が誰もいない場合、機械検証の強化は代償措置であり、独立した人の確認の代わりにならない。前提が満たせないことを隠さず、未達として表示し続ける",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 40,
       "sourceFile": "rules-supplementary.yaml"
@@ -798,7 +802,7 @@
           "note": "既存の決裁ゲート(品質部門の判定・CTOレビュー等)に外殻ゲートを対応づける。新設や二重化はしない"
         }
       ],
-      "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計(変更は2点のみの原則)",
+      "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計。既存制度への変更は、技術判断の分離・単独判定・出荷判定者の署名の意味の3点に限る",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
@@ -904,7 +908,7 @@
           "action": "set",
           "param": "reviewMode",
           "value": "external",
-          "note": "独立レビューはチーム外(他チーム・別部門・社外コミュニティ)へ依頼する"
+          "note": "独立レビューは、作成を指示した本人以外の確認者に置く。2名体制では作成を指示していない側が確認する(相互の確認で成立)。1名体制と、相手も作成の指示に関与した変更は、外部(他チーム・別部門・社外コミュニティ)へ依頼する。外部の確認者はR1の変更へ集中させてよい。R2の変更は確認者を置けなければ未達とし、リリースごとの件数で表示する"
         },
         {
           "target": {
@@ -927,7 +931,7 @@
           "note": "仕様承認の委譲は不要(全部自分で判定する)"
         }
       ],
-      "reason": "最小体制では「作成指示者・レビュア・判定者の分離」がチーム内で成立しない。独立レビューを外部に求めることが唯一の必須要件になる",
+      "reason": "3名未満では「作成指示者・レビュア・判定者の分離」が成立しない。独立は人の単位で定義するため、独立レビューは作成を指示した本人以外の人に求める(2名体制は相手、1名体制は外部)。出荷判定者の兼務は逸脱のまま表示する。AIの確認は独立した人の確認に数えない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 10,
       "sourceFile": "rules-team-size.yaml"
@@ -1079,6 +1083,27 @@
       "description": "標準から外した項目を、理由と承認者とともに提案書へ記載せずに運用しない",
       "rationale": "規格の世界でも、テーラリングは適合の放棄ではなく「差分の宣言」を条件に認められる。宣言のない省略は追跡できない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
+    },
+    {
+      "id": "c-risk-class-not-waived-per-project",
+      "name": "リスク区分依存の条項は案件単位で外さない",
+      "description": "リスク区分に依存する条項を、案件単位で適用外にしない",
+      "rationale": "リスク区分は変更ごとに判定する。案件の安全重要度から、変更ごとの判定の適用外は導けない(ADR-0039)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
+    },
+    {
+      "id": "c-mode-cap-not-raised",
+      "name": "運用形態の上限は引き上げない",
+      "description": "担い手の運用形態(人確定・協働・委任)の上限を、案件単位で引き上げない",
+      "rationale": "上限は変更ごとのリスク区分で決まる。席ごとの宣言は上限であり、R1を協働や委任へ、R2を委任へ引き上げる経路はない(ADR-0054)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/"
+    },
+    {
+      "id": "c-expired-performer-not-counted",
+      "name": "失効した担い手を検出の層に数えない",
+      "description": "適合性確認が失効した担い手の確認を、検出の層に数えない",
+      "rationale": "担い手の識別(モデルの版・指示資産の版・権限の組)が変わった時点で確認は失効する。測り直すまで、その担い手の確認を検出能力の根拠にできない(ADR-0056)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/assurance-case/"
     }
   ],
   "practices": [
@@ -1144,6 +1169,14 @@
       "name": "企画承認",
       "approver": "事業決裁者(決裁権限規程どおりの職位)",
       "approverRole": "biz-approver",
+      "criteria": [
+        "投資対効果が事業基準を満たす",
+        "リスクと受容方針が明示されている",
+        "コンテキスト基盤の初期整備コストが予算に含まれる",
+        "指標の閾値と予算区分が合意され記録されている"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-1-企画承認事業決裁者既存規程どおり"
     },
     {
@@ -1152,6 +1185,15 @@
       "name": "要件合意",
       "approver": "価値責任者(単独。目安48時間以内に判定)",
       "approverRole": "value-owner",
+      "criteria": [
+        "受入基準が検証可能な形式で書かれている",
+        "曖昧語が残っていない",
+        "暗黙の前提が案件層コンテキストに登録済み",
+        "スコープ外事項が明記されている",
+        "合意した範囲がスコープ3層へ割り当てられている"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-2-要件合意価値責任者48時間"
     },
     {
@@ -1160,6 +1202,15 @@
       "name": "技術設計判断",
       "approver": "技術判断者(単独。目安48時間以内に判定)",
       "approverRole": "tech-lead",
+      "criteria": [
+        "非機能要件の充足見込みが示されている",
+        "既存資産・コンテキスト基盤と整合している",
+        "選択の可逆性が評価されている",
+        "代替案が最低1つ比較されている",
+        "事業影響が観測可能な事象で記述されている"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-3-技術設計判断技術判断者48時間"
     },
     {
@@ -1168,6 +1219,15 @@
       "name": "機能仕様承認(反復内)",
       "approver": "価値責任者(または明示的に委譲された機能責任者。委譲しても結果責任は価値責任者に残る)",
       "approverRole": "value-owner",
+      "criteria": [
+        "機能仕様に検証可能な受入基準が含まれる",
+        "タスク分解の粒度が1タスク=1レビュー単位",
+        "対象機能のコア/非コア指定が明示されている",
+        "各タスクの規模が分割基準の範囲内である",
+        "合意した範囲の内か外かの判定が記入されている"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-4-機能仕様承認価値責任者または委譲先24時間"
     },
     {
@@ -1176,22 +1236,56 @@
       "name": "自動検証(CI)",
       "approver": "CI(機械判定)",
       "approverRole": null,
+      "criteria": [
+        "全テストが GREEN",
+        "静的解析・脆弱性スキャンの重大指摘",
+        "テストカバレッジ",
+        "曖昧語チェック(仕様変更を含むPRの場合)",
+        "依存関係のライセンス検査",
+        "文脈ファイルの形式検査",
+        "秘匿情報の混入検査",
+        "依存関係の追加・更新の識別"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-5-自動検証-ci機械判定即時"
     },
     {
       "id": "g-indep-review",
       "label": "G-6",
       "name": "独立レビュー",
-      "approver": "独立レビュア(作成指示者本人は承認不可。ブランチ保護で強制)",
+      "approver": "独立レビュア(作成指示者本人の承認は数えない。ブランチ保護と出荷の証跡の集約の2つの層で止める)",
       "approverRole": "independent-reviewer",
+      "criteria": [
+        "仕様(受入基準)と実装が一致している",
+        "レビュアが挙動を自分の言葉で説明できる",
+        "(コア機能のみ)設計意図の記録が完備",
+        "レビュアが作成の指示者本人でない",
+        "(依存の追加・更新を含む場合)追加の必要性を確認した"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-6-独立レビュー独立レビュア応答1営業日--判定2営業日"
     },
     {
       "id": "g-ship",
       "label": "G-7",
       "name": "出荷判定",
-      "approver": "品質保証(第三者。署名する)",
+      "approver": "品質保証(開発ラインの外の人。署名する)",
       "approverRole": "qa-gatekeeper",
+      "criteria": [
+        "計画したテストの消化率",
+        "未解決の欠陥",
+        "受容した負債の台帳記録",
+        "運用引き継ぎ文書",
+        "全ゲートの通過記録",
+        "AI 品質指標の確認",
+        "(安全関連ソフトウェアのみ)安全適合性の検証記録",
+        "知財潔白性の検査記録",
+        "保証の開示の完備"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-7-出荷判定qa3営業日"
     },
     {
@@ -1200,6 +1294,12 @@
       "name": "リリース決裁",
       "approver": "事業決裁者",
       "approverRole": "biz-approver",
+      "criteria": [
+        "出荷判定(G-7)を通過している",
+        "事業リスクの受容判断"
+      ],
+      "criteriaComplete": false,
+      "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-8-リリース決裁事業決裁者48時間"
     }
   ],
@@ -1225,7 +1325,7 @@
     {
       "id": "ai-agent",
       "name": "AIエージェント",
-      "responsibility": "仕様の起案支援、実装、テスト生成、ドキュメント生成、負債候補の検出。提案はするが承認しない",
+      "responsibility": "仕様の起案支援、実装、テスト生成、ドキュメント生成、負債候補の検出。席の担い手として実行(R)を担う。提案はするが、判定と承認はしない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/"
     },
     {
@@ -1237,7 +1337,7 @@
     {
       "id": "qa-gatekeeper",
       "name": "品質保証(出荷判定者)",
-      "responsibility": "第三者として出荷判定を行い署名する。プロセス実行記録と品質エビデンスの確認が任務(再テストではない)",
+      "responsibility": "開発ラインの外の人として出荷判定を行い署名する。プロセス実行記録と品質エビデンスの確認が任務(再テストではない)",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
@@ -1294,9 +1394,21 @@
         "qa-gatekeeper"
       ],
       "scope": "same-project",
-      "reason": "第三者判定の独立性が崩れる",
+      "reason": "開発ラインの外の人による判定が成立しなくなる",
       "exception": "3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029)",
       "gate": "g-ship",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
+    },
+    {
+      "id": "sep-shipping-business",
+      "roles": [
+        "qa-gatekeeper",
+        "biz-approver"
+      ],
+      "scope": "same-project",
+      "reason": "出荷判定者が書く異議を、事業決裁者が読んで残存リスクを受容する。同じ人が兼ねると、受容が自己完結する(ADR-0056 決定5)",
+      "exception": "3名未満に限り、逸脱として D-0 体制図へ記録し、保証の開示の項目1 へ「異議を書く者と、残存リスクを受容する者が同一である」と表示する。3.5.2 の例外(代償措置つきの許容)は適用しない(第3章 3.5)",
+      "gate": "g-release",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     },
     {
@@ -1307,7 +1419,7 @@
       ],
       "scope": "always",
       "reason": "案件の都合で全社の統制を緩める経路ができる",
-      "exception": "none",
+      "exception": "1〜2名体制で兼務禁止が成立しない場合に限り、逸脱として D-0 体制図へ記録し、表示し続ける。兼務を認める例外ではなく、3.5.2 の例外(代償措置つきの許容)は適用しない(第3章 3.5)",
       "gate": null,
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
@@ -1320,16 +1432,58 @@
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか"
     },
     {
+      "title": "委任の変更は判定の時点を事後へ移す",
+      "range": "CL0・R3 の変更",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#委任の変更は判定の時点を事後へ移す適用-cl0r3-の変更"
+    },
+    {
+      "title": "未達のまま出荷する場合の例外承認",
+      "range": "R1 の変更",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#未達のまま出荷する場合の例外承認適用-r1-の変更"
+    },
+    {
+      "title": "5.5.4 委任の条件",
+      "range": "CL0・R3 の変更",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#554-委任の条件適用-cl0r3-の変更"
+    },
+    {
       "title": "5.7.3 選択肢の比較",
       "range": "R1 の決定・例外承認",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#573-選択肢の比較適用-r1-の決定例外承認"
     },
     {
+      "title": "委任を適用した変更",
+      "range": "CL0・R3 の変更",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/review-guide/#委任を適用した変更適用-cl0r3-の変更"
+    },
+    {
+      "title": "入力の分離",
+      "range": "確認側の担い手に AI を置く場合",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#入力の分離適用-確認側の担い手に-ai-を置く場合"
+    },
+    {
       "title": "B-3 設計審査会",
       "range": "S2 スケール、または安全・法規制の対象となる機能",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#b-3-設計審査会適用-s2-スケールまたは安全法規制の対象となる機能"
+    },
+    {
+      "title": "外部の確認者を高リスクの変更へ集中させる",
+      "range": "チーム規模 1〜2名",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#外部の確認者を高リスクの変更へ集中させる適用-チーム規模-12名"
+    },
+    {
+      "title": "事後監査の手続",
+      "range": "委任を適用した R3 の変更。体制の規模によらない",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#事後監査の手続適用-委任を適用した-r3-の変更体制の規模によらない"
     }
   ]
 }

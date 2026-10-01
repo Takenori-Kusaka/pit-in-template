@@ -4,6 +4,11 @@
 # ここで行うのは記録と基準の突合だけです。
 #
 # 未達のゲートがある場合、品質レポートへ必ず記載されます。隠す経路はありません。
+#
+# PR の変更として数えるのは、PR のマージコミットと一致するコミットだけです(件名の番号に依らない)。
+# PR とコミットの関係は、gh(PR の mergeCommit と、コミットに対応づく PR)で取得します。
+# G-7 の基準ごとに、機械が確かめた範囲と、出荷判定者が突合する記録を、品質レポートの冒頭に出します。
+# 委任で先へ進めた変更の、期間ごとの保証の開示は assurance-period ワークフローが出します。
 
 name: ship-evidence
 
@@ -22,6 +27,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  actions: read
 
 jobs:
   evidence:
@@ -39,6 +45,18 @@ jobs:
           path: evidence
           merge-multiple: true
 
+      # 保証の開示の項目1・3・6 へ、前回の出荷の値を併記するための入力。
+      # 取得できない場合(初回、成果物の保存期間の経過)は「前回なし」と出力される
+      - name: 前回の出荷の証跡を取り込む
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh run list --repo "${{ github.repository }}" --workflow ship-evidence --status completed --limit 20 --json databaseId --jq "map(select(.databaseId != ${{ github.run_id }})) | .[0].databaseId // empty")
+          if [ -n "$prev" ]; then
+            gh run download "$prev" --repo "${{ github.repository }}" --name ship-evidence --dir evidence/previous
+          fi
+
       - name: 証跡を集約する
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,7 +70,10 @@ jobs:
         if: always()
         with:
           name: ship-evidence
+          # assurance-disclosure.external.md は、組織の外へ渡す保証の開示。項目6 を値で出さない。
+          # 外へ渡すときは、このファイルをそのまま使う(人が差し替えない)
           path: |
             evidence/evidence.json
             evidence/quality-report.md
+            evidence/assurance-disclosure.external.md
           if-no-files-found: error

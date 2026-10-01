@@ -1,0 +1,175 @@
+{
+  "config": {
+    "configured": true,
+    "answers": {
+      "q-team-size": "size-3-9",
+      "q-quality": "quality-standard",
+      "q-criticality": "cl0"
+    },
+    "task": {
+      "maxChangedFiles": 15,
+      "maxChangedLines": 400
+    },
+    "people": [
+      {
+        "id": "p1",
+        "name": "山田 太郎",
+        "accounts": [
+          "yamada-taro"
+        ]
+      },
+      {
+        "id": "p2",
+        "name": "佐藤 花子",
+        "accounts": [
+          "sato-hanako"
+        ]
+      },
+      {
+        "id": "p3",
+        "name": "鈴木 一郎",
+        "accounts": [
+          "suzuki-ichiro"
+        ]
+      }
+    ],
+    "seats": [
+      {
+        "role": "dev-verifier",
+        "name": "開発者(検証)",
+        "accountable": "山田 太郎",
+        "mode": "delegated",
+        "performer": {
+          "model": "model-x-1",
+          "instructions": "CLAUDE.md@v1",
+          "permissions": "dev"
+        },
+        "fallback": "human",
+        "qualification": {
+          "confirmedAt": "2026-09-30",
+          "performedBy": "鈴木 一郎",
+          "approvedBy": "山田 太郎",
+          "cases": "10件",
+          "result": "9/10",
+          "performer": {
+            "model": "model-x-1",
+            "instructions": "CLAUDE.md@v1",
+            "permissions": "dev"
+          }
+        }
+      },
+      {
+        "role": "independent-reviewer",
+        "name": "独立レビュア",
+        "accountable": "佐藤 花子",
+        "mode": "delegated",
+        "performer": {
+          "model": "model-x-1",
+          "instructions": "CLAUDE.md@v1",
+          "permissions": "review"
+        },
+        "fallback": "human",
+        "qualification": {
+          "confirmedAt": "2026-09-30",
+          "performedBy": "鈴木 一郎",
+          "approvedBy": "佐藤 花子",
+          "cases": "10件",
+          "result": "9/10",
+          "performer": {
+            "model": "model-x-1",
+            "instructions": "CLAUDE.md@v1",
+            "permissions": "review"
+          }
+        }
+      },
+      {
+        "role": "biz-approver",
+        "name": "事業決裁者",
+        "accountable": "鈴木 一郎",
+        "mode": "human"
+      },
+      {
+        "role": "ai-maintainer",
+        "name": "AI維持管理者",
+        "accountable": "鈴木 一郎",
+        "mode": "collab"
+      }
+    ],
+    "delegation": {
+      "allowed": true,
+      "changeTypes": [
+        {
+          "id": "表示文言",
+          "registeredBy": "鈴木 一郎",
+          "registeredAt": "2026-09-30",
+          "basis": {
+            "detection": "文言の表示崩れは画面の自動比較(visual-diff ジョブ)で検知する",
+            "rollback": "2026-09-12 の文言の取り消し(PR #88 の revert)",
+            "tests": "i18n のキー欠落は既存の単体テスト i18n.test.js で失敗する"
+          }
+        }
+      ],
+      "protectedPaths": [
+        "src/core/**"
+      ],
+      "rules": [
+        {
+          "id": "DR-001",
+          "seat": "dev-verifier",
+          "changeType": "表示文言",
+          "paths": [
+            "src/i18n/**"
+          ],
+          "decidedBy": "山田 太郎",
+          "decidedAt": "2026-09-30",
+          "reason": "文言の変更は既存のテストで検出でき、単独で取り消せる",
+          "approvedBy": "鈴木 一郎"
+        },
+        {
+          "id": "DR-002",
+          "seat": "independent-reviewer",
+          "changeType": "表示文言",
+          "paths": [
+            "src/i18n/**"
+          ],
+          "decidedBy": "佐藤 花子",
+          "decidedAt": "2026-09-30",
+          "reason": "文言の変更は事後の抜き取りで確かめる",
+          "approvedBy": "鈴木 一郎"
+        }
+      ]
+    }
+  },
+  "pr": {
+    "number": 12,
+    "title": "fix: 招待の文言を直す",
+    "body": "## 対応タスク\n\nSpec: F-012 / Task-3\n\n## 検証方法と結果\n\n- npm test を実行し、全件の通過を確認した\n\n## リスク区分\n\nR3\n",
+    "state": "open",
+    "draft": false,
+    "baseRef": "main",
+    "defaultBranch": "main",
+    "headSha": "1111111111111111111111111111111111111111",
+    "fromFork": false
+  },
+  "files": [
+    {
+      "path": "src/i18n/ja.json",
+      "additions": 2,
+      "deletions": 2
+    }
+  ],
+  "commits": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "message": "fix: 招待の文言を直す\n\nSpec: F-012 / Task-3\nCo-Authored-By: model-x-1\nDelegated: DR-001"
+    }
+  ],
+  "checks": [
+    {
+      "name": "gate-g5",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "reviews": []
+}

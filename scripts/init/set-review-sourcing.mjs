@@ -1,110 +1,61 @@
-// 未達(unmet)ゲートのレビュー調達先を安全に記入するためのユーティリティ。
+// 未達(unmet)ゲートの、確認者(作成を指示した本人以外の人)の調達先を安全に記入するためのユーティリティ。
 //
 //   node scripts/init/set-review-sourcing.mjs --gate g6 --sourcing "コミュニティレビュー"
 //
+// 調達先の記入は未達を解消しません。確認者を置けたら、人の名簿(people[])へ記入し、
+// /process-change で独立レビュアの席の責任者として反映します。
+//
+// 構成(process.config.json)を書き換えるのは /process-change だけです。このスクリプトは、
+// 種別 settings の変化点の入力を組み立てて generate-profile.mjs へ渡します。構成を直接は書きません。
+// 記入は変化点の記録(changeLog[])へ残り、要約値の連鎖が保たれます。
+//
 // 依存パッケージなし。Node 22 以上で動く。
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { aiNameReason } from '../gate/config.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 function getArg(argv, name) {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : null;
 }
 
-// 実際の書き換え処理を行うコア関数 (テスト用にパスを外注入可能にする)
-export function updateSourcing({ configPath, profilePath, gate, sourcing }) {
-  if (!fs.existsSync(configPath)) {
-    throw new Error(`${configPath} が存在しません。先に /process-init を実行してください。`);
+/** 調達先の記入を、種別 settings の変化点の入力として組み立てる。受け付けない調達先は例外にする */
+export function sourcingChange({ gate, sourcing, date = null }) {
+  // AI の確認は検出の層であり、未達を埋めない。AI を示す調達先を受け付けない
+  const ai = aiNameReason(sourcing, { account: true });
+  if (ai) {
+    throw new Error(`調達先 "${sourcing}" は ${ai}。確認者は、作成を指示した本人以外の人に限ります。AI の確認は未達を埋めません。`);
   }
-
-  // 1. process.config.json の更新
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  if (!config.unmet || config.unmet.length === 0) {
-    throw new Error('設定された未達のゲートはありません。');
-  }
-
-  const targetUnmet = config.unmet.find((u) => u.gate.toLowerCase() === gate.toLowerCase());
-  if (!targetUnmet) {
-    throw new Error(`指定されたゲート ${gate} は未達ゲートの一覧に存在しません。`);
-  }
-
-  targetUnmet.reviewSourcing = sourcing;
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
-  console.log(`Updated config: unmet[gate=${gate}].reviewSourcing = "${sourcing}"`);
-
-  // 2. PROCESS-PROFILE.md の更新
-  if (fs.existsSync(profilePath)) {
-    let profile = fs.readFileSync(profilePath, 'utf8');
-    const label = targetUnmet.label;
-    const escapedLabel = label.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-
-    // 表行をマッチングする正規表現
-    // | G-6 独立レビュー | ... | ... | **未記入** |  のような行を探す。
-    // 4列目（末尾のパイプの前）を sourcing で置き換える。
-    const tableRowRegex = new RegExp(
-      `(\\|\\s*${escapedLabel}\\s*\\|.*?\\|[^|]+\\|\\s*)([^|\\s][^|]*?|\\*\\*未記入\\*\\*)(\\s*\\|)`
-    );
-
-    if (tableRowRegex.test(profile)) {
-      profile = profile.replace(tableRowRegex, `$1${sourcing}$3`);
-      fs.writeFileSync(profilePath, profile, 'utf8');
-      console.log(`Updated profile: Replaced sourcing for "${label}" with "${sourcing}"`);
-    } else {
-      console.warn(`[警告] profile 内に "${label}" の表行が見つからなかったため、MDファイルの自動更新をスキップしました。`);
-    }
-  }
+  if (!String(sourcing ?? '').trim()) throw new Error('調達先が空です。');
+  return {
+    kind: 'settings',
+    ...(date ? { date } : {}),
+    summary: `${gate.toUpperCase()} の確認者の調達先を記入した`,
+    settings: { reviewSourcing: { [gate.toLowerCase()]: sourcing } },
+  };
 }
 
 // ---------------------------------------------------------------- セルフテスト用
 function runSelfTest() {
   console.log('Running self test...');
-  const testConfigPath = path.join(ROOT, 'test-process.config.json');
-  const testProfilePath = path.join(ROOT, 'test-PROCESS-PROFILE.md');
-
-  const dummyConfig = {
-    unmet: [
-      {
-        gate: 'g6',
-        label: 'G-6 独立レビュー',
-        reason: '最小体制3名未満',
-        compensation: ['ci-strict'],
-        reviewSourcing: null,
-      }
-    ]
-  };
-
-  const dummyProfile = `# プロセス構成書\n\n## 未達のゲート\n\n| ゲート | 未達の理由 | 代償措置 | 外部レビューの調達先 |\n| --- | --- | --- | --- |\n| G-6 独立レビュー | 最小体制3名未満 | ci-strict | **未記入** |\n`;
-
-  try {
-    fs.writeFileSync(testConfigPath, JSON.stringify(dummyConfig, null, 2) + '\n', 'utf8');
-    fs.writeFileSync(testProfilePath, dummyProfile, 'utf8');
-
-    updateSourcing({
-      configPath: testConfigPath,
-      profilePath: testProfilePath,
-      gate: 'g6',
-      sourcing: 'GitHub コミュニティレビュー'
-    });
-
-    const updatedConfig = JSON.parse(fs.readFileSync(testConfigPath, 'utf8'));
-    if (updatedConfig.unmet[0].reviewSourcing !== 'GitHub コミュニティレビュー') {
-      throw new Error('Config reviewSourcing was not updated correctly!');
-    }
-
-    const updatedProfile = fs.readFileSync(testProfilePath, 'utf8');
-    if (!updatedProfile.includes('| G-6 独立レビュー | 最小体制3名未満 | ci-strict | GitHub コミュニティレビュー |')) {
-      throw new Error('Profile table cell was not updated correctly! Got: ' + updatedProfile);
-    }
-
-    console.log('Self test passed!');
-  } finally {
-    if (fs.existsSync(testConfigPath)) fs.unlinkSync(testConfigPath);
-    if (fs.existsSync(testProfilePath)) fs.unlinkSync(testProfilePath);
+  const c = sourcingChange({ gate: 'G6', sourcing: 'GitHub コミュニティレビュー' });
+  if (c.kind !== 'settings' || c.settings.reviewSourcing.g6 !== 'GitHub コミュニティレビュー') {
+    throw new Error('変化点の入力が正しく組み立てられていません: ' + JSON.stringify(c));
   }
+  let refused = false;
+  try {
+    sourcingChange({ gate: 'g6', sourcing: 'Reviewer-Agent (gpt-9)' });
+  } catch {
+    refused = true;
+  }
+  if (!refused) throw new Error('AI を示す調達先が拒否されませんでした');
+  console.log('Self test passed!');
 }
 
 // ---------------------------------------------------------------- 実行
@@ -127,16 +78,18 @@ if (isMain) {
     process.exit(1);
   }
 
+  let file = null;
   try {
-    updateSourcing({
-      configPath: path.join(ROOT, 'process.config.json'),
-      profilePath: path.join(ROOT, 'PROCESS-PROFILE.md'),
-      gate,
-      sourcing
-    });
+    const change = sourcingChange({ gate, sourcing });
+    file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-sourcing-')), 'change.json');
+    fs.writeFileSync(file, JSON.stringify(change, null, 2), 'utf8');
+    execFileSync(process.execPath, [path.join(HERE, 'generate-profile.mjs'), '--change', file], { stdio: 'inherit' });
     console.log('完了しました。');
   } catch (e) {
-    console.error(`[エラー] ${e.message}`);
+    // generate-profile.mjs が拒否した場合、理由はそのスクリプトが出力している
+    if (e.status === undefined) console.error(`[エラー] ${e.message}`);
     process.exit(1);
+  } finally {
+    if (file) fs.rmSync(path.dirname(file), { recursive: true, force: true });
   }
 }
