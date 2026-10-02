@@ -10,8 +10,9 @@
     "lint": "ruff check .",
     "audit": "pip-audit",
     "licenses": "pip-licenses --format=json | node scripts/gate/ip-clearance-python.mjs",
-    "secretScan": "npx --yes secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
+  "thresholdFiles": [".coveragerc", "pytest.ini", ".flake8", ".pylintrc", "pylintrc", "ruff.toml", ".ruff.toml", "mypy.ini", ".mypy.ini", ".bandit"],
   "coverageSummary": "coverage.json",
-  "note": "coverage.json は pytest-cov の JSON 形式です。totals.percent_covered を読みます"
+  "note": "coverage.json は pytest-cov の JSON 形式です。totals.percent_covered を読みます。thresholdFiles は、閾値・除外設定のファイル(禁止事項6。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
 }

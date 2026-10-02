@@ -7,6 +7,9 @@
 //      → エージェントが自分を縛る設定を変えられる構成では、遮断が成立しないため
 //   2. 自己修正ループ中のテストへの書き込み
 //      → 渡された失敗をテスト側の変更で解消する経路を塞ぐため(附属書E E.7)
+//      ロックは scripts/gate/self-heal.mjs が始めて終える。ロックのファイルそのものへの書き込みも拒否する。
+//      この遮断は guard.enabled に依らず有効である(探索ステージでも外さない。#286)。
+//      ロックの外(テストを先に書く作業)は遮断しない
 //
 // 拒否した操作は .claude/denied.log へ残します。拒否の発生そのものが、
 // タスクの範囲設定と実態が合っていない兆候だからです。
@@ -68,11 +71,6 @@ function main() {
   if (!fs.existsSync(guardPath)) process.exit(0);
   const guard = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
 
-  // 探索フェーズ（S0）や未初期化状態などで、強制層が無効化されている場合はバイパスする
-  if (guard.enabled === false) {
-    process.exit(0);
-  }
-
   let input;
   try {
     input = JSON.parse(readStdin() || '{}');
@@ -97,16 +95,22 @@ function main() {
     process.exit(2);
   };
 
-  // 1. 強制層そのもの
-  for (const item of guard.protectedPatterns ?? []) {
-    const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
-    const p = isObj ? item.pattern : item;
-    const reason = isObj ? (item.reason ?? guard.protectedReason) : guard.protectedReason;
-    if (match(p, rel)) deny(reason, 'protected');
+  // 1. 強制層そのもの。探索フェーズ（S0）などで強制層が無効化されている場合は適用しない
+  if (guard.enabled !== false) {
+    for (const item of guard.protectedPatterns ?? []) {
+      const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
+      const p = isObj ? item.pattern : item;
+      const reason = isObj ? (item.reason ?? guard.protectedReason) : guard.protectedReason;
+      if (match(p, rel)) deny(reason, 'protected');
+    }
   }
 
-  // 2. 自己修正ループ中のテスト
-  const lock = path.join(ROOT, guard.selfHealLockFile ?? '.claude/.self-heal');
+  // 2. 自己修正ループ中のテスト。guard.enabled に依らず適用する
+  const lockRel = guard.selfHealLockFile ?? '.claude/.self-heal';
+  if (rel === lockRel) {
+    deny('自己修正のロックは `node scripts/gate/self-heal.mjs start|stop` で始めて終えます。ファイルを直接書き換えません', 'self-heal-lock');
+  }
+  const lock = path.join(ROOT, lockRel);
   if (fs.existsSync(lock)) {
     for (const p of guard.testPatterns ?? []) {
       if (match(p, rel)) deny(guard.selfHealReason, 'self-heal-test');

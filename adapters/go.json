@@ -10,8 +10,9 @@
     "lint": "go vet ./...",
     "audit": "govulncheck ./...",
     "licenses": "go-licenses check ./...",
-    "secretScan": "npx --yes secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
+  "thresholdFiles": [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"],
   "coverageSummary": null,
-  "note": "coverage.out はテキスト形式のため、カバレッジ判定はワークフロー側の go tool cover の出力で行ってください"
+  "note": "coverage.out はテキスト形式のため、カバレッジ判定はワークフロー側の go tool cover の出力で行ってください。thresholdFiles は、閾値・除外設定のファイル(禁止事項6。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
 }

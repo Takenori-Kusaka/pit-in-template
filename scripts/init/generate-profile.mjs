@@ -8,6 +8,10 @@
 //
 // change.json の書式は .claude/skills/process-change/SKILL.md にあります。
 //
+// 開発の基盤(初回の G-5 を通す最小のファイル)だけを作るとき(初期化は自動で作る。スタックを変えた後に使う):
+//
+//   node scripts/init/generate-profile.mjs --scaffold
+//
 // answers.json の例:
 //   {
 //     "q-team-size": "size-1-2",
@@ -22,6 +26,7 @@
 //
 // 依存パッケージなし。Node 22 以上で動く。
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -746,6 +751,8 @@ export function seatSeparationFindings(config) {
   const nameOf = (id) => seatOf(id)?.name ?? id;
   const small = config.answers?.['q-team-size'] === 'size-1-2';
   const violations = [];
+  // 抵触の組の席(拒否の文で、解き方を出すために使う)。violations と同じ順
+  const violationDetails = [];
   const excepted = [];
   const notIndependent = [];
   // 1〜2名の体制で、同一人物が占めた兼務禁止の組。拒否せず逸脱として記録する
@@ -758,16 +765,53 @@ export function seatSeparationFindings(config) {
     const key = sep.gate ? GATE_KEY[sep.gate] : null;
     // 成果物単位の禁止(作成を指示した本人 × 独立レビュア)。1〜2名では未達として扱う(detectUnmet)。
     // 3名以上では、別の人を置けるため、同一人物にする変更を拒否する
-    if (sep.scope === 'same-work-product') (small ? notIndependent : violations).push(pair);
+    if (sep.scope === 'same-work-product') {
+      if (small) notIndependent.push(pair);
+      else {
+        violations.push(pair);
+        violationDetails.push({ pair, roles: [a, b], person });
+      }
+    }
     // 代償措置つきの例外は、ゲートの逸脱として記録された組に限る(第3章 3.5.2)
     else if (key && sep.exception !== 'none' && (config.deviations ?? []).some((d) => d.gate === key)) excepted.push(pair);
     // 判定を実施しない構成(省略・統合)では、その判定者との兼務は生じない
     else if (small && key && !isActiveState(config.gates?.[key]?.state)) continue;
     else if (small) deviated.push({ id: sep.id, roles: [a, b], pair, person, names: [nameOf(a), nameOf(b)], reason: sep.reason });
-    else violations.push(pair);
+    else {
+      violations.push(pair);
+      violationDetails.push({ pair, roles: [a, b], person });
+    }
   }
   const blank = seats.filter((s) => !s.accountable).length;
-  return { violations, excepted, notIndependent, deviated, blank };
+  return { violations, violationDetails, excepted, notIndependent, deviated, blank };
+}
+
+/**
+ * 兼務禁止の抵触を、今の名簿の人で解く割り当ての候補を返す(拒否の文に添える。#286)。
+ * 組の一方の席を、名簿の別の人へ移したときに、新たな抵触が生じない人を席ごとに挙げる。
+ * 候補が無い場合は空。人を増やすことを、解き方の既定にしない(名簿の人数で解ける場合がある)
+ */
+export function separationRemedies(config, detail) {
+  const people = (config.people ?? []).filter((p) => !p.external);
+  const before = new Set(seatSeparationFindings(config).violations);
+  // この抵触が消え、ほかに新しい抵触を生まない(同時に出ている別の抵触は、それぞれの解き方で解く)
+  const resolves = (trial) => {
+    const v = seatSeparationFindings(trial).violations;
+    return !v.includes(detail.pair) && v.every((x) => before.has(x));
+  };
+  const out = [];
+  for (const role of detail.roles) {
+    const seat = (config.seats ?? []).find((s) => s.role === role);
+    if (!seat) continue;
+    const ok = [];
+    for (const p of people) {
+      if (personKey(config, p.name) === personKey(config, detail.person)) continue;
+      const trial = { ...config, seats: config.seats.map((s) => (s.role === role ? { ...s, accountable: p.name } : s)) };
+      if (resolves(trial)) ok.push(p.name);
+    }
+    if (ok.length) out.push({ seat: seat.name ?? role, to: ok });
+  }
+  return out;
 }
 
 /**
@@ -1020,7 +1064,7 @@ export function diffConfig(before, after) {
     remaining.push(
       after.ruleset
         ? `ブランチ保護を適用する(人が実行する。エージェントは実行しない): gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/${after.ruleset}.json`
-        : 'ブランチ保護の適用を外す場合は、人が実行する。外す理由を判断記録へ残す'
+        : 'ブランチ保護を、承認を強制するルールセットから必須チェックだけのルールセットへ替える場合は、人が実行する(gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/checks-only.json と、旧いルールセットの解除)。外す理由を判断記録へ残す'
     );
   }
 
@@ -2549,7 +2593,7 @@ export const RULES_END = '<!-- generated:process-rules end -->';
  * ロールと Label Mailbox の対応(第5章 4.3 / 4.3.1)。
  * ラベルは状態であり、常に「次に動く人」を指す。
  */
-const MAILBOX = {
+export const MAILBOX = {
   'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner'] },
   'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner'] },
   'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform'] },
@@ -2563,7 +2607,7 @@ const MAILBOX = {
  * エスカレーションの段階とラベルの対応(第7章 7.6 / 第5章 4.5.2)。
  * 閾値は案件が企画承認(G-1)で確定するため、ここでは持たない。
  */
-const ESCALATION = [
+export const ESCALATION = [
   ['段階1', 'プロジェクト責任者', 'state:needs-po'],
   ['段階2', '部門責任者・PMO', 'state:needs-owner'],
   ['段階3', 'ステアリングコミッティ(B-2)', 'state:needs-owner'],
@@ -2582,209 +2626,153 @@ export function renderProcessRules(config) {
 
 この節は \`/process-init\` が \`process.config.json\` から生成します。**手で編集しないでください**。
 
-プロセス構成が未設定のため、まだ生成されていません。\`/process-init\` を実行すると、有効なゲートと判定者、ロールごとの権限、担ってはならない工程、受信箱のラベルがここへ入ります。`.trim();
+プロセス構成が未設定のため、まだ生成されていません。\`/process-init\` を実行すると、構成の要約(体制、有効なゲート、出荷できない状態、運用形態)と、自分のロールを確かめる方法がここへ入ります。`.trim();
   }
 
+  // 常駐させるのは構成の要約と、詳細の所在だけである(#286)。ロールごとの権限・受信箱・兼務の禁止は、
+  // 構成から導出する出力(next.mjs --role)で必要な時点に読む。規則そのものは CLAUDE.md の手書きの索引にある
   const L = [];
   L.push('## このプロジェクトの構成(自動生成)');
   L.push('');
   L.push(
-    'この節は `process.config.json` から生成しています。**手で編集しないでください**。' +
-      '内容を変えるときは `/process-change` で変化点として反映します。手で編集すると `check-process-rules` が失敗します。' +
-      '**構成(`process.config.json`)も手で編集しないでください**。書き換える経路は `/process-change` だけです。' +
-      '変化点の記録を経ない書き換えは、契約検査が検出して失敗させます。'
+    'この節は `process.config.json` から生成しています。**手で編集しないでください**(`check-process-rules` が検出します)。' +
+      '**構成(`process.config.json`)も手で編集しないでください**。書き換える経路は `/process-change` だけです。'
   );
   L.push('');
-  L.push(`- 案件 ID: \`${config.projectId}\``);
-  L.push(`- 追随している D-0 体制図の版: ${config.d0Version ? `\`${config.d0Version}\`` : '**未取得**(D-0 が未作成、または版の記載がない)'}`);
-  L.push('');
-
-  L.push('### 有効なゲートと判定者');
-  L.push('');
-  L.push('| ゲート | 判定 | 判定者 |');
-  L.push('| --- | --- | --- |');
-  for (const g of Object.values(config.gates)) {
-    L.push(`| ${link(g.label, g.source)} | ${stateLabel(g.state)} | ${g.approver ?? '—'} |`);
-  }
-  L.push('');
-  L.push('**判定の基準を確認するときは、ゲート名のリンク先(標準の該当節)を読んでください**。');
-  L.push('');
-
-  if (config.shipBlocked) {
-    L.push(`**出荷できない状態**: ${config.shipBlocked.reason}`);
-    L.push('');
-  }
+  L.push(`- 案件 ID: \`${config.projectId}\` / 追随している D-0 体制図の版: ${config.d0Version ? `\`${config.d0Version}\`` : '**未取得**(D-0 が未作成、または版の記載がない)'}`);
+  const al = config.answerLabels ?? {};
+  L.push(`- 体制: ${al['q-team-size'] ?? '—'} / 段階: ${al['q-biz-phase'] ?? '—'} / 最悪の場合: ${al['q-criticality'] ?? '—'}`);
+  const gates = Object.values(config.gates);
+  const active = gates.filter((g) => isActiveState(g.state));
+  const inactive = gates.filter((g) => !isActiveState(g.state));
+  L.push(`- 有効なゲート: ${active.map((g) => `${g.label}(${stateLabel(g.state)})`).join(' / ') || 'なし'}`);
+  if (inactive.length) L.push(`- 有効でないゲート: ${inactive.map((g) => `${g.label}(${stateLabel(g.state)})`).join(' / ')}`);
+  if (config.shipBlocked) L.push(`- **出荷できない状態**: ${config.shipBlocked.reason}`);
   if (config.unmet?.length) {
-    L.push('**未達のゲート**: ' + config.unmet.map((u) => `${u.label}(${u.reason})`).join(' / '));
-    L.push('');
-    L.push('未達は省略ではありません。**AI で埋めてはなりません**。');
-    L.push('');
+    L.push('- **未達のゲート**: ' + config.unmet.map((u) => `${u.label}(${u.reason})`).join(' / ') + '。未達は省略ではありません。**AI で埋めてはなりません**');
   }
   const gateDevs = (config.deviations ?? []).filter((d) => d.gate);
   const seatDevs = (config.deviations ?? []).filter((d) => !d.gate);
-  if (gateDevs.length) {
-    L.push('**代償措置つきの逸脱**: ' + gateDevs.map((d) => `${d.label}(${d.rule})`).join(' / '));
-    L.push('');
-  }
-  if (seatDevs.length) {
-    L.push('**兼務の逸脱**(1〜2名の体制。代償措置は定められていない): ' + seatDevs.map((d) => d.label).join(' / '));
-    L.push('');
-  }
+  if (gateDevs.length) L.push('- **代償措置つきの逸脱**: ' + gateDevs.map((d) => `${d.label}(${d.rule})`).join(' / '));
+  if (seatDevs.length) L.push('- **兼務の逸脱**(1〜2名の体制。代償措置は定められていない): ' + seatDevs.map((d) => d.label).join(' / '));
 
-  L.push('### ロールごとの権限');
-  L.push('');
-  L.push('**自分がどのロールのセッションかを確認してから作業を始めてください**。');
-  L.push('分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します(標準 第3章 3.5.3)。');
-  L.push('');
-  L.push('| ロール | 判定するゲート | 判定してはならないゲート | 運用形態 | 受信箱 | 引き渡しに使うラベル |');
-  L.push('| --- | --- | --- | --- | --- | --- |');
-  const seatOf = Object.fromEntries((config.seats ?? []).map((s) => [s.role, s]));
-  for (const r of config.roles ?? []) {
-    const mb = MAILBOX[r.id];
-    if (!mb && !r.gatesOwned.length && !r.gatesUnmet.length) continue;
-    const owned = [...r.gatesOwned, ...r.gatesUnmet.map((k) => `${k}*`)]
-      .map((k) => GATE_BY_KEY[k.replace('*', '')]?.label + (k.endsWith('*') ? '(未達)' : ''))
-      .join(' / ');
-    const notJudge = r.mustNotJudge.map((k) => GATE_BY_KEY[k]?.label ?? k).join(' / ');
-    const inbox = (mb?.inbox ?? []).map((s) => `\`${s}\``).join(' ');
-    const hands = (mb?.hands ?? []).map((s) => `\`${s}\``).join(' ');
-    const ownedCell = [...(owned ? [owned] : []), ...(r.notes ?? [])].join('。') || '—';
-    const mode = MODE_LABEL[seatOf[r.id]?.mode] ?? '—';
-    L.push(`| ${link(r.name, r.source)} | ${ownedCell} | ${notJudge || '—'} | ${mode} | ${inbox || '—'} | ${hands || '—'} |`);
-  }
-  L.push('');
-  // 自席の運用形態と委任の範囲(第5章 5.5)。禁止だけを示して決めてよい範囲を示さないと、
-  // 担い手は自分で決めてよい選択を判別できない
+  // 運用形態の要約(第5章 5.5)。席ごとの詳細は next.mjs --role
+  const seats = config.seats ?? [];
+  const byMode = (m) => seats.filter((s) => s.mode === m).map((s) => s.name);
+  const modeLine = ['human', 'collab', 'delegated']
+    .map((m) => [MODE_LABEL[m], byMode(m)])
+    .filter(([, names]) => names.length)
+    .map(([label, names]) => `${label}: ${names.join('・')}`)
+    .join(' / ');
+  L.push(`- 運用形態(上限の宣言): ${modeLine || '—'}`);
   const rules = config.delegation?.allowed ? (config.delegation.rules ?? []) : [];
-  const delegated = (config.seats ?? []).filter((s) => s.mode === 'delegated');
-  L.push('- **運用形態は上限の宣言です**。変更ごとのリスク区分がそれを下げます(R1 は人確定、R2 は協働まで)');
+  const delegated = seats.filter((s) => s.mode === 'delegated');
   if (delegated.length && rules.length) {
-    L.push('- **委任の範囲**(`process.config.json` の `delegation.rules`。該当は機械の規則で判定します):');
-    for (const s of delegated) {
-      for (const r of rules.filter((x) => x.seat === s.role)) {
-        L.push(`  - \`${r.id}\` ${s.name}: ${r.changeType ?? '—'}(${(r.paths ?? []).map((p) => `\`${p}\``).join(' ')})`);
-      }
-    }
-    L.push(`- **${MERGE_PATH_NOTE}**`);
+    L.push(`- **委任の範囲**: ${rules.map((r) => `\`${r.id}\``).join(' ')}(該当は機械の規則で判定する。${MERGE_PATH_NOTE})`);
   } else {
     L.push('- **委任の範囲: なし**。人の事前確認(ゲートの判定)を経ずに先へ進めてよい変更は、この構成にありません');
   }
-  L.push('- **起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらない禁止です');
-  L.push('- **自分のロールの受信箱以外を拾わないでください**。ディレクトリが分かれていても、複数のレーンの受信箱を見た時点で文脈は合流します');
-  L.push('- エージェント指示資産(強制層。`.claude/**`)の統合・削除は AI維持管理者へ集約します。変更が必要な場合は `state:needs-platform` を付与します([第5章 Label Mailbox](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))');
+  const filled = seats.filter((s) => s.accountable).length;
+  L.push(`- 席の責任者: ${filled} / ${seats.length} 席が記入済み${filled < seats.length ? '。**未記入の席の任免は人が行う**(氏名を推測で埋めない)' : ''}`);
   L.push('');
-  L.push('#### 標準の条項を課す前に、適用範囲を確認する');
+  L.push('**自分のロールを確かめてから作業を始めてください**。次のコマンドが、構成から導出した詳細を出します。');
   L.push('');
-  L.push(
-    '**条項番号だけを根拠にしないでください**。適用範囲を書けない条項は課さないでください。' +
-      '箇条書きだけを読んで限定を落とすと、適用されない条項を課すことになります' +
-      '([適用範囲の書き方](https://takenori-kusaka.github.io/process-compass/community/scope-marking/))。'
-  );
-  L.push('');
-  const scopes = KB.clauseScopes ?? [];
-  if (scopes.length) {
-    L.push('| 条項 | 適用範囲 | 判定の単位 |');
-    L.push('| --- | --- | --- |');
-    for (const s of scopes) {
-      let unit = 'その他';
-      if (s.unit === 'per-change') {
-        unit = '**変更ごと**';
-      } else if (s.unit === 'per-project') {
-        unit = '案件ごと（開始時に判定）';
-      } else if (s.unit === 'per-stage') {
-        unit = 'ステージごと（移行ゲートで再判定が必要）';
-      } else if (s.unit === 'per-spec' || s.unit === 'per-feature') {
-        unit = '機能ごと（G-4承認時に判定）';
-      } else if (s.title.includes('設計審査会')) {
-        unit = 'ステージ/機能ごと（S2移行またはG-4時に判定）';
-      }
-      L.push(`| [${s.title}](${s.source}) | ${s.range} | ${unit} |`);
-    }
-    L.push('');
-  }
-  L.push(
-    '**リスク区分(R)は変更ごとに判定します**。この案件の安全重要度から「適用されない」を導いてはなりません。' +
-      'CL0 の案件でも、認証・認可・個人データ・外部インタフェースに触れる変更は R1 です。'
-  );
-  L.push('');
-  L.push('#### 統制の弱化を見つけたら');
-  L.push('');
-  L.push(
-    '**遮断の解除・閾値の緩和・強制層の縮小**を見つけた場合は、差分が変更の主張と一致するかまでを確認し、' +
-      '**許容してよいかは判断しないでください**。'
-  );
-  L.push('');
-  L.push('| 対象 | 付与するラベル |');
+  L.push('| 知りたいこと | コマンド |');
   L.push('| --- | --- |');
-  L.push('| 強制層(`.claude/**` 等)の縮小 | `state:needs-platform` |');
-  L.push('| 取り消せない操作に当たる(取り消せない時間帯が存在する操作。ガード・検証ゲート・重要テストの削除を含み、例示の一覧に無いことを理由に外さない) | 上に加えて `state:needs-owner` |');
-  L.push('| 弱化の範囲そのものの適否 | `state:needs-po` |');
+  L.push('| 機能ごと・ロールごとの段階と次の一手、人の判断待ち | `node scripts/gate/next.mjs`(`/pit`) |');
+  L.push('| ロールの判定するゲート・判定してはならないゲート・運用形態・受信箱・引き渡しのラベル・兼ねてはならない役割 | `node scripts/gate/next.mjs --role <ロール>` |');
+  L.push('| 標準の条項の適用範囲と判定の単位 | `node scripts/gate/next.mjs --scopes` |');
   L.push('');
-  L.push(
-    '**引き渡し先が分からないことを、自分で決める理由にしないでください**。特定できない場合は `state:needs-po` を付与します。' +
-      '兼務していても、ラベルを経由させて引き渡しを記録します' +
-      '([第5章 4.7](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。'
-  );
+  const ids = (config.roles ?? []).filter((r) => MAILBOX[r.id] || r.gatesOwned.length || r.gatesUnmet.length).map((r) => `\`${r.id}\` ${r.name}`);
+  L.push(`ロール: ${ids.join(' / ')}`);
   L.push('');
-  L.push('**規定の全文は標準にあります**。判断に迷ったら、表のリンク先を読んでから進めてください。推測で補わないでください。');
+  return L.join('\n');
+}
+
+/**
+ * ロールの詳細(判定するゲート・判定してはならないゲート・運用形態・受信箱・引き渡しのラベル・兼務の禁止)。
+ * CLAUDE.md へ常駐させず、next.mjs --role で必要な時点に出す(#286)。構成から毎回導出するため、構成と乖離しない
+ */
+export function renderRoleCard(config, roleId) {
+  const r = (config.roles ?? []).find((x) => x.id === roleId);
+  if (!r) return null;
+  const mb = MAILBOX[r.id];
+  const seat = (config.seats ?? []).find((s) => s.role === r.id);
+  const label = (k) => GATE_BY_KEY[k]?.label ?? k;
+  const L = [];
+  L.push(`## ${r.name}(\`${r.id}\`)`);
   L.push('');
-  for (const r of config.roles ?? []) {
-    if (!r.mustNotAlso?.length) continue;
+  if (r.responsibility) L.push(`- 責務: ${r.responsibility}`);
+  L.push(`- 判定するゲート: ${[...r.gatesOwned.map(label), ...r.gatesUnmet.map((k) => `${label(k)}(未達)`)].join(' / ') || '—'}`);
+  for (const n of r.notes ?? []) L.push(`- 注記: ${n}`);
+  L.push(`- 判定してはならないゲート: ${r.mustNotJudge.map(label).join(' / ') || '—'}`);
+  if (seat) {
+    L.push(`- 席の責任者: ${seat.accountable ? personName(config, seat.accountable) : '**未記入**(任免は人が行う)'}`);
+    L.push(`- 運用形態: ${MODE_LABEL[seat.mode] ?? '—'}(上限の宣言。変更ごとのリスク区分がそれを下げる。R1 は人確定、R2 は協働まで)`);
+    const rules = config.delegation?.allowed ? (config.delegation.rules ?? []).filter((x) => x.seat === r.id) : [];
+    if (seat.mode === 'delegated' && rules.length) {
+      for (const x of rules) L.push(`- 委任の範囲 \`${x.id}\`: ${x.changeType ?? '—'}(${(x.paths ?? []).map((p) => `\`${p}\``).join(' ')})`);
+      L.push(`- ${MERGE_PATH_NOTE}`);
+    }
+  }
+  if (r.mustNotAlso?.length) {
     const names = r.mustNotAlso.map((s) => {
       const n = config.roles.find((x) => x.id === s.role)?.name ?? s.role;
       return s.exception === 'none' ? n : `${n}(ただし: ${s.exception})`;
     });
     L.push(`- **${r.name}** が兼ねてはならない役割: ${names.join(' / ')}`);
   }
-  L.push('');
-
-  // --- 受信箱(ポーリングの範囲) ---
-  const polling = (config.roles ?? []).filter((r) => MAILBOX[r.id]);
-  if (polling.length) {
-    L.push('### 自分の受信箱を見る');
+  if (mb) {
+    L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ')}`);
+    L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ')}`);
     L.push('');
-    L.push(
-      '**自分のロールのブロックだけを実行してください**。他のロールの受信箱を見た時点で文脈は合流し、' +
-        '分離は成立しなくなります([第5章 4.5.1](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。'
-    );
-    L.push('');
-    L.push('```bash');
-    polling.forEach((r, i) => {
-      if (i) L.push('');
-      // 未達のロールは担い手がいない。受信箱を出すと、誰かが見ているように読める
-      if (r.gatesUnmet.length && !r.gatesOwned.length) {
-        L.push(`# ${r.name}: この構成では未達。担い手がいないため受信箱を置かない`);
-        return;
+    if (r.gatesUnmet.length && !r.gatesOwned.length) {
+      L.push('この構成では未達です。担い手がいないため、受信箱を置きません。');
+    } else {
+      L.push('**このロールの受信箱だけを見てください**。他のロールの受信箱を見た時点で文脈は合流し、分離は成立しなくなります([第5章 4.5.1](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。');
+      L.push('');
+      L.push('```bash');
+      for (const s of mb.inbox) {
+        L.push(`gh issue list --label "${s}" --state open`);
+        L.push(`gh pr list --label "${s}" --state open`);
       }
-      L.push(`# ${r.name}`);
-      for (const label of MAILBOX[r.id].inbox) {
-        L.push(`gh issue list --label "${label}" --state open`);
-        L.push(`gh pr list --label "${label}" --state open`);
-      }
-    });
-    L.push('```');
-    L.push('');
-    L.push(
-      '状態ラベルの付いていない Issues/PRs(孤児)の再配分は価値責任者の義務です。' +
-        '**再配分した仕事を自ら拾わないでください**。再配分の権限と、仕事を拾う権限は別です。'
-    );
-    L.push('');
+      L.push('```');
+    }
   }
-
-  // --- エスカレーション ---
-  L.push('### エスカレーションの段階とラベル');
   L.push('');
-  L.push('| 段階 | 報告先 | 付与するラベル |');
-  L.push('| --- | --- | --- |');
-  for (const [stage, to, label] of ESCALATION) L.push(`| ${stage} | ${to} | \`${label}\` |`);
+  L.push(`規定の全文: ${r.source ?? ROLES_URL}`);
+  return L.join('\n');
+}
+
+/** 標準の条項の適用範囲と判定の単位(知識ベースの clauseScopes)。next.mjs --scopes が出す */
+export function renderClauseScopes() {
+  const L = [];
+  L.push('## 標準の条項を課す前に、適用範囲を確認する');
   L.push('');
   L.push(
-    '発火条件と閾値は[第7章 7.6](https://takenori-kusaka.github.io/process-compass/phase4-process-design/exception-escalation/)、' +
-      '実際の宛先は D-0 体制図の第4節によります。**ラベルの付与だけで報告を済ませないでください**。' +
-      'エスカレーションレポートの5項目(状態・原因・事業影響・リカバリ選択肢3案・推奨と決裁事項)を書きます。' +
-      '**推奨と決裁事項は人が記入します**。'
+    '**条項番号だけを根拠にしないでください**。適用範囲を書けない条項は課さないでください' +
+      '([適用範囲の書き方](https://takenori-kusaka.github.io/process-compass/community/scope-marking/))。' +
+      '**リスク区分(R)は変更ごとに判定します**。案件の安全重要度から「適用されない」を導いてはなりません。CL0 の案件でも、認証・認可・個人データ・外部インタフェースに触れる変更は R1 です。'
   );
   L.push('');
+  L.push('| 条項 | 適用範囲 | 判定の単位 |');
+  L.push('| --- | --- | --- |');
+  for (const s of KB.clauseScopes ?? []) {
+    let unit = 'その他';
+    if (s.unit === 'per-change') unit = '**変更ごと**';
+    else if (s.unit === 'per-project') unit = '案件ごと(開始時に判定)';
+    else if (s.unit === 'per-stage') unit = 'ステージごと(移行ゲートで再判定が必要)';
+    else if (s.unit === 'per-spec' || s.unit === 'per-feature') unit = '機能ごと(G-4承認時に判定)';
+    else if (s.title.includes('設計審査会')) unit = 'ステージ/機能ごと(S2移行またはG-4時に判定)';
+    L.push(`| [${s.title}](${s.source}) | ${s.range} | ${unit} |`);
+  }
+  return L.join('\n');
+}
+
+/** エスカレーションの段階とラベル(next.mjs --role の補足と、pit スキルの補助ファイルが参照する) */
+export function renderEscalation() {
+  const L = ['| 段階 | 報告先 | 付与するラベル |', '| --- | --- | --- |'];
+  for (const [stage, to, label] of ESCALATION) L.push(`| ${stage} | ${to} | \`${label}\` |`);
   return L.join('\n');
 }
 
@@ -2795,6 +2783,94 @@ export function applyProcessRules(text, config) {
   if (b < 0 || e < 0 || e < b) return null;
   const body = renderProcessRules(config);
   return text.slice(0, b) + RULES_BEGIN + '\n\n' + body + '\n' + text.slice(e);
+}
+
+// ---------------------------------------------------------------- 開発の基盤(#286)
+
+/**
+ * 秘匿情報の検査(アダプタの secretScan が使う secretlint)の設定。node・python・go で共通。
+ * secretlint とルールの版はアダプタのコマンドで固定している(CI の secret-scan ジョブは依存を取得しないため、
+ * package.json の依存に頼らない)
+ */
+const SECRETLINT_RC = '{\n  "rules": [{ "id": "@secretlint/secretlint-rule-preset-recommend" }]\n}\n';
+/** node の基盤で固定する版。版を上げるのは、依存の更新の PR(G-6 で必要性を確かめる)で行う */
+const NODE_DEV_DEPS = { c8: '12.0.0' };
+
+/**
+ * 初回の G-5 を通すための最小の基盤。アダプタの検査が求めるファイルのうち、無いものだけを作る(既存のファイルを
+ * 書き換えない)。作れないスタックでは、作るべきファイルを todo に列挙する。
+ * 返り値: { created: [パス], kept: [既にあったパス], todo: [作るべきもの], next: [続けて人が行う手順] }
+ */
+export function scaffoldStack(stack, root = ROOT) {
+  const out = { created: [], kept: [], todo: [], next: [] };
+  const put = (rel, text) => {
+    const p = path.join(root, rel);
+    if (fs.existsSync(p)) {
+      out.kept.push(rel);
+      return;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text, 'utf8');
+    out.created.push(rel);
+  };
+  const testsReadme = (pattern, measured) =>
+    `# テスト\n\n受入基準ごとのテストをここへ置きます(${pattern})。\n\n` +
+    `- カバレッジは ${measured} を測ります。製品のコードを別の場所へ置く場合は、測定の対象の設定を合わせます\n` +
+    '- テストがまだ無い段階では、テストは0件で通り、カバレッジは「対象なし」として記録されます。製品のコードを置いた後に0行のままなら、G-5 が失敗します\n';
+  if (stack === 'node') {
+    const name = path.basename(path.resolve(root)).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
+    const pkg = {
+      name,
+      version: '0.0.0',
+      private: true,
+      engines: { node: '>=22' },
+      scripts: {
+        test: 'node --test "tests/**/*.test.*"',
+        coverage: 'c8 --all --src src --include "src/**" --reporter=json-summary --reporter=text node --test "tests/**/*.test.*"',
+      },
+      devDependencies: NODE_DEV_DEPS,
+    };
+    put('package.json', JSON.stringify(pkg, null, 2) + '\n');
+    put('.secretlintrc.json', SECRETLINT_RC);
+    put('tests/README.md', testsReadme('ファイル名は `*.test.js` / `*.test.mjs`。`node --test` で実行します', '`src/` の下'));
+    if (!fs.existsSync(path.join(root, 'package-lock.json'))) {
+      out.next.push('`npm install` を実行して package-lock.json を作る(CI の `npm ci` はロックファイルを要する)。作ったロックファイルは、基盤のファイルと同じ PR に含める');
+    }
+    out.next.push('製品のコードは `src/` へ置く。別の場所へ置く場合は、package.json の coverage の `--include` を合わせる');
+  } else if (stack === 'python' || stack === 'go') {
+    put('.secretlintrc.json', SECRETLINT_RC);
+    if (stack === 'python') {
+      out.todo.push(
+        'pyproject.toml: `pip install -e ".[dev]"` で入る開発用の依存(pytest・pytest-cov・ruff・pip-audit・pip-licenses)と、pytest-cov の測定の対象(製品のコードの置き場)',
+        'tests/: 受入基準ごとのテスト。pytest は、テストが0件だと終了コード 5 で失敗する(初回の G-5 を通すには、最初のテストが要る)'
+      );
+    } else {
+      out.todo.push(
+        'go.mod: `go mod init <モジュール名>` で作る',
+        'govulncheck・go-licenses: CI の実行環境へ入れる手順(アダプタの audit・licenses のコマンドが使う)',
+        'カバレッジ: アダプタの coverageSummary が null のため、判定は「実施しない」として記録される(adapters/go.json の note)'
+      );
+    }
+    out.next.push('秘匿情報の検査は `npx` で secretlint を取得して実行する(ネットワークを要する)');
+  } else if (stack === 'none') {
+    out.todo.push('adapters/none.json の commands: テストの実行コマンド(test)と秘匿情報の検査(secretScan)は空のままでは G-5 が失敗する。ほかの検査は、空なら「実施しない」として記録される');
+  } else if (stack === 'undetermined') {
+    out.todo.push('スタックが未確定のため、基盤は作らない。確定したら /process-change(種別 settings の settings.stack)で反映し、アダプタの検査が求めるファイルを作る');
+  }
+  return out;
+}
+
+/** scaffoldStack の結果を出力する */
+function printScaffold(s) {
+  console.log('');
+  if (s.created.length) console.log(`[開発の基盤] 作成: ${s.created.join(', ')}`);
+  if (s.kept.length) console.log(`[開発の基盤] 既にあるため変更せず: ${s.kept.join(', ')}`);
+  if (s.todo.length) {
+    console.log('[開発の基盤] このスタックでは生成しない。初回の G-5 を通すまでに作るもの:');
+    for (const t of s.todo) console.log(`  - ${t}`);
+  }
+  for (const n of s.next) console.log(`  - 続けて: ${n}`);
+  console.log('  - G-5 の手元の検査(CI と同じ範囲): node scripts/gate/g5-local.mjs');
 }
 
 // ---------------------------------------------------------------- 実行
@@ -2808,6 +2884,19 @@ if (isMain) {
     for (const d of details) console.error(`  - ${d}`);
     process.exit(1);
   };
+  // 開発の基盤だけを作る(スタックを /process-change で確定・変更した後に使う)。構成は書き換えない
+  if (argv.includes('--scaffold')) {
+    let stack;
+    try {
+      const c = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
+      if (c.configured === false) reject('プロセス構成が未設定です。先に /process-init を実行してください');
+      stack = c.adapters?.stack ?? 'none';
+    } catch (e) {
+      reject(`process.config.json を読めません(${e.message.split('\n')[0]})`);
+    }
+    printScaffold(scaffoldStack(stack));
+    process.exit(0);
+  }
   const dryRun = argv.includes('--dry-run');
   // 手元の時刻帯の日付。協定世界時の日付で書くと、人が書く日付(判定記録の判定日時など)と1日ずれる
   const today = localDay();
@@ -3731,12 +3820,19 @@ if (isMain) {
     for (const p of answersRosterProblems(config)) refused.push(p);
     // 規模の規則が分離を必須とした組(10名以上)は、10名以上の体制に限る兼務禁止である。拒否の文を書き分ける
     const tenPlus = (config.separations ?? []).filter((s) => s.scope === 'team-size').map((s) => s.roles.map((r) => seatOf(r)?.name ?? r).join(' × '));
-    for (const v of sep.violations) {
+    for (const [i, v] of sep.violations.entries()) {
       const isTen = tenPlus.some((pair) => v.startsWith(`${pair}(`));
+      // 解き方(#286)。名簿の人で組み替えられるなら、その候補を出す。人を増やすことを既定の解き方として示さない
+      const detail = sep.violationDetails[i];
+      const remedies = detail ? separationRemedies(config, detail) : [];
+      const headcount = (config.people ?? []).filter((p) => !p.external).length;
+      const how = remedies.length
+        ? `今の名簿(${headcount} 名)で解ける割り当て: ${remedies.map((r) => `「${r.seat}」を ${r.to.join(' / ')} へ移す`).join('、または ')}。人を増やす必要はありません`
+        : `今の名簿(${headcount} 名)の別の人へ移しても、新たな抵触が生じます。人を名簿へ足して席を割り当てるか、席の割り当て全体を組み直してください`;
       refused.push(
         isTen
-          ? `兼務禁止に抵触します: ${v}(10名以上の体制では、同じ人がこの2つの席の責任者になれません。第8章 軸A)`
-          : `兼務禁止に抵触します: ${v}(3名以上の体制では、同じ人がこの2つの席の責任者になれません。兼務を逸脱として記録できるのは 1〜2名の体制に限ります)`
+          ? `兼務禁止に抵触します: ${v}(10名以上の体制では、同じ人がこの2つの席の責任者になれません。第8章 軸A)。${how}`
+          : `兼務禁止に抵触します: ${v}(3名以上の体制では、同じ人がこの2つの席の責任者になれません。兼務を逸脱として記録できるのは、体制の人数が 1〜2名の場合に限ります。実際の人数と異なる人数を申告して逸脱へ逃がさないでください)。${how}`
       );
     }
     refused.push(...d0Refused);
@@ -4095,6 +4191,8 @@ if (isMain) {
           } else {
             console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、settings.json の編集遮断や Bash 遮断も一時的に解放しました。');
           }
+          // 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、enabled に依らずフックが適用する(#286)
+          console.log('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
         } else {
           // S1/S2（構築・拡大ステージ）では、エージェント用ガードを有効化（enabled: true）し、
           // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
@@ -4156,6 +4254,15 @@ if (isMain) {
         console.log('wrote CLAUDE.md (構成依存部分)');
       }
     }
+    // 開発の基盤(#286)。初回の G-5 を通すための最小のファイルを、無いものだけ作る
+    if (!prior) {
+      printScaffold(scaffoldStack(config.adapters.stack));
+      console.log('');
+      console.log(
+        '[最初のコミット] 生成物と基盤のファイルを、ブランチ(例: chore/process-init)で PR にして main へ入れる。main へ直接コミットしない。' +
+          'PR の本文の末尾の段落(トレーラ)に `Spec: setup` を書く。独立レビュー(G-6)を適用する体制では、PR を経ないコミットは出荷判定の証跡で欠落になる'
+      );
+    }
     if (config.shipBlocked) {
       console.log('');
       console.log(`[出荷不可] ${config.shipBlocked.reason}`);
@@ -4169,6 +4276,21 @@ if (isMain) {
       console.log('');
       console.log('[逸脱] 次のゲート・兼務は、標準が要求する属性を欠いています:');
       for (const d of config.deviations) console.log(`  - ${d.label}: ${d.rule}`);
+    }
+    // ブランチ保護(#286)。初期化の直後に、適用のコマンドを出す。適用は人が行う。独立レビューを強制しない構成でも、
+    // 必須チェック(gate-g5)だけのルールセットを置く。プランによって私有リポジトリでは使えない(README「ブランチ保護」)
+    if (!prior) {
+      console.log('');
+      console.log(
+        `[ブランチ保護] 人が適用する(エージェントは実行しない): gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/${config.ruleset ?? 'checks-only'}.json` +
+          (config.ruleset ? '' : '。独立レビュー(G-6)の承認は強制せず、必須チェック gate-g5 だけを強制する')
+      );
+    }
+    // 次の一手(#286)。状態から機械が導出する。失敗しても構成の書き込みは終わっている
+    const next = spawnSync(process.execPath, [path.join(ROOT, 'scripts/gate/next.mjs'), '--brief'], { cwd: ROOT, encoding: 'utf8' });
+    if (next.status === 0 && next.stdout.trim()) {
+      console.log('');
+      console.log(next.stdout.trimEnd());
     }
   }
 }

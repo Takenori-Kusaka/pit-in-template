@@ -76,3 +76,7 @@ claude mcp add --scope local graft -- npx -y @nanonets/graft@0.12.1 mcp
 
 `graft_find_code` / `graft_find_all` / `graft_file_api` / `graft_trace_calls` / `graft_repo_map` /
 `graft_check_freshness` が上表の CLI と同じ働きをする。
+
+## 調べ終えたら
+
+探索は作業の途中の手段です。作業の区切りでは `node scripts/gate/next.mjs` を実行し、出力された次の一手を示します。

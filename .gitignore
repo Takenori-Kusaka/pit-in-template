@@ -11,6 +11,12 @@ build/
 target/
 *.egg-info/
 
+# カバレッジの出力(G-5 の test ジョブが毎回作る。coverage-check が読む)
+coverage/
+.nyc_output/
+coverage.json
+coverage.out
+
 # 出荷判定の証跡(タグ push 時に CI が生成する)
 evidence/
 
@@ -35,3 +41,6 @@ tmp/
 
 # Graft のローカルグラフキャッシュ。再生成できるため commit しない(`graft build` で作る)
 /graft/
+
+# 自己修正ループのロック(scripts/gate/self-heal.mjs が作る。端末ごとの状態)
+.claude/.self-heal

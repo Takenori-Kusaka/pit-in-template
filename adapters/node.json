@@ -10,8 +10,9 @@
     "lint": "npm run lint --if-present",
     "audit": "npm audit --audit-level=high",
     "licenses": "npx --yes license-checker-rseidelsohn --production --excludePrivatePackages --onlyAllow \"$PIT_IN_ALLOWED_LICENSES\"",
-    "secretScan": "npx --yes secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
+  "thresholdFiles": [".nycrc", ".nycrc.*", ".c8rc", ".c8rc.*", "jest.config.*", "vitest.config.*", ".eslintrc", ".eslintrc.*", "eslint.config.*", ".eslintignore", "biome.json", "biome.jsonc"],
   "coverageSummary": "coverage/coverage-summary.json",
-  "note": "coverage は coverage-summary.json(istanbul 形式)を出す設定にしてください。出せない場合は coverageSummary を null にすると、カバレッジ判定は実施しない扱いとして記録されます"
+  "note": "coverage は coverage-summary.json(istanbul 形式)を出す設定にしてください。出せない場合は coverageSummary を null にすると、カバレッジ判定は実施しない扱いとして記録されます。thresholdFiles は、閾値・除外設定のファイル(禁止事項6。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
 }

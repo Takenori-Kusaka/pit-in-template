@@ -368,8 +368,82 @@ export function isFilledValue(v) {
   return true;
 }
 
+/**
+ * 例外承認の「対象」が、変更でなくゲートの判定を指すか(#286)。`G-2 F-001`・`G-1 P-001` の形(ゲートと、判定記録の
+ * 対象)。この形の行は、変更(PR・コミット)の例外承認として対応づけない。指さなければ null
+ */
+export function gateExceptionTarget(target) {
+  const m = /^(G-[1-8]|SG\d?)\s+([A-Za-z]+-\d+|v?\d+(?:\.\d+)*[\w.-]*)$/i.exec(String(target ?? '').replace(/[*`]/g, '').normalize('NFKC').trim());
+  return m ? { gate: m[1].toUpperCase(), subject: m[2] } : null;
+}
+
 /** 例外承認の行が有効を示す状態の値。完全一致で判定する(前方一致で判定しない) */
 export const ACTIVE_EXCEPTION_STATES = ['未返却', '未回収', '有効'];
+
+// 技術負債台帳(テンプレ3)の欄は見出し行の欄名で読む。見出し行に「区分」と「状態」を持たない旧い台帳は、
+// 位置で読む(区分=2列目、内容=3列目、状態=最後の列)。旧い台帳は「対象」と「承認した者」の欄を持たない
+const LEDGER_COLUMNS = {
+  kind: ['区分'],
+  target: ['対象'],
+  content: ['内容'],
+  reason: ['受容した理由', '受容理由'],
+  due: ['返却の目安', '返却目安'],
+  state: ['状態'],
+  approver: ['承認した者'],
+  recorder: ['記録者'],
+};
+
+/**
+ * 技術負債台帳の本文から、全行を読む。出荷判定の証跡の集約(例外承認の対応づけ)と、G-5 の PR の検査
+ * (基底ブランチの台帳にある例外承認)が、同じ読み方を使う
+ */
+export function parseLedger(text) {
+  const rows = [];
+  let header = null;
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (!/^\s*\|/.test(line)) continue;
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
+    if (cells.includes('区分') && cells.includes('状態')) {
+      header = cells;
+      continue;
+    }
+    if (!/^\**D-\d+/.test(cells[0] ?? '')) continue;
+    const at = (key) => {
+      if (!header) return null;
+      const i = header.findIndex((h) => LEDGER_COLUMNS[key].includes(h.replace(/\*/g, '')));
+      return i >= 0 ? (cells[i] ?? '') : null;
+    };
+    rows.push(
+      header
+        ? {
+            id: cells[0].replace(/\*/g, ''),
+            kind: String(at('kind') ?? '').replace(/\*/g, ''),
+            target: at('target'),
+            content: at('content') ?? '',
+            reason: at('reason'),
+            due: at('due'),
+            state: at('state') ?? '',
+            approver: at('approver'),
+            recorder: at('recorder'),
+            text: cells.join(' '),
+          }
+        : {
+            id: cells[0].replace(/\*/g, ''),
+            kind: String(cells[1] ?? '').replace(/\*/g, ''),
+            target: null,
+            content: cells[2] ?? '',
+            reason: null,
+            due: null,
+            state: cells[cells.length - 1] ?? '',
+            approver: null,
+            recorder: null,
+            text: cells.join(' '),
+          }
+    );
+  }
+  return rows;
+}
 
 /** 期限の欄から日付(YYYY-MM-DD または YYYY/MM/DD)を取り出す。実在する日付として解釈できなければ null */
 export function dueDayOf(v) {
@@ -1043,9 +1117,9 @@ export function classifyDelegation(config, files, ruleId = null, changedLines = 
 export function readGateRecords() {
   const dir = path.join(ROOT, 'docs/gates');
   if (!fs.existsSync(dir)) return [];
+  const raw = (text, key) => text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
   const cell = (text, key) => {
-    const m = text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'));
-    const v = m?.[1]?.trim() ?? '';
+    const v = raw(text, key) ?? '';
     return v && !v.includes(' / ') && !v.startsWith('<') ? v : null;
   };
   return fs
@@ -1056,7 +1130,10 @@ export function readGateRecords() {
       return {
         file: `docs/gates/${f}`,
         gate: cell(text, 'ゲート'),
+        target: cell(text, '対象'),
         result: cell(text, '結果'),
+        // 結果欄の記載そのもの(様式の文言を残したままの値を含む)。2値のどちらとも読めない理由を示すために使う
+        resultRaw: raw(text, '結果'),
         mode: cell(text, '確定の形態'),
         riskConfirmedBy: cell(text, 'リスク区分を確定した者'),
         d0Version: cell(text, '参照した D-0 の版'),

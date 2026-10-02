@@ -10,6 +10,8 @@ name: gate-g5
 
 on:
   pull_request:
+    # edited: PR の本文(トレーラ Spec・リスク区分)を直したときに、pr-rules を再実行する
+    types: [opened, synchronize, reopened, edited]
   # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
   # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
   # 既定ブランチの名前が main でない場合は、ここを改める(このファイルは強制層であり、変更は AI維持管理者の承認を要する)
@@ -67,6 +69,11 @@ jobs:
       # 委任した変更のマージの経路の判定を、フィクスチャで試験する。
       # ワークフロー(delegation.yml)が PR の先頭を checkout していないこと、承認を付けていないことも確かめる
       - run: node scripts/gate/test-check-delegation.mjs
+      # PR 単位の検査(check-pr)を、一時のリポジトリのフィクスチャで試験する
+      - run: node scripts/gate/test-check-pr.mjs
+      # 初期化した直後に G-5 の手元で確かめられる検査が通ることを、テンプレートの全ファイルで試験する(#286)。
+      # 構成が設定済みのリポジトリでは省く(テンプレートの初期の状態が無いため)
+      - run: node scripts/gate/test-init-g5.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:
@@ -104,7 +111,8 @@ jobs:
       - name: 依存の脆弱性
         run: node scripts/gate/adapter.mjs run audit
 
-  # 基準4 曖昧語チェック。構成に依存しないため常に走らせる
+  # 基準4 曖昧語チェック。構成に依存しないため常に走らせる。引数なし = 機能仕様の置き場(specs/F-NNN/)だけを見る。
+  # 手元でも引数なしで実行すれば同じ範囲になる(#286)
   spec-lint:
     name: spec-lint
     runs-on: ubuntu-latest
@@ -175,11 +183,43 @@ jobs:
           path: evidence/dependency-diff.json
           if-no-files-found: ignore
 
+  # PR 単位の検査(#286): トレーラ Spec、変更規模の上限、閾値・除外設定と製品のコードの同時変更(禁止事項6)。
+  # 既存のテストの変更(削除・期待値の変更)は、G-6 の材料として PR へ一覧を出す(失敗にはしない)。
+  # 上限と例外承認は基底ブランチの構成と台帳から読む。同じ PR で足した例外承認の行は数えない。
+  # PR の題名と本文は環境変数で渡す(シェルへ展開しない)
+  pr-rules:
+    name: pr-rules
+    needs: config
+    if: github.event_name == 'pull_request' && needs.config.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+      - name: PR の検査
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/gate/check-pr.mjs --base "origin/${BASE_REF}" --report evidence/pr-checks.md --comment
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-checks
+          path: evidence/pr-checks.md
+          if-no-files-found: ignore
+
   # 集約。ブランチ保護の必須ステータスチェックはこのジョブ名を指す
   gate-g5:
     name: gate-g5
     runs-on: ubuntu-latest
-    needs: [config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan]
+    needs: [config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan, pr-rules]
     if: always()
     steps:
       - name: 全検査の結果を突合する
@@ -191,6 +231,7 @@ jobs:
           echo "spec-lint:       ${{ needs.spec-lint.result }}"
           echo "ip-clearance:    ${{ needs.ip-clearance.result }}"
           echo "secret-scan:     ${{ needs.secret-scan.result }}"
+          echo "pr-rules:        ${{ needs.pr-rules.result }}"
           if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
             echo "::error::G-5 は通過していません"
             exit 1

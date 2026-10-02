@@ -2,8 +2,12 @@
 //
 //   node scripts/gate/spec-lint.mjs [対象ディレクトリ...]
 //
-// 既定の対象は specs/ と docs/。1件でも検出したら失敗させます。
+// 既定の対象は機能仕様の置き場(specs/F-NNN/ の .md)だけです。1件でも検出したら失敗させます。
 // 曖昧語が残った受入基準は、実装されるか否かが不定になるためです。
+//
+// CI(gate-g5 の spec-lint ジョブ)は引数なしで実行します。手元でも引数なしで実行すれば、CI と同じ範囲を見ます。
+// 様式(templates/)・判定記録や体制図(docs/)・生成物は対象にしません。受入基準を持たない文書の語を
+// G-5 の失敗にすると、初期化した直後から G-5 が落ち、受入基準の曖昧さを検出する目的から外れるためです(#286)。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,10 +27,18 @@ const BANNED = [
   'なるべく',
 ];
 
-const targets = process.argv.slice(2).length ? process.argv.slice(2) : ['specs', 'docs'];
+const explicit = process.argv.slice(2);
+/** 既定の対象: 機能仕様の置き場 specs/F-NNN/(specs/README.md のような案内は含めない) */
+const DEFAULT_ROOT = 'specs';
+const FEATURE_DIR = /^specs\/F-\d+\//;
+const targets = explicit.length ? explicit : [DEFAULT_ROOT];
 
 function walk(dir, out) {
   if (!fs.existsSync(dir)) return;
+  if (fs.statSync(dir).isFile()) {
+    if (dir.endsWith('.md')) out.push(dir);
+    return;
+  }
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, out);
@@ -34,11 +46,12 @@ function walk(dir, out) {
   }
 }
 
-const files = [];
-for (const t of targets) walk(path.join(ROOT, t), files);
+const found = [];
+for (const t of targets) walk(path.join(ROOT, t), found);
+const files = explicit.length ? found : found.filter((f) => FEATURE_DIR.test(path.relative(ROOT, f).split(path.sep).join('/')));
 
 if (!files.length) {
-  notice(`検査対象がありません(${targets.join(', ')})`);
+  notice(`検査対象がありません(${explicit.length ? targets.join(', ') : '機能仕様 specs/F-NNN/'})`);
   process.exit(0);
 }
 

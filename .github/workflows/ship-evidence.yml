@@ -9,6 +9,11 @@
 # PR とコミットの関係は、gh(PR の mergeCommit と、コミットに対応づく PR)で取得します。
 # G-7 の基準ごとに、機械が確かめた範囲と、出荷判定者が突合する記録を、品質レポートの冒頭に出します。
 # 委任で先へ進めた変更の、期間ごとの保証の開示は assurance-period ワークフローが出します。
+#
+# 知財潔白性の検査記録(license-scan)は、gate-g5 の ip-clearance ジョブが別の実行で作る成果物です。
+# 出荷の対象のコミットに対する gate-g5 の成功した実行から、gh run download で取り込みます(#286)。
+# **このワークフローは、2026-10-01 時点で、実際の GitHub 上で実行して確かめていません**。確かめたのは、
+# 構文と、gh を模擬した呼び出しの形までです。初回の出荷では、Actions の実行の記録で、取り込みの行を確かめてください。
 
 name: ship-evidence
 
@@ -38,12 +43,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 直近の CI 成果物を取り込む
-        uses: actions/download-artifact@v4
+      # download-artifact は、この実行の成果物しか取れない(gate-g5 は別のワークフローの実行)。
+      # 出荷の対象のコミット(--to、無ければ checkout したコミット)に対する gate-g5 の成功した実行を探し、
+      # その実行の license-scan を取る。gate-g5 は既定ブランチへの push でも走るため、マージ後のコミットに実行がある。
+      # 取得できなければ取り込まない。集約が「知財潔白性の検査記録がありません」を欠落として出す(隠さない)
+      - name: 知財潔白性の検査記録を gate-g5 の実行から取り込む
         continue-on-error: true
-        with:
-          path: evidence
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TO: ${{ inputs.to }}
+        run: |
+          target=$(git rev-parse "${TO:-HEAD}^{commit}")
+          run=$(gh run list --repo "${{ github.repository }}" --workflow gate-g5 --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$run" ]; then
+            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
+            echo "::notice::gate-g5 の実行 $run から license-scan を取り込みました(対象 $target)"
+          else
+            echo "::warning::$target に対する gate-g5 の成功した実行がありません。知財潔白性の検査記録は取り込みません"
+          fi
 
       # 保証の開示の項目1・3・6 へ、前回の出荷の値を併記するための入力。
       # 取得できない場合(初回、成果物の保存期間の経過)は「前回なし」と出力される

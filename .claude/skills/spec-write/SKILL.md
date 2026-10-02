@@ -45,8 +45,16 @@ description: 機能仕様(F-NNN)を EARS 記法で書き、受入基準を検証
 ### 6. 検証する
 
 ```bash
-node scripts/gate/spec-lint.mjs specs
+node scripts/gate/spec-lint.mjs   # 引数なし = CI と同じ範囲(機能仕様の置き場 specs/F-NNN/)
 ```
+
+### 7. 次の一手を示す
+
+```bash
+node scripts/gate/next.mjs
+```
+
+出力された次の一手を利用者へ示します。「人の判断待ち」が出たら、コマンドを実行せず、待つ席へ受信箱のラベルで渡します。
 
 ## 草案を AI に書かせてよいか
 

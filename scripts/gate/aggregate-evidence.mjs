@@ -1,6 +1,9 @@
 // 出荷判定(G-7)の証跡を集約する。
 //
-//   node scripts/gate/aggregate-evidence.mjs --from v1.3.0 --to v1.4.0 [--previous <前回の evidence.json>]
+//   node scripts/gate/aggregate-evidence.mjs --from v1.3.0 --to v1.4.0 [--previous <前回の evidence.json>] [--repo <owner/name>]
+//
+// PR の記録は gh で引く。リポジトリは --repo、環境変数 GITHUB_REPOSITORY(CI)、git remote の GitHub の URL の順に
+// 決める。決まらなければ、その旨を欠落として出す(手元の集約で全 PR が欠落になる原因を、出力に書く)
 //   node scripts/gate/aggregate-evidence.mjs --period-from 2026-09-01 --period-to 2026-09-30 [--previous <前回の期間の evidence.json>]
 //
 // 出力: evidence/evidence.json(機械可読)、evidence/quality-report.md(人が読む)、
@@ -65,8 +68,10 @@ import {
   signerKey,
   isFilledValue,
   ACTIVE_EXCEPTION_STATES,
+  parseLedger,
   dueDayOf,
   nameProblems,
+  gateExceptionTarget,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
@@ -102,10 +107,13 @@ function git(args) {
   }
 }
 
+/** 最後に失敗した gh の呼び出しの理由(PR の記録を取得できない原因の表示に使う) */
+let lastGhError = null;
 function gh(args) {
   try {
-    return JSON.parse(execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8' }));
-  } catch {
+    return JSON.parse(execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (e) {
+    lastGhError = String(e.stderr || e.message || '').split('\n').find((l) => l.trim()) ?? null;
     return null;
   }
 }
@@ -243,67 +251,9 @@ const licenseScan = exists('evidence/license-scan.json')
 /** 記入があるか。「—」「未定」などの記入でない値と、様式の説明(<…>)を残したままの欄は、未記入である(登録の根拠と同じ関数) */
 const filled = isFilledValue;
 
-// 技術負債台帳の全行。未回収の一覧(項目5)と、例外承認の記録の対応づけに使う。
-// 欄は見出し行の欄名で読む(標準 第6章 テンプレ3)。見出し行に「区分」と「状態」を持たない旧い台帳は、
-// 位置で読む(区分=2列目、内容=3列目、状態=最後の列)。旧い台帳は「対象」と「承認した者」の欄を持たない
-const LEDGER_COLUMNS = {
-  kind: ['区分'],
-  target: ['対象'],
-  content: ['内容'],
-  reason: ['受容した理由', '受容理由'],
-  due: ['返却の目安', '返却目安'],
-  state: ['状態'],
-  approver: ['承認した者'],
-  recorder: ['記録者'],
-};
-function readLedger() {
-  if (!exists(debtFile)) return null;
-  const rows = [];
-  let header = null;
-  for (const line of fs.readFileSync(path.join(ROOT, debtFile), 'utf8').split(/\r?\n/)) {
-    if (!/^\s*\|/.test(line)) continue;
-    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-    if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
-    if (cells.includes('区分') && cells.includes('状態')) {
-      header = cells;
-      continue;
-    }
-    if (!/^\**D-\d+/.test(cells[0] ?? '')) continue;
-    const at = (key) => {
-      if (!header) return null;
-      const i = header.findIndex((h) => LEDGER_COLUMNS[key].includes(h.replace(/\*/g, '')));
-      return i >= 0 ? (cells[i] ?? '') : null;
-    };
-    rows.push(
-      header
-        ? {
-            id: cells[0].replace(/\*/g, ''),
-            kind: String(at('kind') ?? '').replace(/\*/g, ''),
-            target: at('target'),
-            content: at('content') ?? '',
-            reason: at('reason'),
-            due: at('due'),
-            state: at('state') ?? '',
-            approver: at('approver'),
-            recorder: at('recorder'),
-            text: cells.join(' '),
-          }
-        : {
-            id: cells[0].replace(/\*/g, ''),
-            kind: String(cells[1] ?? '').replace(/\*/g, ''),
-            target: null,
-            content: cells[2] ?? '',
-            reason: null,
-            due: null,
-            state: cells[cells.length - 1] ?? '',
-            approver: null,
-            recorder: null,
-            text: cells.join(' '),
-          }
-    );
-  }
-  return rows;
-}
+// 技術負債台帳の全行。未回収の一覧(項目5)と、例外承認の記録の対応づけに使う。読み方は config.mjs の parseLedger
+// (G-5 の PR の検査と共通。標準 第6章 テンプレ3)
+const readLedger = () => (exists(debtFile) ? parseLedger(fs.readFileSync(path.join(ROOT, debtFile), 'utf8')) : null);
 const ledgerRows = readLedger();
 
 // ゲート判定記録の、様式(テンプレ4)に依る欄。対象・判定者・結果・挙動要約・出荷判定者の異議を読む。
@@ -338,7 +288,9 @@ const gateDetails = gateRecordList.map((r) => {
     objection: objection && objection !== templateObjection && !objection.startsWith('<') ? objection : null,
   };
 });
-const passed = (g) => /^通過/.test(g.result ?? '');
+// 結果欄は「通過」「差し戻し」の語だけを完全一致で読む(next.mjs と同じ。注記を足した値は通過に数えない。#286)
+const resultWord = (v) => String(v ?? '').replace(/\*/g, '').trim();
+const passed = (g) => resultWord(g.result) === '通過';
 /**
  * G-6 の判定記録のうち、対象が refers に当たり、結果が通過のもの。確定の形態が「委任」の記録は、事後の抜き取りの
  * 記録であり、事前の承認ではない。独立した人の確認には数えない(第4章 G-6「記録」)
@@ -383,11 +335,42 @@ const trailers = commits.map((c) => ({ ...c, ...(trailerOf.get(c.hash) ?? { coAu
 
 // --- PR とマージコミットの突合(K44) ---------------------------------------------
 
-const repo = process.env.GITHUB_REPOSITORY ?? '';
+// PR の記録を引くリポジトリ(owner/name)。CI は GITHUB_REPOSITORY を渡す。手元では --repo、無ければ git remote
+// (origin、無ければ最初の remote)の GitHub の URL から推定する。特定できなければ、PR の記録を引かず、
+// 原因を欠落として出す(全 PR が「記録を取得できない」になる理由を、出力から読めるようにする。#286)
+function inferRepo() {
+  const fromArg = arg('--repo', null);
+  if (fromArg) return { repo: fromArg, source: '--repo' };
+  if (process.env.GITHUB_REPOSITORY) return { repo: process.env.GITHUB_REPOSITORY, source: 'GITHUB_REPOSITORY' };
+  const remotes = git(['remote']).split('\n').filter(Boolean);
+  for (const name of [...new Set(['origin', ...remotes])].filter((r) => remotes.includes(r))) {
+    const url = git(['remote', 'get-url', name]);
+    const m = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url);
+    if (m) return { repo: `${m[1]}/${m[2]}`, source: `git remote ${name}` };
+  }
+  return { repo: '', source: null, why: remotes.length ? `git remote(${remotes.join(', ')})が GitHub の URL ではない` : 'git remote が無い' };
+}
+const repoInfo = inferRepo();
+const repo = repoInfo.repo;
+if (!repo) {
+  fail(
+    `PR の記録を引くリポジトリを特定できません(GITHUB_REPOSITORY が無く、${repoInfo.why})。--repo <owner/name> を渡して実行し直してください。` +
+      'このまま集約すると、PR の変更をマージコミットと突合できず、PR を経ていないコミットとして数えます'
+  );
+} else if (repoInfo.source !== 'GITHUB_REPOSITORY') {
+  notice(`PR の記録を引くリポジトリ: ${repo}(${repoInfo.source} から)`);
+}
 const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits';
 const prData = new Map();
+// PR の記録を取得できなかった理由(PR の番号ごと)
+const prFetchError = new Map();
 const fetchPr = (n) => {
-  if (!prData.has(n)) prData.set(n, repo ? gh(['pr', 'view', String(n), '--repo', repo, '--json', PR_FIELDS]) : null);
+  if (!prData.has(n)) {
+    lastGhError = null;
+    const d = repo ? gh(['pr', 'view', String(n), '--repo', repo, '--json', PR_FIELDS]) : null;
+    prData.set(n, d);
+    if (!d) prFetchError.set(n, repo ? `gh: ${lastGhError ?? '応答なし'}` : 'リポジトリを特定できないため、PR の記録を引いていない(--repo を渡す)');
+  }
   return prData.get(n);
 };
 for (const n of candidateNumbers) fetchPr(n);
@@ -441,7 +424,7 @@ function claimedPrNote(c) {
   const n = Number(c.subject.match(/\(#(\d+)\)|^Merge pull request #(\d+)/)?.slice(1).find(Boolean) ?? 0) || null;
   if (!n) return null;
   const d = prData.get(n);
-  if (!d) return { number: n, why: `PR #${n} の記録を取得できない。マージコミットと突合できないため、PR を経ていないコミットとして扱う` };
+  if (!d) return { number: n, why: `PR #${n} の記録を取得できない(${prFetchError.get(n) ?? '理由不明'})。マージコミットと突合できないため、PR を経ていないコミットとして扱う` };
   if (!d.mergeCommit?.oid) return { number: n, why: `PR #${n} のマージコミットを取得できない(マージされていない PR を含む)。PR を経ていないコミットとして扱う` };
   return { number: n, why: `件名は PR #${n} を指すが、PR #${n} のマージコミット(${d.mergeCommit.oid.slice(0, 7)})と一致しない。PR を経ていないコミットとして扱う` };
 }
@@ -899,6 +882,8 @@ function exceptionMatch(refers, ins) {
       if (refers(r.text)) rejected.push(`${r.id}: 台帳に「対象」の欄が無い(旧い様式)。「対象」と「承認した者」の欄を足す`);
       continue;
     }
+    // 対象がゲートの判定(`G-2 F-001`)の行は、変更へ対応づけない(下の gateExceptions で照合する)
+    if (gateExceptionTarget(r.target)) continue;
     if (!refers(r.target)) continue;
     const why = [];
     if (!ACTIVE_EXCEPTION_STATES.includes(r.state.replace(/\*/g, '').normalize('NFKC').trim())) {
@@ -929,9 +914,38 @@ function exceptionMatch(refers, ins) {
   return { matched, rejected };
 }
 
+// ゲートの判定を対象とする例外承認(台帳の「対象」が `G-2 F-001` の形。#286)。変更の例外承認と区別して照合する。
+// 有効を示す状態の行だけを見て、7.3 の記録の事項(承認した者・理由・期限)が記入され、承認した者が名簿の人で
+// AI の名義でないことを確かめる。成立しない行は欠落にする(記録として例外承認の成立を示さないため)。
+// どの基準を欠いた判定か、承認した者が成果物の作成者と別の人か、権限を持つ者かは、機械では確かめない
+const gateExceptions = { matched: [], rejected: [] };
+for (const r of ledgerRows ?? []) {
+  if (r.kind !== '例外') continue;
+  const t = gateExceptionTarget(r.target);
+  if (!t) continue;
+  if (!ACTIVE_EXCEPTION_STATES.includes(r.state.replace(/\*/g, '').normalize('NFKC').trim())) continue;
+  const why = [];
+  if (!filled(r.approver)) why.push('承認した者が未記入');
+  else {
+    if (aiNameBlocked(config, r.approver)) why.push('承認した者が AI の名義である');
+    if (!resolveSigner(config, r.approver)) why.push(`承認した者 "${r.approver}" が、人の名簿(people[])の人へ対応づかない`);
+  }
+  if (!filled(r.content) || (r.reason !== null && !filled(r.reason))) why.push('理由(内容・受容した理由)が未記入');
+  if (!filled(r.due) || !dueDayOf(r.due)) why.push(`期限(返却の目安)が未記入、または日付として解釈できない(${r.due || '未記入'})`);
+  const label = `${r.id}(${t.gate} ${t.subject})`;
+  if (why.length) gateExceptions.rejected.push(`${label}: ${why.join('、')}`);
+  else gateExceptions.matched.push(label);
+}
+
 // --- 突合と gaps -----------------------------------------------------------
 
 const gaps = [];
+if (!repo && candidateNumbers.size) {
+  gaps.push(
+    `PR の記録を引くリポジトリを特定できません(${repoInfo.why})。件名に PR の番号を持つコミット ${candidateNumbers.size} 件を、PR を経ていないコミットとして数えています。` +
+      '--repo <owner/name> を渡して集約し直してください'
+  );
+}
 const isActive = (key) => ['required', 'simplified'].includes(config.gates?.[key]?.state);
 // G-6 を適用する体制(作成を指示した者以外の確認者を置ける体制)。未達・成立しない・省略の体制は含まない
 const g6Applied = isActive('g6') && !g6Unmet && !reviewerIsDeveloper;
@@ -939,6 +953,9 @@ const g6Applied = isActive('g6') && !g6Unmet && !reviewerIsDeveloper;
 // 構成の整合(契約検査のうち、構成だけから確かめられる部分)。PR を経ない体制では、契約検査が走らないまま
 // 出荷へ進む場合があるため、集約の時点でも確かめる(要約値の連鎖、回答と名簿の食い違いなど)
 for (const p of configIntegrityProblems(config)) gaps.push(`構成の整合: ${p}`);
+for (const x of gateExceptions.rejected) {
+  gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);
+}
 
 /**
  * 独立した人の確認を経ていない変更の扱い(第4章 G-7 基準5 の表)。
@@ -1099,6 +1116,37 @@ const d0Timeline = (config.changeLog ?? [])
     version: String(e.d0After),
     before: e.d0Before ? String(e.d0Before) : null,
   }));
+/**
+ * 版の不一致が、判定日時と変化点の前後のずれに由来するかを添える(#286)。判定日時を目安で書くと、実際は変化点より
+ * 前の判定が、変化点より後の判定に見える。どの変化点の前か後かと、記録を取り込んだコミットの時刻を示し、
+ * 判定日時の書き誤りか、改訂前の版で判定したのかを人が見分けられるようにする。どちらであるかは判定しない
+ */
+function judgedAtHint(r, judged, order) {
+  const parts = [];
+  // 記録した版を改訂前の版として持つ変化点(この変化点より前の判定なら、記録した版が正しい)
+  const cp = d0Timeline.find((e) => e.before === r.d0Version);
+  if (cp) {
+    const side = order(cp);
+    const when = cp.local ? cp.local.replace('T', ' ') : cp.day;
+    if (side === 'after') {
+      parts.push(`判定日時(${judged})は、版を ${cp.before} から ${cp.version} へ上げた変化点(${when})より前です`);
+    } else {
+      parts.push(
+        `判定日時(${judged})は、版を ${cp.before} から ${cp.version} へ上げた変化点(${when})${side === 'same-day' ? 'と同じ日(前後を決められない)' : 'より後'}です。` +
+          `記録した版 ${r.d0Version} は、その変化点より前の版です`
+      );
+    }
+  }
+  // 判定日時が、記録を取り込んだコミットの時刻より後なら、判定日時は事実と合わない(記録は判定の後に作られる)
+  const added = git(['log', '--diff-filter=A', '--format=%cI', '-1', '--', r.file]).slice(0, 16);
+  const at = judged.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  if (added && at && `${at[1]}T${at[2]}` > added) {
+    parts.push(`判定日時が、この記録を取り込んだコミットの時刻(${added.replace('T', ' ')})より後です。判定日時の書き誤りの可能性があります`);
+  }
+  if (!parts.length) return '';
+  return `。前後関係: ${parts.join('。')}。判定日時が事実と違う場合は、判定者が判定日時の欄を事実の日時へ直し、「訂正」の節に経緯と訂正した者を残す(版・結果は書き換えない)。判定日時が事実なら、改訂後の版を参照して判定し直す`;
+}
+
 const recordsWithoutD0 = [];
 for (const r of gateRecordList) {
   if (!r.d0Version) {
@@ -1130,12 +1178,16 @@ for (const r of gateRecordList) {
   if (day && accepted.size && !accepted.has(r.d0Version)) {
     gaps.push(
       `${r.file}: 参照した D-0 の版(${r.d0Version})が、判定の時点の版(${[...accepted].join(' / ')})と一致しません。` +
-        '体制の変化点の後は、改訂後の D-0 を参照して判定します'
+        '体制の変化点の後は、改訂後の D-0 を参照して判定します' +
+        judgedAtHint(r, judged, order)
     );
   }
 }
+// gate-g5 の成功を持たない PR は欠落である。結果の記録が無い PR(unknown)も含める。ブランチ保護(必須チェック)を
+// 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
 for (const p of prs) {
-  if (p.g5 !== 'success' && p.g5 !== 'unknown') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
+  if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる)`);
+  else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
 }
 
 // G-7 基準5: 変更が仕様(トレーラ Spec: F-NNN)を指す場合、その仕様の機能仕様承認(G-4)の判定記録が要る。
@@ -1203,9 +1255,9 @@ if (period) {
     const judgeProblems = g.judge ? nameProblems(config, g.judge, { requireRoster: true }) : ['記名がない'];
     if (judgeProblems.length) gaps.push(`${g.file}: 期間の G-8 の記録の判定者を受け付けられません(${judgeProblems.join('。')})`);
     const result = String(g.result ?? '').replace(/\*/g, '').trim();
-    if (/^差し戻し/.test(result)) {
+    if (result === '差し戻し') {
       gaps.push(`${g.file}: 期間の G-8 の記録の結果が差し戻しです。期間の開示(${period.from}〜${period.to})は受容されていません`);
-    } else if (!/^通過/.test(result)) {
+    } else if (result !== '通過') {
       gaps.push(`${g.file}: 期間の G-8 の記録の結果が未記入、または判定の値(通過 / 差し戻し)でありません(${result || '未記入'})`);
     }
   }
@@ -1576,6 +1628,8 @@ const residual = {
   // 独立した人の確認を経ていないが、例外承認の記録が対応づいたため欠落として扱わなかった変更(未回収の例外)
   exceptedChanges: exceptedChanges.map((c) => `${c.label}(${c.riskClass ?? '区分未記入'}。${c.records.join(', ')})`),
   openExceptions: debtRows ? debtRows.filter((r) => r.kind === '例外').map((r) => `${r.id} ${r.content}`) : NO_RECORD,
+  // ゲートの判定を対象とする例外承認のうち、記録として成立したもの(変更の例外承認と分けて出す)
+  gateExceptions: gateExceptions.matched,
   openUnresolved: debtRows ? debtRows.filter((r) => r.kind === '未解決').map((r) => `${r.id} ${r.content}`) : NO_RECORD,
   openDebt: debtRows ? count(debtRows, (r) => r.kind === '負債') : NO_RECORD,
   knownDefects: `${NO_RECORD}(不具合の台帳を持たない。追跡は Issue による)`,
@@ -1784,7 +1838,11 @@ const norm = (s) => String(s).toLowerCase().replace(/<[^>]*>/g, '').replace(/[^a
 const declaredModels = declaredPerformers.map((p) => norm(p.model ?? '')).filter(Boolean);
 const undeclared = observedCoAuthors.filter((c) => !declaredModels.some((m) => norm(c).includes(m) || m.includes(norm(c))));
 if (undeclared.length) {
-  drift.push(`担い手の識別: 宣言にない共著者の記録がある(${undeclared.join(' / ')})。人の共著者を含む場合がある`);
+  drift.push(
+    `担い手の識別: 宣言にない共著者の記録がある(${undeclared.join(' / ')})。人の共著者を含む場合がある。` +
+      '直し方: AI の担い手なら、/process-change の種別 performer で、その席の担い手の識別(モデルの名称と版)を宣言する(補助ファイル .claude/skills/process-change/kinds/performer.md)。' +
+      '宣言した版と異なる版がコミットに残っているなら、担い手の識別の変更(変化点)として扱う。人の共著者なら宣言は要らない。どちらかを出荷判定者が確かめる'
+  );
 }
 
 const assurance = {
@@ -2244,6 +2302,7 @@ function renderAssurance(external) {
   const idsOnly = (v) => (Array.isArray(v) ? v.map((x) => String(x).split(' ')[0]) : v);
   R.push(`- 未回収の例外(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);
   R.push(`- 独立した人の確認を経ていないが、例外承認の記録が対応づいた変更(未回収の例外): ${listOr(A.residual.exceptedChanges ?? [])}`);
+  R.push(`- ゲートの判定を対象とする例外承認(未回収): ${listOr(A.residual.gateExceptions ?? [])}`);
   R.push(`- 未解決事項(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openUnresolved) : A.residual.openUnresolved)}`);
   R.push(`- 未返却の負債(技術負債台帳): ${A.residual.openDebt === NO_RECORD ? NO_RECORD : `${A.residual.openDebt} 件`}`);
   R.push(`- 既知の不具合: ${A.residual.knownDefects}`);
