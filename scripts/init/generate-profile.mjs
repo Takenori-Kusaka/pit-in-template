@@ -418,6 +418,10 @@ export function buildSeats(prevSeats = []) {
         performer: p.performer ?? null,
         fallback: p.fallback ?? null,
         qualification: p.qualification ?? null,
+        // 席の責任者本人の、AI を使わずに判断できる力量の確認の記録(第3章 3.4.3 要求事項1。#288 第6巡 R)。
+        // 判断を担う席で読む。{ confirmedAt, confirmedBy, record, person }。責任者が替われば消える(前任の記録を引き継がない)。
+        // 鍵は記録を書いた席にだけ置く(旧い構成の変化点を経ない再生成で構成が変わらないように)
+        ...(p.competence !== undefined ? { competence: p.competence } : {}),
         // 席の責任者が委任を宣言し、規則が AI維持管理者の承認待ちであるあいだ、宣言した意図と決定者を保持する。
         // 承認が入った変化点で、委任を有効にする(再宣言を要求しない)
         ...(p.intent ? { intent: p.intent } : {}),
@@ -556,6 +560,9 @@ export function buildConfig(answers, opts = {}) {
     accounts: p.accounts === undefined ? [] : p.accounts,
     // 名義の機械検査に当たる氏名を、人が確認した旨。真の人だけに持たせる
     ...(p.nameConfirmed === true ? { nameConfirmed: true } : {}),
+    // 所属(任意。チーム・部門)。10名以上の規則(コア機能は別チームがレビューする、出荷判定は QA 部門・専任)を
+    // 出荷の集約が確かめるときに使う(#288 第6巡 Q)。無ければ「判定できない」と出る
+    ...(typeof p.team === 'string' && p.team.trim() ? { team: p.team.trim() } : {}),
     // 組織上の任命権者(体制の外の人。第3章 3.13.3)。前任の決定者が体制から外れたとき、決定者の任命を記名する
     ...(p.appointer !== undefined ? { appointer: p.appointer } : {}),
   }));
@@ -868,6 +875,29 @@ export function separationSummary(config) {
     `逸脱として記録した兼務 ${f.deviated.length} 件 / ` +
     `同一人物のため独立が成立しない組 ${f.notIndependent.length} 件 / 責任者が未記入の席 ${f.blank} 席`
   );
+}
+
+/**
+ * 兼務禁止ではないが、同じ人が占めると規定を構造的に満たせなくなる席の組(#288 第4巡)。拒否せず、注記として出す。
+ * 技術判断者 = AI運用担当者: 評価用の基準集合の範囲は AI運用担当者が起案し、技術判断者が記名で承認する(標準 第3章 3.12.3 の
+ * 要求事項10「基準集合の十分性を一人で判断させない」)。同じ人なら別の自然人の承認を作れず、出荷の証跡の集約は承認に数えない。
+ * 3名以上の体制では、AI運用担当者を品質管理側(出荷判定者と同じ側)の人に置く割り当てで解ける
+ */
+export function seatPairingNotes(config) {
+  const seats = config.seats ?? [];
+  const seatOf = (id) => seats.find((s) => s.role === id);
+  const tech = seatOf('tech-lead');
+  const ops = seatOf('ai-ops');
+  const out = [];
+  if (tech?.accountable && ops?.accountable && personKey(config, tech.accountable) === personKey(config, ops.accountable)) {
+    const who = personName(config, tech.accountable);
+    const small = config.answers?.['q-team-size'] === 'size-1-2';
+    out.push(
+      `${tech.name ?? '技術判断者'}と${ops.name ?? 'AI運用担当者'}の責任者が同じ人(${who})。評価用の基準集合の範囲の承認(AI運用担当者が起案し、技術判断者が記名で承認する。標準 第3章 3.12.3 の要求事項10)を別の自然人で行えないため、出荷の証跡の集約は承認に数えず、退出の予行は「基準集合の範囲の承認なし」と出る。` +
+        (small ? '1〜2名の体制では別の人を置けないため、承認なしの表示を層1 の権限者が期限つきで受容する' : '3名以上の体制では、AI運用担当者を品質管理側(出荷判定者と同じ側)の人に置くと解ける(例: 開発者・技術判断者 A、独立レビュア・事業決裁者 B、出荷判定者・AI運用担当者 C)。/process-change の種別 accountable で席を移す')
+    );
+  }
+  return out;
 }
 /** 変化点の記録1件。記録する内容は標準 第3章 3.13.4 の5点による */
 export function changeLogEntry(e) {
@@ -1251,10 +1281,25 @@ export function diffConfig(before, after) {
       if (s.accountable && p.accountable) {
         remaining.push(`${s.name}: 新任の責任者は暫定任命とする(標準 第3章 3.4.1)`);
       }
+      // 判断を担う席の新任の責任者は、AI を使わずに判断できる力量の確認を任命時に受ける(3.4.3 要求事項1。#288 第6巡 R)。
+      // 確認の記録(確認日・確認した者・所在)が同じ変化点に無ければ、確認を経ない任命として、集約と次の一手に「未確認」と出続ける
+      if (s.accountable && JUDGE_SEAT_IDS.includes(s.role) && !s.competence) {
+        remaining.push(
+          `${s.name}: 新任の責任者(${toName})の、AI を使わずに判断できる力量の確認(標準 第3章 3.4.3 要求事項1。任命時)の記録が無い。` +
+            `確認を経ない任命として、出荷の証跡の集約の項目7 と次の一手に「未確認」と出続ける。確認の後に、種別 accountable で seats.${s.role}.competence({ "confirmedAt", "confirmedBy", "record" })を書く(記名は要らない)`
+        );
+      }
       const owned = (ownedBy[s.role] ?? []).map((k) => GATE_BY_KEY[k]?.label ?? k);
       if (owned.length) {
         candidates.push(`${s.name} が判定者となる ${owned.join(' / ')} の、仕掛かり中の判定(作成を指示した者と確認する者の関係が変わる)`);
       }
+    }
+    // 力量の確認の確認した者が名簿の外(#288 第7巡 T)。拒否しない(外部の研修機関・前任の部門長があり得る)。受け付けた旨と、
+    // 機械で突合できないことを残作業に出す。D-0 節9・出荷の集約の項目7・次の一手に「(名簿の外)」と出る
+    if (s.competence?.confirmedBy && JSON.stringify(p.competence ?? null) !== JSON.stringify(s.competence ?? null) && !resolveSigner(after, s.competence.confirmedBy)) {
+      remaining.push(
+        `${s.name}: 力量の確認の確認した者 ${s.competence.confirmedBy} は人の名簿の外(受け付けた)。名簿の外の名前は機械で突合できない。確認の記録 ${s.competence.record ?? '所在なし'} に所属・役職を書く。D-0 節9・出荷の証跡の集約の項目7・次の一手に「(名簿の外)」と出る。内部監査の観点6(名簿の実在)で突合する`
+      );
     }
     if (p.mode !== s.mode) {
       modeChanged = true;
@@ -1309,6 +1354,11 @@ export function diffConfig(before, after) {
     }
     if ((p.fallback ?? null) !== (s.fallback ?? null)) {
       diff.push(`${s.name}: AI が使えないときの扱い ${p.fallback ?? '未記入'} → ${s.fallback ?? '未記入'}`);
+    }
+    // 席の責任者本人の力量の確認の記録(3.4.3 要求事項1)。記録だけが変わる変化点も構成の変更として記録する
+    if (JSON.stringify(p.competence ?? null) !== JSON.stringify(s.competence ?? null)) {
+      const show = (c, cfg) => (c ? `${c.confirmedAt} 実施(確認した者 ${c.confirmedBy}${c.confirmedBy && !resolveSigner(cfg, c.confirmedBy) ? '(名簿の外)' : ''}。記録 ${c.record ?? '所在なし'})` : 'なし');
+      diff.push(`${s.name}: 席の責任者本人の力量の確認の記録 ${show(p.competence, before)} → ${show(s.competence, after)}`);
     }
     if (s.performer && qualificationProblems(s).length) {
       remaining.push(`${s.name}: 適合性確認(標準 第3章 3.4.2。実施は AI維持管理者、承認は席の責任者)。確認まで協働を上限とする`);
@@ -1468,6 +1518,34 @@ export function diffConfig(before, after) {
       const b = num(before.task?.[k]);
       const a = num(after.task?.[k]);
       if (b !== null && a !== null && b !== a) push(`${label}: ${b} → ${a}`, -b, -a, M);
+    }
+    // 区分の下限の規則(第3章 3.8.1 の要求事項5)。下限を下げる変更・規則を削る変更・対象のパスを狭める変更は
+    // 緩める向きとして、D-0 表1「体制と運用形態」の決定者の記名と理由を要する(seat は null)
+    {
+      const rank = { R2: 1, R1: 2 };
+      const rulesOf = (c) => new Map((c.riskFloor?.rules ?? []).map((r) => [r.id, r]));
+      const b = rulesOf(before);
+      const a = rulesOf(after);
+      for (const [id, r] of b) {
+        const n = a.get(id);
+        if (!n) push(`区分の下限の規則 ${id}: 削除(下限 ${r.floor})`, 1, 0, null);
+        else {
+          if ((rank[n.floor] ?? 0) < (rank[r.floor] ?? 0)) push(`区分の下限の規則 ${id}: 下限 ${r.floor} → ${n.floor}`, 1, 0, null);
+          else if ((rank[n.floor] ?? 0) > (rank[r.floor] ?? 0)) push(`区分の下限の規則 ${id}: 下限 ${r.floor} → ${n.floor}`, 0, 1, null);
+          const removed = (r.paths ?? []).filter((g) => !(n.paths ?? []).includes(g));
+          const added = (n.paths ?? []).filter((g) => !(r.paths ?? []).includes(g));
+          if (removed.length) push(`区分の下限の規則 ${id}: 対象のパスを外す(${removed.join(', ')})`, 1, 0, null);
+          if (added.length) push(`区分の下限の規則 ${id}: 対象のパスを足す(${added.join(', ')})`, 0, 1, null);
+          const kb = JSON.stringify(r.kinds ?? null);
+          const ka = JSON.stringify(n.kinds ?? null);
+          if (kb !== ka) push(`区分の下限の規則 ${id}: 変更の種類 ${kb} → ${ka}`, n.kinds && (!r.kinds || r.kinds.some((k) => !n.kinds.includes(k))) ? 1 : 0, 0, null);
+        }
+      }
+      for (const [id, r] of a) if (!b.has(id)) push(`区分の下限の規則 ${id}: 追加(下限 ${r.floor}。${(r.paths ?? []).join(', ')})`, 0, 1, null);
+      if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
+        diff.push(`依存先の欄(通知の期間・データ): ${(before.dependencies ?? []).length} 件 → ${(after.dependencies ?? []).length} 件`);
+        remaining.push('依存先の欄は、提供者との契約・規約で確かめた通知の期間と、渡すデータの種別と保持の条件を書く(第3章 3.12.11)。空欄の欄は単一障害点の候補として出る');
+      }
     }
     const guardOn = (c) => c.guard?.enabled !== false;
     const bg = before.guard ?? null;
@@ -1830,7 +1908,14 @@ export function noticeText(config, i) {
 
 export const D0_FILE = 'docs/D-0-governance.md';
 export const D0_SECTIONS = ['seats', 'performers', 'history'];
+/**
+ * 目印が無くても失敗にしない生成区間(#288 第6巡 R)。節9 の「席の責任者本人の力量の確認」の表。第6巡より前の様式で作った
+ * D-0 には目印が無い。check-d0 は注意を出し、templates/00-d0-governance.md から目印を写すよう案内する(旧い D-0 を失敗させない)
+ */
+export const D0_OPTIONAL_SECTIONS = ['competence'];
 export const d0Marks = (key) => [`<!-- generated:d0-${key} start -->`, `<!-- generated:d0-${key} end -->`];
+/** 判断を担う席(第3章 3.4.3)。席の責任者本人の力量の確認を読む席 */
+export const JUDGE_SEAT_IDS = ['value-owner', 'tech-lead', 'independent-reviewer', 'qa-gatekeeper'];
 
 /** D-0 節1 の備考(席の役割)。様式の記述と同じ */
 const D0_SEAT_NOTE = {
@@ -1866,15 +1951,30 @@ export function renderD0Section(key, config) {
     L.push('');
     L.push('人の名簿(`people[]`):');
     L.push('');
-    L.push('| id | 氏名 | 区分 | リポジトリ上のアカウント |');
-    L.push('| --- | --- | --- | --- |');
     const roster = config.people ?? [];
+    // 所属(team)の欄は、名簿の誰かに記入があるときだけ列を出す(旧い D-0 の生成区間を変えない。#288 第6巡 Q)
+    const withTeam = roster.some((p) => typeof p.team === 'string' && p.team.trim());
+    L.push(`| id | 氏名 | 区分 | リポジトリ上のアカウント |${withTeam ? ' 所属 |' : ''}`);
+    L.push(`| --- | --- | --- | --- |${withTeam ? ' --- |' : ''}`);
     for (const p of roster) {
       const accounts = (Array.isArray(p.accounts) ? p.accounts : []).join(', ') || '**未記入**';
       const kind = p.appointer === true ? '組織上の任命権者(体制の外。第3章 3.13.3)' : p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内';
-      L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kind} | ${cell(accounts)} |`);
+      L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kind} | ${cell(accounts)} |${withTeam ? ` ${cell(p.team ?? '—')} |` : ''}`);
     }
-    if (!roster.length) L.push('| | | | |');
+    if (!roster.length) L.push(`| | | | |${withTeam ? ' |' : ''}`);
+  } else if (key === 'competence') {
+    // 席の責任者本人の、AI を使わずに判断できる力量の確認(第3章 3.4.3 要求事項1。#288 第6巡 R)。記録は構成の seats[].competence。
+    // 次回の期限は層1 の周期から出荷の集約と next.mjs が導く(ここでは記録の値だけを出す。層1 を読まない)
+    L.push('| 役割 | 責任者 | 確認日 | 確認した者(本人以外) | 確認の記録の所在 |');
+    L.push('| --- | --- | --- | --- | --- |');
+    for (const s of seats.filter((x) => JUDGE_SEAT_IDS.includes(x.role))) {
+      const who = blank ? '' : s.accountable ? personName(config, s.accountable) : '**未記入**';
+      const c = s.competence && typeof s.competence === 'object' ? s.competence : null;
+      const own = c && (!c.person || !s.accountable || personKey(config, c.person) === personKey(config, s.accountable));
+      // 確認した者が名簿の外なら注記を添える(#288 第7巡 T。受け付ける。内部監査の観点6 で突合する)
+      const by = own ? `${c.confirmedBy ?? ''}${c.confirmedBy && !resolveSigner(config, c.confirmedBy) ? '(名簿の外)' : ''}` : null;
+      L.push(`| ${s.name} | ${cell(who)} | ${blank ? '' : own ? cell(c.confirmedAt) : '**未確認**(確認を経ない任命)'} | ${blank ? '' : own ? cell(by) : '—'} | ${blank ? '' : own ? cell(c.record ?? '所在なし') : '—'} |`);
+    }
   } else if (key === 'performers') {
     const FALLBACK = { human: '人へ戻す', stop: '止める' };
     const d = config.delegation ?? { allowed: false, blockedBy: [], rules: [] };
@@ -1991,12 +2091,13 @@ export function renderD0Section(key, config) {
 export function applyD0Sections(text, config) {
   const missing = [];
   let out = text;
-  for (const key of D0_SECTIONS) {
+  for (const key of [...D0_SECTIONS, ...D0_OPTIONAL_SECTIONS]) {
     const [begin, end] = d0Marks(key);
     const b = out.indexOf(begin);
     const e = out.indexOf(end);
     if (b < 0 || e < 0 || e < b) {
-      missing.push(key);
+      // 目印の無い任意の区間は黙って飛ばす(旧い様式。check-d0 が注意を出す)
+      if (!D0_OPTIONAL_SECTIONS.includes(key)) missing.push(key);
       continue;
     }
     out = out.slice(0, b) + begin + '\n\n' + renderD0Section(key, config) + '\n\n' + out.slice(e);
@@ -2039,6 +2140,29 @@ export function d0SectionProblems(text, config) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
           '体制を変えるときは /process-change、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * 任意の生成区間(節9 の席の責任者本人の力量の確認の表)の問題。目印が無ければ { missing: [key] }(注意にとどめる)、
+ * 目印があって構成と一致しなければ problems に出す(#288 第6巡 R)
+ */
+export function d0OptionalSectionProblems(text, config) {
+  // 「(名簿の外)」の注記は第7巡で足した表示であり、注記の無い旧い区間を失敗させない(比較のときだけ除く)
+  const norm = (s) => s.replace(/\r\n/g, '\n').replace(/\(名簿の外\)/g, '').trim();
+  const out = { missing: [], problems: [] };
+  for (const key of D0_OPTIONAL_SECTIONS) {
+    const [begin, end] = d0Marks(key);
+    const b = text.indexOf(begin);
+    const e = text.indexOf(end);
+    if (b < 0 || e < 0 || e < b) out.missing.push(key);
+    else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config))) {
+      out.problems.push(
+        `D-0 の節9「席の責任者本人の力量の確認」の生成区間が、構成(process.config.json の seats[].competence)と一致しません。この区間は手で編集しません。` +
+          '確認の記録は /process-change(種別 accountable の seats.<席>.competence)で構成へ書き、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
       );
     }
   }
@@ -2590,17 +2714,24 @@ export const RULES_BEGIN = '<!-- generated:process-rules start -->';
 export const RULES_END = '<!-- generated:process-rules end -->';
 
 /**
+ * 停止の申し立て(標準 第7章 7.11)のラベル。誰でも付けられる(どのロールの引き渡しのラベルにも含める)。付けた PR は、
+ * 解除の記録が基底ブランチに入るまで G-5(pr-rules)が失敗する。値は org-assurance.mjs の STOP_LABEL と同じ
+ */
+export const STOP_REQUEST_LABEL = 'state:stop-requested';
+
+/**
  * ロールと Label Mailbox の対応(第5章 4.3 / 4.3.1)。
  * ラベルは状態であり、常に「次に動く人」を指す。
  */
 export const MAILBOX = {
-  'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner'] },
-  'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner'] },
-  'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform'] },
-  'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
-  'qa-gatekeeper': { inbox: ['state:dev-done', 'state:ready-to-merge'], hands: ['state:qm-blocked', 'state:ready-to-merge'] },
-  'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done'] },
-  'biz-approver': { inbox: ['state:needs-owner'], hands: ['state:needs-po', 'state:needs-dev'] },
+  'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner', STOP_REQUEST_LABEL] },
+  'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner', STOP_REQUEST_LABEL] },
+  'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform', STOP_REQUEST_LABEL] },
+  'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge', STOP_REQUEST_LABEL] },
+  'qa-gatekeeper': { inbox: ['state:dev-done', 'state:ready-to-merge'], hands: ['state:qm-blocked', 'state:ready-to-merge', STOP_REQUEST_LABEL] },
+  'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done', STOP_REQUEST_LABEL] },
+  // 停止の申し立ての解除は、層1 の項目4 の権限者が行う。層1 が無い組織の既定は事業決裁者(第7章 7.11)
+  'biz-approver': { inbox: ['state:needs-owner', STOP_REQUEST_LABEL], hands: ['state:needs-po', 'state:needs-dev', STOP_REQUEST_LABEL] },
 };
 
 /**
@@ -2665,6 +2796,30 @@ export function renderProcessRules(config) {
     .map(([label, names]) => `${label}: ${names.join('・')}`)
     .join(' / ');
   L.push(`- 運用形態(上限の宣言): ${modeLine || '—'}`);
+  // 独立レビュー(G-6)の承認者の数と記録の書式(第8章 軸C・軸E)。2名の体制で1名の承認を「確認あり」と読まれないよう常駐させる(#288 第5巡)
+  if (isActiveState(config.gates?.g6?.state)) {
+    const n = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+    const audit = config.review?.recordFormat === 'audit';
+    const safety = config.gates?.g6?.params?.independentSafetyAssessment === true;
+    L.push(
+      `- **独立レビュー(G-6)の承認者: ${n} 名**(名簿の別人。各自が自分の挙動要約を書く${n >= 2 ? '。1名の承認でマージした変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える' : ''})` +
+        (audit ? '。**判定記録は監査対応書式**(変更ごとに G-6 の判定記録を残し、「監査対応書式」の表を埋める。PR の承認だけでは記録にならない)' : '') +
+        (safety ? '。**独立した安全性の評価者**(実装の責任者から組織的に独立。附属書F)の記名を判定記録に要する' : '')
+    );
+  }
+  // 10名以上の規則(第8章 軸A。#288 第6巡 Q)。構成の値(review.mode・approverMode)が何を要し、機械が何を確かめるかを常駐させる
+  if (config.answers?.['q-team-size'] === 'size-10plus') {
+    const core = config.review?.mode === 'internal-plus-core-external';
+    const qa = config.gates?.g7?.params?.approverMode === 'dedicated-qa';
+    const paths = Array.isArray(config.delegation?.protectedPaths) ? (config.delegation.protectedPaths.length ? config.delegation.protectedPaths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言**';
+    const teams = (config.people ?? []).some((p) => typeof p.team === 'string' && p.team.trim());
+    L.push(
+      `- **10名以上の規則**(第8章 軸A): ` +
+        (core ? `コア機能(確約範囲・コア指定のパス: ${paths})の独立レビューに、作成を指示した者と別の所属(名簿の \`team\`${teams ? '' : '。**未記入**'})の人を含める(構成 review.mode)。` : '') +
+        (qa ? `出荷判定は QA 部門・専任者(構成 gates.g7.params.approverMode: dedicated-qa。出荷判定者の所属は名簿の \`team\` で示す)。` : '') +
+        '機能責任者への仕様承認の委譲は機械で確かめない(G-4 の判定者は価値責任者の席のまま。実装の台帳に「降りていない」と開示)。出荷の証跡の集約が項目1 に、所属の有無と判定の結果を出す'
+    );
+  }
   const rules = config.delegation?.allowed ? (config.delegation.rules ?? []) : [];
   const delegated = seats.filter((s) => s.mode === 'delegated');
   if (delegated.length && rules.length) {
@@ -2905,6 +3060,8 @@ if (isMain) {
   const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   /** 適合性確認の承認し直し。approvedBy だけを書いた入力(確認の記録は、既存のものを使う) */
   const isReapproval = (q) => isObject(q) && Boolean(q.approvedBy) && Object.keys(q).every((k) => k === 'approvedBy');
+  // 附属書H H.4 の条件2〜5 の確認の記録だけを足す入力(既存の適合性確認の記録へ conditions を書く)
+  const isConditionsOnly = (q) => isObject(q) && isObject(q.conditions) && Object.keys(q).every((k) => k === 'conditions');
 
   // 設定済みの構成。体制の変化点は、この構成との差分として反映する
   let existing = null;
@@ -2982,8 +3139,27 @@ if (isMain) {
         bad.push(`seats.${role} はオブジェクトで書きます`);
         continue;
       }
-      const unknown = Object.keys(v).filter((k) => !['accountable', 'mode', 'performer', 'fallback', 'qualification'].includes(k));
-      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは accountable / mode / performer / fallback / qualification です`);
+      const unknown = Object.keys(v).filter((k) => !['accountable', 'mode', 'performer', 'fallback', 'qualification', 'competence'].includes(k));
+      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは accountable / mode / performer / fallback / qualification / competence です`);
+      // 席の責任者本人の力量の確認の記録(3.4.3 要求事項1。#288 第6巡 R)。null は記録を消す(確認を経ない任命へ戻す)
+      if (v.competence !== undefined && v.competence !== null) {
+        const c = v.competence;
+        const holder = v.accountable ?? knownSeats.find((s) => s.role === role)?.accountable ?? null;
+        if (!isObject(c)) bad.push(`seats.${role}.competence は { "confirmedAt": "YYYY-MM-DD", "confirmedBy": "<本人以外の確認した者>", "record": "<確認の記録の所在>" } で書きます(標準 第3章 3.4.3 要求事項1・2)`);
+        else {
+          const unknownC = Object.keys(c).filter((k) => !['confirmedAt', 'confirmedBy', 'record'].includes(k));
+          if (unknownC.length) bad.push(`seats.${role}.competence に書けない欄があります(${unknownC.join(', ')})。書けるのは confirmedAt / confirmedBy / record です(person はスクリプトが書きます)`);
+          if (!isDay(c.confirmedAt)) bad.push(`seats.${role}.competence.confirmedAt は、暦に実在する日付を YYYY-MM-DD で書きます`);
+          else if (c.confirmedAt > (change.date ?? today)) bad.push(`seats.${role}.competence.confirmedAt "${c.confirmedAt}" は、変化点の発効日(${change.date ?? today})より後です。済んでいない確認は記録できません`);
+          if (!(typeof c.confirmedBy === 'string' && c.confirmedBy.trim())) bad.push(`seats.${role}.competence.confirmedBy(確認した者)を書きます。自己申告は認めません(3.4.3 要求事項2)`);
+          else {
+            const ctxC = { people: change.people ?? prior.people ?? [], seats: knownSeats };
+            if (aiNameReason(c.confirmedBy)) bad.push(`seats.${role}.competence.confirmedBy "${c.confirmedBy}" は AI の名義です。確認した者は自然人に限ります`);
+            if (holder && personKey(ctxC, c.confirmedBy) === personKey(ctxC, holder)) bad.push(`seats.${role}.competence.confirmedBy "${c.confirmedBy}" は席の責任者本人です。本人以外の者が確認します(3.4.3 要求事項2)`);
+          }
+          if (!(typeof c.record === 'string' && c.record.trim())) bad.push(`seats.${role}.competence.record(確認の記録の所在。AI を使っていない期間の成果物、または判定者の面前の演習の記録)を書きます`);
+        }
+      }
       if (v.mode !== undefined && !SEAT_MODES.includes(v.mode)) bad.push(`seats.${role}.mode "${v.mode}" は不正です。${SEAT_MODES.join(' / ')} のいずれかにしてください`);
       if (v.fallback != null && !['human', 'stop'].includes(v.fallback)) bad.push(`seats.${role}.fallback "${v.fallback}" は不正です。human(人へ戻す) / stop(止める) のいずれかにしてください`);
       if (v.accountable != null && typeof v.accountable !== 'string') bad.push(`seats.${role}.accountable は、人の名簿の氏名または id を文字列で書きます`);
@@ -2991,7 +3167,15 @@ if (isMain) {
       if (v.qualification != null) {
         if (!isObject(v.qualification)) bad.push(`seats.${role}.qualification はオブジェクトで書きます`);
         else {
-          if (!isReapproval(v.qualification) && !isDay(v.qualification.confirmedAt)) {
+          const c = v.qualification.conditions;
+          if (c !== undefined) {
+            if (!isObject(c) || !isDay(c.checkedAt) || !c.checkedBy || !c.approvedBy) {
+              bad.push(`seats.${role}.qualification.conditions は { "checkedAt": "YYYY-MM-DD", "checkedBy": "<AI維持管理者の席の責任者>", "approvedBy": "<当該の席の責任者>" } で書きます(附属書H H.4 の条件2〜5 の確認)`);
+            } else if (c.checkedAt > (change.date ?? today)) bad.push(`seats.${role}.qualification.conditions.checkedAt "${c.checkedAt}" は、変化点の発効日より後です`);
+          }
+          if (isConditionsOnly(v.qualification)) {
+            // 確認の記録の全体は書き換えない
+          } else if (!isReapproval(v.qualification) && !isDay(v.qualification.confirmedAt)) {
             bad.push(`seats.${role}.qualification.confirmedAt(実施日)は、暦に実在する日付を YYYY-MM-DD で書きます(承認し直すだけなら、approvedBy だけを書きます)`);
           } else if (!isReapproval(v.qualification) && v.qualification.confirmedAt > (change.date ?? today)) {
             bad.push(`seats.${role}.qualification.confirmedAt "${v.qualification.confirmedAt}" は、変化点の発効日(${change.date ?? today})より後です。済んでいない確認は記録できません`);
@@ -3168,11 +3352,40 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'dependencies'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
     const strList = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string' && x.trim());
+    // 区分の下限の規則(標準 第3章 3.8.1「区分の下限と確定者」)。{ rules: [{ id, paths: [glob], floor: 'R1' | 'R2', kinds?, why }] }
+    if (S.riskFloor !== undefined && S.riskFloor !== null) {
+      if (!isObject(S.riskFloor) || !Array.isArray(S.riskFloor.rules)) bad.push('settings.riskFloor は { "rules": [{ "id": "<ID>", "paths": ["<glob>"], "floor": "R1" | "R2", "why": "<理由>" }] } で書きます。設定を消すときは null です');
+      else {
+        const ids = new Set();
+        for (const [i, r] of S.riskFloor.rules.entries()) {
+          if (!isObject(r) || typeof r.id !== 'string' || !r.id.trim()) bad.push(`settings.riskFloor.rules[${i}].id を書きます`);
+          else if (ids.has(r.id)) bad.push(`settings.riskFloor.rules の id "${r.id}" が重複しています`);
+          else ids.add(r.id);
+          if (!['R1', 'R2'].includes(r?.floor)) bad.push(`settings.riskFloor.rules[${i}].floor は "R1" か "R2" です(規則に当たらない変更の下限は R3)`);
+          if (!strList(r?.paths)) bad.push(`settings.riskFloor.rules[${i}].paths はパスの glob の配列で書きます`);
+          if (r?.kinds !== undefined && !(Array.isArray(r.kinds) && r.kinds.every((k) => ['add', 'modify', 'delete', 'rename'].includes(k)))) {
+            bad.push(`settings.riskFloor.rules[${i}].kinds は "add" / "modify" / "delete" / "rename" の配列で書きます`);
+          }
+          if (typeof r?.why !== 'string' || !r.why.trim()) bad.push(`settings.riskFloor.rules[${i}].why(この下限を置く理由)を書きます`);
+        }
+      }
+    }
+    // 依存先の欄(標準 第3章 3.12.11 の要求事項2)。[{ provider, models?: [], noticePeriod, data }]
+    if (S.dependencies !== undefined && S.dependencies !== null) {
+      if (!Array.isArray(S.dependencies)) bad.push('settings.dependencies は [{ "provider": "<提供者>", "models": ["<モデル>"], "noticePeriod": "<通知の期間と確かめた契約の条項>", "data": "<渡すデータの種別と保持の条件>" }] で書きます');
+      else {
+        for (const [i, d] of S.dependencies.entries()) {
+          if (!isObject(d) || typeof d.provider !== 'string' || !d.provider.trim()) bad.push(`settings.dependencies[${i}].provider を書きます`);
+          if (d?.models !== undefined && !strList(d.models)) bad.push(`settings.dependencies[${i}].models は文字列の配列で書きます`);
+          for (const k of ['noticePeriod', 'data']) if (d?.[k] !== undefined && typeof d[k] !== 'string') bad.push(`settings.dependencies[${i}].${k} は文字列で書きます(空欄の欄は単一障害点の候補として出る)`);
+        }
+      }
+    }
     if (S.ci !== undefined && !isObject(S.ci)) bad.push('settings.ci はオブジェクトで書きます');
     if (S.ci?.coverageThreshold !== undefined && !(typeof S.ci.coverageThreshold === 'number' && S.ci.coverageThreshold >= 0 && S.ci.coverageThreshold <= 100)) {
       bad.push('settings.ci.coverageThreshold は 0〜100 の数値で書きます');
@@ -3293,12 +3506,25 @@ if (isMain) {
       const iq = input.qualification;
       const performerChanged = Boolean(p?.performer) && performerKey(p.performer) !== performerKey(s.performer);
 
+      // 席の責任者本人の力量の確認の記録(3.4.3 要求事項1。#288 第6巡 R)。記録は人に属する。責任者が替わり、新しい記録が
+      // 同じ変化点に無ければ、前任の記録を引き継がない(確認を経ない任命)。記録を書くときは、誰の記録かを person に残す
+      const holderChanged = personKey(ctxNow, p?.accountable ?? null) !== personKey(ctxNow, s.accountable ?? null);
+      if (input.competence !== undefined) {
+        s.competence = input.competence === null || !s.accountable ? null : { ...input.competence, person: personName(ctxNow, s.accountable) };
+      } else if (s.competence && (holderChanged || !s.accountable)) {
+        s.competence = null;
+      }
+
       // 承認し直し。approvedBy だけを書いた入力は、既存の確認の記録へ、新しい承認者を書く。確認の再実施は要しない
       if (isReapproval(iq)) {
         if (!p?.qualification) reject(`${s.name}: 承認し直す適合性確認の記録がありません。確認の記録の全体を seats.${s.role}.qualification へ書いてください`);
         const { lapsed, ...record } = p.qualification;
         s.qualification = { ...record, approvedBy: iq.approvedBy, approvedAt: day };
         reapproved.push(s.role);
+      }
+      if (isConditionsOnly(iq)) {
+        if (!p?.qualification) reject(`${s.name}: 条件2〜5 の確認を足す適合性確認の記録がありません。確認の記録の全体を seats.${s.role}.qualification へ書いてください`);
+        s.qualification = { ...p.qualification, conditions: { ...iq.conditions } };
       }
       const q = s.qualification;
       if (q && !q.lapsed && !('qualification' in input) && q.approvedBy && personKey(ctxNow, q.approvedBy) !== personKey(ctxNow, s.accountable)) {
@@ -3330,7 +3556,7 @@ if (isMain) {
       //   4. 当該の席の責任者が、新しい識別で委任を続ける決定として記名し、理由を書く
       // 1つでも欠ければ、協働へ下げる。新しい版を採用する前に確認を済ませておく運用は妨げない
       let requalified = false;
-      if (isObject(iq) && !isReapproval(iq)) {
+      if (isObject(iq) && !isReapproval(iq) && !isConditionsOnly(iq)) {
         const why = [];
         if (performerKey(iq.performer) !== performerKey(s.performer)) why.push('記録の担い手の欄(performer)が、新しい識別と一致しない');
         if (p.qualification?.confirmedAt && !(String(iq.confirmedAt) > String(p.qualification.confirmedAt))) {
@@ -3424,6 +3650,12 @@ if (isMain) {
   }
 
   const { config, result, clamps } = built;
+  // 区分の下限の規則と依存先の欄(種別 settings で書く)。再生成で失わない。null は設定を消す
+  for (const key of ['riskFloor', 'dependencies']) {
+    const now = S[key] !== undefined ? S[key] : prior?.[key];
+    if (now != null) config[key] = now;
+    else delete config[key];
+  }
   // 構成へ記録を足したか。足した場合に限り、最後の記録へ要約値を書く
   let appended = !prior;
 
@@ -3689,6 +3921,7 @@ if (isMain) {
     for (const v of sep.violations) console.log(`- 抵触: ${v}`);
     for (const v of sep.deviated) console.log(`- 逸脱として記録(1〜2名の体制): ${v.pair}`);
     for (const v of sep.notIndependent) console.log(`- 独立が成立しない: ${v}`);
+    for (const n of seatPairingNotes(config)) console.log(`- 注記(兼務禁止ではないが、規定を構造的に満たせない組): ${n}`);
     console.log('');
 
     const refused = [];
@@ -4078,16 +4311,40 @@ if (isMain) {
       // 版を上げるのは変化点だけである。変化点を経ない再生成では、体制図の版に触れない
       const bump = Boolean(change) && config.d0Version != null && String(config.d0Version) !== String(d0InFile);
       if (bump) {
-        text = text.replace(/^(---\r?\n[\s\S]*?^version:[ \t]*)(.*)$/m, `$1${config.d0Version}`);
-        // 承認者と承認日は、この版を定めた変化点の決定者と日付から生成する。決定を要しない変化点
-        // (厳しくする向き、発生)では、その旨を承認者の欄に書く。初版の承認者を残さない
+        text = text.replace(/^(---\r?\n[\s\S]*?^version:)[ \t]*(.*)$/m, `$1 ${config.d0Version}`);
+        // 承認者(approver)は D-0 の承認権限者、すなわち表1「体制と運用形態」の決定者の席の責任者(既定は事業決裁者)に固定する。
+        // 変化点のたびに決定者の氏名で上書きしない(開発者の席の責任者が決めた担い手の変更で「体制図の承認者=開発者」になる。
+        // #288 第5巡 J)。変化点の決定者は節13 の列と、frontmatter の last_change_decided_by に書く。決定を要しない変化点
+        // (厳しくする向き、発生)では、その旨を last_change_decided_by に書く。承認日は、この版を定めた変化点の日付
         const last = config.changeLog.at(-1);
-        const approver = last.decidedBy
+        const deciderSeat = (config.seats ?? []).find((s) => s.role === structureDeciderSeat(config));
+        const approver = deciderSeat?.accountable
+          ? personName(config, deciderSeat.accountable)
+          : '(表1「体制と運用形態」の決定者の席の責任者が未記入。記入後の変化点で入る)';
+        const decidedBy = last.decidedBy
           ? personName(config, last.decidedBy)
           : `決定を要しない変化点(${DIRECTION_LABEL[last.direction] ?? '—'}。${KIND_NOTE[last.kind] ?? `変化点${last.changePoint ?? ''}`})`;
+        // 「key:」の直後に必ず空白を1つ置く(空白の無い `approver:氏名` は YAML の鍵と値にならない)
         text = text
-          .replace(/^(---\r?\n[\s\S]*?^approver:[ \t]*)(.*)$/m, `$1${approver}`)
-          .replace(/^(---\r?\n[\s\S]*?^approved_at:[ \t]*)(.*)$/m, `$1${String(last.date).slice(0, 10)}`);
+          .replace(/^(---\r?\n[\s\S]*?^approver:)[ \t]*(.*)$/m, `$1 ${approver}`)
+          .replace(/^(---\r?\n[\s\S]*?^approved_at:)[ \t]*(.*)$/m, `$1 ${String(last.date).slice(0, 10)}`);
+        if (/^last_change_decided_by:/m.test(text.split(/^---\s*$/m)[1] ?? '')) {
+          text = text.replace(/^(---\r?\n[\s\S]*?^last_change_decided_by:)[ \t]*(.*)$/m, `$1 ${decidedBy}`);
+        } else {
+          // 旧い様式(行が無い)には、approved_at の次の行として足す
+          text = text.replace(/^(---\r?\n[\s\S]*?^approved_at:[^\n]*\n)/m, `$1last_change_decided_by: ${decidedBy}\n`);
+        }
+      }
+      // 案件 ID(frontmatter の project_id)は構成の projectId から埋める(#288 第6巡 P)。様式の初期値(P-001)と空欄だけを書き換える。
+      // 人が別の値を書いていれば上書きせず警告する(構成と D-0 の案件 ID がずれたままの状態は check-d0 が注意を出す)
+      {
+        const m = text.match(/^(---\r?\n[\s\S]*?^project_id:)[ \t]*(.*)$/m);
+        const current = m ? m[2].trim().replace(/^["']|["']$/g, '') : null;
+        if (m && config.projectId && (!current || current === 'P-001' || current === config.projectId)) {
+          text = text.replace(/^(---\r?\n[\s\S]*?^project_id:)[ \t]*(.*)$/m, `$1 ${config.projectId}`);
+        } else if (m && config.projectId && current !== config.projectId) {
+          console.warn(`[警告] ${D0_FILE} の project_id(${current})が、構成の案件 ID(${config.projectId})と異なります。上書きしません。どちらかを直してください(構成は種別 settings の projectId)`);
+        }
       }
       const applied = applyD0Sections(text, config);
       fs.writeFileSync(d0Path, applied.text, 'utf8');

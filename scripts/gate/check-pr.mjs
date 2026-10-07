@@ -7,7 +7,7 @@
 // PR_NUMBER / PR_TITLE / PR_BODY / PR_AUTHOR から読む。題名と本文をシェルへ展開しないため、ワークフローは
 // 環境変数で渡す。
 //
-// 検査は5つ。1〜3 と 5 は失敗させる。4 は失敗させない。
+// 検査は6つ。1〜3・5・6 は失敗させる。4 は失敗させない。
 //   1. トレーラ Spec: スカッシュのメッセージになる PR の本文の末尾の段落に `Spec: F-NNN / Task-N` があり、
 //      指す仕様(specs/F-NNN/spec.md)と実装計画のタスクが実在すること。製品のコードを変えない PR と、
 //      依存の更新の bot の PR は対象外(出力に出す)
@@ -24,7 +24,23 @@
 //   5. リスク区分: PR の本文の「リスク区分」の節に R1 / R2 / R3 のいずれか1つだけが残っていること。変更の種類に
 //      依らない(文書・記録だけの PR、Spec: setup の PR、依存の更新の bot の PR を含む)。区分は変更ごとに確定する
 //      記録であり(標準 第3章 3.8.1)、出荷判定の証跡の集約が同じ読み方(delegation.mjs の riskClassOf)で欠落にする
-//      判定を、マージの前へ移す。区分の妥当性と、確定した者の記名は見ない
+//      判定を、マージの前へ移す。区分の妥当性は見ない(下限と確定者は 7 で見る)
+//   7. 区分の下限と確定者(標準 第3章 3.8.1「区分の下限と確定者」): 基底ブランチの構成の riskFloor.rules(パスと
+//      変更の種類から R1・R2 の下限を導く規則)に当たる変更で、記載された区分が下限より低ければ失敗させる。
+//      riskFloor を変える PR の下限は R2 とし、riskFloor と製品のコードを同じ PR で変えたら失敗させる。
+//      R1・R2 の区分は、「リスク区分」の節の「確定した者: <氏名>」に、作成を指示した者以外の名簿の人(AI の名義でない)の
+//      記名が要る。指示した者以外の人が名簿にいない体制(1名体制など)では失敗させず、確定していない区分として出す
+//   6. 停止の申し立て(標準 第7章 7.11): 受信箱のラベル `state:stop-requested` が付いた PR(付けた履歴のある PR を
+//      含む)は、基底ブランチに成立した解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」)が無い限り失敗させる。
+//      解除は層1 の項目4 の権限者の記名と理由を要し、AI の名義を受け付けない。見解を退けた解除は上申先と日付を要する。
+//      ラベルは PR_LABELS(JSON の配列)、付け外しの履歴は PR_LABEL_EVENTS(JSON)、または --pr の labels / labelEvents
+//   8. G-6 の承認者の数(標準 第8章 軸C 規制業・軸E CL3「独立レビューは2名で実施する」。基底ブランチの構成の
+//      review.reviewerCount): PR のレビューを読めるとき(PR_REVIEWS の JSON、または --pr の reviews)、出荷の証跡の集約と
+//      同じ条件(人のアカウント、名簿の人、作成を指示した者でない、承認した者自身の挙動要約つき、レビュアごとの最後の
+//      状態)で独立した人の承認者を数え、「G-6 の承認者 N 名 / 要求 M 名」を出す。満たなければ警告として出す。
+//      **合否にはしない**。pr-rules はレビューの前(push・本文の編集)に走り、承認はその後に付くため、失敗にすると
+//      すべての PR が承認まで赤になる。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を
+//      経ていない」に数えて止める。レビューを読めないときは、その旨を出す(黙って通さない)
 //
 // 限界(機械で閉じないもの):
 //   - 生成物・機械的な変換のうち、上の印で識別できないものは算定に入る。例外承認か、先に印を基底へ入れる
@@ -51,6 +67,7 @@ import {
   canonicalJson,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
+import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -283,10 +300,149 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor) {
   return { matched, rejected, reason: null };
 }
 
-/** PR の変更を読み、4つの検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
+/**
+ * 停止の申し立て(標準 第7章 7.11)。受信箱のラベル `state:stop-requested` が付いた PR、または付けた履歴のある PR を、
+ * 基底ブランチに成立した解除の記録が無い限り失敗させる(マージを保留する)。
+ *
+ * 解除の記録は、ゲート判定記録の様式(テンプレ4)で、ゲート欄が「停止の申し立ての解除」、対象が `PR #<番号>` のもの。
+ * 基底ブランチ(base の先端)の docs/gates/ だけを読む。保留した PR の中で足した記録は数えない(例外承認と同じ)。
+ * 解除する者は、基底ブランチの層1(docs/quality-assurance-policy.md)の項目4「停止の申し立ての解除」の受容者の席の
+ * 責任者。層1 が無い、または行が空欄なら、事業決裁者の席の責任者と照合する(出力にその旨を出す)。AI の名義を受け付けない。
+ * 申し立てた者の見解を退けた解除は、上申先と日付の記録を要する。ラベルを付けた日より前の解除の記録は数えない。
+ *
+ * 限界: ラベルの履歴(pr.labelEvents)を渡せない場合、ラベルを外した PR は申し立てを検出できない(ワークフローは
+ * GitHub の issue の events から履歴を渡す)。記録の記述が事実と合うか、異常の内容の妥当性は判定しない
+ */
+export function stopFindings({ git, base, pr = {}, config = {} }) {
+  const name = (l) => (typeof l === 'string' ? l : (l?.name ?? null));
+  const labels = (Array.isArray(pr.labels) ? pr.labels : []).map(name).filter(Boolean);
+  const events = Array.isArray(pr.labelEvents) ? pr.labelEvents.filter((e) => name(e?.label) === STOP_LABEL) : null;
+  const labeledNow = labels.includes(STOP_LABEL);
+  const lastLabeled = (events ?? []).filter((e) => e.event === 'labeled').map((e) => String(e.at ?? e.created_at ?? '')).filter(Boolean).sort().at(-1) ?? null;
+  const requested = labeledNow || Boolean(lastLabeled);
+  if (!requested) return { requested: false, historyRead: events !== null };
+  const sinceDay = lastLabeled ? lastLabeled.slice(0, 10) : null;
+  const policyText = git(['show', `${base}:${POLICY_FILE}`]);
+  const policy = readPolicy(config, { text: policyText ?? null });
+  const files = (git(['ls-tree', '--name-only', base, 'docs/gates/']) ?? '').split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.md'));
+  const refers = (text) => Boolean(pr.number) && new RegExp(`PR\\s*#\\s*${pr.number}(?!\\d)`).test(String(text ?? ''));
+  const releases = files
+    .map((f) => parseStopRelease(config, policy, f, git(['show', `${base}:${f}`])))
+    .filter((r) => r && refers(r.target));
+  const fresh = releases.filter((r) => !sinceDay || (r.day && r.day >= sinceDay));
+  const valid = fresh.filter((r) => r.valid);
+  const how = labeledNow ? `ラベル ${STOP_LABEL} が付いている` : `ラベル ${STOP_LABEL} を付けた履歴がある(${sinceDay}。ラベルを外しただけでは解除にならない)`;
+  if (valid.length) {
+    const r = valid[0];
+    return {
+      requested: true,
+      released: true,
+      releases,
+      message:
+        `停止の申し立て: ${how}。基底ブランチの解除の記録 ${r.file}(解除 ${r.judge}、${r.day})により保留を解く` +
+        `${r.declined ? `。申し立てた者の見解を退けた解除(上申: ${r.escalation})` : ''}${r.selfReleased ? '。申し立てた者と解除した者が同一(その旨を記録に残す)' : ''}` +
+        `${r.notes.length ? `。${r.notes.join('。')}` : ''}${labeledNow ? `。ラベル ${STOP_LABEL} は外してよい` : ''}`,
+    };
+  }
+  const rejected = releases.map((r) => `${r.file}: ${!fresh.includes(r) ? `ラベルを付けた日(${sinceDay})より前の記録` : r.problems.join('、')}`);
+  return {
+    requested: true,
+    released: false,
+    releases,
+    message:
+      `停止の申し立て: ${how}。対象のマージを保留する(標準 第7章 7.11)。解除は、層1 の項目4「停止の申し立ての解除」の権限者が、` +
+      `解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」、対象 \`PR #${pr.number ?? '<番号>'}\`、解除の理由、申し立てた者、見解を退けたか、退けた場合は上申先と日付)を` +
+      `基底ブランチへ先に入れて行う。同じ PR で足した記録は数えない。AI の名義の解除を受け付けない` +
+      `${rejected.length ? `。成立しない解除の記録: ${rejected.join(' / ')}` : ''}${policy.present ? '' : '。層1 が無いため、事業決裁者の席の責任者を権限者として照合する'}`,
+  };
+}
+
+const RISK_RANK = { R3: 1, R2: 2, R1: 3 };
+const KIND_OF_STATUS = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'add', T: 'modify' };
+
+/**
+ * 区分の下限の規則(構成の riskFloor.rules)に当たる変更から、下限を導く。rules は基底ブランチの構成から渡す。
+ * 規則: { id, paths: [glob], floor: 'R1' | 'R2', kinds?: ['add' | 'modify' | 'delete' | 'rename'], why }
+ */
+export function riskFloorOf(rules, changes) {
+  const hits = [];
+  for (const r of Array.isArray(rules) ? rules : []) {
+    if (!RISK_RANK[r?.floor] || !Array.isArray(r?.paths)) continue;
+    const kinds = Array.isArray(r.kinds) && r.kinds.length ? r.kinds : null;
+    const files = changes.filter((c) => (!kinds || kinds.includes(c.kind)) && r.paths.some((g) => matchAny([g], c.path) || (c.from && matchAny([g], c.from)))).map((c) => c.path);
+    if (files.length) hits.push({ id: r.id ?? '(ID なし)', floor: r.floor, why: r.why ?? null, files });
+  }
+  const floor = hits.reduce((f, h) => (RISK_RANK[h.floor] > RISK_RANK[f] ? h.floor : f), 'R3');
+  return { floor, hits };
+}
+
+/** 「リスク区分」の節の「確定した者: <氏名>」。無ければ null */
+export function riskConfirmerOf(body) {
+  const section = String(body ?? '').replace(/\r\n/g, '\n').split(/^##\s*リスク区分.*$/m)[1]?.split(/^##\s/m)[0] ?? '';
+  const m = section.replace(/<!--[\s\S]*?-->/g, '').match(/^\s*[-*]?\s*確定した者\s*[::]\s*(.+?)\s*$/m);
+  return m && isFilledValue(m[1]) ? m[1].trim() : null;
+}
+
+/** 作成を指示した者(PR の本文の節)。未記入なら PR の作成者のアカウント */
+export function instructorsOf(config, body, author) {
+  const section = String(body ?? '').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*作成を指示した者.*$/m)[1]?.split(/^(?:##\s|---\s*$)/m)[0] ?? '';
+  const tokens = section.split(/[\n,、，/／]/).map((t) => t.replace(/^[\s\-*・]+/, '').trim()).filter(Boolean);
+  const list = tokens.length ? tokens : author ? [`@${String(author).replace(/^@/, '')}`] : [];
+  return list.map((t) => (t.startsWith('@') ? findPersonByAccount(config, t) : resolveSigner(config, t))).filter(Boolean);
+}
+
+/**
+ * G-6 の承認者の数(検査8)。PR のレビュー(reviews: [{ author: { login, is_bot }, state, body }])から、出荷の証跡の集約と同じ条件で
+ * 独立した人の承認者を数える。レビュアごとの最後の状態で数え、承認の後の変更要求は承認を取り下げたものとして扱う。
+ * G-6 の判定記録(docs/gates/)は PR の時点では基底に無いことが多いため、ここでは読まない(集約が読む)。
+ * reviews が無い(読めない)ときは readable: false を返し、呼び出し側がその旨を出す
+ */
+export function approverFindings(config, pr) {
+  const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
+  const required = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+  if (!g6Active) return { applies: false, required };
+  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required };
+  const instructors = instructorsOf(config, pr.body, pr.author);
+  const last = new Map();
+  for (const r of pr.reviews) {
+    const login = r?.author?.login;
+    const state = String(r?.state ?? '').toUpperCase();
+    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+    const before = last.get(login);
+    const body = String(r.body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim().length > 0;
+    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary) });
+    else last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false });
+  }
+  const counted = [];
+  const notCounted = [];
+  for (const [login, v] of last) {
+    if (!v.approved) continue;
+    if (v.bot || aiNameBlocked(config, login)) {
+      notCounted.push(`@${login}(AI・bot のアカウント。検出の層)`);
+      continue;
+    }
+    const person = findPersonByAccount(config, login);
+    if (!person || person.appointer === true) {
+      notCounted.push(`@${login}(名簿の人へ対応づかない)`);
+      continue;
+    }
+    if (instructors.some((i) => i.id === person.id)) {
+      notCounted.push(`@${login}(作成を指示した者)`);
+      continue;
+    }
+    if (!v.summary) {
+      notCounted.push(`@${login}(承認の本文に挙動要約が無い)`);
+      continue;
+    }
+    if (!counted.some((c) => c.id === person.id)) counted.push({ id: person.id, name: person.name, login });
+  }
+  return { applies: true, readable: true, required, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
+}
+
+/** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
 export function analyzePr({ root = ROOT, base, pr = {} }) {
   const git = gitIn(root);
-  const result = { errors: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
+  const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
   const mergeBase = (git(['merge-base', base, 'HEAD']) ?? '').trim();
   if (!mergeBase) {
     result.errors.push(`比較の起点 ${base} を解決できません。基底ブランチを取得してから実行する(fetch-depth: 0)`);
@@ -462,8 +618,81 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
     );
   }
 
+  // --- 7. 区分の下限と確定者(標準 第3章 3.8.1「区分の下限と確定者」) ---
+  // 規則は基底ブランチの構成から読む。同じ PR で規則を書き換えても、その PR の下限は変わらない
+  const rulesConfig = baseConfigured ? baseConfig : headConfig;
+  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  const floorResult = riskFloorOf(rulesConfig.riskFloor?.rules, changes);
+  const rulesChanged = baseConfigured && canonicalJson(baseConfig.riskFloor ?? null) !== canonicalJson(headConfig.riskFloor ?? null);
+  if (rulesChanged) {
+    floorResult.hits.push({ id: 'riskFloor の変更', floor: 'R2', why: '区分の下限の規則を変える変更の下限は R2(第3章 3.8.1 の要求事項6)', files: ['process.config.json'] });
+    if (RISK_RANK.R2 > RISK_RANK[floorResult.floor]) floorResult.floor = 'R2';
+    if (productCode.length) {
+      result.errors.push(
+        `区分の下限: 区分の下限の規則(process.config.json の riskFloor)と製品のコード(${productCode.slice(0, 3).join(', ')}${productCode.length > 3 ? ' ほか' : ''})が同じ PR で変わっています。規則の変更を別の PR に分ける(第3章 3.8.1 の要求事項6)`
+      );
+    }
+  }
+  result.riskFloor = { floor: floorResult.floor, hits: floorResult.hits, rules: (rulesConfig.riskFloor?.rules ?? []).length };
+  if (risk && RISK_RANK[risk] < RISK_RANK[floorResult.floor]) {
+    const why = floorResult.hits.filter((h) => RISK_RANK[h.floor] > RISK_RANK[risk]).map((h) => `${h.id}(下限 ${h.floor}${h.why ? `。${h.why}` : ''}: ${h.files.slice(0, 3).join(', ')}${h.files.length > 3 ? ' ほか' : ''})`);
+    result.errors.push(
+      `区分の下限: 記載された区分 ${risk} は、変更の対象から導いた下限 ${floorResult.floor} より低い。当たった規則: ${why.join(' / ')}。区分を ${floorResult.floor} 以上へ改める(下限より高い区分は妨げない。第3章 3.8.1 の要求事項2)。規則の網羅は主張しない`
+    );
+  }
+  if (risk === 'R1' || risk === 'R2') {
+    const confirmer = riskConfirmerOf(pr.body);
+    const instructors = instructorsOf(rulesConfig, pr.body, pr.author);
+    const roster = Array.isArray(rulesConfig.people) ? rulesConfig.people : [];
+    const others = roster.filter((p) => p?.appointer !== true && !instructors.some((i) => i.id === p.id));
+    const why = [];
+    let person = null;
+    if (!confirmer) why.push('「リスク区分」の節に「確定した者: <氏名>」が無い');
+    else if (aiNameBlocked(rulesConfig, confirmer)) why.push(`確定した者 "${confirmer}" が AI の名義である`);
+    else if (!(person = resolveSigner(rulesConfig, confirmer.replace(/^@/, '')) ?? findPersonByAccount(rulesConfig, confirmer))) why.push(`確定した者 "${confirmer}" が人の名簿(people[])の人へ対応づかない`);
+    else if (instructors.some((i) => i.id === person.id)) why.push(`確定した者 "${confirmer}" は作成を指示した者である`);
+    result.riskConfirmation = { confirmer, valid: !why.length, why, instructors: instructors.map((i) => i.name) };
+    if (why.length) {
+      if (!others.length) {
+        result.notices.push(
+          `リスク区分の確定者: ${why.join('。')}。作成を指示した者以外の人が名簿にいないため失敗させない。${risk} の区分は確定していないものとして扱い、保証の開示の項目3 に出る(外部の確認者を名簿に置けば確定できる。第3章 3.8.1)`
+        );
+      } else {
+        result.errors.push(
+          `リスク区分の確定者: ${risk} の区分は、作成を指示した者以外の名簿の人が確定し記名する(第3章 3.8.1 の要求事項3)。${why.join('。')}。` +
+            '「リスク区分」の節に `確定した者: <氏名>` を1行書く(区分を確定した人が自分で書く。AI は書かない)'
+        );
+      }
+    }
+  }
+
+  // --- 6. 停止の申し立て(標準 第7章 7.11) ---
+  result.stop = stopFindings({ git, base, pr, config: baseConfigured ? baseConfig : headConfig });
+  if (result.stop.requested) {
+    if (result.stop.released) result.notices.push(result.stop.message);
+    else result.errors.push(result.stop.message);
+  }
+
+  // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
+  result.approvers = approverFindings(baseConfigured ? baseConfig : headConfig, pr);
+  if (result.approvers.applies) {
+    const a = result.approvers;
+    if (!a.readable) {
+      result.notices.push(
+        `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount)の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる`
+      );
+    } else if (!a.enough) {
+      result.warnings.push(
+        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})。` +
+          `マージの前に、名簿の別人が自分の挙動要約を付けて承認する。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える(この検査は合否にしない)`
+      );
+    } else {
+      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}`);
+    }
+  }
+
   // --- 4. 既存のテストの変更 ---
-  const guard = json(atBase('.claude/guard.json')) ?? json(atHead('.claude/guard.json')) ?? {};
+  const guard =json(atBase('.claude/guard.json')) ?? json(atHead('.claude/guard.json')) ?? {};
   const testPatterns = Array.isArray(guard.testPatterns) ? guard.testPatterns : [];
   const isTest = (f) => testPatterns.some((g) => matchGlob(g, f));
   for (const e of all) {
@@ -505,6 +734,7 @@ function renderReport(r) {
   L.push(`- 失敗: ${r.errors.length} 件`);
   L.push(`- リスク区分: ${r.riskClass ?? '未記入'}`);
   for (const e of r.errors) L.push(`  - ${e}`);
+  for (const w of r.warnings ?? []) L.push(`- 警告: ${w}`);
   for (const n of r.notices) L.push(`- ${n}`);
   if (r.size) {
     L.push(`- 変更規模(算定の対象): ${r.size.lines} 行 / ${r.size.files} ファイル(上限 ${r.size.maxLines ?? '—'} 行 / ${r.size.maxFiles ?? '—'} ファイル)`);
@@ -532,6 +762,18 @@ function upsertComment(markdown, prNumber) {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
+/** 環境変数の JSON を読む。無い・読めない場合は null */
+function parseJsonEnv(key) {
+  const v = process.env[key];
+  if (!v) return null;
+  try {
+    return JSON.parse(v);
+  } catch {
+    warn(`${key} を JSON として読めません。停止の申し立ての検査は、読めない値を無いものとして扱います`);
+    return null;
+  }
+}
+
 if (isMain) {
   const argv = process.argv.slice(2);
   const arg = (k, d = null) => (argv.indexOf(k) >= 0 ? argv[argv.indexOf(k) + 1] : d);
@@ -543,12 +785,23 @@ if (isMain) {
   const prFile = arg('--pr');
   const pr = prFile
     ? JSON.parse(fs.readFileSync(prFile, 'utf8'))
-    : { number: process.env.PR_NUMBER ? Number(process.env.PR_NUMBER) : null, title: process.env.PR_TITLE ?? '', body: process.env.PR_BODY ?? '', author: process.env.PR_AUTHOR ?? '' };
+    : {
+        number: process.env.PR_NUMBER ? Number(process.env.PR_NUMBER) : null,
+        title: process.env.PR_TITLE ?? '',
+        body: process.env.PR_BODY ?? '',
+        author: process.env.PR_AUTHOR ?? '',
+        // 停止の申し立て(第7章 7.11)。ラベルと、ラベルの付け外しの履歴(JSON)
+        labels: parseJsonEnv('PR_LABELS') ?? [],
+        labelEvents: parseJsonEnv('PR_LABEL_EVENTS'),
+        // G-6 の承認者の数(検査8)。レビューの一覧(JSON)。無ければ「読めない」として出す
+        reviews: parseJsonEnv('PR_REVIEWS') ?? undefined,
+      };
   const r = analyzePr({ base, pr });
   if (argv.includes('--json')) {
     console.log(JSON.stringify(r, null, 2));
   } else {
     for (const e of r.errors) fail(e);
+    for (const w of r.warnings) warn(w);
     for (const n of r.notices) notice(n);
     if (r.testChanges.length) warn(`既存のテストの変更が ${r.testChanges.length} 件あります(G-6 の材料。合否には使わない)`);
   }

@@ -108,6 +108,16 @@
 - **次工程の材料が未完成であることを、当該ゲートの差し戻し理由にしない**(未解決事項として台帳へ置く)
 - 詳細: `.claude/skills/gate/reference/exception-paths.md`
 
+### 停止の申し立てと品質保証の層1
+
+- 品質・安全・法令上の異常は、誰でも PR へ `state:stop-requested` を付けて止められる。**AI は停止を解除しない**(ラベルを外さない・解除の記録を書かない) `[機械]` G-5(`pr-rules`)と出荷の証跡の集約。詳細: `.claude/skills/gate/gates/G-5.md`
+- **申し立てを受けたら作業を止め、AI運用担当者へ返す**。止めた時刻を PR・Issue へ残す(自律実行の停止は指示文だけ)
+- 層1(`docs/quality-assurance-policy.md`)の記名、G-8 の層1 の版・上申・対象外の受容、D-0 節15 の受容は人が書く。**AI が埋めない**(`/artifact 11`)
+- 保証の主張の成立判定と単一障害点の一覧は機械の出力。要約・評価を足さない
+- 導入前の検証は `node scripts/gate/adoption-trial.mjs`(`/artifact adoption-trial`)。**基準と注入の記録は人が持つ**
+- 実環境の統制の確認(ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物)は、採用者が実環境の gh で `node scripts/gate/adoption-trial.mjs env-check --by <氏名>` を実行して記録する。**AI が確認済みにしない**。記録の `evidence`(API の応答の識別)を書き足さない。未確認は `/pit` と出荷の証跡の集約に出続ける
+- 変化点の後の失効(検出率の測定値)・後継不在・依存先の欄の空欄・席の責任者本人の力量の未確認は、`/pit` が担当の席と次の一手を注記で出す。**AI が解消したことにしない**(tally のやり直し・受容・確認の記録は人が行う)
+
 ### 標準の条項を課すとき
 
 - **条項番号だけを根拠にしない**。適用範囲を書けない条項は課さない。表は `node scripts/gate/next.mjs --scopes`
@@ -142,6 +152,7 @@
 - トレーラ `Spec: F-NNN / Task-N` は必須 `[機械]` G-5(`pr-rules`)が PR の本文の末尾の段落を検査する(製品のコードを変える PR)。設定・ツール・雛形だけの PR は `Spec: setup`(製品のコードを含めば通らない)。`Co-Authored-By:` は AI が関与したら必須(モデルの名称と版)。`ADR:` は該当時
 - 委任の範囲の変更では、すべてのコミットへ `Delegated: <規則ID>`(R3 の変更に限る)
 - PR の本文は `.github/PULL_REQUEST_TEMPLATE.md` から作り、「リスク区分」の節に区分を1つだけ残す。文書・記録だけの PR と `Spec: setup` の PR も同じ `[機械]` G-5(`pr-rules`)が変更の種類に依らず検査する。区分の確定は人
+- 区分の下限(構成の `riskFloor`)より低く書かない。R1・R2 の `確定した者:` は指示した者以外の人が書く `[機械]` G-5
 - PR を経ずにコミットする場合は `Risk: R1/R2/R3` と `Verification:` が必須(記録だけのコミットには要らない) `[機械]` 出荷判定の証跡の集約が欠落として扱う
 - トレーラはメッセージの末尾の段落に書く
 - 詳細(各トレーラの意味、PR を経ないコミットの扱い): `.claude/skills/implement/reference/commit.md`

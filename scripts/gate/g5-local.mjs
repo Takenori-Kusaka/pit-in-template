@@ -78,7 +78,9 @@ if (!notConfigured && !noInstall) {
   }
 }
 const needsDeps = notConfigured ?? installFailed;
-run('test', 'test', adapter('test'), { skip: needsDeps });
+const testOk = run('test', 'test', adapter('test'), { skip: needsDeps });
+// G-7 基準1 の入力(テストの実行の記録。CI の test ジョブと同じ)。失敗した実行も、失敗として記録する
+run('test', 'test-results', node('test-results.mjs', '--outcome', testOk ? 'success' : 'failure'), { skip: needsDeps });
 run('test', 'coverage', adapter('coverage'), { skip: needsDeps });
 run('test', 'coverage-check', node('coverage-check.mjs'), { skip: needsDeps });
 run('static-analysis', 'lint', adapter('lint'), { skip: needsDeps });

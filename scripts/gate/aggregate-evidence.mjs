@@ -31,6 +31,16 @@
 // 保証の開示(G-7 基準9 の7項目)も、ここで出力します。構成と既存の記録からの投影であり、
 // 人に新しい記述を書かせません。導けない項目は「未測定」「記録なし」を値として出します。
 // 値の良否では落としません。落とすのは記録の欠落だけです(標準 附属書H H.6)。
+//
+// 保証の主張の成立判定(附属書H H.1 の6条件。#288)も、開示に出力します。層1(docs/quality-assurance-policy.md)、
+// 層2(企画書の「品質の約束と保証範囲」と G-1 の判定記録)、7項目の値から機械で判定し、成立しない範囲には
+// 「品質保証の対象外として出荷した」の定型の文を出します。組織継続の側の状態(依存先の一覧と単一障害点の一覧。
+// 第3章 3.12.11)は項目5・7 へ出し、期限を過ぎた受容(D-0 節15)を記載の欠落にします。読み方は org-assurance.mjs。
+//
+// 第2巡(#288): D-0 節7 の有事の決定者の空欄・識別子(QC-NN)を持たない品質条件・欠陥の台帳が無いことを記載の欠落に、
+// 出荷の範囲の PR とリリースの未解除の停止の申し立てを保留(集約の失敗)にします。G-7 基準1・2 の件数と、品質条件と
+// 受入基準・テストの参照の突合(参照の無い条件は項目5)を出します。読み方は verification-trace.mjs。AI の層は、附属書H H.4 の
+// 条件2〜5 の確認の記録(seats[].qualification.conditions)が無いか古い場合に「条件未確認」として検出の層に数えません。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -75,6 +85,28 @@ import {
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
+import {
+  readPolicy,
+  readBriefScope,
+  continuityState,
+  parseStopRelease,
+  withinTolerance,
+  checkAuthority,
+  samePerson,
+  POLICY_FILE,
+  STOP_GATE,
+  STOP_LABEL,
+  aiIdentityMismatch as identityMismatchOf,
+  performerIdentity,
+  humanFinderState,
+  competenceState,
+  readEnvCheck,
+  ENV_CHECK_FILE,
+  coreReviewText,
+  qaAffiliationText,
+} from './org-assurance.mjs';
+import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
+import { stopFindings, riskConfirmerOf } from './check-pr.mjs';
 
 const config = loadConfig();
 /**
@@ -272,11 +304,34 @@ const gateDetails = gateRecordList.map((r) => {
   const objectionRaw = rowValue(text, '出荷判定者の異議', false);
   const objection = normLine(objectionRaw ?? '');
   const judge = rowValue(text, '判定者');
+  // 監査対応書式(構成 review.recordFormat: audit。テンプレ4「監査対応書式」)の行。2人目の判定者は、G-6 を2名で行う体制の
+  // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織的に独立した者(附属書F)。
+  // 様式の説明(<…>)を残したままの欄は未記入として扱う(#288 第5巡)
+  const auditCell = (key) => {
+    const v = rowValue(text, key, false);
+    if (v === null) return { present: false, value: null };
+    const cleaned = v.replace(/\*\*/g, '').trim();
+    return { present: true, value: cleaned && !cleaned.startsWith('<') && !/^(—|-|―)$/.test(cleaned) ? cleaned : null };
+  };
+  const second = auditCell('2人目の判定者');
+  const secondSummary = auditCell('2人目の挙動要約');
+  const safety = auditCell('安全性の評価者');
+  const safetyRecord = auditCell('安全性の評価の記録の所在');
   return {
     ...r,
     target: rowValue(text, '対象'),
     // 判定者の記名。様式の説明(<氏名>…)を残したままの欄は未記入
     judge: judge && !judge.startsWith('<') ? judge.replace(/。.*$/, '').trim() : null,
+    // 監査対応書式の行(欄の有無と、記入の有無)。2人目の判定者は、独立した人の確認の2人目の候補として数える
+    audit: {
+      rowsPresent: second.present || safety.present,
+      secondJudge: second.value ? second.value.replace(/。.*$/, '').trim() : null,
+      secondJudgeRowPresent: second.present,
+      secondSummaryPresent: Boolean(secondSummary.value),
+      safetyAssessor: safety.value,
+      safetyAssessorRowPresent: safety.present,
+      safetyRecord: safetyRecord.value,
+    },
     // 作成側の検証の記載。「検証方法と結果」の欄(表の行)または節に、記載があるか
     authorVerificationPresent: Boolean(
       (rowValue(text, '検証方法と結果') ?? '').replace(/^<.*>$/, '').trim() || dropComments(mdSection(text, '検証方法と結果') ?? '').trim()
@@ -360,7 +415,7 @@ if (!repo) {
 } else if (repoInfo.source !== 'GITHUB_REPOSITORY') {
   notice(`PR の記録を引くリポジトリ: ${repo}(${repoInfo.source} から)`);
 }
-const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits';
+const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels';
 const prData = new Map();
 // PR の記録を取得できなかった理由(PR の番号ごと)
 const prFetchError = new Map();
@@ -455,7 +510,12 @@ const UNCONFIRMED = {
   instructorUnresolved: '作成を指示した者を名簿と対応づけられない',
   noReviewerSummary: 'レビュアの挙動要約が無い(承認した者自身の挙動要約を伴わない承認は数えない)',
   directCommit: 'PR を経ていない(独立した人の G-6 の判定記録が対応づかない)',
+  // 文言は変更ごとに件数を埋める(下の insufficientText)
+  insufficientApprovers: 'G-6 の承認者の数が、構成の要求(review.reviewerCount)に満たない',
 };
+/** 承認者の数が要求に満たない変更の文言。「G-6 の承認者 N 名 / 要求 M 名」(#288 第5巡) */
+const insufficientText = (counted, required) =>
+  `G-6 の承認者 ${counted} 名 / 要求 ${required} 名(独立した人の確認に数えられる承認者が、構成 review.reviewerCount の要求に満たない。名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の判定者」に記名する)`;
 
 /** 数えない理由の識別子(evidence.json の prs[].g6.notCountedReason) */
 const NOT_COUNTED_CODE = {
@@ -468,7 +528,14 @@ const NOT_COUNTED_CODE = {
   instructorUnresolved: 'instructor-not-in-roster',
   noReviewerSummary: 'no-reviewer-summary',
   directCommit: 'direct-commit',
+  insufficientApprovers: 'insufficient-approvers',
 };
+
+// G-6 に要する独立した人の承認者の数(構成 review.reviewerCount。第8章 軸C の規制業・軸E の CL3 は 2)。
+// G-6 を適用する体制でだけ掛ける(未達・成立しない・省略の体制では、人数の要求より先に体制の表示が出る)
+const REVIEWERS_REQUIRED = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+const g6AppliedStructure = ['required', 'simplified'].includes(config.gates?.g6?.state) && !g6Unmet && !reviewerIsDeveloper;
+const reviewersRequired = g6AppliedStructure ? REVIEWERS_REQUIRED : 1;
 
 /**
  * 欄「作成を指示した者」の記載(複数可。改行・「、」「,」「/」で区切る)。氏名、名簿の id、@アカウント のいずれか。
@@ -579,11 +646,17 @@ function independentConfirmation(ins, reviews, refers, { direct = false } = {}) 
       continue;
     }
     candidates.push({ login: null, label: g.judge, person: reviewerPerson(findPerson(config, g.judge)), summary: g.behaviorSummaryPresent ? 'gate-record' : null, source: 'gate-record', file: g.file });
+    // 監査対応書式の「2人目の判定者」(G-6 を2名で行う体制)。2人目の挙動要約は同じ書式の行に書く。1人目の挙動要約を2人目に流用しない
+    const second = g.audit?.secondJudge;
+    if (second) {
+      if (aiNameBlocked(config, second)) ai++;
+      else candidates.push({ login: null, label: second, person: reviewerPerson(findPerson(config, second)), summary: g.audit.secondSummaryPresent ? 'gate-record' : null, source: 'gate-record', file: g.file, second: true });
+    }
   }
   // 承認レビューの本文に要約が無くても、当人が判定者の G-6 の判定記録に要約があれば足る
   for (const c of candidates) {
     if (c.summary || !c.person) continue;
-    if (records.some((g) => g.behaviorSummaryPresent && findPerson(config, g.judge)?.id === c.person.id)) c.summary = 'gate-record';
+    if (records.some((g) => (g.behaviorSummaryPresent && findPerson(config, g.judge)?.id === c.person.id) || (g.audit?.secondSummaryPresent && g.audit.secondJudge && findPerson(config, g.audit.secondJudge)?.id === c.person.id))) c.summary = 'gate-record';
   }
   if (!candidates.length) return none(direct && !ai ? 'directCommit' : ai ? 'aiOrBot' : 'noApproval');
   about.unmappedApprovers = candidates.filter((c) => !c.person).map((c) => c.label);
@@ -597,11 +670,20 @@ function independentConfirmation(ins, reviews, refers, { direct = false } = {}) 
   const summarized = eligible.filter((c) => c.summary);
   if (!summarized.length) return none('noReviewerSummary');
   const reviewerKey = whoKey('independent-reviewer');
+  const byNames = [...new Set(summarized.map((c) => c.person.name))];
+  // 承認者の数(構成 review.reviewerCount)。名簿の別人で、各自の挙動要約を伴う承認者の数が要求に満たない変更は、
+  // 独立した人の確認を経ていない変更に数える(第8章 軸C・軸E の「独立レビューは2名で実施する」。#288 第5巡)
+  about.approversCounted = byNames.length;
+  about.approversRequired = reviewersRequired;
+  about.approverNames = byNames;
+  if (byNames.length < reviewersRequired) {
+    return { ...none('insufficientApprovers'), reasonText: insufficientText(byNames.length, reviewersRequired) };
+  }
   return {
     counted: true,
     reason: null,
     reasonText: null,
-    by: [...new Set(summarized.map((c) => c.person.name))],
+    by: byNames,
     byLogins: summarized.map((c) => c.login).filter(Boolean),
     source: summarized.some((c) => c.source === 'review') ? 'review' : 'gate-record',
     summarySource: summarized.some((c) => c.summary === 'review') ? 'review' : 'gate-record',
@@ -639,6 +721,10 @@ for (const [hash, m] of commitPr) {
     // マージの方式。squash / merge-commit / rebase(構成要素の数え方だけが変わる)
     mergeMethod: m.method,
     riskClass: riskClassOf(d?.body),
+    // 区分を確定した者(「リスク区分」の節の「確定した者」。第3章 3.8.1)。照合は保証の開示の項目3 で行う
+    riskConfirmer: riskConfirmerOf(d?.body),
+    // 受信箱のラベル(停止の申し立ての保留に使う。第7章 7.11)
+    labels: (Array.isArray(d?.labels) ? d.labels : []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean),
     g5: g5 ? (g5.conclusion ?? g5.state ?? 'unknown').toLowerCase() : 'unknown',
     // 作成側の検証の記載(PR 本文「検証方法と結果」)。レビュアの挙動要約ではない
     authorVerificationPresent: Boolean(sectionOf(d?.body, '検証方法と結果')),
@@ -679,10 +765,13 @@ const prByNumber = new Map(prs.map((p) => [p.number, p]));
 /**
  * 記録の置き場。ここだけを変えるコミットは、製品の変更でない。
  *
- * 無条件で対象外にするのは、判定記録、証跡、技術負債台帳、体制図、構成書(全体が生成物)である。
+ * 無条件で対象外にするのは、判定記録、証跡、導入前の検証の記録(docs/adoption-trial/。合否の基準・封じた要約値・
+ * 見つける者の記録・演習の記録・記録の様式。標準 附属書I I.11)、演習の報告(docs/drills/)、退出の予行の記録
+ * (docs/exit-rehearsal.json)、技術負債台帳、体制図、構成書(全体が生成物)である。評価用の基準集合は評価の入力であり
+ * 記録ではないため、PR で入れる(範囲を狭める変更は統制を緩める向きの変更。第3章 3.12.3 の要求事項10)。
  * 体制図は、決定の理由と記名の記録である。生成区間と構成の一致は、D-0 の検査(check-d0)が確かめる
  */
-const RECORD_PATHS = ['docs/gates/**', 'evidence/**', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'PROCESS-PROFILE.md'];
+const RECORD_PATHS = ['docs/gates/**', 'evidence/**', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'PROCESS-PROFILE.md'];
 
 /**
  * 内容を見て対象外にするファイル。パスだけで対象外にすると、構成の手での書き換えと、指示資産の
@@ -989,6 +1078,72 @@ for (const p of prs) {
   }
 }
 
+// --- 監査対応書式(構成 review.recordFormat: audit)と、独立した安全性の評価(gates.g6.params.independentSafetyAssessment) ---
+//
+// 第8章 軸C の規制業は「レビュー記録は監査対応書式で残す」。PR の承認だけでは記録にならず、変更ごとに G-6 の判定記録
+// (テンプレ4。監査対応書式の節を持つ)を要する。G-6 を2名で行う体制では「2人目の判定者」の記名を要する。
+// 軸E の CL2 以上は「独立レビューとは別に、実装の責任者から組織的に独立した安全性の評価を重ねる」。判定記録の
+// 「安全性の評価者」の記名(名簿の人で、開発者の席の責任者・作成を指示した者・当該の判定者と別人)、または
+// 「該当なし(理由)」を要する。機械が確かめるのは記名の有無と独立までで、評価の実施と内容は確かめない(附属書F は人が行う)。
+// 構成がこれらを要しない体制では、この節は何もしない(#288 第5巡)
+const auditFormat = g6Applied && config.review?.recordFormat === 'audit';
+const safetyAssessmentRequired = g6Applied && config.gates?.g6?.params?.independentSafetyAssessment === true;
+const auditRecordGaps = [];
+if (auditFormat || safetyAssessmentRequired) {
+  const devKey = whoKey('dev-verifier');
+  const unitList = [
+    ...prs.map((p) => ({ label: `PR #${p.number}`, refers: (text) => refersToPr(text, p.number), instructors: p.g6.independent.instructors, postHoc: p.g6PostHoc })),
+    ...directProduct.map((d) => ({ label: `コミット ${d.commit}`, refers: commitRefers(d.hash), instructors: d.independent.instructors, postHoc: false })),
+  ];
+  for (const u of unitList) {
+    if (u.postHoc) continue;
+    const own = g6RecordsFor(u.refers);
+    if (auditFormat && !own.length) {
+      auditRecordGaps.push(
+        `${u.label}: 監査対応書式の G-6 の判定記録(docs/gates/。「対象」に ${u.label}、判定者、挙動要約、「監査対応書式」の節)がありません。` +
+          '構成 review.recordFormat: audit(第8章 軸C 規制業)では、PR の承認だけでは記録になりません。独立レビュアが判定記録を残してください'
+      );
+    }
+    for (const g of own) {
+      const a = g.audit ?? {};
+      if (auditFormat && !a.rowsPresent) {
+        auditRecordGaps.push(`${g.file}: 監査対応書式の節(2人目の判定者・安全性の評価者の行)がありません。templates/04-gate-record.md の「監査対応書式」の表を写してください`);
+        continue;
+      }
+      if (auditFormat && reviewersRequired >= 2 && !a.secondJudge) {
+        auditRecordGaps.push(`${g.file}: 「2人目の判定者」が未記入です(G-6 を ${reviewersRequired} 名で行う体制)。2人目が自分で記名し、「2人目の挙動要約」を自分の言葉で書いてください`);
+      } else if (auditFormat && reviewersRequired >= 2 && a.secondJudge && !a.secondSummaryPresent) {
+        auditRecordGaps.push(`${g.file}: 「2人目の挙動要約」が未記入です(2人目の判定者 ${a.secondJudge})。承認した者自身の挙動要約を伴わない記名は、独立した人の確認に数えません`);
+      }
+      if (auditFormat && reviewersRequired >= 2 && a.secondJudge && g.judge && samePerson(config, a.secondJudge, g.judge)) {
+        auditRecordGaps.push(`${g.file}: 「2人目の判定者」(${a.secondJudge})が1人目の判定者と同一人物です。別の人が記名してください`);
+      }
+      if (safetyAssessmentRequired) {
+        if (!a.safetyAssessorRowPresent || !a.safetyAssessor) {
+          auditRecordGaps.push(
+            `${g.file}: 「安全性の評価者」が未記入です(構成 independentSafetyAssessment: true。第8章 軸E CL2 以上)。実装の責任者から組織的に独立した評価者の記名と記録の所在(附属書F)、または「該当なし(安全関連でない変更である理由)」を書いてください`
+          );
+        } else if (!/^該当なし/.test(a.safetyAssessor.normalize('NFKC'))) {
+          const why = [];
+          if (aiNameBlocked(config, a.safetyAssessor)) why.push('AI の名義である');
+          const person = resolveSigner(config, a.safetyAssessor);
+          if (!person) why.push('名簿の人へ対応づかない');
+          else {
+            if (devKey && person.id === devKey) why.push('開発者の席の責任者(実装の責任者)と同一人物である');
+            if ((u.instructors ?? []).some((n) => personKey(config, n) === person.id)) why.push('作成を指示した者である');
+            if (g.judge && samePerson(config, a.safetyAssessor, g.judge)) why.push('当該の判定者(独立レビュア)と同一人物である。独立した安全性の評価は G-6 へ吸収しない');
+          }
+          if (!a.safetyRecord) why.push('「安全性の評価の記録の所在」が未記入である');
+          if (why.length) auditRecordGaps.push(`${g.file}: 安全性の評価者 "${a.safetyAssessor}" を独立した評価者として受け付けません(${why.join('。')})`);
+        } else if (a.safetyAssessor.normalize('NFKC').replace(/^該当なし/, '').replace(/^[((:：\s]+/, '').replace(/[))\s]+$/, '').length === 0) {
+          auditRecordGaps.push(`${g.file}: 「安全性の評価者」の「該当なし」に理由がありません。安全関連でない変更である理由を書いてください`);
+        }
+      }
+    }
+  }
+  gaps.push(...auditRecordGaps);
+}
+
 // 作成側の検証の記載(PR 本文「検証方法と結果」)。開発者(検証)の席の記録であり、独立レビュー(G-6)の
 // 成立とは別である。G-6 の状態に依らず、無ければ欠落とする。独立した人の確認が無い体制ほど、
 // この記載が唯一の証拠になる(標準 第5章 5.5.6)。開発者の席の委任の範囲の変更では、担い手が実行結果の証拠として書く。
@@ -1273,6 +1428,43 @@ if (!period && !licenseScan.scanRun) {
   gaps.push('知財潔白性の検査記録がありません。判定するのは検査を実施し記録したことです');
 }
 
+// 層1(品質保証の方針と受容の基準。テンプレ11)。保証の主張の成立条件1・5・6 と、G-8 の照合の材料(#288)
+const policy = readPolicy(config, { today: localDay() });
+
+// G-8 の受容の基準との照合と上申(標準 第4章 G-8「受容の基準との照合と上申」)。照らした層1 の版と、上申の欄は
+// 必須である。異議を「異議あり」と書いた記録を通過(受容)にした場合は、上申の届け先と日付を要する。
+// 段階を超える受容かどうかは機械で判定しない(出荷判定者と内部監査が確かめる)
+const g8Detail = (g) => {
+  const text = fs.readFileSync(path.join(ROOT, g.file), 'utf8');
+  return {
+    policyVersion: rowValue(text, '照らした層1 の版', false),
+    escalation: rowValue(text, '上申', false),
+    outOfScope: rowValue(text, '品質保証の対象外として出荷することの受容', false),
+  };
+};
+for (const g of g8Records) {
+  const d = g8Detail(g);
+  Object.assign(g, { g8: d });
+  if (!filled(d.policyVersion) && !/層1\s*なし/.test(d.policyVersion ?? '')) {
+    gaps.push(`${g.file}: リリース決裁(G-8)の決断の記録の「照らした層1 の版」が${d.policyVersion === null ? 'ありません' : '未記入です'}。受容を照らした層1 の版(層1 が無い組織は「層1 なし」)を書きます(第4章 G-8)`);
+  }
+  if (d.escalation === null || (!filled(d.escalation) && !/該当なし/.test(d.escalation))) {
+    gaps.push(`${g.file}: リリース決裁(G-8)の決断の記録の「上申」が${d.escalation === null ? 'ありません' : '未記入です'}。届けた先と日付、または「該当なし」を書きます(第4章 G-8)`);
+  } else if (passed(g) && /^異議あり/.test(String(g.objection ?? '').normalize('NFKC')) && !/\d{4}-\d{2}-\d{2}/.test(d.escalation.normalize('NFKC'))) {
+    gaps.push(`${g.file}: 出荷判定者の異議(「異議あり」)を退けて受容していますが、「上申」に届けた先と日付がありません。記載の欠落です(第4章 G-8 要求事項3・4)`);
+  }
+}
+
+// 停止の申し立ての解除の記録(第7章 7.11)。当該の範囲で追加された記録を項目7 へ出す。成立しない解除の記録
+// (記名・理由が無い、権限者でない、退けた解除に上申の記録が無い)は記載の欠落とする
+const stopReleases = gateRecordList
+  .map((r) => parseStopRelease(config, policy, r.file, fs.readFileSync(path.join(ROOT, r.file), 'utf8')))
+  .filter(Boolean)
+  .filter((r) => !recordsInRange || recordsInRange.has(r.file));
+for (const r of stopReleases) {
+  if (!r.valid) gaps.push(`${r.file}: 停止の申し立ての解除の記録として成立していません(${r.problems.join('。')})。第7章 7.11`);
+}
+
 
 // --- 未達(隠す経路を持たない) --------------------------------------------
 
@@ -1365,7 +1557,7 @@ else if (whoKey('independent-reviewer') && whoKey('independent-reviewer') === wh
 } else if (findPerson(config, seatOf('independent-reviewer')?.accountable)?.external) {
   g6Status = `外部依頼(独立レビュアの席の責任者が外部の確認者: ${whoName('independent-reviewer')}。変更ごとの実施は件数による)`;
 } else if (small) g6Status = '成立(相互。作成を指示していない側の人が確認する。構成上。変更ごとの実施は件数による)';
-else g6Status = '成立(構成上。変更ごとの実施は件数による)';
+else g6Status = `成立(構成上。変更ごとの実施は件数による${reviewersRequired >= 2 ? `。承認者 ${reviewersRequired} 名を要する` : ''})`;
 
 let g7Status;
 if (g7Deviation) g7Status = `兼務(代償措置: ${(g7Deviation.compensation ?? []).join(' / ')})`;
@@ -1394,10 +1586,69 @@ const unconfirmed = {
   structure: unconfirmedBy('structure'),
   instructorUnresolved: unconfirmedBy('instructorUnresolved'),
   noReviewerSummary: unconfirmedBy('noReviewerSummary'),
+  // 承認者の数が構成の要求(review.reviewerCount)に満たない(G-6 を2名で行う体制。#288 第5巡)
+  insufficientApprovers: unconfirmedBy('insufficientApprovers'),
   recordNotFound: approvalRecordNotFound,
   directCommits: count(directProduct, (d) => !d.independent.counted),
 };
+// 承認者の数が要求に満たない変更の一覧(「G-6 の承認者 N 名 / 要求 M 名」)
+const insufficientApproverChanges = changeUnits.filter((c) => c.independent.reason === 'insufficientApprovers').map((c) => `${c.label}(承認者 ${c.independent.approversCounted ?? 0} 名 / 要求 ${c.independent.approversRequired ?? reviewersRequired} 名)`);
 const confirmedUnits = changeUnits.filter((c) => c.independent.counted);
+
+// 10名以上の規則(第8章 軸A。#288 第6巡 Q)。構成の値が実行層で何も変えていなかったため、確かめられる範囲を降ろす。
+//   reviewMode internal-plus-core-external: コア機能(確約範囲・コア指定のパス = delegation.protectedPaths)に触れる変更の、
+//     数えた承認者に、作成を指示した者と別の所属(名簿の team)の人を含むか。所属の欄が無い名簿、コア指定のパスの未宣言は
+//     「判定できない」と出す(欠落にはしない。第8章の表は手引きの位置づけ)
+//   approverMode dedicated-qa: 出荷判定者の席の責任者の所属が、開発者の席の責任者の所属と別か(名簿の team)
+//   機能責任者への仕様承認の委譲(role-delegation): 席も記録も無く、機械では確かめない(台帳に降りていないと開示する)
+const teamOf = (ref) => {
+  const p = ref ? resolveSigner(config, ref) : null;
+  return p && isFilledValue(p.team) ? String(p.team).trim() : null;
+};
+const rosterHasTeam = roster.some((p) => isFilledValue(p?.team));
+const coreReview = (() => {
+  if (config.review?.mode !== 'internal-plus-core-external') return null;
+  const protectedPaths = Array.isArray(config.delegation?.protectedPaths) ? config.delegation.protectedPaths : null;
+  const out = { mode: config.review.mode, protectedPathsDeclared: Boolean(protectedPaths), rosterHasTeam, coreChanges: 0, withOtherTeam: 0, sameTeamOnly: [], undetermined: [], why: null };
+  if (!protectedPaths) {
+    out.why = 'コア機能のパス(構成 delegation.protectedPaths。確約範囲・コア指定)が未宣言のため、どの変更がコア機能に当たるかを判定できない(/process-change の種別 mode で protectedPaths を宣言する。委任を適用しない案件でも宣言できる)';
+    return out;
+  }
+  if (!protectedPaths.length) {
+    out.why = 'コア指定のパスが「なし」と宣言されている(コア機能に当たる変更は無い)';
+    return out;
+  }
+  for (const p of prs) {
+    if (!p.g6.independent.counted) continue;
+    const files = git(['diff-tree', '--no-commit-id', '--name-only', '-r', p.mergeCommit]).split('\n').filter(Boolean);
+    if (!files.some((f) => protectedPaths.some((g) => matchGlob(g, f)))) continue;
+    out.coreChanges++;
+    const authorTeams = [...new Set(p.instructedBy.map(teamOf).filter(Boolean))];
+    const approverTeams = (p.g6.independent.by ?? []).map((n) => ({ name: n, team: teamOf(n) }));
+    if (!authorTeams.length || approverTeams.some((a) => !a.team)) {
+      out.undetermined.push(`#${p.number}(名簿に所属(team)の無い人: ${[...(authorTeams.length ? [] : p.instructedBy), ...approverTeams.filter((a) => !a.team).map((a) => a.name)].join('・') || '不明'})`);
+      continue;
+    }
+    if (approverTeams.some((a) => !authorTeams.includes(a.team))) out.withOtherTeam++;
+    else out.sameTeamOnly.push(`#${p.number}(承認者の所属 ${[...new Set(approverTeams.map((a) => a.team))].join('・')} = 作成を指示した者の所属)`);
+  }
+  return out;
+})();
+const qaAffiliation = (() => {
+  if (config.gates?.g7?.params?.approverMode !== 'dedicated-qa') return null;
+  const qa = seatOf('qa-gatekeeper')?.accountable ?? null;
+  const dev = seatOf('dev-verifier')?.accountable ?? null;
+  const qaTeam = teamOf(qa);
+  const devTeam = teamOf(dev);
+  return {
+    mode: 'dedicated-qa',
+    qa: qa ? personName(config, qa) : null,
+    qaTeam,
+    devTeam,
+    separate: qaTeam && devTeam ? qaTeam !== devTeam : null,
+    why: !qa ? '出荷判定者の席の責任者が未記入' : !qaTeam ? '名簿に出荷判定者の所属(team)が無く、QA 部門・専任かを確かめられない(名簿の team の欄は任意。/process-change の種別 accountable)' : !devTeam ? '名簿に開発者の席の責任者の所属(team)が無く、開発ラインと別の所属かを確かめられない' : null,
+  };
+})();
 const confirmedPrs = prs.filter((p) => p.g6.independent.counted);
 const withoutIndependentHuman = changesTotal - confirmedUnits.length;
 const identityUnconfirmed = unconfirmed.approverUnmapped + unconfirmed.instructorUnresolved;
@@ -1451,6 +1702,19 @@ const objectionSelfAccepted = Boolean(whoKey('qa-gatekeeper')) && whoKey('qa-gat
 
 const independence = {
   g6: g6Status,
+  // G-6 に要する独立した人の承認者の数(構成 review.reviewerCount)と、監査対応書式(review.recordFormat: audit)の要否
+  reviewers: {
+    required: reviewersRequired,
+    configured: REVIEWERS_REQUIRED,
+    applied: g6AppliedStructure,
+    recordFormat: config.review?.recordFormat ?? 'standard',
+    independentSafetyAssessment: config.gates?.g6?.params?.independentSafetyAssessment === true,
+    insufficient: insufficientApproverChanges,
+  },
+  // 10名以上の規則(第8章 軸A。#288 第6巡 Q)。構成に値がある場合だけ出す
+  coreReview,
+  qaAffiliation,
+  teamSize: config.answers?.['q-team-size'] ?? null,
   g6PostHocSampling: g6PostHoc
     ? `G-6 を事後の抜き取りへ移した変更 ${g6PostHoc} 件` +
       (samplerIsAuthor ? '(抜き取りは責任者本人が実施する。独立した確認に数えない)' : '(独立レビュアの席の責任者が事後に抜き取る)')
@@ -1521,6 +1785,17 @@ if (config.guard?.enabled === false) {
 // 3. リスク区分ごとの変更の件数と、確定の形態の内訳
 // リスク区分を確定した者の記名(判定記録)。「自己記載」と AI の名義は、確定した者の記名に数えない
 const riskConfirmed = count(records, (r) => r.riskConfirmedBy && !/自己記載/.test(r.riskConfirmedBy) && !aiNameBlocked(config, r.riskConfirmedBy));
+// R1・R2 の PR の確定者(「リスク区分」の節の「確定した者」)。作成を指示した者以外の名簿の人で、AI の名義でないものを数える
+const riskConfirmation = (() => {
+  const high = knownPrs.filter((p) => p.riskClass === 'R1' || p.riskClass === 'R2');
+  const ok = high.filter((p) => {
+    const who = p.riskConfirmer;
+    if (!who || aiNameBlocked(config, who)) return false;
+    const person = resolveSigner(config, who.replace(/^@/, '')) ?? findPersonByAccount(config, who);
+    return Boolean(person) && !(p.instructedBy ?? []).some((n) => personKey(config, n) === person.id || samePerson(config, n, person.name));
+  });
+  return { high: high.length, confirmed: ok.length, unconfirmed: high.filter((p) => !ok.includes(p)).map((p) => `#${p.number}`) };
+})();
 const byClass = (k) => {
   const own = knownPrs.filter((p) => (k === 'notRecorded' ? !p.riskClass : p.riskClass === k));
   return {
@@ -1542,11 +1817,18 @@ const changeCounts = {
   byRiskClassDetail: knownPrs.length
     ? { R1: byClass('R1'), R2: byClass('R2'), R3: byClass('R3'), notRecorded: byClass('notRecorded') }
     : NO_RECORD,
-  // 区分の出所。低い区分への自己記載で、人の確認を経ない変更が増える経路を見えるようにする
-  riskClassSource: riskConfirmed
-    ? `区分を確定した者の記名がある判定記録 ${riskConfirmed} 件。それ以外の変更の区分は、PR 本文の自己記載に依る(PR と判定記録の突合はしていない)`
-    : 'PR 本文の自己記載だけに依る。区分を確定した者の記名は無い',
+  // 区分の出所。低い区分への自己記載で、人の確認を経ない変更が増える経路を見えるようにする。
+  // 確定した者の記名は、判定記録(「変更のリスク区分」の確定者)と PR 本文(「確定した者」)の両方を数える(#288 第3巡)
+  riskClassSource: (() => {
+    const parts = [];
+    if (riskConfirmed) parts.push(`区分を確定した者の記名がある判定記録 ${riskConfirmed} 件`);
+    if (riskConfirmation.confirmed) parts.push(`PR 本文の「確定した者」の記名(作成を指示した者以外の名簿の人)がある R1・R2 の PR ${riskConfirmation.confirmed} 件(R1・R2 ${riskConfirmation.high} 件のうち)`);
+    return parts.length
+      ? `${parts.join('、')}。それ以外の変更の区分は、PR 本文の自己記載に依る(PR と判定記録の突合はしていない)`
+      : 'PR 本文の自己記載だけに依る。区分を確定した者の記名は、判定記録にも PR 本文にも無い';
+  })(),
   riskClassConfirmedRecords: riskConfirmed,
+  riskConfirmation,
   byMode: records.length
     ? {
         human: count(records, (r) => r.mode === MODE_LABEL.human),
@@ -1603,6 +1885,7 @@ const phase = (name) => {
   if (!hasTarget(adapter)) return '未実施(検査対象が存在しない)';
   return (adapter.commands?.[name] ?? '').trim() ? '実施(結果は gate-g5 に含む)' : '未実施(コマンドが未設定)';
 };
+const envCheck = readEnvCheck(config);
 const machineChecks = {
   gateG5: prs.length
     ? {
@@ -1618,7 +1901,16 @@ const machineChecks = {
   licenses: licenseScan.scanRun ? `実施(${licenseScan.result ?? '結果の記録なし'})` : '未実施',
   secretScan: phase('secretScan'),
   dependencyDiff: depDiff ? '実施' : NO_RECORD,
+  // 実環境の統制の確認(附属書I I.11 要件⑦。#288 第6巡)。ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物の取得を、
+  // 採用者が実環境の gh で確かめた記録(docs/adoption-trial/env-check.json)。未確認は未達のゲートと同じく表示し続ける(欠落にはしない)
+  envControls: envCheck.summary,
+  envControlsDetail: { present: envCheck.present, confirmed: envCheck.confirmed, items: envCheck.items, problems: envCheck.problems, committed: envCheck.committed, checkedAt: envCheck.record?.checkedAt ?? null, checkedBy: envCheck.record?.checkedBy ?? null, repoUrl: envCheck.record?.repoUrl ?? null, evidenceText: envCheck.evidenceText ?? null },
 };
+
+// 壊してはならない品質条件の突合・G-7 基準1 の件数・欠陥の台帳(基準2)。項目4・5 と基準1・2 の材料(下で欠落も判定する)
+const briefQuality = readBriefQuality();
+const trace = traceVerification({ conditions: briefQuality.conditions });
+const defects = readDefectLedger(config);
 
 // 5. 残存リスク、既知の不具合、未回収の例外
 const debtRows = ledgerRows ? ledgerRows.filter((r) => r.state.startsWith('未返却')) : null;
@@ -1632,16 +1924,54 @@ const residual = {
   gateExceptions: gateExceptions.matched,
   openUnresolved: debtRows ? debtRows.filter((r) => r.kind === '未解決').map((r) => `${r.id} ${r.content}`) : NO_RECORD,
   openDebt: debtRows ? count(debtRows, (r) => r.kind === '負債') : NO_RECORD,
-  knownDefects: `${NO_RECORD}(不具合の台帳を持たない。追跡は Issue による)`,
+  knownDefects: !defects.present
+    ? `${NO_RECORD}(欠陥の台帳 ${DEFECT_FILE} が無い)`
+    : defects.noKnown
+      ? '既知の欠陥なし(台帳の記載)'
+      : `未解決 ${defects.open} 件(${defects.bySeverity.map((x) => `${x.severity} ${x.open} 件`).join(' / ')}。事業ステージ ${defects.stage ?? '不明'})`,
+  // 壊してはならない品質条件のうち、検証へ降ろしていないもの(第4章 G-7「壊してはならない品質条件の突合」。G-8 の受容の対象)
+  qcNoTest: trace.qcNoTest,
+  qcUnreferenced: trace.qcUnreferenced,
   // 構成の初期化より前に、製品のコードを変えたコミット。独立した人の確認・リスク区分・検証の記載を確かめていない
   preInitProductChanges: preInitDetail.product.length,
 };
 independence.preInit = { productChanges: preInitDetail.product.length, templateOrigin: preInitDetail.templateOrigin };
 
 // 6. 検出能力の測定値と測定時点(人の層・AI の層)
-const seeded = exists('evidence/seeded-errors.json')
-  ? JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/seeded-errors.json'), 'utf8'))
-  : null;
+// 測定の記録は、記録の置き場 docs/adoption-trial/seeded-errors.json(導入前の検証の tally が書き、コミットされる)を読む。
+// 記録の置き場に記録があるときは、evidence/seeded-errors.json(.gitignore の下。CI が成果物として置く場合の経路)を読まない。
+// 誰でも書ける未コミットの記録が、測定時点が新しいだけでコミット済みの目隠しの測定に勝つ経路を閉じる(#288 第5巡。
+// 第4巡の「両方あれば新しいほう」を置き換えた)。記録の置き場に記録が無いときに限り evidence/ を読む。採った出所と、
+// 読まなかった記録を項目6 に出す
+const SEEDED_SOURCES = ['docs/adoption-trial/seeded-errors.json', 'evidence/seeded-errors.json'];
+const seededLatestAt = (v) =>
+  v && typeof v === 'object'
+    ? [v.human, v.ai, v].map((x) => (x && typeof x === 'object' ? (x.measuredAtIso ?? x.measuredAt ?? x.scannedAt ?? null) : null)).filter(Boolean).sort().at(-1) ?? ''
+    : '';
+const seededCandidates = SEEDED_SOURCES.filter((p) => exists(p)).map((p) => {
+  try {
+    return { source: p, value: JSON.parse(fs.readFileSync(path.join(ROOT, p), 'utf8')) };
+  } catch (e) {
+    return { source: p, value: null, error: e.message };
+  }
+}).filter((c) => c.value && typeof c.value === 'object');
+const seededPick = seededCandidates.find((c) => c.source === SEEDED_SOURCES[0]) ?? seededCandidates[0] ?? null;
+const seeded = seededPick?.value ?? null;
+const seededIgnored = seededCandidates.filter((c) => c !== seededPick);
+const seededSource = seededPick
+  ? `${seededPick.source}${seededIgnored.length ? `(${seededIgnored.map((c) => `${c.source}(測定時点 ${seededLatestAt(c.value) || '記録なし'})`).join(' / ')} は読まない。記録の置き場に記録があるとき、evidence/ の記録は測定時点に依らず採らない)` : ''}`
+  : `記録なし(${SEEDED_SOURCES.join(' / ')} のいずれも無い)`;
+// 記録の置き場の記録は、コミットされていて、コミットの後の変更が無いことを要する(見つける者の記録と同じ。#288 第4巡 C と同じ扱い)。
+// evidence/ の記録は .gitignore の下にあるため、コミットの有無では検証できない。出所の印(method・blind)で読む
+const seededProvenance = (() => {
+  if (!seededPick) return { ok: false, why: null };
+  if (seededPick.source !== SEEDED_SOURCES[0]) return { ok: true, why: null, uncommittedPath: false };
+  const committed = git(['log', '-1', '--format=%cI', '--', seededPick.source]);
+  const dirty = git(['status', '--porcelain', '--', seededPick.source]);
+  if (!committed) return { ok: false, why: `${seededPick.source} がコミットされていない(誰が書いたかを git の履歴で確かめられない)` };
+  if (dirty) return { ok: false, why: `${seededPick.source} にコミットの後の変更がある(コミット済みの測定と一致しない)` };
+  return { ok: true, why: null };
+})();
 // 期間の指定では、起点と終点の日付そのもの(手元の時刻帯の日付)で切る
 const fromDay = period ? period.from : from ? git(['log', '-1', '--format=%cs', from]) : '';
 const toDay = period ? period.to : git(['log', '-1', '--format=%cs', to]);
@@ -1670,30 +2000,185 @@ function unmeasuredStreak(measured, prevSince, prevReleases, prevWasUnmeasured) 
 }
 const streakText = (st) => `${st.since} の出荷から ${st.releases} 回連続${st.note ? `。${st.note}` : ''}`;
 
-// 測定の記録(evidence/seeded-errors.json)は、human / ai のキーを持てば層ごとに読む。
+// 組織継続の側の状態(依存先の一覧・単一障害点の一覧。第3章 3.12.11 / 附属書H H.6)。判定の日は出荷の終点の日付。
+// 期限を過ぎた受容は、状態が解消していなければ記載の欠落である(第4章 G-7 基準9)
+const continuity = continuityState(config, policy, { day: releaseDay });
+for (const item of continuity.expired) {
+  gaps.push(
+    `組織継続の状態「${item.state}: ${item.subject}」の受容の期限(${item.acceptance.until})が、判定の日(${releaseDay})を過ぎています。` +
+      '記載の欠落です。層1 の項目4 の権限者が受容を記名し直す(D-0 節15 へ新しい期限の行を足す)か、状態を解消してください(附属書H H.6)'
+  );
+}
+
+// 有事の決定者(D-0 節7 の4つの事象 × 3つの決定)の空欄は記載の欠落(第6章 テンプレ0「有事の決定者を決めておく」/ G-7 基準9)
+if (continuity.d0Present && continuity.emergencyMissing.length) {
+  gaps.push(
+    `D-0 節7 の有事の決定者に空欄が ${continuity.emergencyMissing.length} 欄あります(${continuity.emergencyMissing.join(' / ')})。記載の欠落です。` +
+      '4つの事象 × 3つの決定(停止・切替・顧客説明)の12欄を役割名で埋めます。該当しない事象は「層1 の項目4 による」と書き、層1 の該当行の受容者を埋めます'
+  );
+}
+
+// 壊してはならない品質条件の突合(第4章 G-7「壊してはならない品質条件の突合」)と、G-7 基準1 の件数(「基準1・2 の記録」)。
+// 突合が確かめるのは参照の有無だけである。参照したテストが条件を確かめていることは判定しない(G-6 が確かめる)
+if (briefQuality.missingIds.length) {
+  gaps.push(
+    `企画書の壊してはならない品質条件に、識別子(QC-NN)を持たない条件があります(${briefQuality.missingIds.slice(0, 3).map((t) => t.slice(0, 40)).join(' / ')})。` +
+      '記載の欠落です。「壊してはならない品質条件(識別子)」の表で条件ごとに識別子を振り、受入基準とテストから参照させます'
+  );
+}
+// G-7 基準2: 欠陥の台帳。台帳が無い出荷は、基準2 を確かめられないため記載の欠落
+if (!period && isActive('g7')) {
+  if (!defects.present) {
+    gaps.push(`欠陥の台帳(${DEFECT_FILE})がありません。基準2(未解決の欠陥)を確かめられないため、記載の欠落です。既知の欠陥が無い場合も「既知の欠陥なし」と書いた台帳を置きます(templates/defect-ledger.md)`);
+  } else if (defects.problems.length) {
+    gaps.push(`欠陥の台帳(${DEFECT_FILE})を読めません(${defects.problems.join('。')})。記載の欠落です`);
+  }
+}
+
+// 停止の申し立ての保留(第4章 G-7「停止の申し立ての保留」/ 第7章 7.11)。出荷の範囲の PR に、未解除の申し立て(ラベルが付いている、
+// または付けた履歴があり、その日以後の成立した解除の記録が出荷の終点に無いもの)がある場合と、リリースを対象とする未解除の申し立て
+// がある場合に、集約を失敗させる。保留は差し戻しではない。判定記録を作らず、項目7 へ出す
+const stopHolds = [];
+const stopHistoryUnread = [];
+{
+  const gitOrNull = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  };
+  const endRef = period ? 'HEAD' : to;
+  for (const p of prs) {
+    // ラベルの付け外しの履歴(issue の events)。読めない場合は、いま付いているラベルだけで判定する
+    const events = repo ? gh(['api', `repos/${repo}/issues/${p.number}/events?per_page=100`]) : null;
+    if (!Array.isArray(events)) stopHistoryUnread.push(p.number);
+    const labelEvents = Array.isArray(events)
+      ? events.filter((e) => e?.event === 'labeled' || e?.event === 'unlabeled').map((e) => ({ event: e.event, label: e.label?.name ?? e.label, at: e.created_at ?? e.at }))
+      : null;
+    const r = stopFindings({ git: gitOrNull, base: endRef, pr: { number: p.number, labels: p.labels ?? [], labelEvents }, config });
+    if (r.requested) {
+      p.stop = { released: r.released, message: r.message };
+      if (!r.released) stopHolds.push({ target: `PR #${p.number}`, message: r.message });
+    }
+  }
+  // リリースを対象とする申し立て(ラベル state:stop-requested の付いた開いている Issue で、題名か本文が出荷の終点を指すもの)
+  if (!period && to !== 'HEAD' && repo) {
+    const issues = gh(['issue', 'list', '--repo', repo, '--label', STOP_LABEL, '--state', 'open', '--json', 'number,title,body']);
+    for (const i of Array.isArray(issues) ? issues : []) {
+      if (!`${i.title ?? ''}\n${i.body ?? ''}`.includes(to)) continue;
+      const released = gateRecordList
+        .map((g) => parseStopRelease(config, policy, g.file, fs.readFileSync(path.join(ROOT, g.file), 'utf8')))
+        .filter((x) => x && x.valid && String(x.target ?? '').includes(to));
+      if (!released.length) stopHolds.push({ target: `リリース ${to}(Issue #${i.number})`, message: `リリース ${to} を対象とする停止の申し立て(Issue #${i.number})に、成立した解除の記録(対象に ${to} を書いた解除の記録)が無い。PR の段階の解除は、リリースの申し立てを解かない` });
+    }
+  }
+  for (const h of stopHolds) {
+    gaps.push(
+      `停止の申し立ての保留: ${h.target}。${h.message}。出荷の証跡の集約を失敗させます(第4章 G-7「停止の申し立ての保留」)。` +
+        '保留を解くのは解除の記録だけです。出荷判定者の署名と G-8 の受容は保留を解きません'
+    );
+  }
+}
+
+// ステージ移行ゲート・第三者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
+const AI_EVAL_ROWS = ['評価の単位', '下流の指標と比較の基準値', '総費用の内訳', '評価に用いなかった入力', '判定', '縮小・停止の基準に当たる状態での継続'];
+for (const g of gateRecordList.filter((r) => /ステージ移行|^SG|棚卸し/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
+  const text = fs.readFileSync(path.join(ROOT, g.file), 'utf8');
+  const sec = mdSection(text, 'AI\\s*の利用の評価');
+  if (sec === null) {
+    gaps.push(`${g.file}: ステージ移行ゲート・棚卸しの判定記録に「AI の利用の評価」の節がありません。記載の欠落です(第7章 7.7.8。テンプレ4)`);
+    continue;
+  }
+  const blank = AI_EVAL_ROWS.filter((k) => {
+    const v = rowValue(sec, k, false);
+    return !filled(v) && !(k === '縮小・停止の基準に当たる状態での継続' && /該当なし/.test(String(v ?? '')));
+  });
+  if (blank.length) gaps.push(`${g.file}: 「AI の利用の評価」に空欄の欄があります(${blank.join(' / ')})。記載の欠落です(第7章 7.7.8)`);
+}
+
+// 測定の記録(docs/adoption-trial/seeded-errors.json、または evidence/seeded-errors.json)は、human / ai のキーを持てば層ごとに読む。
 // 持たない場合は、全体を人の層の記録として扱う
-const seededHuman = seeded ? (seeded.human ?? (seeded.ai === undefined ? seeded : null)) : null;
-const seededAi = seeded?.ai ?? null;
-const performerSeats = seats.filter((s) => s.performer);
-// 測定時点の後に担い手の識別が変わっていれば、AI の層の値は失効している(標準 附属書H H.6 項目6)。
-// 測定時点の記録が無い値は、失効していないことを示せない
+const seededHumanRaw = seeded ? (seeded.human ?? (seeded.ai === undefined ? seeded : null)) : null;
+const seededAiRaw = seeded?.ai ?? null;
 const measuredAtOf = (v) => (v && typeof v === 'object' ? (v.measuredAt ?? v.scannedAt ?? null) : null);
+// 測定値として読まない層と、その理由(標準 附属書I I.11 の要件③。#288 第4巡・第5巡)。
+//   目隠しを確かめられない層(tally が blind:false を書いた層。見つける者が注入した者と同じ、など)
+//   出所を検証できない層(method と blind の記録が無い。tally が書いた記録はどちらも持つ。手で書いた記録と区別する印)
+//   記録の置き場の記録がコミットされていない、またはコミットの後に変更がある
+//   測定時点が判定の日より後(未来の測定は数えない。演習の記録と同じ扱い)
+const unmeasurableReason = (v) => {
+  if (!v || typeof v !== 'object') return null;
+  if (v.blind === false) return `目隠しを確かめられない(${(Array.isArray(v.blindProblems) && v.blindProblems.length ? v.blindProblems : ['理由の記録なし']).join('。')})。検出率に数えない`;
+  if (!seededProvenance.ok) return `出所を検証できない(${seededProvenance.why})。検出率に数えない`;
+  if (!isFilledValue(v.method) || v.blind !== true) return '出所を検証できない(記録に method と blind: true が無い。導入前の検証の tally が書いた記録はどちらも持つ)。検出率に数えない';
+  const at = measuredAtOf(v);
+  if (at && String(at).slice(0, 10) > releaseDay) return `測定時点 ${String(at).slice(0, 10)} が判定の日(${releaseDay})より後(未来の測定は数えない)。検出率に数えない`;
+  return null;
+};
+const seededHumanBlind = unmeasurableReason(seededHumanRaw);
+const seededHuman = seededHumanBlind ? null : seededHumanRaw;
+const seededAiBlind = unmeasurableReason(seededAiRaw);
+const seededAi = seededAiBlind ? null : seededAiRaw;
+const performerSeats = seats.filter((s) => s.performer);
+// 測定の後に担い手の識別が変わっていれば、AI の層の値は失効している(標準 附属書H H.6 項目6)。
+// 判定は、記録に書かれた測定した担い手の識別(tally が書く performers[]: 席・モデル・指示資産の版)と、現在の構成の識別の一致で行う。
+// 同じ日の世代交代でも失効する(#288 第5巡)。記録に識別が無い旧い記録は、日付の比較で補う(測定時点の日付が最後の担い手の
+// 変化点の日付より前なら失効)。測定時点の記録が無い値は、失効していないことを示せない
 const lastPerformerChange =
   (config.changeLog ?? [])
     .filter((e) => e.kind === 'performer')
     .map((e) => changeDay(e))
     .sort()
     .at(-1) ?? null;
-const aiExpired = Boolean(
-  seededAi && lastPerformerChange && (!measuredAtOf(seededAi) || String(measuredAtOf(seededAi)).slice(0, 10) < lastPerformerChange)
+// 識別の比較は org-assurance.mjs の関数(next.mjs も同じ関数で、変化点の直後に失効を注記として出す。#288 第6巡 N)
+const aiIdentityMismatch = identityMismatchOf(config, seededAi);
+// 人の層の測定した見つける者と、現在の独立レビュアの席の責任者・名簿の対応(#288 第6巡 O)。
+// 全員が離れた層、層1 の「人の層の再測定の契機」に当たる層は失効。一部が離れた層は、残る者の指摘の和集合で読み直す
+const humanFinders = humanFinderState(config, policy, seededHuman ?? seededHumanRaw);
+const humanExpiredByFinders = Boolean(seededHuman) && Boolean(humanFinders?.expired);
+const seededHumanShown = (() => {
+  if (!seededHuman || humanExpiredByFinders) return seededHuman;
+  if (humanFinders?.recomputed) {
+    const r = humanFinders.recomputed;
+    return { ...seededHuman, detected: r.detected, seeded: r.seeded, rate: r.rate, recomputedFrom: { detected: seededHuman.detected, finders: humanFinders.finders }, note: `残る見つける者(${r.finders.join('・')})の指摘の和集合で読み直した値` };
+  }
+  return seededHuman;
+})();
+const aiExpiredByIdentity = Boolean(aiIdentityMismatch && aiIdentityMismatch.length);
+const aiExpiredByDate = Boolean(
+  seededAi && !aiIdentityMismatch && lastPerformerChange && (!measuredAtOf(seededAi) || String(measuredAtOf(seededAi)).slice(0, 10) < lastPerformerChange)
 );
+const aiExpired = aiExpiredByIdentity || aiExpiredByDate;
 // AI の層の検出能力は、欠陥注入による実測があるときだけ「測定済み」とする。
 // 適合性確認(第3章 3.4.2)の結果は、検出能力の測定値として出さない(附属書H H.7)
-const aiMeasured = performerSeats.length > 0 && Boolean(seededAi) && !aiExpired;
+// 附属書H H.4 の条件2〜5 の確認の記録(適合性確認と同じ置き場: seats[].qualification.conditions)。AI維持管理者の席の責任者の確認と、
+// 当該の席の責任者の承認を要する。記録が無い、または直近の四半期の棚卸し(判定の日の92日前)より古い席がある AI の層は、
+// 「条件未確認」として検出の層に数えない。機械が確かめるのは記録の有無・日付・記名の席までである(中身は AI維持管理者が人として確かめる)
+const maintainerWho = seatOf('ai-maintainer')?.accountable ?? null;
+const aiConditionsUnchecked = performerSeats
+  .map((s) => {
+    const c = s.qualification?.conditions;
+    const why = [];
+    if (!c) why.push('条件2〜5 の確認の記録が無い');
+    else {
+      if (!isRealDay(c.checkedAt)) why.push('確認日が日付でない');
+      else {
+        const age = (Date.parse(releaseDay) - Date.parse(c.checkedAt)) / 86400000;
+        if (!(age <= 92)) why.push(`確認日 ${c.checkedAt} が直近の四半期の棚卸し(判定の日の92日前)より古い`);
+      }
+      if (!maintainerWho || !samePerson(config, c.checkedBy, maintainerWho)) why.push('確認した者が AI維持管理者の席の責任者でない');
+      if (!s.accountable || !samePerson(config, c.approvedBy, s.accountable)) why.push('承認した者が当該の席の責任者でない');
+      if (aiNameBlocked(config, c.checkedBy ?? '') || aiNameBlocked(config, c.approvedBy ?? '')) why.push('記名が AI の名義');
+    }
+    return why.length ? `${s.name ?? s.role}(${why.join('。')})` : null;
+  })
+  .filter(Boolean);
+const aiMeasured = performerSeats.length > 0 && Boolean(seededAi) && !aiExpired && !aiConditionsUnchecked.length;
 const prevD = prevA?.detection ?? null;
 // 前回の出力が旧い形式(席ごとの配列。適合性確認の結果を値にしていた)なら、未測定として引き継ぐ
 const prevAiUnmeasured = Array.isArray(prevD?.ai) || (typeof prevD?.ai === 'string' && prevD.ai.startsWith(UNMEASURED));
-const humanStreak = unmeasuredStreak(Boolean(seededHuman), prevD?.unmeasuredSince, prevD?.unmeasuredReleases, prevD?.human === UNMEASURED);
+const humanStreak = unmeasuredStreak(Boolean(seededHuman) && !humanExpiredByFinders, prevD?.unmeasuredSince, prevD?.unmeasuredReleases, typeof prevD?.human === 'string' && prevD.human.startsWith(UNMEASURED));
 // AI の担い手の宣言が無い構成には、AI の層が無い。継続は数えない
 const aiStreak = performerSeats.length
   ? unmeasuredStreak(aiMeasured, prevD?.aiUnmeasuredSince, prevD?.aiUnmeasuredReleases, prevAiUnmeasured)
@@ -1701,15 +2186,45 @@ const aiStreak = performerSeats.length
 let aiValue;
 if (!performerSeats.length) aiValue = `${UNMEASURED}(AI の担い手の宣言なし)`;
 else if (aiMeasured) aiValue = seededAi;
-else if (aiExpired) aiValue = `${UNMEASURED}(測定時点の後に担い手の識別が変わり、値は失効している。測定時点の記録が無い値も同じ扱い)`;
+else if (aiExpiredByIdentity) aiValue = `${UNMEASURED}(失効: 測定した担い手の識別が現在の識別と一致しない。${aiIdentityMismatch.join(' / ')}。識別が変わった後の値は検出能力を示さない。tally をやり直す)`;
+else if (aiExpired) aiValue = `${UNMEASURED}(測定時点の後に担い手の識別が変わり、値は失効している。記録に測定した担い手の識別が無いため日付で比べた。測定時点の記録が無い値も同じ扱い)`;
+else if (seededAi && aiConditionsUnchecked.length) aiValue = `${UNMEASURED}(条件未確認。附属書H H.4 の条件2〜5 の確認の記録が無いか古い席がある: ${aiConditionsUnchecked.join(' / ')}。検出の層に数えない)`;
+else if (seededAiBlind) aiValue = `${UNMEASURED}(${seededAiBlind})`;
 else aiValue = `${UNMEASURED}(AI の層の検出能力を測定した記録がない)`;
 const detection = {
-  human: seededHuman ?? UNMEASURED,
+  // 測定の記録の出所(docs/adoption-trial/seeded-errors.json を先に読む。evidence/seeded-errors.json は CI が置く場合の経路)
+  source: seededSource,
+  human: humanExpiredByFinders
+    ? `${UNMEASURED}(失効: ${humanFinders.why}。測定値は測定した見つける者の値であり、現在の体制の検出能力を示さない。tally をやり直す)`
+    : (seededHumanShown ?? (seededHumanBlind ? `${UNMEASURED}(${seededHumanBlind})` : UNMEASURED)),
+  // 人の層の測定した見つける者と、現在の独立レビュアの席の責任者・名簿の対応(#288 第6巡 O)。失効と注記の根拠
+  humanFinders: humanFinders
+    ? {
+        recorded: humanFinders.recorded,
+        finders: humanFinders.finders,
+        mapping: humanFinders.mapping ?? [],
+        accountable: humanFinders.accountable,
+        accountableIncluded: humanFinders.accountableIncluded,
+        departed: humanFinders.departed,
+        expired: humanFinders.expired,
+        why: humanFinders.why,
+        recomputed: humanFinders.recomputed,
+        trigger: humanFinders.trigger?.raw ?? null,
+        notes: humanFinders.notes,
+      }
+    : null,
   // 人の層が未測定のまま出荷した最初の出荷の日付と、連続した出荷の回数。測定済みなら null と 0
   unmeasuredSince: humanStreak.since,
   unmeasuredReleases: humanStreak.releases,
   unmeasuredNote: humanStreak.note,
   ai: aiValue,
+  // 測定した担い手の識別(記録の performers[])と現在の識別。失効の判定の根拠(#288 第5巡)
+  aiPerformers: {
+    recorded: Array.isArray(seededAiRaw?.performers) ? seededAiRaw.performers.map((p) => `${p.seat ?? p.role ?? '(席の記録なし)'}: ${performerIdentity(p)}`) : null,
+    current: performerSeats.map((s) => `${s.name ?? s.role}: ${performerIdentity(s.performer)}`),
+    mismatch: aiIdentityMismatch ?? null,
+    comparedBy: aiIdentityMismatch ? 'identity' : lastPerformerChange ? 'date' : null,
+  },
   aiUnmeasuredSince: aiStreak.since,
   aiUnmeasuredReleases: aiStreak.releases,
   aiUnmeasuredNote: aiStreak.note,
@@ -1856,6 +2371,37 @@ const assurance = {
   detectionExternal,
   generation,
   drift,
+  // 組織継続の側の状態(項目5・7 へ出す。成立条件には入れない。附属書H H.6)
+  continuity: {
+    d0Policy: continuity.d0Policy,
+    policy: policy.label,
+    successors: continuity.successors,
+    degradation: continuity.degradation,
+    emergencyBlank: continuity.emergencyBlank,
+    emergencyMissing: continuity.emergencyMissing,
+    cycle: continuity.cycle,
+    cycleNotices: continuity.cycleNotices,
+    baselineScope: continuity.baselineScope,
+    core: continuity.core.map((c) => ({ name: c.name, holders: c.holders.length, uncounted: c.uncounted.length, uncountedDetail: c.uncounted })),
+    // 席の責任者本人の力量の確認(第3章 3.4.3 要求事項1。#288 第6巡 R)。記録の無い任命は暫定任命、周期を過ぎた確認は失効
+    competence: competenceState(config, policy, { day: releaseDay }),
+    rehearsals: continuity.rehearsals,
+    dependencies: continuity.dependencies,
+    spof: continuity.spof,
+    problems: continuity.problems,
+  },
+  // 壊してはならない品質条件の突合と、G-7 基準1・2 の件数(第4章 G-7「基準1・2 の記録」「壊してはならない品質条件の突合」)
+  verification: {
+    qc: trace.qc,
+    qcMissingIds: briefQuality.missingIds,
+    criterion1: trace.criterion1,
+    defects,
+  },
+  // 停止の申し立ての保留(出荷の範囲)と、自律実行の保留の範囲(第4章 G-7「停止の申し立ての保留」/ 第7章 7.11)
+  stopHolds,
+  stopHistoryUnread,
+  // 停止の申し立ての解除の記録(第7章 7.11)。当該の範囲で追加されたもの
+  stopReleases: stopReleases.map((r) => ({ file: r.file, target: r.target, day: r.day, judge: r.judge, requester: r.requester, declined: r.declined, escalation: r.escalation, valid: r.valid, problems: r.problems, selfReleased: r.selfReleased })),
 };
 
 // --- 出荷判定者の異議(標準 第4章 G-8「出荷判定者の異議」) ----------------------
@@ -1944,6 +2490,163 @@ const sampling = prs
     return { pr: p.number, sampled: recs.length > 0, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
   });
 
+// --- 保証の主張の成立判定(標準 第4章 G-7「保証の主張の成立判定」/ 附属書H H.1・H.6。#288) -----------------
+//
+// 保証範囲に入る変更が6つの成立条件をすべて満たすかを、層1・層2 の記録と7項目の値から機械で判定する。人が判定しない。
+// 条件1・2・4・5・6 は出荷(期間)の単位で、条件3 は変更ごとに判定する。変更が保証範囲に入るかどうかは、企画書の
+// 保証範囲の欄の記述からは機械で決められないため、層2 を宣言した案件では範囲の全変更を保証範囲に入るものとして数える。
+// 条件4 は、G-7・G-8 の判定記録があれば記名した者で、無ければ席の責任者の構成で判定する(判定記録は集約の後に
+// 作られるため。記録を書いた後に集約し直すと、記名で判定し直す)。条件6 の「記載の欠落」には、この判定から導く
+// G-8 の対象外の受容の欄の欠落を含めない(判定の結果に依る欠落であるため)
+const claimGapsBefore = gaps.length;
+const releaseWord = period ? '期間' : 'リリース';
+// 条件2: 層2 の保証範囲(企画書の4欄)と、G-1 の判定記録(通過)
+const briefScope = readBriefScope();
+const g1Passed = gateDetails.some((g) => /G-1/.test(g.gate ?? '') && passed(g));
+let cond2Reason = null;
+if (!isActive('g1')) cond2Reason = `G-1 が${config.gates.g1?.state === 'unmet' ? '未達' : '省略'}の構成であり、層2 の保証範囲を G-1 で宣言していない`;
+else if (!briefScope.declared) cond2Reason = briefScope.reason;
+else if (!g1Passed) cond2Reason = '企画承認(G-1)の判定記録(結果が通過)が無い';
+// 条件4: 出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している
+const targetsRelease = (g) => !recordsInRange || recordsInRange.has(g.file) || (to !== 'HEAD' && (g.target ?? '').includes(to));
+const g7For = period ? [] : gateDetails.filter((g) => /G-7/.test(g.gate ?? '') && passed(g) && targetsRelease(g));
+const g8For = g8Records.filter((g) => passed(g));
+const humanSigner = (name) => Boolean(name) && !nameProblems(config, name, { requireRoster: true }).length;
+let cond4 = { ok: false, basis: null, reason: null };
+const qaWho = seatOf('qa-gatekeeper')?.accountable ?? null;
+const bizWho = seatOf('biz-approver')?.accountable ?? null;
+if (g8For.length && (period || g7For.length)) {
+  const g7Judges = period ? (qaWho ? [qaWho] : []) : g7For.map((g) => g.judge).filter(Boolean);
+  const g8Judges = g8For.map((g) => g.judge).filter(Boolean);
+  const bad = [...g7Judges, ...g8Judges].filter((n) => !humanSigner(n));
+  if (!g7Judges.length || !g8Judges.length) cond4 = { ok: false, basis: 'record', reason: '判定記録に判定者の記名が無い' };
+  else if (bad.length) cond4 = { ok: false, basis: 'record', reason: `判定者の記名を、名簿の自然人として受け付けられない(${bad.join(' / ')})` };
+  else if (g7Judges.some((a) => g8Judges.some((b) => samePerson(config, a, b)))) {
+    cond4 = { ok: false, basis: 'record', reason: `出荷判定${period ? '者(異議を書く者)' : '(G-7)'}と受容(G-8)を同じ人が記名している` };
+  } else cond4 = { ok: true, basis: 'record', reason: null };
+} else if (!period && !isActive('g7')) cond4 = { ok: false, basis: 'structure', reason: `G-7 が${config.gates.g7?.state === 'unmet' ? '未達' : '省略'}の構成` };
+else if (!isActive('g8')) cond4 = { ok: false, basis: 'structure', reason: `G-8 が${config.gates.g8?.state === 'unmet' ? '未達' : '省略'}の構成` };
+else if (g7Deviation) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者の席が兼務(代償措置つきの逸脱)であり、開発ラインから独立した人が記名しない' };
+else if (!qaWho || !bizWho) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者または事業決裁者の席の責任者が未記入' };
+else if (objectionSelfAccepted) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者の席と事業決裁者の席の責任者が同一人物' };
+else if (!humanSigner(qaWho) || !humanSigner(bizWho)) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者または事業決裁者の席の責任者を、名簿の自然人として受け付けられない' };
+else cond4 = { ok: true, basis: 'structure', reason: null };
+// 条件5: 検出能力の測定。未測定が層1 の定める期間を超えて続いていない
+const tol = policy.tolerance;
+const layersOverdue = [
+  !withinTolerance(tol, humanStreak, releaseDay) ? `人の層(${streakText(humanStreak)})` : null,
+  performerSeats.length && !withinTolerance(tol, aiStreak, releaseDay) ? `AI の層(${streakText(aiStreak)})` : null,
+].filter(Boolean);
+const tolText = tol.raw ? `${tol.raw}${tol.note ? `。${tol.note}` : ''}` : policy.present ? (tol.note ?? '未記入') : '層1 なし(許容しないとして扱う)';
+// 条件6: 受容しない条件(層1 の項目2)に当たる事実。印の付いた条件だけを照合する
+const openLedger = debtRows ?? [];
+const nonAcceptableFacts = [];
+const notChecked = [];
+// 層1 の条件の文と機械の判定の食い違い(印 [未測定] の文に期間の表現がある、など)。出荷判定者へ出す注記(#288 第7巡 S)
+const conditionNotes = [];
+for (const c of policy.conditions) {
+  const hit = (fact, source) => nonAcceptableFacts.push({ condition: c.text, fact, source });
+  if (c.kind === 'R1未確認') {
+    if (r1Unconfirmed.length) hit(`独立した人の確認を経ていない R1 の変更 ${r1Unconfirmed.length} 件(${r1Unconfirmed.map((x) => x.label).join(', ')})`, '保証の開示 項目1');
+  } else if (c.kind === '未達ゲート') {
+    if (unmet.length) hit(`未達のゲート ${unmet.map((u) => u.label).join(' / ')}`, '保証の開示 項目1・5');
+  } else if (c.kind === '逸脱') {
+    if (deviations.length) hit(`逸脱 ${deviations.map((d) => d.label).join(' / ')}`, '保証の開示 項目5');
+  } else if (c.kind === '未回収の例外') {
+    const ex = openLedger.filter((r) => r.kind === '例外');
+    if (ex.length) hit(`未回収の例外 ${ex.map((r) => r.id).join(', ')}`, '技術負債台帳(保証の開示 項目5)');
+  } else if (c.kind === '未測定') {
+    // 印 [未測定] は層1 項目1 の許容期間に依らず、未測定の最初の出荷から当たる(即時)。期間の猶予は成立条件5 だけが見る。
+    // 猶予を与える組織は印を付けない(#288 第7巡 S。ADR-0057 補足 S45)
+    const um = [typeof detection.human === 'string' ? '人の層' : null, performerSeats.length && !aiMeasured ? 'AI の層' : null].filter(Boolean);
+    if (um.length) hit(`検出能力が未測定(${um.join('・')})。印 [未測定] は項目1 の許容期間(${tolText})に依らず当たる`, '保証の開示 項目6');
+    if (c.periodWords) conditionNotes.push(`条件「${c.text}」の文に期間の表現(「${c.periodWords}」)があるが、印 [未測定] は項目1 の許容期間を読まず、未測定の最初の出荷から当たる。期間の猶予を与えるなら印を外す(成立条件5 が期間を見る)。文と機械の判定が食い違ったまま出荷しない(層1 を改める)`);
+  } else if (c.kind === 'ledger') {
+    const rows = openLedger.filter((r) => `${r.content ?? ''} ${r.id ?? ''}`.normalize('NFKC').includes(c.word.normalize('NFKC')));
+    if (rows.length) hit(`技術負債台帳の未返却の行 ${rows.map((r) => r.id).join(', ')}(「${c.word}」を含む)`, '技術負債台帳(保証の開示 項目5)');
+  } else notChecked.push(c.kind === 'unknown' ? `${c.text}(印「${c.tag}」は機械で照合できる印に当たらない)` : c.text);
+}
+const gapsForClaim = claimGapsBefore;
+const releaseConditions = [
+  { id: 1, label: '層1 の方針と受容の基準が、トップマネジメントの記名で有効である', ok: policy.valid, reason: policy.valid ? null : policy.problems.join(' / ') },
+  { id: 2, label: '層2 の保証範囲が、G-1 で宣言されている', ok: !cond2Reason, reason: cond2Reason },
+  { id: 4, label: '出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している', ok: cond4.ok, reason: cond4.reason, basis: cond4.basis },
+  {
+    id: 5,
+    label: '検出能力を測定している(未測定が、層1 の定める期間を超えて続いていない)',
+    ok: !layersOverdue.length,
+    reason: layersOverdue.length ? `未測定が許容する期間(${tolText})を超えている: ${layersOverdue.join(' / ')}` : null,
+  },
+  {
+    id: 6,
+    label: '保証の開示に記載の欠落が無く、層1 の「受容しない条件」に当たる事実が無い',
+    ok: !gapsForClaim && !nonAcceptableFacts.length,
+    reason: [gapsForClaim ? `記録の欠落 ${gapsForClaim} 件` : null, nonAcceptableFacts.length ? `受容しない条件に当たる事実 ${nonAcceptableFacts.length} 件` : null].filter(Boolean).join(' / ') || null,
+  },
+];
+// 条件3: 変更ごと。独立した人の確認に数えた変更、または G-6 を事後へ移し、独立レビュアの席の責任者(作成を指示した者でない)が
+// 事後の抜き取りで確かめた変更
+const sampledIndependently = (label) => {
+  const n = Number(String(label).replace(/^#/, ''));
+  return !samplerIsAuthor && sampling.some((x) => x.pr === n && x.sampled);
+};
+const claimUnits = changeUnits.map((c) => {
+  const c3 = c.independent.counted || (c.postHoc && sampledIndependently(c.label));
+  const failed = [...releaseConditions.filter((x) => !x.ok).map((x) => x.id), ...(c3 ? [] : [3])].sort();
+  return { label: c.label, failed };
+});
+const claimEstablished = count(claimUnits, (u) => !u.failed.length);
+const claimNotEstablished = claimUnits.length - claimEstablished;
+const cond3Failed = count(claimUnits, (u) => u.failed.includes(3));
+let claimStatement = null;
+if (claimUnits.length && claimNotEstablished === claimUnits.length) {
+  claimStatement = `本${releaseWord}は、品質保証の対象外として出荷しました。実施した検証と、確かめていない範囲は、添付の保証の開示のとおりです。`;
+} else if (claimNotEstablished) {
+  claimStatement = `本${releaseWord}の変更 ${claimUnits.length} 件のうち ${claimNotEstablished} 件は、品質保証の対象外として出荷しました。`;
+}
+const claim = {
+  policy: { present: policy.present, valid: policy.valid, label: policy.label, problems: policy.problems, file: POLICY_FILE },
+  scope: { declared: !cond2Reason, reason: cond2Reason },
+  conditions: [
+    ...releaseConditions.slice(0, 2),
+    {
+      id: 3,
+      label: '範囲内の変更が、作成の指示者と別の自然人の確認(G-6。委任の変更は事後の抜き取り)を経ている',
+      ok: !cond3Failed,
+      reason: cond3Failed ? `満たさない変更 ${cond3Failed} 件(保証の開示 項目1・3)` : null,
+    },
+    ...releaseConditions.slice(2),
+  ],
+  total: claimUnits.length,
+  established: claimEstablished,
+  notEstablished: claimNotEstablished,
+  byCondition: Object.fromEntries([1, 2, 3, 4, 5, 6].map((id) => [id, count(claimUnits, (u) => u.failed.includes(id))])),
+  notEstablishedChanges: claimUnits.filter((u) => u.failed.length).map((u) => `${u.label}(条件 ${u.failed.join('・')})`),
+  nonAcceptable: { checked: policy.conditions.length - notChecked.length, facts: nonAcceptableFacts, notChecked, notes: conditionNotes },
+  tolerance: tolText,
+  statement: claimStatement,
+  outOfScopeAcceptance: null,
+};
+assurance.claim = claim;
+
+// 品質保証の対象外として出荷することの受容(第4章 G-8 要求事項6)。成立しない変更がある出荷の G-8 の記録は、層1 の項目4 の
+// 権限者の記名を要する。記録は集約の後に書かれるため、記録を書いた後に集約し直したときに検査される
+if (claimNotEstablished) {
+  for (const g of g8For) {
+    const v = g.g8?.outOfScope ?? null;
+    if (!filled(v)) {
+      gaps.push(
+        `${g.file}: 成立しない変更 ${claimNotEstablished} 件を品質保証の対象外として出荷しますが、「品質保証の対象外として出荷することの受容」に記名がありません。` +
+          '記載の欠落です(第4章 G-8 要求事項6)'
+      );
+      continue;
+    }
+    const auth = checkAuthority(config, policy, /品質保証の対象外として出荷/, v.replace(/[(（].*$/, '').trim(), { fallbackSeat: 'biz-approver' });
+    if (!auth.ok) gaps.push(`${g.file}: 「品質保証の対象外として出荷することの受容」の記名を受け付けられません(${auth.problems.join('。')})。第4章 G-8 要求事項6`);
+    claim.outOfScopeAcceptance = { file: g.file, ok: auth.ok, notes: auth.notes };
+  }
+}
+
 // --- G-7 の基準ごとの、機械が確かめた範囲(第4章 G-7 基準1〜9) --------------------
 //
 // 機械が確かめた結果か、「機械では確かめていない。出荷判定者が次の記録と突合する」かを、基準ごとに出す。
@@ -1953,12 +2656,36 @@ const gatesInRange = Object.entries(config.gates ?? {})
   .filter(([k]) => isActive(k))
   .map(([k, g]) => ({ gate: k, label: g.label ?? k, records: count(records, (r) => gateLabelRe(k).test(r.gate ?? '')) }));
 const g6Summary = `独立した人の確認あり ${confirmedUnits.length} 件 / G-6 を事後へ移した ${g6PostHoc} 件 / 例外承認の記録が対応づいた ${exceptedChanges.length} 件 / 独立した人の確認を経ていない ${withoutIndependentHuman} 件` +
+  (reviewersRequired >= 2 ? `(承認者 ${reviewersRequired} 名を要する体制。満たない変更 ${insufficientApproverChanges.length} 件${insufficientApproverChanges.length ? `: ${insufficientApproverChanges.join(', ')}` : ''})` : '') +
+  (auditFormat ? `(監査対応書式。判定記録の欠落・未記入 ${auditRecordGaps.length} 件)` : '') +
   (g6Applied ? '(G-6 を適用する体制。事後へ移した変更と例外承認のある変更を除き、欠落として扱う)' : '(G-6 を適用しない体制。R1 の変更だけ例外承認を要する)');
 const g5Summary = prs.length ? `gate-g5 成功 ${count(prs, (p) => p.g5 === 'success')} / 成功以外 ${count(prs, (p) => p.g5 !== 'success' && p.g5 !== 'unknown')} / 記録なし ${count(prs, (p) => p.g5 === 'unknown')}(PR ごと)` : 'PR なし';
 const specTotal = new Set(specChanges.flatMap((c) => c.specs)).size;
 const criteria = [
-  { id: 1, label: '計画したテストの消化率', machine: 'not-checked', result: null, humanReconcile: 'テスト計画と、G-7 の判定記録の「未消化のテスト」の節(未消化が1件以上ある場合)' },
-  { id: 2, label: '未解決の欠陥', machine: 'not-checked', result: null, humanReconcile: '欠陥の追跡(Issue など)と、事業ステージ別の欠陥トリアージ基準' },
+  {
+    id: 1,
+    label: '計画したテストの消化率',
+    machine: 'partial',
+    result: (() => {
+      const c1 = trace.criterion1;
+      const res = !c1.results ? '実行の記録(evidence/test-results.json)なし。消化数を数えていない' : c1.results.error ? c1.results.error : `実行して通過 ${c1.results.passed} / 失敗 ${c1.results.failed} / 実行の記録に無い ${c1.results.notRun.length}`;
+      return `受入基準 ${c1.acceptanceCriteria} 件、計画したテスト(受入基準 F-NNN/AC-N を参照するテストのファイル)${c1.plannedTests} 件。${res}。対応するテストの無い受入基準 ${c1.acWithoutTest.length} 件${c1.acWithoutTest.length ? `(${c1.acWithoutTest.slice(0, 10).join(', ')})` : ''}`;
+    })(),
+    humanReconcile: '計画したテストが受入基準を十分に確かめているか(機械は件数だけを数える)と、対応するテストの無い受入基準・未消化のテストの理由と残存リスク(G-7 の判定記録の「未消化のテスト」の節)',
+  },
+  {
+    id: 2,
+    label: '未解決の欠陥',
+    machine: defects.present && !defects.problems.length ? 'partial' : 'not-checked',
+    result: !defects.present
+      ? `欠陥の台帳(${DEFECT_FILE})が無い(記載の欠落)`
+      : defects.problems.length
+        ? `台帳を読めない(${defects.problems.join('。')})`
+        : defects.noKnown
+          ? '既知の欠陥なし(台帳の記載)'
+          : `事業ステージ ${defects.stage ?? '不明'} の区分ごとの未解決: ${defects.bySeverity.map((x) => `${x.severity} ${x.open} 件(${x.triage}${x.split ? `。コア ${x.split.core} / 非コア ${x.split.nonCore}` : ''})`).join(' / ')}`,
+    humanReconcile: '区分ごとの件数が欠陥トリアージ基準を満たすか(出荷の可否を機械は判定しない)。台帳に載っていない欠陥が無いか',
+  },
   {
     id: 3,
     label: '受容した負債の台帳記録',
@@ -1997,7 +2724,18 @@ const criteria = [
     result: `依存関係のライセンス検査の記録 ${licenseScan.scanRun ? 'あり' : 'なし'}(記録の有無だけを見た)`,
     humanReconcile: '類似の検知の実施記録と結果、判定できなかった項目の台帳記録',
   },
-  { id: 9, label: '保証の開示の完備', machine: 'checked', result: `7項目を出力した。記録の欠落 ${gaps.length} 件(欠落の一覧による)`, humanReconcile: null },
+  {
+    id: 9,
+    label: '保証の開示の完備',
+    machine: 'checked',
+    result:
+      `7項目と、保証の主張の成立判定(成立 ${claim.established} 件 / 不成立 ${claim.notEstablished} 件)を出力した。記録の欠落 ${gaps.length} 件(欠落の一覧による)。` +
+      `受容しない条件(層1 の項目2)に当たる事実: 機械で照合した条件 ${claim.nonAcceptable.checked} 件に対して ${claim.nonAcceptable.facts.length} 件`,
+    humanReconcile:
+      claim.nonAcceptable.notChecked.length || !policy.present
+        ? `受容しない条件のうち、機械で照合していない ${claim.nonAcceptable.notChecked.length} 件(${policy.present ? '印の無い条件' : '層1 なし'})に当たる事実が、保証の開示に無いこと(G-7「保証の主張の成立判定」(b))`
+        : null,
+  },
 ];
 
 const evidence = {
@@ -2126,6 +2864,134 @@ if (deviations.length) {
 // external を真にすると、組織の外へ渡す形で出す。変えるのは項目6 だけである(標準 附属書H H.6)
 const listOr = (v, empty = 'なし') => (Array.isArray(v) ? (v.length ? v.join(' / ') : empty) : v);
 const A = assurance;
+/** 保証の主張の成立判定(附属書H H.6「保証の主張の成立判定の出力」)。項目は増やさず、7項目の前に置く */
+function renderClaim(c) {
+  const R = [];
+  R.push('### 保証の主張の成立判定');
+  R.push('');
+  if (c.statement) {
+    R.push(`> ${c.statement}`);
+    R.push('');
+  }
+  R.push('| 出力 | 値 |');
+  R.push('| --- | --- |');
+  R.push(`| 成立判定 | ${c.total ? `成立 ${c.established} 件 / 不成立 ${c.notEstablished} 件(変更 ${c.total} 件)` : '変更なし'} |`);
+  R.push(`| 不成立の理由(条件ごとの件数) | ${[1, 2, 3, 4, 5, 6].map((id) => `条件${id} ${c.byCondition[id]}`).join(' / ')} |`);
+  R.push(`| 照らした層1 の版 | ${c.policy.present ? c.policy.label : '層1 なし'}${c.policy.present && !c.policy.valid ? '(有効でない)' : ''} |`);
+  const facts = c.nonAcceptable.facts;
+  R.push(
+    `| 受容しない条件 | ${facts.length ? `**当たる事実 ${facts.length} 件**: ${facts.map((f) => `${f.fact}(条件「${f.condition}」。出所: ${f.source})`).join(' / ')}` : `当たる事実なし(機械で照合した条件 ${c.nonAcceptable.checked} 件)`}` +
+      `${c.nonAcceptable.notChecked.length ? `。機械で照合していない条件 ${c.nonAcceptable.notChecked.length} 件(出荷判定者が突合する): ${c.nonAcceptable.notChecked.join(' / ')}` : ''}` +
+      `${(c.nonAcceptable.notes ?? []).length ? `。**層1 の文と機械の判定の食い違い**: ${c.nonAcceptable.notes.join(' / ')}` : ''} |`
+  );
+  R.push('');
+  R.push('| 条件 | 判定 | 満たさない理由 |');
+  R.push('| --- | --- | --- |');
+  for (const x of c.conditions) {
+    const basis = x.id === 4 && x.basis === 'structure' ? '(構成上。G-7・G-8 の判定記録は集約の後に作られる。記録を書いた後に集約し直すと、記名で判定する)' : '';
+    R.push(`| ${x.id}. ${x.label} | ${x.ok ? `満たす${basis}` : '**満たさない**'} | ${x.reason ?? '—'} |`);
+  }
+  R.push('');
+  R.push(
+    '成立・不成立は機械の判定であり、人が判定していません。保証範囲に入る・入らないの2値であり、等級ではありません。' +
+      '変更が保証範囲に入るかどうかは企画書の記述からは機械で決められないため、層2 を宣言した案件では、範囲の全変更を保証範囲に入るものとして数えています。' +
+      `未測定を許容する期間(層1 の項目1): ${c.tolerance}。この期間は成立条件5 だけが見る。項目2 の印 [未測定] は期間に依らず当たる(猶予を与えるなら印を付けない)。` +
+      '成立しない範囲も出荷できます。対象外として出荷することの受容は、層1 の項目4 の権限者が G-8 の記録に記名します。組織継続の側の状態は、成立条件に入れていません(項目5・7)。'
+  );
+  R.push('');
+  return R;
+}
+
+/** 項目5 へ出す組織継続の側の状態(単一障害点の一覧と、期限つきの受容) */
+function renderContinuityResidual(ct, external = false) {
+  const R = [];
+  const ACC = {
+    accepted: (a) => `受容あり(${a.by}、期限 ${a.until}、層1 ${a.version})`,
+    expired: (a) => `**受容の期限切れ(${a.until}。記載の欠落)**`,
+    invalid: (a) => `受容の記録が無効(${a.why.join('。')})`,
+    none: () => '受容なし',
+  };
+  if (!ct.spof.length) {
+    R.push('- 組織継続の側の状態(単一障害点の一覧): なし');
+    return R;
+  }
+  R.push(`- 組織継続の側の状態(単一障害点の一覧。構成と記録から生成。${ct.spof.length} 件):`);
+  // 組織の外へ渡す形では、数えなかった候補・保持者の氏名を出さない(名簿の外の氏名を含むため)
+  const detailOf = (x) => {
+    if (!external) return x.detail;
+    // 「…(数えなかった候補: …)」の括弧書きと、「…。数えなかった名前: …」の文末の、両方の形を件数だけの形にする
+    return String(x.detail).replace(/([((])?。?数えなかった(名前|候補): .*$/, (m, paren, w) => (paren ? `(数えなかった${w}あり。氏名は出さない)` : `。数えなかった${w}あり(氏名は出さない)`));
+  };
+  for (const x of ct.spof) R.push(`  - ${x.state}: ${x.subject}(${detailOf(x)})。${ACC[x.acceptance.status](x.acceptance)}`);
+  return R;
+}
+
+/** 項目7 へ出す組織継続の側の状態(依存先の一覧、退出の予行、縮退、後継、コア理解、有事の決定者、停止の申し立て) */
+function renderContinuityGeneration(ct, releases, external) {
+  const R = [];
+  R.push('');
+  R.push('組織継続の側の状態(第3章 3.4.3・3.12.3・3.12.5・3.12.11、第7章 7.11):');
+  R.push('');
+  const bare = (v) => String(v ?? '').split('(')[0].replace(/\s/g, '');
+  const same = ct.d0Policy && ct.policy && bare(ct.d0Policy).includes(bare(ct.policy));
+  R.push(
+    `- D-0 が参照する層1 の版: ${ct.d0Policy ?? 'D-0 に記載なし'}(層1 の現行: ${ct.policy})` +
+      `${ct.d0Policy && !same && ct.policy !== '層1 なし' ? '。**現行の版と一致しない**(層1 の版の更新は体制の変化点)' : ''}`
+  );
+  R.push('- 依存先の一覧(承認済みモデルの一覧を広げたもの。構成と記録から生成):');
+  for (const d of ct.dependencies) {
+    if (d.kind === 'モデル') {
+      R.push(`  - モデル ${d.name}: 提供者 ${d.provider} / 使う席 ${d.seats.join('・')} / 代替 ${d.alternative} / 退出の予行を最後に行った日 ${d.lastExitRehearsal}${d.exitLapse ? `(**失効**: ${d.exitLapse})` : ''} / 通知の期間 ${d.noticePeriod} / データ ${external ? (d.fieldsBlank?.includes('データ') ? '記録なし' : '記録あり') : d.data}`);
+    } else if (d.kind === '評価用の基準集合') {
+      R.push(`  - ${d.kind}: ${d.name}${d.inRepo ? '(自組織のリポジトリ)' : '(**自組織のリポジトリで所在を確かめられない**)'}。範囲の承認(AI運用担当者の起案・技術判断者の記名): ${d.scopeApproved ? 'あり' : `**なし**(${(d.scopeWhy ?? []).join('。')})`}`);
+    } else {
+      R.push(`  - ${d.kind}: ${d.name}${d.inRepo === undefined ? '' : d.inRepo ? '(自組織のリポジトリ)' : '(**自組織のリポジトリで所在を確かめられない**)'}`);
+    }
+  }
+  if (!ct.dependencies.some((d) => d.kind === 'モデル')) R.push('  - モデル: AI の担い手の宣言なし');
+  const exits = ct.rehearsals.filter((r) => r.valid);
+  R.push(
+    `- 退出の予行(別の提供者での回帰評価): ${exits.length ? exits.map((r) => `${r.model} → ${r.alternative.provider} ${r.alternative.model}(${r.at}${r.approved ? '。代替として承認' : ''})`).join(' / ') : '記録なし(退出を試していない)'}`
+  );
+  R.push(
+    `- 縮退(AI が使えないとき): ${ct.degradation.length ? ct.degradation.map((g) => `${g.seat} ${g.fallback}・処理できる量 ${g.quantity}${g.stops ? `・止める業務 ${g.stops}` : ''}${g.recovery ? `・復旧の目安 ${g.recovery}` : ''}`).join(' / ') : 'AI の担い手を置いた席なし'}`
+  );
+  const cy = ct.cycle ?? {};
+  R.push(`- 確認の周期と後継(層1): 演習の頻度 ${cy.drill ?? '**空欄**'} / 退出の予行の間隔 ${cy.exit ?? '**空欄**'} / 縮退の実測の頻度 ${cy.degradation ?? '**空欄**'} / 力量の確認の周期 ${cy.competence ?? '**空欄**'} / 後継候補の最低数 ${cy.successorMin ? Object.entries(cy.successorMin).map(([k, v]) => `${k} ${v}`).join('・') : '**空欄**'} / 育成の担当 ${cy.trainer ?? '**空欄**'}`);
+  for (const n of ct.cycleNotices ?? []) R.push(`- ${n}`);
+  R.push(`- 判断を担う席の後継(確認済みで周期内の候補の数 / 最低数): ${ct.successors.map((x) => `${x.seat} ${x.counted ?? 0} / ${x.min ?? '空欄'}${x.vacant ? '(後継不在)' : ''}`).join(' / ')}`);
+  // 席の責任者本人の力量の確認(第3章 3.4.3 要求事項1。#288 第6巡 R)。記録は構成の seats[].competence。失効と未確認を出す(欠落にはしない)
+  if (Array.isArray(ct.competence)) {
+    const text = ct.competence
+      .map((c) => {
+        const who = external ? (c.accountable ? '記名あり' : '未記入') : (c.accountable ?? '未記入');
+        // 確認した者が名簿の外(#288 第7巡 T)。受け付けたうえで注記し、内部監査の観点6 へつなぐ。外部向けには氏名を出さない
+        const outside = !c.outsideRoster ? '' : external ? '。確認した者は名簿の外' : `。確認した者 ${c.record.confirmedBy}(名簿の外。所属・役職は確認の記録で示す。内部監査の観点6 で突合)`;
+        if (c.status === 'valid') return `${c.seat} ${who} 確認済み(${c.record.confirmedAt}。次回 ${c.nextDue}${outside})`;
+        if (c.status === 'expired') return `${c.seat} ${who} **失効**(${c.why}${outside})`;
+        if (c.status === 'no-accountable') return `${c.seat} 未記入`;
+        return `${c.seat} ${who} **未確認**(${c.why})`;
+      })
+      .join(' / ');
+    R.push(`- 席の責任者本人の AI を使わない力量の確認(3.4.3 要求事項1。任命時と層1 の周期): ${text}`);
+  }
+  R.push(`- コア機能の理解保持者(本人以外の者が日付を付けて確認した人): ${ct.core.length ? ct.core.map((c) => `${c.name} ${c.holders} 名${c.holders <= 1 ? '(1名以下)' : ''}${c.uncounted ? `。数えなかった ${c.uncounted} 名` : ''}`).join(' / ') : '記載なし'}`);
+  if (ct.emergencyBlank !== null) R.push(`- 有事の決定者(D-0 節7): ${ct.emergencyBlank ? `**空欄 ${ct.emergencyBlank} 欄(記載の欠落)**` : '12欄すべて記入'}`);
+  for (const h of A.stopHolds ?? []) R.push(`- **停止の申し立ての保留**: ${h.target}(未解除。出荷の証跡の集約を失敗させた。判定記録は作らない)`);
+  if ((A.stopHistoryUnread ?? []).length) R.push(`- 停止の申し立ての付け外しの履歴を読めなかった PR: ${A.stopHistoryUnread.map((n) => `#${n}`).join(', ')}(いま付いているラベルだけで判定した)`);
+  R.push('- 停止の申し立てで機械が止めるのは、PR のマージ(G-5)と出荷の証跡の集約までである。AI の担い手の自律実行の停止は、指示文(CLAUDE.md)と AI運用担当者の操作に依る(第7章 7.11)');
+  if (!releases.length) R.push('- 停止の申し立ての解除: 当該の範囲に記録なし');
+  for (const r of releases) {
+    const esc = external ? (r.escalation ? '記録あり' : '**記録なし**') : (r.escalation ?? '**記録なし**');
+    R.push(
+      `- 停止の申し立ての解除: ${r.target ?? '対象未記入'}(${r.day ?? '日付なし'}。解除 ${external ? '記名あり' : r.judge}${r.selfReleased ? '。申し立てた者と解除した者が同一' : ''}。` +
+        `${r.declined ? `申し立てた者の見解を退けた。上申 ${esc}` : '見解を退けていない'}${r.valid ? '' : `。**成立していない**: ${r.problems.join('。')}`})`
+    );
+  }
+  for (const p of ct.problems) R.push(`- 読めない記録: ${p}`);
+  return R;
+}
+
 function renderAssurance(external) {
   const R = [];
   R.push('## 保証の開示');
@@ -2139,6 +3005,7 @@ function renderAssurance(external) {
     R.push(`> ${A.independence.statement}`);
     R.push('');
   }
+  R.push(...renderClaim(A.claim));
   R.push('### 1. 体制と独立性の成立状況');
   R.push('');
   const ch = A.independence.changes;
@@ -2147,12 +3014,42 @@ function renderAssurance(external) {
   R.push('| 項目 | 値 | 前回の出荷の値 |');
   R.push('| --- | --- | --- |');
   R.push(`| G-6 独立レビュー | ${A.independence.g6} | ${prev((p) => p.independence.g6)} |`);
+  {
+    const rv = A.independence.reviewers;
+    if (rv) {
+      const fmt = rv.recordFormat === 'audit' ? '監査対応書式(変更ごとの G-6 の判定記録を要する)' : '標準';
+      const safety = rv.independentSafetyAssessment ? ' / 独立した安全性の評価者の記名を要する' : '';
+      R.push(
+        `| G-6 に要する独立した人の承認者の数(構成 review.reviewerCount) | ${rv.required} 名${rv.applied ? '' : `(構成の値 ${rv.configured} 名。G-6 を適用しない体制のため人数の要求は掛けていない)`} / 記録の書式 ${fmt}${safety} | ${prev((p) => (p.independence.reviewers ? `${p.independence.reviewers.required} 名` : '値なし'))} |`
+      );
+    }
+  }
   R.push(`| G-6 の事後の抜き取り | ${A.independence.g6PostHocSampling} | ${prev((p) => p.independence.g6PostHocSampling)} |`);
+  {
+    // 10名以上の規則(第8章 軸A。#288 第6巡 Q)。コア機能は別チームがレビューする / 出荷判定は QA 部門・専任。確かめられる範囲だけを出す
+    const cr = A.independence.coreReview;
+    if (cr) {
+      // 文は org-assurance.mjs の coreReviewText が正(次の一手も同じ文を出す。#288 第7巡 U)
+      const value = coreReviewText(cr);
+      R.push(`| コア機能の独立レビューに別チームを含むか(構成 review.mode: ${cr.mode}。10名以上の規則。所属は名簿の team) | ${value} | ${prev((p) => (p.independence.coreReview ? (p.independence.coreReview.why ? '判定できない' : `${p.independence.coreReview.withOtherTeam} / ${p.independence.coreReview.coreChanges} 件`) : '値なし'))} |`);
+    }
+    const qa = A.independence.qaAffiliation;
+    if (qa) {
+      const value = qaAffiliationText(qa);
+      R.push(`| 出荷判定は QA 部門・専任者か(構成 gates.g7.params.approverMode: dedicated-qa。10名以上の規則) | ${value} | ${prev((p) => (p.independence.qaAffiliation ? (p.independence.qaAffiliation.separate === null ? '確かめられない' : p.independence.qaAffiliation.separate ? '別の所属' : '同じ所属') : '値なし'))} |`);
+    }
+    if (A.independence.teamSize === 'size-10plus') {
+      R.push('| 機能責任者への仕様承認の委譲(10名以上の規則) | 機械では確かめない(席も記録も無い。実装の台帳に「降りていない」と開示。G-4 の判定者は価値責任者の席のまま) | — |');
+    }
+  }
   R.push(`| G-7 出荷判定 | ${A.independence.g7} | ${prev((p) => p.independence.g7)} |`);
   R.push(`| 責任者が同一人物のため独立が成立しない組 | ${listOr(A.independence.sameAccountable)} | ${prev((p) => listOr(p.independence.sameAccountable))} |`);
   R.push(`| 逸脱として記録した兼務(1〜2名の体制) | ${listOr(A.independence.separationDeviations)} | ${prev((p) => listOr(p.independence.separationDeviations ?? []))} |`);
   if (A.independence.objectionSelfAccepted) {
     R.push(`| 出荷判定者の異議と、残存リスクの受容 | **異議を書く者と、残存リスクを受容する者が同一である**(出荷判定者の席と事業決裁者の席の責任者が同一人物) | ${prev((p) => (p.independence.objectionSelfAccepted ? '同一' : '別の人'))} |`);
+  }
+  if (policy.present && policy.signerIsBizApprover) {
+    R.push('| 層1 の記名者と事業決裁者 | **層1 の記名者が、事業決裁者の席の責任者と同一である**(受容の基準を定める者と案件の残存リスクを受容する者が同一。テンプレ11 の要求事項5 の逸脱。1名・3名未満の体制では避けられない) | — |');
   }
   R.push(`| 責任者が未記入の席 | ${seats.length ? `${A.independence.seatsWithoutAccountable} 席` : NO_RECORD} | ${prev((p) => `${p.independence.seatsWithoutAccountable} 席`)} |`);
   R.push(`| 変更の件数 | ${ch.total} | ${prev((p) => p.independence.changes.total)} |`);
@@ -2164,6 +3061,9 @@ function renderAssurance(external) {
   R.push(`| 　内訳: 承認者を名簿と対応づけられない(承認者の同一性は未確認) | ${un.approverUnmapped} | ${prevUn('approverUnmapped')} |`);
   R.push(`| 　内訳: 作成を指示した者を名簿と対応づけられない | ${un.instructorUnresolved} | ${prevUn('instructorUnresolved')} |`);
   R.push(`| 　内訳: レビュアの挙動要約を伴わない承認だけである | ${un.noReviewerSummary ?? 0} | ${prevUn('noReviewerSummary')} |`);
+  R.push(
+    `| 　内訳: 独立した人の承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名)に満たない | ${un.insufficientApprovers ?? 0}${(A.independence.reviewers?.insufficient ?? []).length ? `: ${A.independence.reviewers.insufficient.join(', ')}` : ''} | ${prevUn('insufficientApprovers')} |`
+  );
   R.push(`| 　内訳: PR を経ていないコミット(独立した人の G-6 の判定記録が対応づかない) | ${un.directCommits} | ${prevUn('directCommits')} |`);
   if (ch.approvalRecordNotFound) {
     R.push(`| 　うち、件名は PR の番号を持つが、PR のマージコミットと一致しない・取得できないコミット | ${ch.approvalRecordNotFound} | ${prev((p) => p.independence.changes.approvalRecordNotFound)} |`);
@@ -2200,7 +3100,8 @@ function renderAssurance(external) {
   R.push('');
   R.push(
     '承認を独立した人の確認に数えるのは、承認した者が名簿(people[])の人へ対応づき、その人が作成を指示した者でなく、構成上 G-6 が成立し(未達の体制では外部の確認者に限る)、承認した者自身の挙動要約を伴う場合に限ります(第4章 G-6 の4条件)。' +
-      '承認は、レビュアごとの最後の状態で数えます。PR のレビューの承認のほか、G-6 の判定記録(「対象」が当該の変更、結果が通過)も承認に数えます。' +
+      '承認は、レビュアごとの最後の状態で数えます。PR のレビューの承認のほか、G-6 の判定記録(「対象」が当該の変更、結果が通過)も承認に数えます。監査対応書式の「2人目の判定者」は、2人目の挙動要約を伴う場合に承認者に数えます。' +
+      `4条件を満たす承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名)に満たない変更は、独立した人の確認を経ていない変更に数えます。` +
       '作成を指示した者は、PR 本文の欄「作成を指示した者」から取ります。PR を経ていないコミットでは、コミットの Author と開発者の席の責任者です。' +
       (ch.instructorsByDefault
         ? `数えた変更のうち ${ch.instructorsByDefault} 件は、欄が未記入のため、指示した者を既定値(PR の作成者と、開発者の席の責任者)で判定しています。`
@@ -2252,6 +3153,8 @@ function renderAssurance(external) {
     !v || v === NO_RECORD ? NO_RECORD : `人確定 ${v.human} / 協働 ${v.collab} / 委任(事後の抜き取り) ${v.delegatedPostHoc} / 記載なし ${v.notRecorded}`;
   R.push(`- リスク区分(PR の記載): ${rcText(rc)}(${prev((p) => rcText(p.changes.byRiskClass))})`);
   R.push(`- リスク区分の出所: ${A.changes.riskClassSource}`);
+  const rcf = A.changes.riskConfirmation;
+  R.push(`- R1・R2 の区分の確定者(作成を指示した者以外の名簿の人の記名): R1・R2 ${rcf.high} 件のうち確定者あり ${rcf.confirmed} 件${rcf.unconfirmed.length ? `。**確定していない区分** ${rcf.unconfirmed.join(', ')}` : ''}(G-5 が確定者の無い R1・R2 を失敗させる。区分の下限の規則に当たらない R1 相当の変更が R3 と記載される経路は残る)`);
   R.push(`- 確定の形態(当該出荷の範囲の判定記録の記載): ${bmText(bm)}(${prev((p) => bmText(p.changes.byMode))})`);
   const dg = A.changes.delegated;
   const dgb = dg.withoutPriorHumanBreakdown;
@@ -2292,6 +3195,15 @@ function renderAssurance(external) {
   R.push(`| 依存関係のライセンス | ${A.machineChecks.licenses} |`);
   R.push(`| 秘匿情報 | ${A.machineChecks.secretScan} |`);
   R.push(`| 依存の追加・更新の識別 | ${A.machineChecks.dependencyDiff} |`);
+  // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
+  // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
+  R.push(`| 実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);
+  const vf = A.verification;
+  R.push(`| 壊してはならない品質条件(受入基準とテストの両方から参照) | ${vf.qc.length ? `${vf.qc.filter((q) => q.state === 'verified').length} / ${vf.qc.length} 件` : '企画書に識別子つきの条件なし'}${vf.qcMissingIds.length ? `。**識別子を持たない条件 ${vf.qcMissingIds.length} 件(記載の欠落)**` : ''} |`);
+  const c1 = vf.criterion1;
+  R.push(`| G-7 基準1(受入基準とテストの対応) | 受入基準 ${c1.acceptanceCriteria} 件 / 計画したテスト ${c1.plannedTests} 件 / 対応するテストの無い受入基準 ${c1.acWithoutTest.length} 件 / ${!c1.results ? '実行の記録なし' : c1.results.error ? c1.results.error : `通過 ${c1.results.passed}・失敗 ${c1.results.failed}・記録に無い ${c1.results.notRun.length}`} |`);
+  R.push('');
+  R.push('参照の有無と件数だけを数えています。参照したテストが条件・受入基準を確かめていることは判定していません(G-6 の独立レビュアが確かめる)。');
   R.push('');
 
   R.push('### 5. 残存リスク、既知の不具合、未回収の例外');
@@ -2306,11 +3218,14 @@ function renderAssurance(external) {
   R.push(`- 未解決事項(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openUnresolved) : A.residual.openUnresolved)}`);
   R.push(`- 未返却の負債(技術負債台帳): ${A.residual.openDebt === NO_RECORD ? NO_RECORD : `${A.residual.openDebt} 件`}`);
   R.push(`- 既知の不具合: ${A.residual.knownDefects}`);
+  R.push(`- テストへ降ろしていない品質条件(受入基準から参照、テストから参照なし): ${listOr(A.residual.qcNoTest ?? [])}`);
+  R.push(`- 検証へ降ろしていない品質条件(受入基準から参照なし): ${listOr(A.residual.qcUnreferenced ?? [])}`);
   if (preInitDetail.total) {
     R.push(
       `- 構成の初期化より前に、製品のコードを変えたコミット: ${A.residual.preInitProductChanges} 件(独立した人の確認・リスク区分・検証の記載を確かめていない。一覧は品質レポートの「変更単位」にある)`
     );
   }
+  R.push(...renderContinuityResidual(A.continuity, external));
   R.push('');
 
   if (external) {
@@ -2330,15 +3245,49 @@ function renderAssurance(external) {
   } else {
     R.push('### 6. 検出能力の測定値と測定時点');
     R.push('');
-    const valueText = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+    // 測定値は、率と件数(検出 / 注入)と測定時点で出す。記録の生の JSON は印字しない(#288 第3巡)
+    const measureText = (v) => {
+      if (typeof v === 'string') return v;
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v);
+      const total = v.seeded ?? v.injected ?? v.total;
+      const rate = rateOf(v);
+      const missed =
+        v.types && typeof v.types === 'object'
+          ? Object.entries(v.types)
+              .filter(([, t]) => Number(t?.detected ?? 0) < Number(t?.injected ?? t?.seeded ?? 0))
+              .map(([k]) => k)
+          : [];
+      return (
+        `${rate === null ? '率を導けない' : `検出率 ${Math.round(rate * 1000) / 10}%`}` +
+        `(検出 ${typeof v.detected === 'number' ? v.detected : '記録なし'} 件 / 注入 ${typeof total === 'number' ? total : '記録なし'} 件。測定時点 ${measuredAtOf(v) ?? '記録なし'}` +
+        `${missed.length ? `。見逃した類型 ${missed.join('・')}` : ''}${v.method ? `。方法 ${v.method}` : ''})`
+      );
+    };
+    const valueText = measureText;
     // 前回の出力が旧い形式(席ごとの配列)の場合、値は適合性確認の結果であり、検出能力の測定値ではない
     const prevAiText = (v) =>
       Array.isArray(v) ? `${UNMEASURED}(前回の出力は、適合性確認の結果を値にしていた: ${v.map((d) => `${d.seat} ${d.value}`).join(' / ')})` : valueText(v);
-    R.push(
-      `- 人の層(欠陥注入): ${A.detection.human === UNMEASURED ? `${UNMEASURED}(${streakText(humanStreak)})` : JSON.stringify(A.detection.human)}` +
-        `(${prev((p) => (p.detection.human === UNMEASURED ? UNMEASURED : JSON.stringify(p.detection.human)))})`
-    );
+    // 人の層が未測定(目隠しを確かめられない、を含む)なら、未測定が続いている期間を併記する
+    const humanText = typeof A.detection.human === 'string' ? `${A.detection.human}(${streakText(humanStreak)})` : measureText(A.detection.human);
+    R.push(`- 測定の記録の出所: ${A.detection.source ?? '記録なし'}`);
+    R.push(`- 人の層(欠陥注入): ${humanText}(${prev((p) => measureText(p.detection.human))})`);
     R.push(`- AI の層(欠陥注入): ${valueText(A.detection.ai)}(${prev((p) => prevAiText(p.detection.ai))})`);
+    if (A.detection.aiPerformers?.recorded) {
+      R.push(`- AI の層の測定した担い手の識別: ${A.detection.aiPerformers.recorded.join(' / ')}(現在: ${A.detection.aiPerformers.current.join(' / ') || '宣言なし'}。${A.detection.aiPerformers.mismatch?.length ? '一致しない。失効' : '一致'})`);
+    } else if (A.detection.aiPerformers?.current.length && typeof A.detection.ai !== 'string') {
+      R.push('- AI の層の測定した担い手の識別: 記録なし(識別の一致で失効を判定できない。日付で比べた。tally をやり直すと記録に識別が入る)');
+    }
+    // 人の層の測定した見つける者と、現在の独立レビュアの席の責任者・名簿の対応(#288 第6巡 O)。査察で「この値は誰の値か」に答える行
+    {
+      const hf = A.detection.humanFinders;
+      if (hf && hf.recorded) {
+        const map = (hf.mapping ?? []).map((m) => `${m.name}(${m.isAccountable ? '独立レビュアの席の責任者' : m.inRoster ? '名簿の体制の内。席の責任者でない' : '**名簿(体制の内)に居ない**'})`).join('・');
+        R.push(`- 人の層の測定した見つける者: ${map} / 現在の独立レビュアの席の責任者: ${hf.accountable ?? '未記入'}(${hf.accountableIncluded ? '測定に含まれる' : '**測定に含まれない**'}) / 層1 の人の層の再測定の契機: ${hf.trigger ?? '空欄(全員が離れたときだけ失効)'}${hf.expired ? '。**失効**' : hf.recomputed ? '。残る者の和集合で読み直した' : ''}`);
+        for (const n of hf.notes ?? []) R.push(`  - ${n}`);
+      } else if (hf && !hf.recorded && typeof A.detection.human !== 'string') {
+        R.push(`- 人の層の測定した見つける者: ${hf.notes?.[0] ?? '記録なし'}`);
+      }
+    }
     if (aiStreak.since) R.push(`- AI の層の未測定の継続: ${streakText(aiStreak)}`);
     if (A.detection.conformity.length) {
       for (const q of A.detection.conformity) {
@@ -2411,6 +3360,7 @@ function renderAssurance(external) {
     R.push(`- AI が使えなかった期間: ${A.generation.changeLogPresent ? '記録なし' : NO_RECORD}`);
   }
   R.push('');
+  R.push(...renderContinuityGeneration(A.continuity, A.stopReleases, external));
   if (A.drift.length) {
     R.push('**宣言と実態のずれ**(体制の変化点として起票してください):');
     R.push('');
@@ -2422,12 +3372,35 @@ function renderAssurance(external) {
   // 氏名が含まれる場合(外部依頼の確認者、同一人物の組など)は、ここで伏せる
   return external ? R.map(redactNames) : R;
 }
-/** 名簿の氏名・id・アカウントと、席に書かれた氏名を伏せる。長い名前から置き換える */
+/**
+ * 役割名(席の名前、役職、部門)か。氏名として伏せない。末尾の語が役職・部門を指すもの(「品質保証部 課長」「情報システム部長」)と、
+ * 席や責任者を指す語を含むもの(「技術判断者の席の責任者」)を役割名とみなす。「社長 一郎」のように末尾が名の形のものは氏名として扱う
+ */
+const ROLE_WORD = /(部長|課長|係長|室長|本部長|社長|副社長|取締役|執行役員|役員|担当者|担当|責任者|管理者|判定者|決裁者|レビュア|マネージャー?|リーダー?|部門|チーム|グループ)$/;
+const looksLikeRole = (v) => {
+  const s = String(v)
+    .normalize('NFKC')
+    .replace(/[((][^))]*[))]/g, '')
+    .trim();
+  if (!s) return false;
+  if (/の席|席の責任者/.test(s)) return true;
+  return ROLE_WORD.test(s.split(/\s+/).at(-1));
+};
+/** 名簿の氏名・id・アカウントと、席に書かれた氏名を伏せる。長い名前から置き換える。役割名は伏せない */
 const PERSON_TOKENS = [
   ...new Set(
-    [...roster.flatMap((p) => [p?.name, ...(Array.isArray(p?.accounts) ? p.accounts : [])]), ...seats.map((s) => s.accountable)]
+    [
+      ...roster.flatMap((p) => [p?.name, ...(Array.isArray(p?.accounts) ? p.accounts : [])]),
+      ...seats.map((s) => s.accountable),
+      // 層1 の記名、代理者、継続の状態の受容の記名、停止の申し立ての記名(#288)
+      policy.signer,
+      ...continuity.successors.map((x) => x.deputy),
+      ...continuity.acceptances.map((a) => a.by),
+      ...stopReleases.flatMap((r) => [r.judge, r.requester]),
+    ]
       .filter((v) => typeof v === 'string' && v.trim().length >= 2)
       .map((v) => v.trim())
+      .filter((v) => !looksLikeRole(v))
   ),
 ].sort((a, b) => b.length - a.length);
 function redactNames(line) {

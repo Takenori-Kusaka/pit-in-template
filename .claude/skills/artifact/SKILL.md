@@ -1,6 +1,6 @@
 ---
 name: artifact
-description: 成果物(テンプレ00〜10)を作る・見直すときの入口。`/artifact <種別>` で、その成果物の補助ファイル1枚(目的・読み手・形式、作成の手順、レビューの観点、機械の検査の所在)だけを読み、様式(templates/)から起こす。運用の工程(運用引き継ぎ、障害時)も含む。種別が分からないときは /pit を実行する。
+description: 成果物(テンプレ00〜11)を作る・見直すときの入口。`/artifact <種別>` で、その成果物の補助ファイル1枚(目的・読み手・形式、作成の手順、レビューの観点、機械の検査の所在)だけを読み、様式(templates/)から起こす。運用の工程(運用引き継ぎ、障害時)も含む。種別が分からないときは /pit を実行する。
 ---
 
 # 成果物を作る・見直す
@@ -26,6 +26,9 @@ description: 成果物(テンプレ00〜10)を作る・見直すときの入口�
 | `08` | AI-SLA 合意確認書 | `artifacts/08-ai-sla.md` | `docs/ai-sla.md` |
 | `09` | AIエージェント安全リスクアセスメント表 | `artifacts/09-safety-risk-assessment.md` | `docs/safety-risk-assessment.md` |
 | `10` | 前提の台帳 | `artifacts/10-assumption-ledger.md` | `docs/assumptions.md` |
+| `11` | 品質保証の方針と受容の基準(層1。組織に1つ) | `artifacts/11-quality-assurance-policy.md` | `docs/quality-assurance-policy.md` |
+| `defect` | 欠陥の台帳(G-7 基準2。様式番号なし) | `artifacts/defect-ledger.md` | `docs/defect-ledger.md` |
+| `adoption-trial` | 導入前の検証(合否の基準・欠陥注入・場面集・記録。附属書I I.11) | `artifacts/adoption-trial.md` | `docs/adoption-trial/` |
 | `incident` | 障害時に使う記録(D-0 表4・引き継ぎの復旧手順・ポストモーテム) | `artifacts/incident.md` | — |
 
 補助ファイルの所在は、このスキルのディレクトリ(`.claude/skills/artifact/`)からの相対です。

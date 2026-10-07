@@ -44,6 +44,8 @@ const config = {
     { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] },
     { id: 'p3', name: '佐藤 花子', accounts: ['sato'] },
   ],
+  // 区分の下限の規則(標準 第3章 3.8.1。#288 第2巡)
+  riskFloor: { rules: [{ id: 'auth', paths: ['src/auth/**'], floor: 'R1', why: '認証・認可' }] },
   changeLog: [],
 };
 write('process.config.json', config);
@@ -87,7 +89,7 @@ scenario('テストを先に書いた PR(新しいテストの追加だけ。既
   write('test/b.test.js', "test('new', () => {\n  expect(1).toBe(1);\n});\n");
   write('src/b.js', lines(5, 'b'));
 }, passes(testListed(0)));
-scenario('閾値だけの PR(既存の除外設定だけを変える)', { body: `閾値の変更\n\n${RISK('R2')}` }, () => {
+scenario('閾値だけの PR(既存の除外設定だけを変える)', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}` }, () => {
   write('.eslintrc.json', '{ "rules": { "no-unused-vars": "warn" } }\n');
 }, passes((r) => (r.thresholds.changed.length === 1 ? [] : ['閾値の変更として識別していない'])));
 scenario('初回の設定(基底に無い閾値のファイルを足し、製品のコードも変える)', {}, () => {
@@ -107,7 +109,7 @@ scenario('上限を超えるが、基底ブランチの台帳にこの PR の例
 scenario('製品のコードを変えない PR(記録だけ)にトレーラ Spec が無い', { body: `判定記録の追加\n\n${RISK()}` }, () => {
   write('docs/gates/g4-F-001.md', '# 判定\n');
 }, passes((r) => (r.spec?.skipped ? [] : ['対象外として扱っていない'])));
-scenario('依存の更新の bot の PR にトレーラ Spec が無い(人がリスク区分を記入した)', { body: `Bumps x\n\n${RISK('R2')}`, author: 'dependabot[bot]' }, () => {
+scenario('依存の更新の bot の PR にトレーラ Spec が無い(人がリスク区分を記入した)', { body: `Bumps x\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}`, author: 'dependabot[bot]' }, () => {
   write('package.json', '{ "dependencies": { "x": "2.0.0" } }\n');
 }, passes());
 scenario('トレーラ Spec が末尾の段落にあり、Co-Authored-By と並ぶ', { body: BODY('Spec: F-001 / Task-2\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>') }, () => {
@@ -202,6 +204,57 @@ if (!md.startsWith('<!-- pit-in:g6-test-changes -->') || !md.includes('test/a.te
   console.log('NG   一覧の Markdown に印とファイルが出ていない');
 } else console.log('ok   一覧の Markdown に印とファイルが出る');
 
+// ---------------------------------------------------------------- 区分の下限と確定者(第3章 3.8.1。#288 第2巡)
+scenario('区分の下限: 規則(src/auth/**、下限 R1)に当たる変更を R3 と記載', { body: BODY('Spec: F-001 / Task-1', RISK('R3')) }, () => write('src/auth/login.js', lines(3, 'l')), failsWith(/区分の下限: 記載された区分 R3 は、変更の対象から導いた下限 R1 より低い/));
+scenario('区分の下限: 下限以上(R1)で、指示した者以外の確定者がいれば通る', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 佐藤 花子')) }, () => write('src/auth/login.js', lines(3, 'l')), passes());
+scenario('確定者: R2 で「確定した者」が無い', { body: BODY('Spec: F-001 / Task-1', RISK('R2')) }, () => write('src/a.js', lines(23)), failsWith(/リスク区分の確定者: R2 の区分は/));
+scenario('確定者: 確定した者が作成を指示した者', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 山田 太郎')) }, () => write('src/a.js', lines(23)), failsWith(/作成を指示した者である/));
+scenario('確定者: AI の名義', { body: BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: Claude')) }, () => write('src/a.js', lines(23)), failsWith(/AI の名義/));
+scenario('確定者: 様式の説明のまま(<…>)は記名に数えない', { body: BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: <区分を確定した人の氏名。作成を指示した者以外の名簿の人>')) }, () => write('src/a.js', lines(23)), failsWith(/「確定した者: <氏名>」が無い/));
+
+// ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)
+const STOP = ['state:stop-requested'];
+const release = (pr, judge, { declined = '退けていない(申し立てた者が取り下げた)', escalation = '該当なし' } = {}) =>
+  `# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | 停止の申し立ての解除 |\n| 対象 | PR #${pr} |\n| 判定者 | ${judge} |\n| 判定日時 | 2026-10-03 10:00 |\n| 結果 | 通過 |\n\n` +
+  `## 停止の申し立ての解除\n\n| 欄 | 記載 |\n| --- | --- |\n| 申し立てた者 | 山田 太郎 |\n| 申し立ての内容 | 個人データの漏えいの恐れ |\n| 解除の理由 | 原因を除いた |\n| 申し立てた者の見解を退けたか | ${declined} |\n| 上申先と日付(退けた場合) | ${escalation} |\n`;
+const onBase = (mutate) => {
+  git('switch', '-q', 'main');
+  mutate();
+  git('add', '-A');
+  git('commit', '-q', '-m', 'docs: 基底の記録');
+};
+onBase(() => write('process.config.json', { ...config, seats: [{ role: 'biz-approver', accountable: '佐藤 花子' }, { role: 'qa-gatekeeper', accountable: '鈴木 一郎' }] }));
+const stopNo = n + 1;
+scenario('停止の申し立て: ラベルが付いた PR は、解除の記録が無ければ失敗', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/停止の申し立て: ラベル state:stop-requested が付いている/));
+onBase(() => write(`docs/gates/stop-${stopNo + 1}.md`, release(100 + stopNo + 1, 'Claude')));
+scenario('停止の申し立て: AI の名義の解除は受け付けない', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/AI/));
+onBase(() => write(`docs/gates/stop-${stopNo + 2}.md`, release(100 + stopNo + 2, '佐藤 花子', { declined: '退けた' })));
+scenario('停止の申し立て: 見解を退けた解除に上申先と日付が無ければ受け付けない', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/上申先と日付/));
+onBase(() => write(`docs/gates/stop-${stopNo + 3}.md`, release(100 + stopNo + 3, '佐藤 花子')));
+scenario('停止の申し立て: 層1 が無ければ事業決裁者の席の責任者の解除で通す(その旨を出す)', { labels: STOP }, () => write('docs/x.md', 'x\n'), passes((r) => (r.notices.some((x) => x.includes('みなした')) ? [] : ['事業決裁者をみなした旨が出ていない'])));
+scenario('停止の申し立て: ラベルを外しただけでは解けない(履歴から検出する)', { labels: [], labelEvents: [{ event: 'labeled', label: 'state:stop-requested', at: '2026-10-03T00:00:00Z' }, { event: 'unlabeled', label: 'state:stop-requested', at: '2026-10-03T01:00:00Z' }] }, () => write('docs/x.md', 'x\n'), failsWith(/ラベルを外しただけでは解除にならない/));
+scenario('停止の申し立て: PR の中で足した解除の記録は数えない', { labels: STOP }, () => write(`docs/gates/stop-${stopNo + 5}.md`, release(100 + stopNo + 5, '佐藤 花子')), failsWith(/対象のマージを保留する/));
+
+// ---------------------------------------------------------------- G-6 の承認者の数(第8章 軸C・軸E。#288 第5巡)
+// 基底の構成に G-6(有効)と review.reviewerCount: 2 を置く。合否にはしない(警告と通知)
+onBase(() =>
+  write('process.config.json', {
+    ...config,
+    gates: { g6: { state: 'required' } },
+    review: { requiredApprovals: 2, reviewerCount: 2, recordFormat: 'audit' },
+    seats: [{ role: 'biz-approver', accountable: '佐藤 花子' }, { role: 'qa-gatekeeper', accountable: '鈴木 一郎' }],
+  })
+);
+const warned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [] : [`${re} の警告が出ていない: ${JSON.stringify(r.warnings)}`]);
+const noticed = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [] : [`${re} の通知が出ていない: ${JSON.stringify(r.notices)}`]);
+const notWarned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [`${re} の警告が出ている`] : []);
+const rv = (login, body = '挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた', state = 'APPROVED') => ({ author: { login }, state, body });
+scenario('承認者の数: レビューを読めないときは、その旨を出す(黙って通さない)', {}, () => write('src/a.js', lines(24)), passes(noticed(/G-6 の承認者の数: PR のレビューを読めない/)));
+scenario('承認者の数: 独立した人の承認 1 名 / 要求 2 名 → 警告(失敗にはしない)', { reviews: [rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
+scenario('承認者の数: 2 名が各自の挙動要約つきで承認 → 要求を満たす', { reviews: [rv('suzuki'), rv('sato')] }, () => write('src/a.js', lines(24)), passes(notWarned(/G-6 の承認者/), noticed(/G-6 の承認者 2 名 \/ 要求 2 名/)));
+scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
+scenario('承認者の数: 承認の後の変更要求は承認を取り下げる。bot の承認は数えない', { reviews: [rv('suzuki'), rv('suzuki', '', 'CHANGES_REQUESTED'), { author: { login: 'ai-review[bot]', is_bot: true }, state: 'APPROVED', body: '要約' }, rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
+
 // ---------------------------------------------------------------- ワークフローの定義
 const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
 const defs = [
@@ -210,6 +263,9 @@ const defs = [
   ['ワークフロー: 集約(gate-g5)が pr-rules を待つ', /needs: \[[^\]]*pr-rules[^\]]*\]/.test(wf)],
   ['ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-check-pr\.mjs/.test(wf)],
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
+  ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
+  ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],
+  ['ワークフロー: PR のレビューの一覧を環境変数で渡す(G-6 の承認者の数)', /pulls\/\$\{PR_NUMBER\}\/reviews/.test(wf) && /PR_REVIEWS: \$\{\{ steps\.reviews\.outputs\.reviews \}\}/.test(wf)],
 ];
 for (const [name, ok] of defs) {
   if (!ok) failures++;

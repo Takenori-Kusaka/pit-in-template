@@ -23,9 +23,34 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay } from './config.mjs';
 import { readLock } from './self-heal.mjs';
-import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation } from '../init/generate-profile.mjs';
+import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
+import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
+
+/**
+ * 直近の出荷の集約の出力(evidence/evidence.json。.gitignore の下。手元で集約を実行したときだけある)。
+ * 10名以上の規則の件数(項目1)は PR のレビューを読んで初めて出るため、次の一手は PR を読まず、集約の出力を写す(#288 第7巡 U)。
+ * 集約の後に既定ブランチが進んでいれば、その旨を添える(件数は集約の時点のもの)
+ */
+function lastAggregate() {
+  const p = path.join(ROOT, 'evidence/evidence.json');
+  if (!fs.existsSync(p)) return null;
+  try {
+    const ev = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const toCommit = ev.range?.toCommit ?? null;
+    const behindRaw = toCommit ? git(['rev-list', '--count', `${toCommit}..HEAD`]) : null;
+    const behind = behindRaw === null ? null : Number(behindRaw);
+    return {
+      independence: ev.assurance?.independence ?? null,
+      range: ev.range ?? null,
+      generatedAt: typeof ev.generatedAt === 'string' ? ev.generatedAt : null,
+      behind: Number.isFinite(behind) ? behind : null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const PASS = '通過';
 const REJECT = '差し戻し';
@@ -309,6 +334,19 @@ export function computeNext() {
         read: READ.artifact('10-assumption-ledger'),
       }
     : null;
+  // 層1(品質保証の方針と受容の基準。テンプレ11。#288)。組織に1つ置き、G-1 で層2 を照らす先。無くても段階を止めない
+  // (保証の主張の成立条件1 を満たさず、出荷が「品質保証の対象外」と出るだけ)。G-1 の材料と同じ時点で作成を案内する
+  const policyMissing = !fs.existsSync(path.join(ROOT, 'docs/quality-assurance-policy.md'));
+  const policyStep = policyMissing
+    ? {
+        stage: '層1(品質保証の方針と受容の基準)なし',
+        ...cmd(
+          'cp templates/11-quality-assurance-policy.md docs/quality-assurance-policy.md',
+          '組織に1つ。5項目と記名はトップマネジメント(人)が書く。AI は欄を推測で埋めない。無いあいだも段階は止まらないが、出荷はすべて「品質保証の対象外」と出る'
+        ),
+        read: READ.artifact('11-quality-assurance-policy'),
+      }
+    : null;
   if (!projectBlocked && isGateActive(config, 'g1') && !passed(records, 'g1')) {
     const brief = path.join(ROOT, 'docs/project-brief.md');
     if (!fs.existsSync(brief)) {
@@ -318,9 +356,52 @@ export function computeNext() {
       if (ledgerStep) result.project.push(ledgerStep);
       result.project.push({ stage: '企画承認(G-1)待ち', ...withIssues(gateWait(config, 'g1', null), recordIssues(records, 'g1')) });
     }
+    if (policyStep) result.project.push(policyStep);
     projectBlocked = true;
   } else if (ledgerStep) {
     result.project.push(ledgerStep);
+  }
+  if (policyMissing && !result.project.includes(policyStep) && config.configured !== false) {
+    result.notes.push(
+      '層1(docs/quality-assurance-policy.md。品質保証の方針と受容の基準)が無い。出荷はすべて「品質保証の対象外」と出る(段階は止めない)。' +
+        '作るなら cp templates/11-quality-assurance-policy.md docs/quality-assurance-policy.md。5項目と記名はトップマネジメントが書く(読む: .claude/skills/artifact/artifacts/11-quality-assurance-policy.md)'
+    );
+  }
+
+  // 導入前の検証(標準 附属書I I.11)。採用を判断する時点の証拠。段階を止めない。記録が1件でもあれば案内しない
+  const trialDir = path.join(ROOT, 'docs/adoption-trial');
+  const trialRecords = fs.existsSync(trialDir) ? fs.readdirSync(trialDir).filter((f) => /^record-.*\.md$/.test(f)) : [];
+  if (!trialRecords.length) {
+    result.notes.push(
+      `導入前の検証の記録が無い(採用を判断する時点の証拠。附属書I I.11)。${fs.existsSync(path.join(trialDir, 'criteria.md')) ? '合否の基準を採用者が書いてコミットした後に' : '採用者が node scripts/gate/adoption-trial.mjs init で合否の基準を写して書き、コミットした後に'} node scripts/gate/adoption-trial.mjs run(読む: ${READ.artifact('adoption-trial')})。基準と記入者は人が書く`
+    );
+  }
+
+  // 技術判断者 = AI運用担当者(基準集合の範囲の起案と承認を別の自然人で行えない。標準 第3章 3.12.3 の要求事項10)。段階を止めない
+  if (config.configured !== false) for (const n of seatPairingNotes(config)) result.notes.push(n);
+
+  // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と
+  // 読まれないよう、注記として常に出す(#288 第5巡)。段階を止めない
+  if (config.configured !== false && isGateActive(config, 'g6')) {
+    const n = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+    const audit = config.review?.recordFormat === 'audit';
+    const safety = config.gates?.g6?.params?.independentSafetyAssessment === true;
+    if (n >= 2 || audit || safety) {
+      result.notes.push(
+        `独立レビュー(G-6)は承認者 ${n} 名(構成 review.reviewerCount。名簿の別人が各自の挙動要約を書く)。` +
+          (n >= 2 ? '1名の承認でマージした変更は、出荷の証跡の集約が「G-6 の承認者 1 名 / 要求 2 名」として独立した人の確認を経ていない変更に数える。G-5(pr-rules)はレビューを読めるとき承認者の数を出す(合否にしない)。' : '') +
+          (audit ? '判定記録は監査対応書式(構成 review.recordFormat: audit)。変更ごとに G-6 の判定記録を残し、「監査対応書式」の表(2人目の判定者・安全性の評価者)を埋める。PR の承認だけでは記録にならない。' : '') +
+          (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。' : '') +
+          `読む: ${READ.gate('g6')}`
+      );
+    }
+  }
+
+  // 変化点の後に失効・後継不在・未確認になったものを、担当の席への次の一手として出す(#288 第6巡 N)。
+  // 第5巡の判定では、これらが出荷の直前の集約でしか現れず、「/pit → 出力に従う」の運用の形が閉じなかった。
+  // 読むのは出荷の集約と同じ関数(org-assurance.mjs)。段階は止めない(注記)。要約・評価は足さない
+  if (config.configured !== false && fs.existsSync(d0)) {
+    for (const n of continuityNotes(config)) result.notes.push(n);
   }
 
   // --- 自己修正のロック ---
@@ -418,7 +499,9 @@ export function computeNext() {
         read: '.claude/skills/implement/SKILL.md',
         roles: [
           { role: 'dev-verifier', action: `/implement で ${t.id} を続け、Draft PR を出す` },
-          ...(isGateActive(config, 'g6') ? [{ role: 'independent-reviewer', action: 'PR が `state:dev-done` になったら G-6 を判定する(/human-verify で材料を集める)' }] : []),
+          ...(isGateActive(config, 'g6')
+            ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})` }]
+            : []),
         ],
       });
       continue;
@@ -487,6 +570,142 @@ export function computeNext() {
   }
   result.notSeen.push('PR・ラベル・CI の状態(ローカルの git だけを見ています)');
   return result;
+}
+
+// ---------------------------------------------------------------- 変化点の後の注記(#288 第6巡 N・O・R・Q・⑦)
+
+/** 席の表示(席名と責任者)。注記に担当の席を書くために使う */
+function seatText(config, roleId) {
+  const role = (config.roles ?? []).find((r) => r.id === roleId);
+  const seat = (config.seats ?? []).find((s) => s.role === roleId);
+  return `${role?.name ?? seat?.name ?? roleId}の席の責任者 ${seat?.accountable ? personName(config, seat.accountable) : '(未記入)'}`;
+}
+
+/**
+ * 変化点の後に現れる失効・後継不在・依存先の欄の空欄・実環境の統制の未確認・席の責任者の力量の未確認を、
+ * 担当の席と次に実行するものを添えて出す。出荷の集約(aggregate-evidence)と同じ関数で読む。読めないものは出さない
+ */
+function continuityNotes(config) {
+  const notes = [];
+  let policy;
+  let ct;
+  const today = localDay();
+  try {
+    policy = readPolicy(config, { today });
+    ct = continuityState(config, policy, { day: today });
+  } catch (e) {
+    return [`層1・D-0 の読み取りに失敗したため、組織継続の状態の注記を出せない(${String(e.message).split('\n')[0]})`];
+  }
+  const authorityOf = (re) => {
+    const row = (policy?.authority ?? []).find((r) => re.test(String(r.target ?? '').normalize('NFKC')));
+    return row && row.role ? `層1 の項目4 の権限者(${row.role})` : '層1 の項目4 の権限者(行が空欄。層1 を先に埋める)';
+  };
+  const cont = `${READ.change('settings')}`;
+
+  // AI の層・人の層の検出率の失効(測定の記録 docs/adoption-trial/seeded-errors.json と現在の構成の比較)
+  const seeded = readSeededRecord();
+  if (seeded.value) {
+    const ai = seeded.ai;
+    if (ai && ai.blind === true) {
+      const diffs = aiIdentityMismatch(config, ai);
+      if (diffs && diffs.length) {
+        notes.push(
+          `AI の層の検出率の測定値が失効(測定した担い手の識別が現在と一致しない: ${diffs.join(' / ')})。出荷の集約は AI の層を未測定と出す。` +
+            `${seatText(config, 'ai-ops')}が目隠しの欠陥注入の tally をやり直す(node scripts/gate/adoption-trial.mjs seal → tally。読む: ${READ.artifact('adoption-trial')})`
+        );
+      }
+    }
+    const hf = humanFinderState(config, policy, seeded.human);
+    if (hf && hf.recorded) {
+      if (hf.expired) {
+        notes.push(
+          `人の層の検出率の測定値が失効(${hf.why})。出荷の集約は人の層を未測定と出す。${seatText(config, 'ai-ops')}が、現在の独立レビュア(${seatText(config, 'independent-reviewer')}と名簿の2人目)を見つける者にして tally をやり直す(読む: ${READ.artifact('adoption-trial')})`
+        );
+      } else if (hf.notes.length) {
+        notes.push(`人の層の検出率の測定値の注記: ${hf.notes.join('。')}。再測定の契機として ${seatText(config, 'ai-ops')}が判断する(層1 の「人の層の再測定の契機」を定めれば失効の規則になる)`);
+      }
+    }
+  }
+
+  // 組織継続の側の状態(単一障害点の一覧)のうち、受容が無い・期限切れのもの。状態ごとに担当の席と次の一手を添える
+  const HINT = {
+    代替の無い依存先: (s) => `${seatText(config, 'ai-ops')}が別の提供者での退出の予行を行い docs/exit-rehearsal.json へ記録する(読む: ${READ.artifact('11-quality-assurance-policy')})`,
+    退出を試していない依存先: (s) => `${seatText(config, 'ai-ops')}が退出の予行(別の提供者での基準集合の回帰評価)を行い docs/exit-rehearsal.json へ記録する`,
+    通知の期間またはデータが空欄の依存先: (s) => `${seatText(config, 'ai-ops')}が構成の dependencies[](提供者・通知の期間・データ)を \`/process-change\`(種別 settings)で記入する(読む: ${cont})`,
+    縮退を確かめていない業務: (s) => `類型E の演習の実測を D-0 表7(節12 の縮退の3列)へ、実測の日とともに ${seatText(config, structureDeciderSeat(config))}が書く(読む: ${READ.artifact('00-d0-governance')})`,
+    止める席: (s) => `AI が使えないときの扱いが「止める」。人へ戻せるなら \`/process-change\`(種別 performer の fallback)で改める`,
+    後継不在の席: (s) => `育成の担当(${ct.cycle?.trainer ?? '層1 の欄が**空欄**。空欄のあいだ受容を更新できない'})が後継候補を力量の確認へ進めて D-0 節9 へ書くか、${authorityOf(/後継のいない|理解の保持者/)}が D-0 節15 で期限つきで受容する(読む: ${READ.artifact('00-d0-governance')})`,
+    コア理解の保持者が1名以下: (s) => `本人以外の者が日付を付けて理解を確認した記録(H-3 など)を docs/handover.md の節2 へ ${seatText(config, 'tech-lead')}が足すか、${authorityOf(/後継のいない|理解の保持者/)}が D-0 節15 で受容する`,
+    自組織に無い資産: (s) => `指示資産・基準集合を自組織のリポジトリへ置く(${seatText(config, 'ai-maintainer')})`,
+  };
+  const spof = (ct.spof ?? []).filter((s) => s.acceptance?.status !== 'accepted');
+  for (const s of spof) {
+    const acc = s.acceptance?.status === 'expired' ? `**受容の期限切れ**(${s.acceptance.until}。記載の欠落。出荷の集約が失敗する)` : s.acceptance?.status === 'invalid' ? `受容の記録が無効(${(s.acceptance.why ?? []).join('。')})` : '受容なし';
+    const hint = HINT[s.state] ? HINT[s.state](s) : `${authorityOf(/代替の無い依存先/)}が解消するか D-0 節15 で受容する`;
+    notes.push(`組織継続の状態「${s.state}: ${s.subject}」(${s.detail})。${acc}。次の一手: ${hint}`);
+  }
+
+  // 席の責任者本人の力量の確認(3.4.3 要求事項1)。未確認・失効を、席ごとに1つの注記へまとめて出す
+  {
+    const comp = competenceState(config, policy, { day: today });
+    // 確認した者が名簿の外の記録(#288 第7巡 T)。受け付けたうえで注記し、内部監査の観点6(名簿の実在)へつなぐ
+    const outside = comp.filter((c) => c.outsideRoster);
+    if (outside.length) {
+      notes.push(
+        `席の責任者本人の力量の確認で、確認した者が名簿の外: ${outside.map((c) => `${c.seat}(${c.accountable})の確認した者 ${c.record.confirmedBy}(記録 ${c.record.record ?? '所在なし'})`).join(' / ')}。` +
+          '受け付けている(外部の研修機関・前任の部門長などがあり得る)。名簿の外の名前は機械で突合できないため、確認の記録に所属・役職を書き、内部監査の観点6(名簿の実在)で突合する。D-0 節9 と出荷の集約の項目7 に「(名簿の外)」と出る'
+      );
+    }
+    const bad = comp.filter((c) => c.status !== 'valid' && c.status !== 'no-accountable');
+    if (bad.length) {
+      const label = (c) => (c.status === 'expired' ? '**失効**' : c.status === 'cycle-blank' ? '有効性を判定できない' : '**未確認**');
+      const cycleBlank = bad.some((c) => c.status === 'cycle-blank');
+      notes.push(
+        `席の責任者本人の AI を使わない力量の確認(3.4.3 要求事項1。任命時と層1 の周期): ${bad.map((c) => `${c.seat}(${c.accountable})${label(c)}(${c.why})`).join(' / ')}。` +
+          (cycleBlank ? `層1 の「AI を使わない力量の確認の周期」を記名者が埋める(読む: ${READ.artifact('11-quality-assurance-policy')})。` : '') +
+          `確認は本人以外の者が行い(AI を使っていない期間の成果物、または判定者の面前の演習。自己申告は認めない)、\`/process-change\`(種別 accountable。seats.<席>.competence に確認日・確認した者・記録の所在。決定者の記名は要らない)で構成へ書く。出荷の集約の項目7 に出続ける(読む: ${READ.change('accountable')})`
+      );
+    }
+  }
+
+  // 実環境の統制の確認(附属書I I.11 要件⑦)。未確認は消えない
+  const env = readEnvCheck(config);
+  if (!env.confirmed) {
+    notes.push(
+      `実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物): ${env.summary}。` +
+        `${seatText(config, 'qa-gatekeeper')}または採用者が、実環境の gh で \`node scripts/gate/adoption-trial.mjs env-check --by <氏名>\` を実行し、記録 ${'docs/adoption-trial/env-check.json'} をコミットする。模擬の gh では「読めない」と出て未確認のまま残る(読む: ${READ.artifact('adoption-trial')})`
+    );
+  }
+
+  // 10名以上の規則(第8章 軸A。#288 第6巡 Q)。構成の値が実行層で何を要するかを、名簿の所属の有無とともに出す
+  if (config.answers?.['q-team-size'] === 'size-10plus') {
+    const core = config.review?.mode === 'internal-plus-core-external';
+    const qaMode = config.gates?.g7?.params?.approverMode === 'dedicated-qa';
+    const teams = (config.people ?? []).some((p) => typeof p.team === 'string' && p.team.trim());
+    const paths = Array.isArray(config.delegation?.protectedPaths);
+    const parts = [];
+    if (core) parts.push(`コア機能(確約範囲・コア指定のパス${paths ? '' : '。**未宣言**。/process-change の種別 mode で protectedPaths を宣言する'})の独立レビューに、作成を指示した者と別の所属の人を含める(構成 review.mode)`);
+    if (qaMode) parts.push('出荷判定は QA 部門・専任者(構成 approverMode: dedicated-qa)');
+    parts.push('機能責任者への仕様承認の委譲は機械で確かめない(台帳に「降りていない」と開示)');
+    // 直近の出荷の集約の項目1 の件数(同じ文。#288 第7巡 U)。集約の出力が無ければ、件数は集約で読む旨だけを出す
+    const agg = lastAggregate();
+    const counts = [];
+    if (agg?.independence) {
+      if (core && agg.independence.coreReview) counts.push(`コア機能の独立レビューに別チームを含むか: ${coreReviewText(agg.independence.coreReview)}`);
+      if (qaMode && agg.independence.qaAffiliation) counts.push(`出荷判定は QA 部門・専任者か: ${qaAffiliationText(agg.independence.qaAffiliation)}`);
+    }
+    const same = agg?.independence?.coreReview?.sameTeamOnly?.length ?? 0;
+    const aggWhere = agg
+      ? `直近の出荷の集約(${agg.range?.from ?? '起点なし'}..${agg.range?.to ?? '?'}${agg.generatedAt ? `、生成 ${agg.generatedAt.slice(0, 19)}` : ''}${agg.behind === null ? '' : agg.behind ? `。集約の後に ${agg.behind} コミット。件数は集約の時点のもの。出荷の前に集約し直す` : '。集約の後のコミットなし'})の項目1`
+      : null;
+    const countText = counts.length
+      ? `。${aggWhere}: ${counts.join(' / ')}${same ? `。**同じ所属の承認者だけの変更 ${same} 件**(コア機能の独立レビューに別の所属の人を含める規則に外れる。欠落にはしない(第8章の表は手引き)。出荷判定者が判定記録の「人が判断する項目」に扱いを書く)` : ''}`
+      : agg
+        ? `。${aggWhere}に件数の行なし`
+        : '。件数は出荷の集約の項目1 で読む(直近の集約の出力 evidence/evidence.json が手元に無い)';
+    notes.push(`10名以上の規則: ${parts.join('。')}。${teams ? '名簿の所属(team)から出荷の集約が項目1 に判定を出す' : '名簿に所属(team)の欄が無く、出荷の集約は「判定できない」と出す。/process-change(種別 accountable)の people に team を書く'}${countText}`);
+  }
+  return notes;
 }
 
 // ---------------------------------------------------------------- 出力
@@ -558,6 +777,7 @@ const TERMS = [
   [/自己修正/, '自己修正: テストが通るまで AI が実装を直す反復。上限に達すると止まり、人が受入基準へ戻るかを決める'],
   [/前提の台帳/, '前提の台帳: 標準が置く前提(A-T3・A-O3 など6つ)が成り立っているかを、観測した事象で記録する台帳(docs/assumptions.md)。全ゲート共通の通過条件の入力'],
   [/証跡の集約/, '証跡の集約: 出荷判定(G-7)の前に、記録の欠落を機械で洗い出すこと(aggregate-evidence.mjs)'],
+  [/層1/, '層1: 組織が品質を保証すると主張するための最上位の文書(品質保証の方針と受容の基準。docs/quality-assurance-policy.md)。トップマネジメントが記名する。無くても進めるが、出荷は「品質保証の対象外」と出る'],
 ];
 
 function glossaryFor(text, gateLabels) {

@@ -11,7 +11,9 @@ name: gate-g5
 on:
   pull_request:
     # edited: PR の本文(トレーラ Spec・リスク区分)を直したときに、pr-rules を再実行する
-    types: [opened, synchronize, reopened, edited]
+    # labeled / unlabeled: 停止の申し立て(ラベル state:stop-requested。標準 第7章 7.11)を付けた時点で保留し、
+    # 外したときにも解除の記録があるかを確かめ直す
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
   # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
   # 既定ブランチの名前が main でない場合は、ここを改める(このファイルは強制層であり、変更は AI維持管理者の承認を要する)
@@ -22,6 +24,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # 停止の申し立てのラベルの付け外しの履歴(issue の events)を読む
+  issues: read
 
 jobs:
   # プロセス構成が未設定のあいだは、検査の中身を判定しない
@@ -85,7 +89,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-stack
       - name: テスト
+        id: test
         run: node scripts/gate/adapter.mjs run test
+      # G-7 基準1(計画したテストの消化)の入力。テストの実行の結果と、テストのファイルの一覧を記録する(#288)。
+      # ship-evidence が license-scan と同じ経路で取り込み、出荷判定の証跡の集約が「実行して通過した数」を数える
+      - name: テストの実行の記録
+        if: always()
+        run: node scripts/gate/test-results.mjs --outcome "${{ steps.test.outcome }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: evidence/test-results.json
+          if-no-files-found: ignore
       - name: カバレッジの取得
         run: node scripts/gate/adapter.mjs run coverage
       - name: カバレッジの判定
@@ -186,6 +202,7 @@ jobs:
   # PR 単位の検査(#286): トレーラ Spec、変更規模の上限、閾値・除外設定と製品のコードの同時変更(禁止事項6)。
   # 既存のテストの変更(削除・期待値の変更)は、G-6 の材料として PR へ一覧を出す(失敗にはしない)。
   # 上限と例外承認は基底ブランチの構成と台帳から読む。同じ PR で足した例外承認の行は数えない。
+  # 停止の申し立て(ラベル state:stop-requested)が付いた PR は、基底ブランチに解除の記録が入るまで失敗させる(#288)。
   # PR の題名と本文は環境変数で渡す(シェルへ展開しない)
   pr-rules:
     name: pr-rules
@@ -199,6 +216,33 @@ jobs:
       - env:
           BASE_REF: ${{ github.base_ref }}
         run: git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+      # 停止の申し立て(標準 第7章 7.11)のラベルの付け外しの履歴。ラベルを外しただけで保留が解けないようにする。
+      # 取得に失敗した場合は空にする(現在のラベルだけで判定し、その限界は check-pr.mjs の冒頭に書いてある)
+      - name: ラベルの履歴
+        id: label-events
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ev=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/events" --paginate \
+            --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, at: .created_at, actor: .actor.login}' \
+            | jq -s -c . 2>/dev/null) || ev=''
+          { echo 'events<<PIT_IN_EVENTS'; echo "${ev}"; echo 'PIT_IN_EVENTS'; } >> "$GITHUB_OUTPUT"
+      # G-6 の承認者の数(構成 review.reviewerCount。規制業・CL3 は 2 名)。レビューの一覧を渡し、check-pr が
+      # 「G-6 の承認者 N 名 / 要求 M 名」を出す(合否にはしない。理由は check-pr.mjs の冒頭)。取得に失敗した場合は
+      # 空にする(check-pr は「読めない」とその旨を出す)
+      - name: PR のレビュー
+        id: reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          rv=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '.[] | {state, body, submitted_at, author: {login: .user.login, is_bot: (.user.type == "Bot")}}' \
+            | jq -s -c . 2>/dev/null) || rv=''
+          { echo 'reviews<<PIT_IN_REVIEWS'; echo "${rv}"; echo 'PIT_IN_REVIEWS'; } >> "$GITHUB_OUTPUT"
       - name: PR の検査
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -206,6 +250,9 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_LABEL_EVENTS: ${{ steps.label-events.outputs.events }}
+          PR_REVIEWS: ${{ steps.reviews.outputs.reviews }}
           GH_TOKEN: ${{ github.token }}
         run: node scripts/gate/check-pr.mjs --base "origin/${BASE_REF}" --report evidence/pr-checks.md --comment
       - uses: actions/upload-artifact@v4
