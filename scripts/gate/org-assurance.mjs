@@ -192,6 +192,29 @@ export function samePerson(config, a, b) {
 export const CONDITION_TAGS = ['R1未確認', '未達ゲート', '逸脱', '未回収の例外', '未測定'];
 
 /**
+ * [未測定] の条件の文に、量を伴う期間の表現(「出荷 2 回」「90 日」「3 か月を超えて」)があれば返す。印は層1 項目1 の
+ * 許容期間を読まず、未測定の最初の出荷から当たる(#288 第7巡 S)。文が機械と同じこと(期間に依らない・即時・猶予を与えない)
+ * を述べていれば、期間の語があっても食い違いではないので null(#288 第8巡 W7・Z8)。語「期間」「超えて」だけでは判定しない
+ */
+export function periodExpression(text) {
+  const s = nfkc(text ?? '');
+  if (/依らず|よらず|関わらず|かかわらず|即時|猶予(?:は|を)?(?:与えない|なし|無し)|適用しない|問わず/.test(s)) return null;
+  return s.match(/(?:出荷\s*)?\d+\s*(?:回|日|週|か月|ヶ月|カ月|ケ月|箇月|月)(?:\s*を?超えて)?/)?.[0] ?? null;
+}
+
+/** 層1 項目4 の必須行「AI の利用の拡大」の受容できる水準の欄に書く、機械が読む印。委任の登録を構成で拒否する(#288 第8巡 Y7) */
+export const DELEGATION_LOCK_WORD = '認めない';
+export function delegationLockOf(authority) {
+  const row = (authority ?? []).find((r) => /AI\s*の利用の拡大/.test(nfkc(r.target ?? '')));
+  if (!row) return { locked: false, unclear: false, level: null };
+  const level = nfkc(row.level ?? '').trim();
+  const locked = /^(?:委任(?:の登録|の範囲の登録)?(?:を|は)?)?認めない/.test(level);
+  // 語「認めない」を含むが機械が読む形(欄の先頭)でない。錠は掛けず、人が確かめる注記にとどめる
+  const unclear = !locked && level.includes(DELEGATION_LOCK_WORD);
+  return { locked, unclear, level: level || null, role: row.role ?? null };
+}
+
+/**
  * 検出能力の未測定を許容する期間を読む。日数(か月は30日に換算)か、出荷の回数。読めない値と未記入は
  * 「許容しない」として扱う(成立条件5 を満たすのは測定済みの場合だけになる)
  */
@@ -316,7 +339,7 @@ export function readPolicy(config, { root = ROOT, today = null, text: given } = 
   // text を渡すと、ファイルの代わりにその本文を読む(G-5 が基底ブランチの層1 を読む場合)。null は「層1 なし」
   const text = given === undefined ? readText(POLICY_FILE, root) : given === null ? null : String(given).replace(/\r\n/g, '\n');
   if (!text) {
-    return { present: false, valid: false, problems: [`${POLICY_FILE} が無い(層1 なし)`], version: null, signer: null, signedAt: null, label: '層1 なし', conditions: [], authority: [], escalation: [], tolerance: parseTolerance(null), cycle: NO_CYCLE, requiredBlank: [], signerIsBizApprover: false };
+    return { present: false, valid: false, problems: [`${POLICY_FILE} が無い(層1 なし)`], version: null, signer: null, signedAt: null, label: '層1 なし', conditions: [], authority: [], escalation: [], tolerance: parseTolerance(null), cycle: NO_CYCLE, requiredBlank: [], signerIsBizApprover: false, delegationLock: { locked: false, unclear: false, level: null } };
   }
   const version = rowValueRe(text, /^版$/);
   const signer = rowValueRe(text, /^記名(\s*[((][^))]*[))])?$/);
@@ -337,12 +360,13 @@ export function readPolicy(config, { root = ROOT, today = null, text: given } = 
       const m = nfkc(t).match(/^\[([^\]]+)\]\s*(.*)$/);
       if (!m) return { text: t, tag: null, kind: 'unchecked', word: null };
       const tag = m[1].trim();
-      if (CONDITION_TAGS.includes(tag)) {
-        // [未測定] の文に期間の表現があれば残す。印は層1 項目1 の許容期間を読まず、未測定の最初の出荷から当たる(#288 第7巡 S)。
-        // 集約は、文と機械の判定が食い違うことを注記に出す
-        const periodWords = tag === '未測定' ? (nfkc(m[2] ?? '').match(/(?:出荷\s*)?\d+\s*(?:回|日|週|か月|ヶ月|カ月|ケ月|箇月|月)(?:\s*を?超えて)?|超えて|続く|期間/)?.[0] ?? null) : null;
-        return { text: m[2] || t, tag, kind: tag, word: null, periodWords };
+      // [未測定] は層を指定できる(#288 第8巡 X7): [未測定:人] は人の層だけ、[未測定:AI] は AI の層だけ、無印の [未測定] は両層
+      const um = tag.match(/^未測定(?:\s*[:：]\s*(人|人の層|AI|ai|AI の層|AIの層))?$/);
+      if (um) {
+        const layer = !um[1] ? null : /^人/.test(um[1]) ? 'human' : 'ai';
+        return { text: m[2] || t, tag, kind: '未測定', layer, word: null, periodWords: periodExpression(m[2] ?? '') };
       }
+      if (CONDITION_TAGS.includes(tag)) return { text: m[2] || t, tag, kind: tag, word: null, periodWords: null };
       const ledger = tag.match(/^台帳\s*[:：]\s*(.+)$/);
       if (ledger) return { text: m[2] || t, tag, kind: 'ledger', word: ledger[1].trim() };
       return { text: t, tag, kind: 'unknown', word: null };
@@ -409,6 +433,8 @@ export function readPolicy(config, { root = ROOT, today = null, text: given } = 
     tolerance: parseTolerance(item1['検出能力の未測定を許容する期間']),
     conditions,
     authority,
+    // 項目4「AI の利用の拡大」の受容できる水準が「認めない」で始まる層1 は、委任の登録を構成で拒否する(#288 第8巡 Y7)
+    delegationLock: delegationLockOf(authority),
     requiredBlank,
     escalation,
     cycle: readCycle(text),
@@ -1203,6 +1229,8 @@ if (isMain) {
     for (const p of policy.problems) L.push(`  - ${p}`);
     L.push(`- 項目4 の必須行の空欄: ${(policy.requiredBlank ?? []).length ? `**${policy.requiredBlank.length} 行**(${policy.requiredBlank.join(' / ')})` : 'なし'}`);
     L.push(`- 検出能力の未測定を許容する期間(項目1): ${policy.tolerance?.raw ?? '未記入(許容しないとして扱う)'}`);
+    L.push(`- 項目4「AI の利用の拡大」の水準: ${policy.delegationLock?.locked ? `**委任の登録を認めない(構成の錠。/process-change の種別 mode・performer は委任の登録を拒否する)**` : policy.delegationLock?.unclear ? `「${policy.delegationLock.level}」(語「認めない」を含むが、機械が読む形(欄の先頭が「認めない」)でない。錠は掛からない。意図が「認めない」なら欄の先頭に書く)` : policy.delegationLock?.level ? `「${policy.delegationLock.level}」(委任の登録は構成で拒否しない。登録には項目4 の受容者の受容を要する)` : '未記入'}`);
+    for (const c of policy.conditions.filter((x) => x.kind === '未測定')) L.push(`- 印 [${c.tag}]: ${c.layer === 'human' ? '人の層だけに当たる' : c.layer === 'ai' ? 'AI の層だけに当たる' : '人の層・AI の層の両方に当たる'}(項目1 の許容期間に依らず、未測定の最初の出荷から)${c.periodWords ? `。文に期間の表現(「${c.periodWords}」)がある。意図が猶予なら印を外し、即時なら「依らず」と書く(人が確かめる)` : ''}`);
     L.push('');
     L.push('### 成立条件(構成と記録だけから出せるもの)');
     L.push('');

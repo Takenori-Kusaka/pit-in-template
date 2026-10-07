@@ -65,6 +65,10 @@ import {
   findPersonByAccount,
   aiNameBlocked,
   canonicalJson,
+  hasBehaviorSummary,
+  behaviorSummaryShortfall,
+  reviewersRequiredOf,
+  touchesCore,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -397,11 +401,16 @@ export function instructorsOf(config, body, author) {
  * G-6 の判定記録(docs/gates/)は PR の時点では基底に無いことが多いため、ここでは読まない(集約が読む)。
  * reviews が無い(読めない)ときは readable: false を返し、呼び出し側がその旨を出す
  */
-export function approverFindings(config, pr) {
+export function approverFindings(config, pr, files = null) {
   const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
-  const required = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
-  if (!g6Active) return { applies: false, required };
-  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required };
+  const counts = reviewersRequiredOf(config);
+  // コア機能の変更(構成のコア機能のパス = 確約範囲・コア指定 + 区分の下限の規則のパス)は coreReviewerCount と reviewerCount の大きいほう(#288 第8巡 Z7)。
+  // パスが未宣言なら、コア機能かどうかを確かめられない(core.declared が偽)。黙って全変更の数で通さず、呼び出し側がその旨を出す
+  const coreOf = counts.coreDeclared && counts.core > counts.all && Array.isArray(files) ? touchesCore(config, files) : null;
+  const core = counts.coreDeclared && counts.core > counts.all ? { configured: counts.core, declared: Boolean(coreOf), hit: coreOf?.hit ?? null, files: coreOf?.files ?? [], paths: coreOf?.paths ?? [] } : null;
+  const required = core?.hit ? counts.core : counts.all;
+  if (!g6Active) return { applies: false, required, core };
+  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core };
   const instructors = instructorsOf(config, pr.body, pr.author);
   const last = new Map();
   for (const r of pr.reviews) {
@@ -409,8 +418,9 @@ export function approverFindings(config, pr) {
     const state = String(r?.state ?? '').toUpperCase();
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
     const before = last.get(login);
-    const body = String(r.body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim().length > 0;
-    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary) });
+    // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(集約と同じ。#288 第8巡 X8)
+    const body = hasBehaviorSummary(r.body);
+    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary), summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
     else last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false });
   }
   const counted = [];
@@ -431,12 +441,12 @@ export function approverFindings(config, pr) {
       continue;
     }
     if (!v.summary) {
-      notCounted.push(`@${login}(承認の本文に挙動要約が無い)`);
+      notCounted.push(`@${login}(承認の本文に挙動要約が無い${v.summaryWhy ? `: ${v.summaryWhy}` : ''})`);
       continue;
     }
     if (!counted.some((c) => c.id === person.id)) counted.push({ id: person.id, name: person.name, login });
   }
-  return { applies: true, readable: true, required, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
+  return { applies: true, readable: true, required, core, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
 }
 
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
@@ -674,20 +684,28 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   }
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
-  result.approvers = approverFindings(baseConfigured ? baseConfig : headConfig, pr);
+  // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
+  result.approvers = approverFindings(baseConfigured ? baseConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
   if (result.approvers.applies) {
     const a = result.approvers;
+    const coreText = a.core
+      ? a.core.hit
+        ? `。コア機能の変更(当たったパス: ${a.core.files.slice(0, 3).join(', ')}${a.core.files.length > 3 ? ' ほか' : ''}。構成 gates.g6.params.coreReviewerCount ${a.core.configured} 名)`
+        : a.core.declared
+          ? ''
+          : `。**コア機能のパスが未宣言のため、この変更がコア機能(要求 ${a.core.configured} 名)に当たるかを確かめられない**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く)`
+      : '';
     if (!a.readable) {
       result.notices.push(
-        `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount)の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる`
+        `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount${a.core?.hit ? ' / コア機能 coreReviewerCount' : ''})の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる${coreText}`
       );
     } else if (!a.enough) {
       result.warnings.push(
-        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})。` +
+        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}。` +
           `マージの前に、名簿の別人が自分の挙動要約を付けて承認する。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える(この検査は合否にしない)`
       );
     } else {
-      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}`);
+      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}`);
     }
   }
 

@@ -1324,7 +1324,7 @@ function envCheck() {
       const evidence = { rulesetIds, api, fetchedAt };
       items.ruleset = bad.length
         ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset}。承認 ${want} 名)と一致しない: ${bad.join('。')}`, evidence }
-        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名${ruleset === 'regulated' ? '・最後の push の後の承認・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている`, evidence);
+        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名${ruleset === 'regulated' ? '・最後の push の後の承認・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
     }
   }
 

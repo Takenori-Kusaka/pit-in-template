@@ -31,7 +31,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
+import { readPolicy } from '../gate/org-assurance.mjs';
 import {
+  reviewersRequiredOf,
+  corePathsOf,
   SEAT_CEILING,
   MODE_LABEL,
   CHANGE_KINDS,
@@ -2074,7 +2077,7 @@ export function renderD0Section(key, config) {
       const decided = e.decidedBy
         ? `${e.decidedBy}(${e.reason ?? '理由の記載なし'})` +
           (e.appointerSigned ? '。決定者の任命を、組織上の任命権者の記名で行った' : '') +
-          (e.ruleApprovedBy ? `。規則の承認: ${e.ruleApprovedBy}(AI 維持管理者の席)` : '')
+          (e.ruleApprovedBy ? `。規則の承認: ${e.ruleApprovedBy}(AI 維持管理者の席${e.ruleApproval?.samePersonAsDecider ? '。**決定した者と同一人物**' : ''})` : '')
         : e.direction === 'arising'
           ? '決定なし(発生)'
           : '—';
@@ -2819,6 +2822,17 @@ export function renderProcessRules(config) {
         (qa ? `出荷判定は QA 部門・専任者(構成 gates.g7.params.approverMode: dedicated-qa。出荷判定者の所属は名簿の \`team\` で示す)。` : '') +
         '機能責任者への仕様承認の委譲は機械で確かめない(G-4 の判定者は価値責任者の席のまま。実装の台帳に「降りていない」と開示)。出荷の証跡の集約が項目1 に、所属の有無と判定の結果を出す'
     );
+  }
+  // コア機能の独立レビューの承認者の数(第8章 軸C 高の coreReviewerCount。#288 第8巡 Z7)。構成に値があり、全変更の要求より大きい体制でだけ常駐させる
+  {
+    const rc = reviewersRequiredOf(config);
+    if (rc.coreDeclared && rc.core > rc.all && ['required', 'simplified'].includes(config.gates?.g6?.state)) {
+      const cp = corePathsOf(config);
+      L.push(
+        `- **コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。全変更は ${rc.all} 名)。コア機能のパス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く。未宣言のあいだ、G-5 と出荷の集約は「確かめられない」と出す)'}。` +
+          'コア機能に触れる変更の承認者が要求に満たなければ、G-5(pr-rules)が警告し、出荷の証跡の集約が「G-6 の承認者 N 名 / 要求 M 名(コア機能)」として独立した人の確認を経ていない変更に数える'
+      );
+    }
   }
   const rules = config.delegation?.allowed ? (config.delegation.rules ?? []) : [];
   const delegated = seats.filter((s) => s.mode === 'delegated');
@@ -4103,7 +4117,44 @@ if (isMain) {
         refused.push(`sgRecord "${change.sgRecord}" は、docs/gates/ 配下の実在する判定記録(.md)ではありません。ステージ移行ゲート(SG)の判定記録の所在を書いてください`);
       }
     }
+    // --- 委任の登録の錠と、決定と承認の同一人物(#288 第8巡 Y7) ---
+    // (1) 層1 項目4「AI の利用の拡大」の受容できる水準が「認めない」で始まる組織では、委任の登録(席を委任にする、委任の規則・変更種別を
+    //     足す、規則を承認する)を構成で拒否する。トップマネジメントの定めが構成に優先する。委任を認めるには、層1 を改めて版を上げる
+    // (2) 委任を決定した者(decidedBy。保持していた宣言・規則の決定者を含む)と規則の承認者(ruleApprovedBy。AI維持管理者)が同一人物の承認は、
+    //     人数に依らず拒否しない(ADR-0054: どの席で判断したかを記録する)。拒否へ改めるのは条項の新設であり、本巡では採らない(ADR-0057 補足)。
+    //     代わりに、変化点の記録(ruleApproval.samePersonAsDecider)・D-0 節13・次の一手・出荷の集約に出し、委任を認めない組織は層1 の錠で塞ぐ
+    let samePersonNotice = null;
+    {
+      const delegatedDeclared = Object.entries(change.seats ?? {}).filter(([, s]) => s?.mode === 'delegated').map(([role]) => seatOf(role)?.name ?? role);
+      const rulesAdded = (config.delegation.rules ?? []).filter((r) => !priorRule[r.id]).map((r) => r.id ?? '(id なし)');
+      const registering = delegatedDeclared.length || rulesAdded.length || newTypes.size || approvedNow.length;
+      if (registering) {
+        const lock = readPolicy(config).delegationLock ?? { locked: false };
+        if (lock.locked) {
+          refused.push(
+            `層1(docs/quality-assurance-policy.md)の項目4「AI の利用の拡大」の受容できる水準が「${lock.level}」です。委任の登録(${[delegatedDeclared.length ? `席を委任にする: ${delegatedDeclared.join(' / ')}` : null, rulesAdded.length ? `委任の規則を足す: ${rulesAdded.join(', ')}` : null, newTypes.size ? `変更種別を足す: ${[...newTypes].join(', ')}` : null, approvedNow.length ? `規則を承認する: ${approvedNow.join(', ')}` : null].filter(Boolean).join('。')})は、この層1 のもとでは受け付けません。` +
+              '委任を認めるには、層1 の記名者が項目4 の水準を改めて版を上げます(体制の変化点。各案件の D-0 の版を更新する)。構成の側だけで錠を外すことはできません'
+          );
+        }
+      }
+      if (approvedNow.length && change.ruleApprovedBy) {
+        const approverKey = personKey(config, change.ruleApprovedBy);
+        const deciders = new Map();
+        if (change.decidedBy) deciders.set(personKey(config, change.decidedBy), `この変化点の決定者 ${personName(config, change.decidedBy)}`);
+        for (const r of (config.delegation.rules ?? []).filter((x) => approvedNow.includes(x.id))) if (r.decidedBy) deciders.set(personKey(config, r.decidedBy), `規則 ${r.id} を決定した者 ${personName(config, r.decidedBy)}`);
+        for (const s of config.seats) if (s.intent?.decidedBy) deciders.set(personKey(config, s.intent.decidedBy), `${s.name} の委任を宣言した者 ${personName(config, s.intent.decidedBy)}`);
+        if (approverKey && deciders.has(approverKey)) {
+          const small = config.answers?.['q-team-size'] === 'size-1-2';
+          samePersonNotice =
+            `委任の規則の承認者 "${change.ruleApprovedBy}"(AI維持管理者の席)は、委任を決定した者(${deciders.get(approverKey)})と同一人物です。委任へ緩める手続の2つの記名(決定と承認。第5章 5.5.7)が1人に集まり、この変化点で1人が委任を有効にしています。` +
+              (small
+                ? 'どの席で判断したかを記録しました(1〜2名の体制。ADR-0054)'
+                : `どの席で判断したかを記録しました(D-0 節13 に「決定した者と同一人物」と出る。次の一手と出荷の集約にも出る)。別の自然人で行うには、対象の席の責任者が decidedBy に記名して AI維持管理者が承認するか、${seatOf(RULE_APPROVER_SEAT)?.name ?? 'AI維持管理者'}の席を別の人へ移します(種別 accountable)。委任を認めない組織は、層1 項目4「AI の利用の拡大」の水準を「認めない」で始めます(構成の錠)`);
+        }
+      }
+    }
     if (refused.length) reject('この変化点は反映できません', [...new Set(refused)]);
+    if (samePersonNotice) console.log(`[注意] ${samePersonNotice}`);
 
     if (openItems.length && !signedNow) {
       const msg =

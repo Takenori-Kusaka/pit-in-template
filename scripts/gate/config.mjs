@@ -1016,6 +1016,60 @@ export function matchGlob(glob, file) {
   return new RegExp(`^${re}$`).test(file.replace(/\\/g, '/'));
 }
 
+// ---------------------------------------------------------------- 挙動要約の最低限の形(第4章 G-6 基準2・条件4。#288 第8巡 X8)
+//
+// 承認レビューの本文、または判定記録の「挙動要約」の節が、承認した者自身の挙動要約として数えられる最低限の形。
+// 機械が確かめるのは形だけであり、中身(変更の挙動を述べているか、自分の言葉か)は確かめない(内部監査の抜き取り)。
+//   - 承認の語だけの本文(LGTM / OK / approve / 承認 / 問題なし など)は数えない
+//   - 見出し語「挙動要約」とコメント・記号を除いた本文が、SUMMARY_MIN_CHARS 文字(空白と句読点を除く)以上あること(1〜2文の下限)
+export const SUMMARY_MIN_CHARS = 8;
+const SUMMARY_STOCK_PHRASES = /^(lgtm|ok|okay|good|fine|approve[d]?|approval|ship ?it|\+1|👍|承認|承認します|問題なし|問題ありません|良い|よい|良さそう|よさそう|確認しました|確認済み|見ました|ok です|okです|了解|rgr)$/i;
+/** 本文が挙動要約の最低限の形を満たすか。満たさない理由を返す(満たせば null) */
+export function behaviorSummaryShortfall(text) {
+  const raw = String(text ?? '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .normalize('NFKC');
+  const body = raw
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*(?:[#>*\-・]+\s*)?(?:\*\*)?挙動要約(?:\*\*)?\s*[::]?\s*/u, '').trim())
+    .filter(Boolean)
+    .join(' ');
+  const letters = body.replace(/[\s\p{P}\p{S}]+/gu, '');
+  if (!letters) return '本文が空(見出し語だけ)';
+  if (SUMMARY_STOCK_PHRASES.test(letters.toLowerCase().replace(/\s+/g, ' '))) return `承認の語だけ(「${body.slice(0, 20)}」)`;
+  if ([...letters].length < SUMMARY_MIN_CHARS) return `${[...letters].length} 文字(${SUMMARY_MIN_CHARS} 文字未満。1〜2文の挙動要約に満たない)`;
+  return null;
+}
+export const hasBehaviorSummary = (text) => behaviorSummaryShortfall(text) === null;
+
+// ---------------------------------------------------------------- コア機能のパスと、コア機能の変更に要する承認者の数(第8章 軸C 高。#288 第8巡 Z7)
+//
+// 「コア機能」の機械の判定は、構成に既にある2つの宣言だけから導く(新しい欄を作らない)。
+//   - 確約範囲・コア指定のパス(delegation.protectedPaths。委任を適用しない案件でも種別 mode で宣言できる)
+//   - 区分の下限の規則のパス(riskFloor.rules[].paths。下限 R1・R2 のいずれも。kinds は見ない)
+// どちらも無い構成では「未宣言」であり、コア機能の変更を判定できない(黙って通さず、未宣言と表示する)
+export function corePathsOf(config) {
+  const fromProtected = Array.isArray(config?.delegation?.protectedPaths) ? config.delegation.protectedPaths.filter((p) => typeof p === 'string' && p.trim()) : null;
+  const fromFloor = (Array.isArray(config?.riskFloor?.rules) ? config.riskFloor.rules : []).flatMap((r) => (Array.isArray(r?.paths) ? r.paths.filter((p) => typeof p === 'string' && p.trim()) : []));
+  const declared = fromProtected !== null || fromFloor.length > 0;
+  const paths = [...new Set([...(fromProtected ?? []), ...fromFloor])];
+  return { declared, paths, sources: { protectedPaths: fromProtected, riskFloorRules: (config?.riskFloor?.rules ?? []).length } };
+}
+/** G-6 に要する独立した人の承認者の数。全変更の数(review.reviewerCount)と、コア機能の変更の数(gates.g6.params.coreReviewerCount)。大きいほうが掛かる */
+export function reviewersRequiredOf(config) {
+  const all = Math.max(1, Number(config?.review?.reviewerCount ?? config?.review?.requiredApprovals ?? 1) || 1);
+  const coreParam = Number(config?.gates?.g6?.params?.coreReviewerCount);
+  const core = Number.isFinite(coreParam) && coreParam > 0 ? Math.max(all, coreParam) : all;
+  return { all, core, coreDeclared: Number.isFinite(coreParam) && coreParam > 0, coreParam: Number.isFinite(coreParam) ? coreParam : null };
+}
+/** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
+export function touchesCore(config, files) {
+  const core = corePathsOf(config);
+  if (!core.declared) return null;
+  const hit = (files ?? []).filter((f) => core.paths.some((g) => matchGlob(g, f)));
+  return { hit: hit.length > 0, files: hit, paths: core.paths };
+}
+
 /** git の --numstat の出力から、変更行数(追加 + 削除)を合計する */
 export function sumNumstat(text) {
   return (text ?? '')

@@ -23,7 +23,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf } from './config.mjs';
 import { readLock } from './self-heal.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
@@ -383,15 +383,22 @@ export function computeNext() {
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と
   // 読まれないよう、注記として常に出す(#288 第5巡)。段階を止めない
   if (config.configured !== false && isGateActive(config, 'g6')) {
-    const n = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+    const rc = reviewersRequiredOf(config);
+    const n = rc.all;
     const audit = config.review?.recordFormat === 'audit';
     const safety = config.gates?.g6?.params?.independentSafetyAssessment === true;
-    if (n >= 2 || audit || safety) {
+    // コア機能の変更の承認者の数(第8章 軸C 高 coreReviewerCount。#288 第8巡 Z7)。パスの未宣言は確かめられない旨を出す
+    const coreApplies = rc.coreDeclared && rc.core > n;
+    const cp = coreApplies ? corePathsOf(config) : null;
+    if (n >= 2 || audit || safety || coreApplies) {
       result.notes.push(
-        `独立レビュー(G-6)は承認者 ${n} 名(構成 review.reviewerCount。名簿の別人が各自の挙動要約を書く)。` +
+        `独立レビュー(G-6)は承認者 ${n} 名(構成 review.reviewerCount。名簿の別人が各自の挙動要約を書く。挙動要約は承認の語だけ(LGTM など)でなく、1〜2文(8文字以上)の本文)。` +
           (n >= 2 ? '1名の承認でマージした変更は、出荷の証跡の集約が「G-6 の承認者 1 名 / 要求 2 名」として独立した人の確認を経ていない変更に数える。G-5(pr-rules)はレビューを読めるとき承認者の数を出す(合否にしない)。' : '') +
+          (coreApplies
+            ? `**コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。パス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言。コア機能に当たる変更を確かめられない**。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く'})。コア機能に触れる変更の承認者が ${rc.core} 名に満たなければ、G-5 が警告し、出荷の集約が「承認者 N 名 / 要求 ${rc.core} 名(コア機能)」として独立した人の確認を経ていない変更に数える。`
+            : '') +
           (audit ? '判定記録は監査対応書式(構成 review.recordFormat: audit)。変更ごとに G-6 の判定記録を残し、「監査対応書式」の表(2人目の判定者・安全性の評価者)を埋める。PR の承認だけでは記録にならない。' : '') +
-          (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。' : '') +
+          (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
           `読む: ${READ.gate('g6')}`
       );
     }
@@ -601,6 +608,30 @@ function continuityNotes(config) {
     return row && row.role ? `層1 の項目4 の権限者(${row.role})` : '層1 の項目4 の権限者(行が空欄。層1 を先に埋める)';
   };
   const cont = `${READ.change('settings')}`;
+
+  // 層1 項目4「AI の利用の拡大」の錠(委任の登録を認めない)と、構成の委任の登録の食い違い。委任の決定と承認が同一人物の記録(#288 第8巡 Y7)
+  {
+    const lock = policy?.delegationLock ?? { locked: false, unclear: false };
+    const delegatedSeats = (config.seats ?? []).filter((s) => s.mode === 'delegated').map((s) => s.name);
+    const rules = Array.isArray(config.delegation?.rules) ? config.delegation.rules.map((r) => r.id ?? '(id なし)') : [];
+    if (lock.locked) {
+      notes.push(
+        `層1 項目4「AI の利用の拡大」の水準「${lock.level}」: 委任の登録は構成で拒否される(/process-change の種別 mode・performer が席の委任・規則・変更種別・規則の承認を受け付けない)。` +
+          (delegatedSeats.length || rules.length
+            ? `**構成に委任の登録が残っている**(${[delegatedSeats.length ? `委任の席: ${delegatedSeats.join(' / ')}` : null, rules.length ? `規則: ${rules.join(', ')}` : null].filter(Boolean).join('。')})。出荷の集約は記載の欠落にする。${seatText(config, 'biz-approver')}が種別 mode で席を協働へ戻し規則を削除する(厳しくする向き。記名不要。${READ.change('mode')})`
+            : '委任を認めるには、層1 の記名者が水準を改めて版を上げる(体制の変化点)')
+      );
+    } else if (lock.unclear) {
+      notes.push(`層1 項目4「AI の利用の拡大」の水準「${lock.level}」は語「認めない」を含むが、機械が読む形(欄の先頭が「認めない」)でないため、委任の登録の錠は掛かっていない。意図が「認めない」なら層1 の記名者が欄の先頭に「認めない」と書く(人が確かめる。${READ.artifact('11')})`);
+    }
+    const same = (config.changeLog ?? []).map((e, i) => ({ e, i })).filter(({ e }) => e?.ruleApproval?.samePersonAsDecider);
+    if (same.length) {
+      notes.push(
+        `委任の規則の承認(AI維持管理者)が、委任を決定した者と同一人物の変化点: ${same.map(({ e, i }) => `changeLog[${i}](${String(e.date ?? '').slice(0, 10)}。承認 ${e.ruleApprovedBy})`).join(' / ')}。` +
+          (config.answers?.['q-team-size'] === 'size-1-2' ? '1〜2名の体制では、どの席で判断したかの記録として受け付けている(第5章 5.5.7)' : '3名以上の体制でも、どの席で判断したかの記録として受け付けている(第5章 5.5.7、ADR-0057 S50)。別の人の AI維持管理者が承認し直す(種別 mode の ruleApprovedBy)まで、この印は出続ける')
+      );
+    }
+  }
 
   // AI の層・人の層の検出率の失効(測定の記録 docs/adoption-trial/seeded-errors.json と現在の構成の比較)
   const seeded = readSeededRecord();

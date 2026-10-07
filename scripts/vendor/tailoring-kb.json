@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "a2c062c04d9f162d28819d0605989a1a2bdb0eda"
+    "commit": "9365779b728979fb5e799fa8dde0d1632f878af7"
   },
   "questions": [
     {
@@ -661,7 +661,7 @@
           "action": "set",
           "param": "coreReviewerCount",
           "value": 2,
-          "note": "コア機能の独立レビューは2名で実施する"
+          "note": "コア機能の独立レビューは2名で実施する(コア機能は確約範囲・コア指定のパスと区分の下限の規則のパス。G-5 と出荷の証跡の集約が承認者の数を数える。パスが未宣言なら「確かめられない」と出る)"
         },
         {
           "target": {
