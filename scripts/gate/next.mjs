@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf } from './config.mjs';
 import { readLock } from './self-heal.mjs';
+import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 
@@ -409,6 +410,15 @@ export function computeNext() {
   // 読むのは出荷の集約と同じ関数(org-assurance.mjs)。段階は止めない(注記)。要約・評価は足さない
   if (config.configured !== false && fs.existsSync(d0)) {
     for (const n of continuityNotes(config)) result.notes.push(n);
+  }
+  // 能力依存の定数の再評価待ち(#295 / ADR-0058 決定6)。段階は止めない(注記)。値は自動で変えない
+  if (config.configured !== false) {
+    try {
+      const rn = recalibrationNote(recalibrationState(config));
+      if (rn) result.notes.push(rn);
+    } catch (e) {
+      result.notes.push(`能力依存の定数の再評価待ちを読めない(${String(e.message).split('\n')[0]})`);
+    }
   }
 
   // --- 自己修正のロック ---

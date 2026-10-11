@@ -124,13 +124,13 @@ const AI_NAME_RULES = [
   [/(?<![A-Za-z])bot(?![A-Za-z])|ボット|dependabot|renovate|github-actions/i, 'bot の表記を含む'],
   [/Bot(?![a-z])/, 'bot の表記を含む'],
   [
-    /(?<![A-Za-z])(claude|anthropic|gpt|chatgpt|openai|gemini|copilot|codex|llama|mistral|grok|deepseek|qwen|sonnet|opus|haiku|fable|mythos|llm|assistant|model)(?![A-Za-z])|モデル/i,
+    /(?<![A-Za-z])(claude|anthropic|gpt|chatgpt|openai|gemini|copilot|codex|llama|mistral|grok|deepseek|qwen|sonnet|opus|haiku|fable|mythos|llm|assistant|model|devin|cursor|windsurf|cline|aider|replit|tabnine|codewhisperer|kiro|perplexity)(?![A-Za-z])|モデル/i,
     'モデル名または提供者名を含む',
   ],
   // 片仮名の読み。語の一致であり、別の文字種・役職名による回避は閉じない(監査観点6 で確かめる)
   [/エーアイ/, 'AI の表記を含む'],
   [
-    /クロード|アンソロピック|チャットジーピーティー|ジーピーティー|オープンエーアイ|ジェミニ|コパイロット|コーデックス|ミストラル|グロック|ディープシーク|ソネット|オーパス|フェイブル|ミトス|アシスタント/,
+    /クロード|デビン|ウィンドサーフ|アンソロピック|チャットジーピーティー|ジーピーティー|オープンエーアイ|ジェミニ|コパイロット|コーデックス|ミストラル|グロック|ディープシーク|ソネット|オーパス|フェイブル|ミトス|アシスタント/,
     'モデル名または提供者名を含む',
   ],
 ];
@@ -1070,6 +1070,43 @@ export function touchesCore(config, files) {
   return { hit: hit.length > 0, files: hit, paths: core.paths };
 }
 
+// ---------------------------------------------------------------- 規模の基準値と担保水準の宣言(#295 / ADR-0058)
+//
+// task.maxChangedLines / maxChangedFiles は「超過で規模の確認を要する基準」であり、遮断の上限ではない。
+// 値の域に null(基準なし)を持つ。null は、担保水準 L2 の宣言と根拠が実在し、R1・R2 の変更・確約範囲・コア指定の
+// パスに触れない変更だけに効く。それ以外は既定値を使う。
+export const DEFAULT_MAX_CHANGED_LINES = 400;
+export const DEFAULT_MAX_CHANGED_FILES = 15;
+export const ASSURANCE_LEVELS = ['L0', 'L1', 'L2'];
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 構成 task.assurance({ level, basis, declaredBy, declaredAt, reviewAt })の実効の水準を返す。宣言は記録であり、
+ * 緩和を自動で与えない。確かめるのは根拠(basis)の実在と見直し日(reviewAt)だけである。満たさなければ L0 として扱う。
+ * exists(path) は、根拠のパスの実在を返す関数(PR の検査では基底ブランチ、手元ではファイルシステム)
+ */
+export function assuranceOf(config, { exists = () => false, today = new Date().toISOString().slice(0, 10) } = {}) {
+  const a = config?.task?.assurance;
+  const declared = a && typeof a === 'object' && typeof a.level === 'string' ? a.level : 'L0';
+  if (declared === 'L0') return { declared: 'L0', level: 'L0', valid: false, problems: [] };
+  const problems = [];
+  if (!ASSURANCE_LEVELS.includes(declared)) problems.push(`水準 ${declared} は L0・L1・L2 のいずれでもない`);
+  const basis = typeof a.basis === 'string' ? a.basis.trim() : '';
+  if (!basis) problems.push('根拠(basis)が未記入');
+  else if (!exists(basis)) problems.push(`根拠 ${basis} が実在しない`);
+  if (!DAY_RE.test(String(a.reviewAt ?? ''))) problems.push('見直し日(reviewAt)が YYYY-MM-DD でない');
+  else if (a.reviewAt < today) problems.push(`見直し日 ${a.reviewAt} を過ぎている`);
+  return { declared, level: problems.length ? 'L0' : declared, valid: !problems.length, basis, reviewAt: a.reviewAt ?? null, problems };
+}
+
+/** 規模の基準値。null(基準なし)は、呼び出し側が条件(L2 の宣言と根拠、R3、コア外)を確かめたうえで使う */
+export function sizeLimitsOf(config) {
+  const read = (v, d) => (v === null ? { value: null, explicitNull: true } : Number.isInteger(v) && v > 0 ? { value: v, explicitNull: false } : { value: d, explicitNull: false });
+  const l = read(config?.task?.maxChangedLines, DEFAULT_MAX_CHANGED_LINES);
+  const f = read(config?.task?.maxChangedFiles, DEFAULT_MAX_CHANGED_FILES);
+  return { lines: l.value, files: f.value, nullLines: l.explicitNull, nullFiles: f.explicitNull };
+}
+
 /** git の --numstat の出力から、変更行数(追加 + 削除)を合計する */
 export function sumNumstat(text) {
   return (text ?? '')
@@ -1108,8 +1145,9 @@ export function classifyDelegation(config, files, ruleId = null, changedLines = 
     };
   }
   // 委任は変更単位の規模の上限を緩めない(第8章「対象にできる変更の境界」)
-  const maxFiles = config.task?.maxChangedFiles;
-  const maxLines = config.task?.maxChangedLines;
+  // 委任は自動マージのため、規模の基準値の超過に規模の確認を要する形に代えられない。null(基準なし)でも既定値で縛る(#295)
+  const maxFiles = Number.isInteger(config.task?.maxChangedFiles) ? config.task.maxChangedFiles : DEFAULT_MAX_CHANGED_FILES;
+  const maxLines = Number.isInteger(config.task?.maxChangedLines) ? config.task.maxChangedLines : DEFAULT_MAX_CHANGED_LINES;
   if (maxFiles && files.length > maxFiles) {
     return { rule: null, reasons: [`変更ファイル数 ${files.length} が上限 ${maxFiles} を超えている`] };
   }

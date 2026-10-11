@@ -11,11 +11,17 @@
 //   1. トレーラ Spec: スカッシュのメッセージになる PR の本文の末尾の段落に `Spec: F-NNN / Task-N` があり、
 //      指す仕様(specs/F-NNN/spec.md)と実装計画のタスクが実在すること。製品のコードを変えない PR と、
 //      依存の更新の bot の PR は対象外(出力に出す)
-//   2. 変更規模の上限: 構成の task.maxChangedLines / maxChangedFiles(基底ブランチの構成)を、製品のコードの
-//      差分で数える。算定から除くのは、文書・記録・強制層(下の NON_PRODUCT)、ロックファイル、生成物(基底
-//      ブランチの .gitattributes の linguist-generated、または基底で生成の印を持つファイル)、空白だけの変更
-//      (一括整形)、内容の変わらない名前の変更。上限を超えたら、**基底ブランチの**技術負債台帳に、この PR を
-//      対象とする有効な例外承認の行がある場合だけ通す。同じ PR で足した行は数えない
+//   2. 変更規模の基準値(#295 / ADR-0058): 構成の task.maxChangedLines / maxChangedFiles(基底ブランチの構成)を、
+//      製品のコードの差分で数える。算定は、ファイルごとの max(追加, 削除)の合計。テスト・fixture・snapshot
+//      (TEST_PATTERNS と構成 task.nonProductPaths)は別に数え、基準値の判定に入れない。算定から除くのは、文書・記録・
+//      強制層(下の NON_PRODUCT)、ロックファイル、生成物(基底ブランチの .gitattributes の linguist-generated、または
+//      基底で生成の印を持つファイル)、空白だけの変更(一括整形)、内容の変わらない名前の変更。
+//      **基準値の超過は失敗にしない**(遮断として運用しない)。超過した PR は、(a) size:over を結果に出し、(b) 区分の下限を
+//      R2 へ引き上げ(7)、(c) PR の本文の「規模の確認」(実施者・読み切れたか・分割しなかった理由・保証の所在)を要する。
+//      欄が無い、実施者が AI の名義、「読み切れたか」が「いいえ」のときだけ失敗させる。担保水準 L1 以上の宣言(task.assurance)に
+//      根拠が実在すれば、保証の所在の記入だけでよい。基準値は null(基準なし)を取れる。null が効くのは、L2 の宣言と根拠が
+//      実在し、R3 で、確約範囲・コア指定のパスに触れない変更だけである。基底の構成が未設定の初回(chore/process-init)は判定しない。
+//      基底ブランチの台帳に有効な例外承認の行がある PR は、従来どおり規模の確認を要さない(過去の記録を壊さない)
 //   3. 閾値・除外設定と製品のコードの同時変更(禁止事項6): 基底に既にある閾値・除外設定のファイルと、製品の
 //      コードが、同じ PR でともに変わった場合だけ失敗させる。閾値だけの PR と、初回の設定(基底に無いファイル、
 //      基底の構成が未設定)は通す
@@ -43,6 +49,13 @@
 //      経ていない」に数えて止める。レビューを読めないときは、その旨を出す(黙って通さない)
 //
 // 限界(機械で閉じないもの):
+//   - 規模はパスで分類する。テスト・fixture・snapshot のパスへ移した製品のコードは、別集計に入る(別集計の側にも、基準行数の
+//     TEST_OVER_FACTOR 倍の上限を置いて、無制限の抜け道にしない。それでも、5 倍までは製品のコードを別集計へ置ける)。
+//     文書の置き場(docs・specs・context・templates・evidence・profiles)に置いたコードの拡張子のファイルは製品として数えるが、
+//     拡張子のないスクリプトや、強制層・構成のパス(.claude・.github・scripts/gate など)へ置いたコードは数えない
+//   - 規模の確認は、欄の有無・実施者の名義・読み切れたかの答えだけを確かめる。理由が1語や定型文でも通る。333 行の変更を 3 つの
+//     PR に分けても、検出しない(改訂前も同じ)。実施者が実際に読んだか、保証の所在の内容が正しいかは確かめない
+//   - 担保水準 L1・L2 の宣言は、根拠のパスの実在と見直し日だけを確かめる。根拠の中身(条件の充足)は確かめない
 //   - 生成物・機械的な変換のうち、上の印で識別できないものは算定に入る。例外承認か、先に印を基底へ入れる
 //   - package.json・pyproject.toml のように依存と設定を兼ねるファイルの中の閾値は、閾値のファイルとして扱わない
 //   - 例外承認の権限を持つ者か、作成を指示した者の全員と別の人かは確かめない(出荷判定の証跡の集約が確かめる)
@@ -69,6 +82,11 @@ import {
   behaviorSummaryShortfall,
   reviewersRequiredOf,
   touchesCore,
+  assuranceOf,
+  sizeLimitsOf,
+  corePathsOf,
+  DEFAULT_MAX_CHANGED_LINES,
+  DEFAULT_MAX_CHANGED_FILES,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -96,6 +114,12 @@ export const NON_PRODUCT = [
   '.gitignore',
   '.gitattributes',
 ];
+
+/**
+ * テスト・fixture・snapshot の置き場の既定(規模の算定では別に数え、基準値の判定に入れない。#295)。
+ * 構成 task.nonProductPaths で足せる。task は閾値として扱うため、足す変更は製品のコードと同じ PR にできない
+ */
+export const TEST_PATTERNS = ['**/test/**', '**/tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*', '**/fixtures/**', '**/__snapshots__/**', '**/*.snap'];
 
 /** ロックファイル(算定から除く)。ファイル名で判定する */
 export const LOCK_FILES = [
@@ -179,8 +203,19 @@ function gitIn(root) {
 const basename = (f) => f.split('/').pop();
 /** スラッシュを含まないパターンは、どの階層のファイル名にも当てる */
 const matchAny = (globs, f) => globs.some((g) => (g.includes('/') ? matchGlob(g, f) : matchGlob(g, basename(f))));
-/** 文書・記録・強制層か。*.md はどの階層でも文書として扱う */
-export const isNonProduct = (f) => NON_PRODUCT.some((g) => (g === '*.md' ? /\.md$/i.test(f) : matchGlob(g, f)));
+/**
+ * 文書・記録の置き場(NON_PRODUCT のうち、コードを置く場所ではないもの)。ここへコードの拡張子のファイルを置いても、製品のコードとして数える。
+ * 強制層・構成(.claude・.github・scripts/gate・scripts/init・scripts/vendor・adapters)は、設計上スクリプトを置くため含めない
+ */
+export const DOC_ONLY_DIRS = ['docs/**', 'specs/**', 'context/**', 'templates/**', 'evidence/**', 'profiles/**'];
+export const CODE_EXTENSIONS = /\.(m?[jt]sx?|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|sh|ps1|sql|lua|dart|ex|exs|vue|svelte)$/i;
+/** 規模の別集計(テスト・fixture・snapshot)が基準行数のこの倍を超えたら、別集計の側も size:over とする */
+export const TEST_OVER_FACTOR = 5;
+/** 文書・記録・強制層か。*.md はどの階層でも文書として扱う。文書の置き場でも、コードの拡張子のファイルは製品として数える */
+export const isNonProduct = (f) => {
+  if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f)) && CODE_EXTENSIONS.test(f)) return false;
+  return NON_PRODUCT.some((g) => (g === '*.md' ? /\.md$/i.test(f) : matchGlob(g, f)));
+};
 export const isLock = (f) => LOCK_FILES.includes(basename(f));
 export const isSetupFile = (f) => matchAny(SETUP_FILES, f);
 /** 製品のコードか(文書・記録・強制層・閾値の設定・ロックファイル・基盤のファイル以外)。thresholdGlobs はアダプタの分を足したもの */
@@ -217,10 +252,11 @@ export function parseNumstatZ(text) {
     if (!m) continue;
     const lines = m[1] === '-' ? null : Number(m[1]) + Number(m[2]);
     const removed = m[2] === '-' ? 0 : Number(m[2]);
+    const added = m[1] === '-' ? 0 : Number(m[1]);
     if (m[3] === '') {
-      out.push({ from: tok[i + 1], path: tok[i + 2], lines, removed });
+      out.push({ from: tok[i + 1], path: tok[i + 2], lines, removed, added });
       i += 2;
-    } else out.push({ from: null, path: m[3], lines, removed });
+    } else out.push({ from: null, path: m[3], lines, removed, added });
   }
   return out;
 }
@@ -449,6 +485,156 @@ export function approverFindings(config, pr, files = null) {
   return { applies: true, readable: true, required, core, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
 }
 
+/**
+ * 「規模の確認」の節(#295 / ADR-0058)。規模の基準値を超えた PR が、同じ PR の中で人の確認を記録する欄。
+ * 実施者・読み切れたか(はい / いいえ)・分割しなかった理由・保証の所在。節が無ければ present: false
+ */
+export function sizeAttestationOf(body) {
+  // HTML コメントの中の見出し・欄は読まない(コメントに隠した見出しで、欄があるように見せる経路を塞ぐ)
+  const parts = String(body ?? '').replace(/\r\n/g, '\n').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*規模の確認.*$/m);
+  if (parts.length < 2) return { present: false };
+  const section = parts[1].split(/^(?:##\s|---\s*$)/m)[0].replace(/<!--[\s\S]*?-->/g, '');
+  const field = (label) => {
+    const m = section.match(new RegExp(`^[ \\t]*[-*]?[ \\t]*${label}[ \\t]*[::][ \\t]*(.*?)[ \\t]*$`, 'm'));
+    return m ? m[1].trim() : null;
+  };
+  const rawRead = field('読み切れたか');
+  const t = String(rawRead ?? '').normalize('NFKC').trim();
+  // 完全一致だけを読む(「はい、ただし…」のような留保つきの値は、答えとして数えない)
+  const yes = /^(はい|yes|y)$/i.test(t);
+  const no = /^(いいえ|no|n)$/i.test(t);
+  return {
+    present: true,
+    performer: field('実施者'),
+    readAll: yes && !no ? 'yes' : no && !yes ? 'no' : null,
+    reason: field('分割しなかった理由'),
+    assurance: field('保証の所在'),
+  };
+}
+
+/** 「規模の確認」の不備を理由の配列で返す。L1 以上で根拠が実在する(assuranceValid)ときは、保証の所在だけを要する */
+export function sizeAttestationProblems(att, { config, assuranceValid }) {
+  if (!att.present) return ['PR の本文に「## 規模の確認」の節がありません(本文は .github/PULL_REQUEST_TEMPLATE.md から作る)'];
+  const p = [];
+  if (isFilledValue(att.performer) && aiNameBlocked(config, att.performer)) p.push(`実施者 "${att.performer}" が AI の名義である(確認は人が行う。AI の確認は検出の層)`);
+  if (!assuranceValid) {
+    if (!isFilledValue(att.performer)) p.push('実施者(確認した人の氏名)が未記入');
+    if (att.readAll === 'no') p.push('「読み切れたか」が「いいえ」である(読み切れない変更は、実装計画(plan.md)へ戻して分け直す)');
+    else if (att.readAll === null) p.push('「読み切れたか」が「はい」「いいえ」のどちらでもない(1つだけ残す)');
+    if (!isFilledValue(att.reason)) p.push('分割しなかった理由が未記入');
+  }
+  if (!isFilledValue(att.assurance)) p.push('保証の所在(テスト・契約・型など、確認の範囲を限定したもの。全体を読んだ場合は「なし(全体を読んだ)」のように書く)が未記入');
+  return p;
+}
+
+/**
+ * 規模の基準値の実効値。null(基準なし)は、次をすべて満たすときだけ効く。それ以外は既定値で判定し、理由を notes に出す。
+ *   - 担保水準 L2 の宣言と、実在する根拠・見直し日(assuranceOf)
+ *   - 確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)が宣言されている(宣言が無い構成では、コア外かを確かめられない)
+ *   - この変更のリスク区分が R3 で、区分の下限も R3
+ *   - 変更したパスが、確約範囲・コア指定のパスに触れない
+ * PR の検査と、出荷の集約(マージ済みの変更の判定)が同じ条件を使う
+ */
+export function effectiveSizeLimits(cfg, { assurance, risk, floor, touched }) {
+  const lim = sizeLimitsOf(cfg);
+  let maxLines = lim.lines;
+  let maxFiles = lim.files;
+  const notes = [];
+  let nullApplied = false;
+  if (lim.nullLines || lim.nullFiles) {
+    const core = corePathsOf(cfg);
+    const blockers = [];
+    if (assurance.level !== 'L2') blockers.push(assurance.problems.length ? `担保水準の宣言が成立しない(${assurance.problems.join('、')})` : `担保水準が ${assurance.declared} である(基準なしは L2 の宣言と根拠が実在するときだけ)`);
+    if (!core.paths.length) blockers.push('確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)が宣言されていない。コア外の変更かを確かめられない');
+    if (risk !== 'R3') blockers.push(`リスク区分が R3 でない(記載: ${risk ?? '未記入'})`);
+    if (floor !== 'R3') blockers.push(`区分の下限が ${floor} である`);
+    if ((touched ?? []).some((f) => core.paths.some((g) => matchGlob(g, f)))) blockers.push('確約範囲またはコア指定のパスに触れる');
+    if (blockers.length) {
+      if (lim.nullLines) maxLines = DEFAULT_MAX_CHANGED_LINES;
+      if (lim.nullFiles) maxFiles = DEFAULT_MAX_CHANGED_FILES;
+      notes.push(`基準値 null(基準なし)は、この変更に効かない(${blockers.join('、')})。既定値(${DEFAULT_MAX_CHANGED_LINES} 行・${DEFAULT_MAX_CHANGED_FILES} ファイル)で判定する`);
+    } else nullApplied = true;
+  }
+  return { maxLines, maxFiles, notes, nullApplied };
+}
+
+/** 変更規模の算定の対象を分ける(製品のコード・別集計のテスト・除外)。PR の検査と、出荷の集約の規模の観測が同じ読み方を使う(#295) */
+export function classifySize(all, ws, { atBase, genPatterns, isTestPath }) {
+  const excluded = [];
+  const counted = [];
+  const testCounted = [];
+  for (const e of all) {
+    const f = e.path;
+    if (isNonProduct(f)) continue;
+    if (matchAny(THRESHOLD_FILES, f)) continue;
+    if (isLock(f)) {
+      excluded.push(`${f}(ロックファイル)`);
+      continue;
+    }
+    if (genPatterns.some((g) => attrMatch(g, f))) {
+      excluded.push(`${f}(生成物: 基底の .gitattributes)`);
+      continue;
+    }
+    const before = atBase(e.from ?? f);
+    if (before !== null && GENERATED_MARK.test(before.split('\n').slice(0, 5).join('\n'))) {
+      excluded.push(`${f}(生成物: 基底で生成の印を持つ)`);
+      continue;
+    }
+    const w = ws?.get(f);
+    const added = e.lines === null ? 0 : ws === null ? e.added : (w?.added ?? 0);
+    const removed = e.lines === null ? 0 : ws === null ? e.removed : (w?.removed ?? 0);
+    if (e.lines !== null && added + removed === 0) {
+      excluded.push(`${f}(${e.from && e.lines === 0 ? '内容の変わらない名前の変更' : '空白だけの変更'})`);
+      continue;
+    }
+    (isTestPath(f) ? testCounted : counted).push({ path: f, lines: Math.max(added, removed), added, removed, binary: e.lines === null });
+  }
+  return { excluded, counted, testCounted };
+}
+
+/**
+ * マージ済みの変更(スカッシュ・マージコミットの 1 コミット)の規模を、PR の検査と同じ読み方で測る。出荷の集約が使う。
+ * git は (args) => 出力 | null の関数。config は、変更の起点(parent)の時点の構成(基準値を変えても過去の判定が変わらないため)。
+ * risk は PR の本文のリスク区分(基準なし null の適用条件に使う)。今日の日付(担保水準の見直し日の判定)は、マージコミットの日付を使う。
+ * 測れなければ null。構成を読めないときは over: null(判定不能)を返し、黙って超過なしにしない
+ */
+export function measureCommitSize({ git, parent, commit, config = null, risk = null }) {
+  const rawOut = git(['diff', '--numstat', '-z', '-M', parent, commit]);
+  if (rawOut === null) return null;
+  const all = parseNumstatZ(rawOut);
+  const wsOut = git(['diff', '--numstat', '-z', '-M', '-w', '--ignore-blank-lines', parent, commit]);
+  const ws = wsOut === null ? null : new Map(parseNumstatZ(wsOut).map((e) => [e.path, e]));
+  const atBase = (file) => git(['show', `${parent}:${file}`]);
+  const extra = Array.isArray(config?.task?.nonProductPaths) ? config.task.nonProductPaths.filter((g) => typeof g === 'string' && g.trim()) : [];
+  const { excluded, counted, testCounted } = classifySize(all, ws, {
+    atBase,
+    genPatterns: generatedPatterns(atBase('.gitattributes')),
+    isTestPath: (f) => [...TEST_PATTERNS, ...extra].some((g) => matchGlob(g, f)),
+  });
+  const lines = counted.reduce((n, c) => n + c.lines, 0);
+  const testLines = testCounted.reduce((n, c) => n + c.lines, 0);
+  const out = { lines, files: counted.length, testLines, testFiles: testCounted.length, excluded: excluded.length, over: null, limits: null, reason: null };
+  if (!config) {
+    out.reason = '変更の起点の構成を読めない';
+    return out;
+  }
+  if (config.configured === false) {
+    out.over = false;
+    out.reason = '変更の起点の構成が未設定(初回)のため判定しない';
+    return out;
+  }
+  const status = new Map(
+    (git(['diff', '--name-status', '-z', '--no-renames', parent, commit]) ?? '').split('\0').reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
+  );
+  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  const day = (git(['show', '-s', '--format=%cs', commit]) ?? '').trim() || undefined;
+  const assurance = assuranceOf(config, { exists: (p) => atBase(p) !== null, ...(day ? { today: day } : {}) });
+  const eff = effectiveSizeLimits(config, { assurance, risk, floor: riskFloorOf(config.riskFloor?.rules, changes).floor, touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])) });
+  out.limits = { lines: eff.maxLines, files: eff.maxFiles };
+  out.over = Boolean((eff.maxLines && (lines > eff.maxLines || testLines > eff.maxLines * TEST_OVER_FACTOR)) || (eff.maxFiles && counted.length > eff.maxFiles));
+  return out;
+}
+
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
 export function analyzePr({ root = ROOT, base, pr = {} }) {
   const git = gitIn(root);
@@ -486,54 +672,88 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
       .reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
   );
 
-  // --- 2. 変更規模 ---
+  // --- 2. 変更規模(#295 / ADR-0058) ---
+  // 超過は失敗にしない(標準 第4章「タスクの分割基準」。遮断として運用しない)。超過した PR は、(a) 結果に size:over を出し、
+  // (b) 区分の下限を R2 へ引き上げ(下の 7)、(c) PR の本文の「規模の確認」を要する。確認が無い・AI の名義・読み切れなかった場合だけ失敗させる。
+  // 算定は、製品のコードのファイルごとの max(追加, 削除)の合計。テスト・fixture・snapshot は別に数え、基準値の判定に入れない。
+  // ただし別集計が基準行数の TEST_OVER_FACTOR 倍を超えたら、別集計の側も size:over とする(別集計に上限が無い抜け道を塞ぐ)
   const genPatterns = generatedPatterns(atBase('.gitattributes'));
-  const excluded = [];
-  const counted = [];
-  for (const e of all) {
-    const f = e.path;
-    if (isNonProduct(f)) continue;
-    const thresholdFile = matchAny(THRESHOLD_FILES, f);
-    if (thresholdFile) continue;
-    if (isLock(f)) {
-      excluded.push(`${f}(ロックファイル)`);
-      continue;
-    }
-    if (genPatterns.some((g) => attrMatch(g, f))) {
-      excluded.push(`${f}(生成物: 基底の .gitattributes)`);
-      continue;
-    }
-    const before = atBase(e.from ?? f);
-    if (before !== null && GENERATED_MARK.test(before.split('\n').slice(0, 5).join('\n'))) {
-      excluded.push(`${f}(生成物: 基底で生成の印を持つ)`);
-      continue;
-    }
-    const w = ws?.get(f);
-    const lines = e.lines === null ? 0 : ws === null ? e.lines : (w?.lines ?? 0);
-    if (e.lines !== null && lines === 0) {
-      excluded.push(`${f}(${e.from && e.lines === 0 ? '内容の変わらない名前の変更' : '空白だけの変更'})`);
-      continue;
-    }
-    counted.push({ path: f, lines, binary: e.lines === null });
-  }
-  const maxLines = limitsFrom.task?.maxChangedLines ?? null;
-  const maxFiles = limitsFrom.task?.maxChangedFiles ?? null;
+  const extraNonProduct = Array.isArray(limitsFrom.task?.nonProductPaths) ? limitsFrom.task.nonProductPaths.filter((g) => typeof g === 'string' && g.trim()) : [];
+  const isTestPath = (f) => [...TEST_PATTERNS, ...extraNonProduct].some((g) => matchGlob(g, f));
+  const { excluded, counted, testCounted } = classifySize(all, ws, { atBase, genPatterns, isTestPath });
+  // 区分の下限の規則と変更の種類。size:over の下限(7)と、基準なし(null)の適用条件の両方が使う
+  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  const assurance = assuranceOf(limitsFrom, { exists: (p) => atBase(p) !== null });
+  const declaredRisk = riskClassOf(pr.body);
+  const eff = effectiveSizeLimits(limitsFrom, {
+    assurance,
+    risk: declaredRisk,
+    floor: riskFloorOf(limitsFrom.riskFloor?.rules, changes).floor,
+    touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])),
+  });
+  const { maxLines, maxFiles } = eff;
   const lines = counted.reduce((n, c) => n + c.lines, 0);
-  const size = { lines, files: counted.length, maxLines, maxFiles, excluded, over: [] };
-  if (maxLines && lines > maxLines) size.over.push(`変更行数 ${lines} が上限 ${maxLines} を超えている`);
-  if (maxFiles && counted.length > maxFiles) size.over.push(`変更ファイル数 ${counted.length} が上限 ${maxFiles} を超えている`);
+  const testLines = testCounted.reduce((n, c) => n + c.lines, 0);
+  const size = {
+    lines,
+    files: counted.length,
+    maxLines,
+    maxFiles,
+    excluded,
+    over: [],
+    measure: 'ファイルごとの max(追加, 削除)の合計(製品のコードのみ)',
+    test: { lines: testLines, files: testCounted.length },
+    sizeOver: false,
+    overFiles: [...counted, ...testCounted].map((c) => c.path),
+    skipped: null,
+    attestation: null,
+    assurance: { declared: assurance.declared, level: assurance.level, problems: assurance.problems },
+  };
+  for (const n of eff.notes) result.notices.push(n);
+  if (assurance.problems.length && assurance.declared !== 'L0') result.notices.push(`担保水準の宣言(${assurance.declared})は成立していない: ${assurance.problems.join('、')}。L0 として扱う`);
+  if (testCounted.length) result.notices.push(`変更規模(別集計): テスト・fixture・snapshot ${testLines} 行 / ${testCounted.length} ファイル。基準値の判定に入れない(基準行数の ${TEST_OVER_FACTOR} 倍を超えたら別集計の側も size:over とする)`);
+  if (!baseConfigured) {
+    size.skipped = '基底ブランチの構成が未設定(初回の chore/process-init)のため、規模の判定を行わない';
+    result.notices.push(`変更規模: ${size.skipped}`);
+  } else {
+    if (maxLines && lines > maxLines) size.over.push(`変更行数 ${lines} が基準値 ${maxLines} を超えている`);
+    if (maxFiles && counted.length > maxFiles) size.over.push(`変更ファイル数 ${counted.length} が基準値 ${maxFiles} を超えている`);
+    if (maxLines && testLines > maxLines * TEST_OVER_FACTOR) size.over.push(`テスト・fixture・snapshot(別集計)${testLines} 行が、基準行数の ${TEST_OVER_FACTOR} 倍(${maxLines * TEST_OVER_FACTOR} 行)を超えている`);
+  }
   if (size.over.length) {
+    size.sizeOver = true;
+    // 既存の台帳の例外承認の行は有効のまま(過去の記録を壊さない)。新しい超過は、台帳でなく規模の確認で扱う
     const ex = exceptionFor(atBase('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author);
     size.exception = ex;
     if (ex.matched.length) {
-      result.notices.push(`変更規模: ${size.over.join('、')}。基底ブランチの台帳の例外承認(${ex.matched.join(', ')})により通す。判定完了時間と変更規模を記録し、較正の母集団に含める`);
+      size.exceptionApproved = true;
+      result.notices.push(`size:over: ${size.over.join('、')}。基底ブランチの台帳の例外承認(${ex.matched.join(', ')})が有効なため、規模の確認は要さない。判定完了時間と変更規模を記録し、較正の母集団に含める`);
     } else {
-      result.errors.push(
-        `変更規模: ${size.over.join('、')}(算定から除いたもの ${excluded.length} 件)。実装計画(plan.md)へ差し戻すのが既定。超過したままレビューするには、` +
-          `例外承認(標準 第7章 7.3)の行を、この PR を対象(\`PR #${pr.number ?? '<番号>'}\`)として、基底ブランチの技術負債台帳へ先に入れる。` +
-          `同じ PR で足した行は数えない${ex.reason ? `。${ex.reason}` : ''}${ex.rejected.length ? `。対応づかない行: ${ex.rejected.join(' / ')}` : ''}`
+      const att = sizeAttestationOf(pr.body);
+      if (ex.rejected.length) result.notices.push(`size:over: 台帳の例外承認の行は有効でない(${ex.rejected.join(' / ')})。規模の超過は例外承認でなく規模の確認で扱う`);
+      const problems = sizeAttestationProblems(att, { config: limitsFrom, assuranceValid: assurance.valid });
+      // 実施者の名簿照合。作成を指示した者以外の人が名簿にいる体制では、名簿外の実施者を失敗にする(1名体制は警告)
+      const instr = instructorsOf(limitsFrom, pr.body, pr.author);
+      const roster = Array.isArray(limitsFrom.people) ? limitsFrom.people : [];
+      const others = roster.filter((p) => p?.appointer !== true && !instr.some((i) => i.id === p.id));
+      const performer = isFilledValue(att.performer) ? (resolveSigner(limitsFrom, att.performer.replace(/^@/, '')) ?? findPersonByAccount(limitsFrom, att.performer)) : null;
+      if (isFilledValue(att.performer) && !performer && !aiNameBlocked(limitsFrom, att.performer)) {
+        if (others.length) problems.push(`実施者 "${att.performer}" が人の名簿(people[])の人へ対応づかない(名簿に指示した者以外の人がいる体制では、名簿の人が確認する)`);
+        else result.warnings.push(`規模の確認: 実施者 "${att.performer}" が人の名簿(people[])の人へ対応づかない(1名体制のため失敗にしない)`);
+      }
+      size.attestation = { ...att, assuranceBasis: assurance.valid ? assurance.basis : null, ok: !problems.length, problems };
+      result.notices.push(
+        `size:over: ${size.over.join('、')}(算定から除いたもの ${excluded.length} 件)。失敗にはしない。区分の下限を R2 へ引き上げ(独立した人の確認が掛かる)、` +
+          `PR の本文の「規模の確認」を要する。この観測は保証の開示に集計する(上限へは自動で反映しない)`
       );
+      if (problems.length) {
+        result.errors.push(`規模の確認: ${problems.join('。')}。\`## 規模の確認\` の節へ、実施者・読み切れたか・分割しなかった理由・保証の所在を書く(標準 第4章「タスクの分割基準」。例外承認は要さない)`);
+      } else if (performer && instr.some((i) => i.id === performer.id)) {
+        result.notices.push(`規模の確認: 実施者は作成を指示した者である。独立した人の確認(G-6)は別に要る${others.length ? '' : '。名簿に指示した者以外の人がいないため、独立した人の確認は無いと記録に出る'}`);
+      }
     }
+  } else if (maxLines === null || maxFiles === null) {
+    result.notices.push('変更規模: 基準値が null(基準なし)で、この変更に効く。規模の確認を要さない(担保水準 L2 の宣言と根拠が実在し、確約範囲・コア指定のパスが宣言され、R3 でコア外の変更)');
   }
   result.size = size;
 
@@ -631,8 +851,12 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   // --- 7. 区分の下限と確定者(標準 第3章 3.8.1「区分の下限と確定者」) ---
   // 規則は基底ブランチの構成から読む。同じ PR で規則を書き換えても、その PR の下限は変わらない
   const rulesConfig = baseConfigured ? baseConfig : headConfig;
-  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
   const floorResult = riskFloorOf(rulesConfig.riskFloor?.rules, changes);
+  // 規模の基準値の超過(size:over)は、区分の下限を R2 へ引き上げる(#295 / ADR-0058。既存の台帳の例外承認を得た PR を除く)
+  if (size.sizeOver && !size.exceptionApproved) {
+    floorResult.hits.push({ id: 'size:over', floor: 'R2', why: '規模の基準値を超えた変更の下限は R2(独立した人の確認と区分の確定者を掛ける。ADR-0058)', files: size.overFiles.slice(0, 10) });
+    if (RISK_RANK.R2 > RISK_RANK[floorResult.floor]) floorResult.floor = 'R2';
+  }
   const rulesChanged = baseConfigured && canonicalJson(baseConfig.riskFloor ?? null) !== canonicalJson(headConfig.riskFloor ?? null);
   if (rulesChanged) {
     floorResult.hits.push({ id: 'riskFloor の変更', floor: 'R2', why: '区分の下限の規則を変える変更の下限は R2(第3章 3.8.1 の要求事項6)', files: ['process.config.json'] });
@@ -755,7 +979,8 @@ function renderReport(r) {
   for (const w of r.warnings ?? []) L.push(`- 警告: ${w}`);
   for (const n of r.notices) L.push(`- ${n}`);
   if (r.size) {
-    L.push(`- 変更規模(算定の対象): ${r.size.lines} 行 / ${r.size.files} ファイル(上限 ${r.size.maxLines ?? '—'} 行 / ${r.size.maxFiles ?? '—'} ファイル)`);
+    L.push(`- 変更規模(製品のコード。max(追加, 削除)の合計): ${r.size.lines} 行 / ${r.size.files} ファイル(基準値 ${r.size.maxLines ?? '—'} 行 / ${r.size.maxFiles ?? '—'} ファイル)${r.size.sizeOver ? ' **size:over**' : ''}`);
+    if (r.size.test?.files) L.push(`- テスト・fixture・snapshot(別集計): ${r.size.test.lines} 行 / ${r.size.test.files} ファイル`);
     if (r.size.excluded.length) L.push(`- 算定から除いたもの: ${r.size.excluded.slice(0, 10).join(', ')}${r.size.excluded.length > 10 ? ` ほか ${r.size.excluded.length - 10} 件` : ''}`);
   }
   L.push('', renderTestChanges(r.testChanges));

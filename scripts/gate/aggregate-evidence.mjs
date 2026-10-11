@@ -110,7 +110,7 @@ import {
   qaAffiliationText,
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
-import { stopFindings, riskConfirmerOf } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
 
 const config = loadConfig();
 /**
@@ -421,7 +421,7 @@ if (!repo) {
 } else if (repoInfo.source !== 'GITHUB_REPOSITORY') {
   notice(`PR の記録を引くリポジトリ: ${repo}(${repoInfo.source} から)`);
 }
-const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels';
+const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels,createdAt';
 const prData = new Map();
 // PR の記録を取得できなかった理由(PR の番号ごと)
 const prFetchError = new Map();
@@ -767,6 +767,36 @@ function developerApproved(reviews) {
 }
 
 const prs = [];
+/** 変更の規模を測る(マージ方式に依らず、PR の変更の起点から終点まで)。起点を決められない・差分を読めない場合は null */
+const gitRaw = (args) => {
+  try {
+    return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+};
+function measureMergedSize(hash, own, risk) {
+  const ownSet = new Set(own);
+  const firstParent = (h) => (gitRaw(['rev-list', '--parents', '-n', '1', h]) ?? '').trim().split(' ')[1] ?? null;
+  const oldest = own.find((h) => !ownSet.has(firstParent(h))) ?? hash;
+  const parent = firstParent(oldest);
+  if (!parent) return null;
+  // 基準値は、変更の起点(マージ時点の基底)の構成で判定する。後から基準値を変えても、過去の変更の判定は変わらない。読めなければ判定不能
+  let baseConfig = null;
+  try {
+    baseConfig = JSON.parse(gitRaw(['show', `${parent}:process.config.json`]) ?? 'null');
+  } catch {
+    baseConfig = null;
+  }
+  return measureCommitSize({ git: gitRaw, parent, commit: hash, config: baseConfig, risk });
+}
+/** 作成から最後の承認まで(分)。レビューの開始日時は記録に無いため、判定完了時間の上側の近似である。取れなければ null */
+function approvalMinutes(d) {
+  const t0 = Date.parse(d?.createdAt ?? '');
+  const ts = (Array.isArray(d?.reviews) ? d.reviews : []).filter((r) => String(r?.state).toUpperCase() === 'APPROVED').map((r) => Date.parse(r?.submittedAt ?? '')).filter(Number.isFinite);
+  if (!Number.isFinite(t0) || !ts.length) return null;
+  return Math.max(0, Math.round((Math.max(...ts) - t0) / 60000));
+}
 for (const [hash, m] of commitPr) {
   if (m.role !== 'merge') continue;
   const n = m.number;
@@ -780,7 +810,13 @@ for (const [hash, m] of commitPr) {
   const humanApprovers = [...last].filter(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot)).map(([login]) => login);
   // PR の変更に属するコミット(マージコミットと構成要素)
   const own = [...commitPr].filter(([, x]) => x.number === n).map(([h]) => h);
+  // 規模の観測(#295 / ADR-0058)。マージコミットの差分を、PR の検査と同じ読み方で測る。測れなければ null(黙って 0 にしない)
+  const sizeMeasured = measureMergedSize(hash, own, riskClassOf(d?.body));
+  const sizeAtt = sizeAttestationOf(d?.body);
   prs.push({
+    size: sizeMeasured,
+    sizeAttestation: sizeAtt.present ? { readAll: sizeAtt.readAll, performerPresent: filled(sizeAtt.performer), reasonPresent: filled(sizeAtt.reason), assurancePresent: filled(sizeAtt.assurance) } : null,
+    reviewMinutes: approvalMinutes(d),
     number: n,
     title: d?.title ?? null,
     recordFound: true,
@@ -819,6 +855,63 @@ for (const [hash, m] of commitPr) {
 }
 prs.sort((a, b) => a.number - b.number);
 const prByNumber = new Map(prs.map((p) => [p.number, p]));
+
+// --- 規模の観測(#295 / ADR-0058。保証の開示の観測。上限へは自動で反映しない) --------------
+//
+// 規模の基準値の超過は、失敗でなく規模の確認と区分の下限 R2 で扱う。その根拠(基準値が妥当か)は、超過の分布と、
+// 超過した変更の確認の実態でしか較正できない。ここでは出荷の範囲の PR について、規模の分布・size:over の件数・
+// 「読み切れたか」の内訳・超過 PR の判定完了時間を、生の値で出す。基準値は各 PR の変更の起点の構成で判定している
+const sizeObservation = (() => {
+  const bucket = (v, edges) => {
+    for (let i = 0; i < edges.length; i++) if (v <= edges[i]) return i;
+    return edges.length;
+  };
+  const LINE_EDGES = [100, 400, 1000];
+  const FILE_EDGES = [5, 15, 30];
+  const lineLabels = ['100 行以下', '101〜400 行', '401〜1000 行', '1001 行以上'];
+  const fileLabels = ['5 以下', '6〜15', '16〜30', '31 以上'];
+  const lineDist = [0, 0, 0, 0];
+  const fileDist = [0, 0, 0, 0];
+  const att = { yes: 0, no: 0, unanswered: 0, absent: 0 };
+  const overPrs = [];
+  const unreadable = [];
+  const undetermined = [];
+  let measured = 0;
+  for (const p of prs) {
+    if (!p.size) {
+      unreadable.push(p.number);
+      continue;
+    }
+    measured++;
+    lineDist[bucket(p.size.lines, LINE_EDGES)]++;
+    fileDist[bucket(p.size.files, FILE_EDGES)]++;
+    if (p.size.over === null) {
+      undetermined.push(p.number);
+      continue;
+    }
+    if (!p.size.over) continue;
+    overPrs.push(p);
+    if (!p.sizeAttestation) att.absent++;
+    else if (p.sizeAttestation.readAll === 'yes') att.yes++;
+    else if (p.sizeAttestation.readAll === 'no') att.no++;
+    else att.unanswered++;
+  }
+  const minutes = overPrs.map((p) => p.reviewMinutes).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  const median = minutes.length ? minutes[Math.floor((minutes.length - 1) / 2)] : null;
+  return {
+    total: prs.length,
+    measured,
+    unreadable,
+    undetermined,
+    lineDist: lineLabels.map((l, i) => ({ range: l, count: lineDist[i] })),
+    fileDist: fileLabels.map((l, i) => ({ range: l, count: fileDist[i] })),
+    over: overPrs.length,
+    overPrs: overPrs.map((p) => ({ number: p.number, lines: p.size.lines, files: p.size.files, readAll: p.sizeAttestation?.readAll ?? null, attested: Boolean(p.sizeAttestation), riskClass: p.riskClass, reviewMinutes: p.reviewMinutes })),
+    attestation: att,
+    reviewMinutes: { n: minutes.length, median, max: minutes.length ? minutes.at(-1) : null },
+    testLines: prs.reduce((n, p) => n + (p.size?.testLines ?? 0), 0),
+  };
+})();
 
 // --- PR を経ていないコミット(標準 第3章 3.8.1) --------------------------------
 //
@@ -1241,6 +1334,24 @@ for (const p of prs) {
 for (const p of prs) {
   if (p.riskClass) continue;
   gaps.push(`PR #${p.number}: リスク区分が未記入です(選択肢を残したままの欄は未記入として扱います)。リスク区分は変更ごとに確定する記録です(第3章 3.8.1)`);
+}
+
+// 規模の基準値を超えてマージされた PR(#295 / ADR-0058)。超過した変更の区分の下限は R2 で、規模の確認(読み切れた旨、保証の所在)を要する。
+// R3 の記載のまま、規模の確認が無い、「読み切れたか」が「いいえ」のままマージされたものは、記載の欠落である。
+// 基底の台帳に有効な例外承認の行がある PR は、従来どおり対象外とする。基準値は変更の起点(マージ時点)の構成で判定している
+for (const p of prs) {
+  if (!p.size?.over) continue;
+  const exs = exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors });
+  if (exs.matched.length) continue;
+  const a = p.sizeAttestation;
+  const why = [];
+  if (!a) why.push('PR の本文に「規模の確認」の節が無い');
+  else {
+    if (a.readAll === 'no') why.push('「読み切れたか」が「いいえ」のまま');
+    if (!a.assurancePresent) why.push('保証の所在が未記入');
+  }
+  if (p.riskClass !== 'R1' && p.riskClass !== 'R2') why.push(`リスク区分が ${p.riskClass ?? '未記入'}(超過した変更の下限は R2)`);
+  if (why.length) gaps.push(`PR #${p.number}: 規模の基準値を超えてマージされましたが、${why.join('、')}。記載の欠落です(第4章「基準値を超えた変更の扱い」)`);
 }
 
 // PR を経ていないコミット。区分はトレーラ Risk から読む
@@ -2457,6 +2568,8 @@ const assurance = {
   detection,
   // 組織の外へ渡す形の項目6。値を含まない
   detectionExternal,
+  // 規模の観測(7項目に数えない。#295)。evidence.json にも出し、集約を読む側が基準値の較正に使える
+  sizeObservation,
   generation,
   drift,
   // 組織継続の側の状態(項目5・7 へ出す。成立条件には入れない。附属書H H.6)
@@ -3103,6 +3216,36 @@ function renderContinuityGeneration(ct, releases, external) {
   return R;
 }
 
+/** 規模の観測(7項目に数えない観測)。生の値を出し、評価の語・基準値の提案を足さない。値の更新は人の判断(第6章 較正) */
+function renderSizeObservation(o) {
+  const R = ['### 観測: 変更規模と規模の確認(7項目に数えない。基準値へは自動で反映しない)', ''];
+  if (!o.total) {
+    R.push('出荷の範囲に PR を経た変更はありません。');
+    R.push('');
+    return R;
+  }
+  R.push(
+    `出荷の範囲の PR ${o.total} 件のうち、規模を測れたもの ${o.measured} 件${o.unreadable.length ? `。**読めなかったもの ${o.unreadable.length} 件(#${o.unreadable.join(', #')})**。マージコミットの差分を読めないため、規模を空として扱わず、ここに出している` : ''}。` +
+      `算定は製品のコードのファイルごとの max(追加, 削除)の合計で、テスト・fixture・snapshot(出荷の範囲で ${o.testLines} 行)は別に数えます。基準値は各 PR の変更の起点の構成で判定しています。`
+  );
+  if (o.undetermined.length) R.push(`- **超過か判定できなかった PR ${o.undetermined.length} 件(#${o.undetermined.join(', #')})**。変更の起点の構成を読めないため、超過なしとは扱わない`);
+  R.push('');
+  R.push('| 区間(行数) | 件数 | 区間(ファイル数) | 件数 |');
+  R.push('| --- | --- | --- | --- |');
+  for (let i = 0; i < o.lineDist.length; i++) R.push(`| ${o.lineDist[i].range} | ${o.lineDist[i].count} | ${o.fileDist[i].range} | ${o.fileDist[i].count} |`);
+  R.push('');
+  const a = o.attestation;
+  R.push(`- size:over の件数: ${o.over}`);
+  R.push(`- 規模の確認の「読み切れたか」: はい ${a.yes} / いいえ ${a.no} / 欄なしまたは未回答(担保水準の宣言で保証の所在だけを記入したものを含む) ${a.unanswered} / 規模の確認の節なし ${a.absent}`);
+  R.push(
+    `- 超過 PR の判定完了時間(作成から最後の承認まで。上側の近似): ${o.reviewMinutes.n ? `${o.reviewMinutes.n} 件で中央値 ${o.reviewMinutes.median} 分、最大 ${o.reviewMinutes.max} 分` : '取れなかった(PR の作成日時または承認の日時が記録に無い)'}`
+  );
+  if (o.overPrs.length) R.push(`- 超過 PR: ${o.overPrs.map((p) => `#${p.number}(${p.lines} 行 / ${p.files} ファイル。区分 ${p.riskClass ?? '未記入'})`).join('、')}`);
+  R.push('- 差し戻された PR(マージされなかったもの)は、この集約が見る範囲(マージ済みの変更)に無い。差し戻しの件数は PR の記録(GitHub)で確かめる');
+  R.push('');
+  return R;
+}
+
 function renderAssurance(external) {
   const R = [];
   R.push('## 保証の開示');
@@ -3494,6 +3637,7 @@ function renderAssurance(external) {
     else for (const d of A.drift) R.push(`- ${d}`);
     R.push('');
   }
+  R.push(...renderSizeObservation(sizeObservation));
   // 組織の外へ渡す形では、人の氏名とアカウントを出さない(席の名前と件数で示す)。構成から導いた値に
   // 氏名が含まれる場合(外部依頼の確認者、同一人物の組など)は、ここで伏せる
   return external ? R.map(redactNames) : R;

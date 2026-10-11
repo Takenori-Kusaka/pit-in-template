@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, measureCommitSize } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -154,15 +154,108 @@ scenario('Spec: setup が本文の途中にあり、末尾の段落に無い', {
 }, failsWith(/トレーラ Spec/));
 
 // ---------------------------------------------------------------- 落ちる場面
-scenario('上限を超え、同じ PR で台帳に例外承認を足した(基底に無い)', {}, () => {
+// 規模の超過は失敗にしない。規模の確認が無い・AI の名義・読み切れなかった場合だけ失敗させる(#295 / ADR-0058)
+const ATT = (f = {}) => `## 規模の確認\n\n実施者: ${f.performer ?? '鈴木 一郎'}\n読み切れたか: ${f.read ?? 'はい'}\n分割しなかった理由: ${f.reason ?? '1 つの関心事で、分けると単独で動かない'}\n保証の所在: ${f.assurance ?? 'なし(全体を読んだ)'}\n\n`;
+const OVER_BODY = (att, risk = 'R2\n\n確定した者: 鈴木 一郎') => `## 変更の概要\n\n説明\n\n## 作成を指示した者\n\n山田 太郎\n\n${RISK(risk)}${att}## トレーラ\n\nSpec: F-001 / Task-1\n`;
+const overOk = (r) => [...(r.size?.sizeOver ? [] : ['size:over が出ていない']), ...(r.riskFloor?.hits.some((h) => h.id === 'size:over' && h.floor === 'R2') ? [] : ['区分の下限 R2 が出ていない'])];
+// 基底ブランチを進める(構成の変更を基底へ入れてから、その上で PR の変更を積む)
+const advanceBase = (msg) => {
+  git('add', '-A');
+  git('commit', '-q', '-m', msg);
+  git('switch', '-q', 'main');
+  git('merge', '-q', '--ff-only', `pr-${n}`);
+  git('switch', '-q', `pr-${n}`);
+};
+const rewindBase = () => {
+  git('reset', '-q', '--hard', 'HEAD');
+  git('switch', '-q', 'main');
+  git('reset', '-q', '--hard', 'HEAD~1');
+};
+scenario('上限を超え、規模の確認が正しく書かれている(R2 + 確定者)→ 通る。size:over と R2 の下限が出る', { body: OVER_BODY(ATT()) }, () => write('src/big.js', lines(450, 'x')), passes(overOk));
+scenario('上限を超え、規模の確認が無い', {}, () => write('src/big.js', lines(401, 'x')), failsWith(/規模の確認: PR の本文に「## 規模の確認」の節がありません/));
+scenario('上限を超え、区分が R3 のまま(下限 R2 より低い)', { body: OVER_BODY(ATT(), 'R3') }, () => write('src/big.js', lines(450, 'x')), failsWith(/区分の下限: 記載された区分 R3.*size:over/));
+scenario('上限を超え、実施者が AI の名義', { body: OVER_BODY(ATT({ performer: 'Claude' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/実施者 "Claude" が AI の名義/));
+scenario('上限を超え、「読み切れたか」が「いいえ」', { body: OVER_BODY(ATT({ read: 'いいえ' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「読み切れたか」が「いいえ」/));
+scenario('上限を超え、様式の置き場(はい / いいえ)のまま', { body: OVER_BODY(ATT({ read: 'はい / いいえ' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「はい」「いいえ」のどちらでもない/));
+scenario('上限を超え、分割しなかった理由と保証の所在が空', { body: OVER_BODY(ATT({ reason: '', assurance: '' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/分割しなかった理由が未記入.*保証の所在/));
+scenario('ファイル数の基準値を超える(1 行ずつ 16 ファイル)→ size:over。規模の確認があれば通る', { body: OVER_BODY(ATT()) }, () => {
+  for (let i = 0; i < 16; i++) write(`src/m${i}.js`, lines(1, `m${i}_`));
+}, passes(overOk));
+scenario('ファイル数の基準値を超え、規模の確認が無い', {}, () => {
+  for (let i = 0; i < 16; i++) write(`src/m${i}.js`, lines(1, `m${i}_`));
+}, failsWith(/規模の確認/));
+scenario('算定: 置換は max(追加, 削除)。書き換えを合算の 2 倍に数えない', {}, () => write('src/fmt.js', lines(250, 'y')), passes((r) => (r.size.lines <= 250 && !r.size.sizeOver ? [] : [`算定 ${r.size.lines} 行`])));
+scenario('算定: テスト・fixture は別集計。実装 250 + テスト 1200 は超過にしない', {}, () => {
+  write('src/f.js', lines(250, 'f'));
+  write('test/fixtures/data.json', lines(900, 'd'));
+  write('test/f.test.js', lines(300, 't'));
+}, passes((r) => (!r.size.sizeOver && r.size.test.lines >= 1200 && r.size.lines <= 250 ? [] : [`製品 ${r.size.lines} / テスト ${r.size.test.lines} / over ${r.size.sizeOver}`])));
+scenario('保証の所在: 担保水準 L1 の宣言と根拠が実在すれば、保証の所在だけで足りる', { body: OVER_BODY('## 規模の確認\n\n保証の所在: 契約テストと型で範囲を限定した\n\n') }, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.task.assurance = { level: 'L1', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' };
+  write('process.config.json', cfg);
+  write('docs/assurance.md', '# 根拠\n');
+  advanceBase('assurance');
+  write('src/big.js', lines(450, 'x'));
+}, passes(overOk));
+rewindBase();
+scenario('基準なし(null): 根拠の無い L2 の宣言では効かず、既定値で判定する', { body: OVER_BODY(ATT()) }, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/none.md', reviewAt: '2099-01-01' } };
+  write('process.config.json', cfg);
+  advanceBase('null');
+  write('src/big.js', lines(450, 'x'));
+}, passes(overOk, (r) => (r.notices.some((m) => /基準値 null.*既定値/.test(m)) ? [] : ['null が効かない旨を出していない'])));
+rewindBase();
+scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア外の変更は、規模の確認を要さない', {}, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
+  write('process.config.json', cfg);
+  write('docs/assurance.md', '# 根拠\n');
+  advanceBase('null-l2');
+  write('src/big.js', lines(450, 'x'));
+}, passes((r) => (!r.size.sizeOver && r.size.maxLines === null ? [] : ['基準なしが効いていない'])));
+rewindBase();
+scenario('基準なし(null): 確約範囲・コア指定のパスが宣言されていない構成では効かない(既定値で判定する)', { body: OVER_BODY(ATT()) }, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  delete cfg.riskFloor;
+  cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
+  write('process.config.json', cfg);
+  write('docs/assurance.md', '# 根拠\\n');
+  advanceBase('null-no-core');
+  write('src/big.js', lines(450, 'x'));
+}, passes(overOk, (r) => (r.notices.some((m) => /コア指定のパス.*宣言されていない/.test(m)) ? [] : ['コア未宣言で null が効かない旨を出していない'])));
+rewindBase();
+scenario('別集計の抜け道: テスト・fixture が基準行数の 5 倍を超えたら size:over(規模の確認が無ければ失敗)', {}, () => {
+  write('test/fixtures/big.json', lines(2100, 'd'));
+}, failsWith(/規模の確認/, (r) => (r.size.sizeOver && r.size.over.some((m) => /別集計/.test(m)) ? [] : ['別集計の超過を出していない'])));
+scenario('別集計の抜け道: 5 倍以内は超過にしない', {}, () => {
+  write('test/fixtures/big.json', lines(1900, 'd'));
+}, passes((r) => (!r.size.sizeOver ? [] : ['5 倍以内で超過にしている'])));
+scenario('文書の置き場に置いたコード(docs/ の .js)は製品として数える', {}, () => {
+  write('docs/hidden.js', lines(450, 'h'));
+}, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 ? [] : [`算定 ${r.size.lines}`])));
+scenario('文書の置き場の .md は従来どおり数えない', {}, () => {
+  write('docs/big.md', lines(3000, 'd'));
+}, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+scenario('規模の確認: HTML コメントの中の節は無いものとして扱う', { body: OVER_BODY('<!--\n' + ATT() + '-->\n') }, () => write('src/big.js', lines(450, 'x')), failsWith(/「## 規模の確認」の節がありません/));
+scenario('規模の確認: 「はい、ただし…」は答えとして数えない', { body: OVER_BODY(ATT({ read: 'はい、ただし一部は読んでいない' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「はい」「いいえ」のどちらでもない/));
+scenario('規模の確認: 実施者が名簿の外(名簿に指示した者以外がいる体制)は失敗', { body: OVER_BODY(ATT({ performer: '見知らぬ 太郎' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/人の名簿\(people\[\]\)の人へ対応づかない/));
+scenario('規模の確認: 実施者が Devin(AI の名義の語彙)は失敗', { body: OVER_BODY(ATT({ performer: 'Devin' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/AI の名義/));
+scenario('規模の確認: 実施者が Cursor(AI の名義の語彙)は失敗', { body: OVER_BODY(ATT({ performer: 'Cursor' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/AI の名義/));
+scenario('初回の chore/process-init(基底の構成が未設定)は、規模の判定を行わない', { body: BODY('Spec: setup') }, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.configured = false;
+  write('process.config.json', cfg);
+  advanceBase('unconfigured');
+  write('package.json', lines(900, 'p'));
+}, passes((r) => (r.size.skipped && !r.size.sizeOver ? [] : ['規模の判定を行っている'])));
+rewindBase();
+scenario('上限を超え、同じ PR で台帳に例外承認を足した(基底に無い)→ 効かない(規模の確認が要る)', {}, () => {
   write('src/big.js', lines(450, 'x'));
   write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-002', 100 + n));
-}, failsWith(/変更規模: 変更行数 450/));
-scenario('上限を超え、例外承認が無い', {}, () => write('src/big.js', lines(401, 'x')), failsWith(/変更規模/));
-scenario('ファイル数の上限を超える', {}, () => {
-  for (let i = 0; i < 16; i++) write(`src/m${i}.js`, lines(1, `m${i}_`));
-}, failsWith(/変更ファイル数 16/));
-scenario('上限を超え、基底の例外承認の行が返却済み', { number: 7 }, () => {
+}, failsWith(/規模の確認/));
+scenario('上限を超え、基底の例外承認の行が返却済み → 効かない(規模の確認が要る。理由を出す)', { number: 7 }, () => {
   write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7, { state: '返却済' }));
   git('add', '-A');
   git('commit', '-q', '-m', 'ledger');
@@ -170,11 +263,11 @@ scenario('上限を超え、基底の例外承認の行が返却済み', { numbe
   git('merge', '-q', '--ff-only', `pr-${n}`);
   git('switch', '-q', `pr-${n}`);
   write('src/big.js', lines(450, 'x'));
-}, failsWith(/状態が有効を示す値でない/));
+}, (r) => [...(has(r, /規模の確認/) ? [] : ['規模の確認の失敗が出ていない']), ...(r.notices.some((m) => /状態が有効を示す値でない/.test(m)) ? [] : ['例外承認の行が有効でない理由を出していない'])]);
 git('reset', '-q', '--hard', 'HEAD');
 git('switch', '-q', 'main');
 git('reset', '-q', '--hard', 'HEAD~1');
-scenario('上限を超え、例外承認の承認した者が PR の作成者', { number: 7, author: 'suzuki' }, () => write('src/big.js', lines(450, 'x')), failsWith(/承認した者が PR の作成者/));
+scenario('上限を超え、例外承認の承認した者が PR の作成者 → 効かない', { number: 7, author: 'suzuki' }, () => write('src/big.js', lines(450, 'x')), (r) => (r.notices.some((m) => /承認した者が PR の作成者/.test(m)) && has(r, /規模の確認/) ? [] : ['理由を出していない']));
 scenario('閾値・除外設定と製品のコードを同じ PR で変える', {}, () => {
   write('.eslintrc.json', '{ "rules": {} }\n');
   write('src/a.js', lines(21));
@@ -255,6 +348,44 @@ scenario('承認者の数: 2 名が各自の挙動要約つきで承認 → 要�
 scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
 scenario('承認者の数: 承認の後の変更要求は承認を取り下げる。bot の承認は数えない', { reviews: [rv('suzuki'), rv('suzuki', '', 'CHANGES_REQUESTED'), { author: { login: 'ai-review[bot]', is_bot: true }, state: 'APPROVED', body: '要約' }, rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
 
+// ---------------------------------------------------------------- マージ済みの変更の規模(出荷の集約が使う。measureCommitSize)
+{
+  git('switch', '-q', '-C', 'pr-merged', 'main');
+  write('src/big.js', lines(450, 'x'));
+  write('test/big.test.js', lines(100, 't'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'merged change');
+  const gitOut = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return null;
+    }
+  };
+  const baseCfg = JSON.parse(execFileSync('git', ['show', 'main:process.config.json'], { cwd: TMP, encoding: 'utf8' }));
+  const m = (config, risk = 'R2') => measureCommitSize({ git: gitOut, parent: 'main', commit: 'pr-merged', config, risk });
+  const rows = [
+    ['マージ済み: 製品 450 行・テスト別 100 行を測り、基準値(基底の構成)で超過と判定する', () => { const r = m(baseCfg); return r?.lines === 450 && r.testLines === 100 && r.over === true; }],
+    ['マージ済み: 基準値を後から引き上げても、起点の構成で判定する(過去の判定が変わらない)', () => m(baseCfg).over === true],
+    ['マージ済み: 起点の構成を読めないときは「判定不能」(over: null)。超過なしにしない', () => { const r = m(null); return r?.over === null && /構成を読めない/.test(r.reason); }],
+    ['マージ済み: 起点の構成が未設定(初回)は判定しない(over: false)', () => m({ ...baseCfg, configured: false }).over === false],
+    ['マージ済み: null(基準なし)でも、L2 の宣言が無ければ既定値で判定する', () => m({ ...baseCfg, task: { ...baseCfg.task, maxChangedLines: null, maxChangedFiles: null } }, 'R3').over === true],
+    ['マージ済み: 差分を読めなければ null', () => measureCommitSize({ git: () => null, parent: 'main', commit: 'pr-merged', config: baseCfg }) === null],
+  ];
+  for (const [name, fn] of rows) {
+    let ok = false;
+    try {
+      ok = fn();
+    } catch {
+      ok = false;
+    }
+    if (!ok) failures++;
+    n++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
+  }
+  git('switch', '-q', 'main');
+}
+
 // ---------------------------------------------------------------- ワークフローの定義
 const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
 const defs = [
@@ -262,6 +393,7 @@ const defs = [
   ['ワークフロー: PR の題名と本文を環境変数で渡し、シェルへ展開しない', /PR_BODY: \$\{\{ github\.event\.pull_request\.body \}\}/.test(wf) && !/run:.*github\.event\.pull_request\.(body|title)/.test(wf)],
   ['ワークフロー: 集約(gate-g5)が pr-rules を待つ', /needs: \[[^\]]*pr-rules[^\]]*\]/.test(wf)],
   ['ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-check-pr\.mjs/.test(wf)],
+  ['ワークフロー: contract で、再評価待ちの試験を実行する', /node scripts\/gate\/test-recalibration\.mjs/.test(wf)],
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
   ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
   ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],

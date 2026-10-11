@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "9365779b728979fb5e799fa8dde0d1632f878af7"
+    "commit": "116b72f2c7649257596d57a670e0285f3cac592b"
   },
   "questions": [
     {
@@ -1444,6 +1444,12 @@
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#未達のまま出荷する場合の例外承認適用-r1-の変更"
     },
     {
+      "title": "基準値を超えた変更の扱い",
+      "range": "規模の基準値を超えた PR",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#基準値を超えた変更の扱い適用-規模の基準値を超えた-pr"
+    },
+    {
       "title": "5.5.4 委任の条件",
       "range": "CL0・R3 の変更",
       "unit": "per-change",
@@ -1484,6 +1490,18 @@
       "range": "委任を適用した R3 の変更。体制の規模によらない",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#事後監査の手続適用-委任を適用した-r3-の変更体制の規模によらない"
+    },
+    {
+      "title": "規模の基準値",
+      "range": "規模の基準値を超えた PR",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/pr-workflow/#規模の基準値適用-規模の基準値を超えた-pr"
+    },
+    {
+      "title": "能力依存の定数の登録簿",
+      "range": "能力依存として登録した定数",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase6-operation/metrics/#能力依存の定数の登録簿適用-能力依存として登録した定数"
     }
   ]
 }

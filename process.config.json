@@ -22,7 +22,7 @@
   "ci": {
     "coverageThreshold": 80,
     "failOnSeverity": ["critical", "high"],
-    "allowedLicenses": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Python-2.0", "MPL-2.0"],
+    "allowedLicenses": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Python-2.0", "MPL-2.0", "CC0-1.0", "Unlicense", "0BSD", "BlueOak-1.0.0"],
     "strengthened": false
   },
   "review": { "requiredApprovals": 1, "reviewerCount": 1, "mode": null, "recordFormat": "standard" },

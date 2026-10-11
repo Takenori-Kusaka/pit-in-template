@@ -12,7 +12,9 @@
 | `projectId` / `profileName` | 案件 ID、プロファイル名 | — |
 | `ci.coverageThreshold` | カバレッジの下限(0〜100) | **下げるのは緩める向き** |
 | `ci.failOnSeverity` / `ci.allowedLicenses` | 失敗させる重大度、許可するライセンス | **重大度を外す、ライセンスを足すのは緩める向き** |
-| `task.maxChangedLines` / `maxChangedFiles` / `selfHealMaxIterations` | 変更規模と反復の上限 | **上げるのは緩める向き** |
+| `task.maxChangedLines` / `maxChangedFiles` / `selfHealMaxIterations` | 規模の基準値(超過で規模の確認を要する。遮断ではない)と反復の上限。`maxChanged*` は `null`(基準なし)も取れる。`null` は `task.assurance` が L2 で根拠が実在し、確約範囲・コア指定のパス(`delegation.protectedPaths` か `riskFloor.rules` のパス)を宣言した構成でだけ書け、R1・R2・そのパスの変更には効かない | **上げる・`null` にするのは緩める向き** |
+| `task.nonProductPaths` | 規模の算定で別に数える置き場(glob の配列)。既定のテスト・fixture・snapshot に足す | **足すのは緩める向き**。閾値として扱い、製品のコードと同じ PR に入れない |
+| `task.assurance` | 担保水準の宣言 `{ "level": "L0" \| "L1" \| "L2", "basis": "<リポジトリ内のパス>", "declaredBy", "declaredAt", "reviewAt" }`。未宣言は L0 | **L0 から L1・L2 へ上げるのは緩める向き**(記名と理由を要する)。宣言は記録であり、緩和を自動で与えない。機械が確かめるのは根拠の実在と見直し日だけで、見直し日を過ぎると L0 として扱う |
 | `guard` | 強制層の緩和設定 `{ "enabled", "reviewBy", "reason" }`。消すときは `null` | **無効にする、期限を延ばすのは緩める向き**。期限と理由を要する |
 | `platform.host` / `platform.hostUrl` | 成果物の配布先 | — |
 | `reviewSourcing` | `{ "g6": "<確認者の調達先>" }`。`node scripts/init/set-review-sourcing.mjs` もこの経路で記録する | — |
@@ -28,6 +30,22 @@
 
 `ci`・`task`・`guard` を変える変化点を、製品のコードの変更と同じ PR に入れると、G-5 の `pr-rules`(`scripts/gate/check-pr.mjs`)が失敗します。閾値だけの PR として出します。変更規模の上限は**基底ブランチの**構成から読まれるため、上限を上げた PR がマージされるまで、新しい上限は効きません。
 
-## 変更規模の上限を変えるとき
+## 規模の基準値を変えるとき
 
-上限の値は暫定です。自組織の実測による較正(四半期ごと、充足率が8割を下回らない最大の区間)は人が判断します。**較正の手続を自動化しません**。超過したまま一度だけレビューする場合は、上限を上げずに例外承認を使います(`.claude/skills/artifact/artifacts/03-debt-ledger.md`)。
+基準値の値は暫定です。自組織の実測による較正(観測は四半期、更新は半期以上。充足率が8割を下回らない最大の区間)は人が判断します。**較正の手続を自動化しません**。出荷の集約が、規模の分布・`size:over` の件数・「読み切れたか」の内訳・超過 PR の判定完了時間を出します(基準値へ自動で反映しません)。
+
+超過したまま一度だけレビューする場合も、基準値を上げません。PR の「規模の確認」の欄を書きます(例外承認は要りません)。例外承認は、R2 以上の規範の逸脱のために残っています。
+
+## 担保水準の宣言(task.assurance)
+
+```json
+{ "kind": "settings", "summary": "担保水準 L1 を宣言した", "settings": { "task": { "assurance": { "level": "L1", "basis": "docs/assurance/f-001.md", "declaredBy": "<氏名>", "declaredAt": "YYYY-MM-DD", "reviewAt": "YYYY-MM-DD" } } }, "decidedBy": "<氏名>", "reason": "<理由>" }
+```
+
+- 水準は自己申告でなく、条件の充足を示す記録の所在(`basis`)で宣言します。`basis` が実在しなければ、書き込みを拒否します
+- L1 以上で根拠が実在するとき、規模の確認は「保証の所在」の記入だけで足ります。L2 の機械の検証(リスク採点の稼働)はテンプレートに降ろしていません(`state=undelivered`。標準の実装台帳で開示)
+- 見直し日を過ぎた宣言は L0 として扱い、G-5 が通知します
+
+## 能力依存の定数の再評価待ち
+
+`/process-change` の出力の末尾と `/pit` の注記が、再評価待ちの能力依存の定数の件数を出します(`node scripts/gate/recalibration.mjs`)。契機は、種別 `performer` で記録したモデル・指示資産の版の変更と、半期の暦だけです。**値は自動で変えません**。人が「残す・外す・移す」を `docs/calibration-register.md` へ記名で記録します(`| RC-NN | 残す・外す・移す | YYYY-MM-DD | 氏名 | 移した先の保証 |`)。

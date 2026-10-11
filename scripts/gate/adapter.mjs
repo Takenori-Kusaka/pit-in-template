@@ -63,8 +63,16 @@ if (mode === 'print') {
   process.exit(0);
 }
 
+// 構成 ci.failOnSeverity を、アダプタの audit コマンドへ渡す(#295 T-19)。npm audit は最小の重大度を取るため、
+// 失敗させる重大度のうち最も低いものを渡す(critical・high なら high)。値が無ければ high
+const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, medium: 2, high: 3, critical: 4 };
+const failLevels = (Array.isArray(config.ci?.failOnSeverity) ? config.ci.failOnSeverity : ['critical', 'high']).map((s) => String(s).toLowerCase()).filter((s) => s in SEVERITY_RANK);
+const auditLevel = failLevels.length ? failLevels.reduce((a, b) => (SEVERITY_RANK[b] < SEVERITY_RANK[a] ? b : a)) : 'high';
+
 const env = {
   ...process.env,
+  PIT_IN_FAIL_ON_SEVERITY: failLevels.join(';'),
+  PIT_IN_AUDIT_LEVEL: auditLevel === 'medium' ? 'moderate' : auditLevel,
   PIT_IN_ALLOWED_LICENSES: (config.ci?.allowedLicenses ?? []).join(';'),
   PIT_IN_COVERAGE_THRESHOLD: String(config.ci?.coverageThreshold ?? 80),
 };

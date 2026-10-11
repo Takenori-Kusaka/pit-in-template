@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 0,
+  "note": "能力依存の定数の登録簿(標準 第6章 metrics.md「能力依存の定数の登録簿」の機械可読版。#295 / ADR-0058)。契機は、/process-change(種別 performer)の記録にあるモデル・指示資産の版の変更と、暦(半期)だけである。契機で値を自動で変えない。人が「残す・外す・移す」を docs/calibration-register.md へ記録する。能力に依らない周期・窓は capabilityDependent を false にし、再評価待ちに数えない。noRelaxByCapability は、人の帯域に由来する定数で、能力が上がったことを理由に緩めない(変えるなら実績と手段の変化の記録を要する)ことを示す",
+  "calendarDays": 183,
+  "constants": [
+    {
+      "id": "RC-01",
+      "name": "規模の基準値(400行・15ファイル)",
+      "capabilityDependent": true,
+      "configKey": "task.maxChangedLines / task.maxChangedFiles",
+      "assumption": "1レビュー単位を人が読み切れる大きさ",
+      "guarantee": "超過は規模の確認と区分の下限 R2 で扱う",
+      "noRelaxByCapability": true
+    },
+    {
+      "id": "RC-02",
+      "name": "レビューの所要の目安 30分",
+      "capabilityDependent": true,
+      "configKey": null,
+      "assumption": "人が 30分で読み切れる量",
+      "guarantee": "規模の確認の「読み切れたか」",
+      "noRelaxByCapability": true
+    },
+    {
+      "id": "RC-03",
+      "name": "タスクの見積の目安 8時間",
+      "capabilityDependent": true,
+      "configKey": null,
+      "assumption": "人の作業量に基づく見積",
+      "guarantee": "超えたら理由を記録する(目安)"
+    },
+    {
+      "id": "RC-04",
+      "name": "レビュアの帯域 3〜4件/日",
+      "capabilityDependent": true,
+      "configKey": null,
+      "assumption": "人のレビューの速度",
+      "guarantee": "判定完了時間と SLA 充足率の観測",
+      "noRelaxByCapability": true
+    },
+    {
+      "id": "RC-05",
+      "name": "自己修復の反復上限 3回",
+      "capabilityDependent": true,
+      "configKey": "task.selfHealMaxIterations",
+      "assumption": "修正ループが収束する回数",
+      "guarantee": "上限で保留にして人が受入基準へ戻る"
+    },
+    {
+      "id": "RC-06",
+      "name": "カバレッジの下限(80%・90%)",
+      "capabilityDependent": true,
+      "configKey": "ci.coverageThreshold",
+      "assumption": "テストの網羅の代理指標",
+      "guarantee": "受入基準ごとのテスト(G-5)"
+    },
+    {
+      "id": "RC-07",
+      "name": "コンテキストの目安(CLAUDE.md 200行・6,000トークン)",
+      "capabilityDependent": true,
+      "configKey": null,
+      "assumption": "指示文の長さと遵守率の関係",
+      "guarantee": "規則の索引と所在の分離"
+    },
+    {
+      "id": "RC-08",
+      "name": "層数 3",
+      "capabilityDependent": true,
+      "configKey": null,
+      "assumption": "層ごとの検出能力",
+      "guarantee": "検出能力の測定(保証の開示の項目6)"
+    },
+    {
+      "id": "RC-09",
+      "name": "自律度の引き上げの観測窓 3か月",
+      "capabilityDependent": false,
+      "configKey": null,
+      "assumption": "人の側の信頼の観測の周期",
+      "guarantee": "能力が上がっても短縮しない"
+    },
+    {
+      "id": "RC-10",
+      "name": "力量確認の周期 92日",
+      "capabilityDependent": false,
+      "configKey": null,
+      "assumption": "人の力量の維持",
+      "guarantee": "能力が上がっても短縮しない"
+    },
+    {
+      "id": "RC-11",
+      "name": "監査の周期",
+      "capabilityDependent": false,
+      "configKey": null,
+      "assumption": "内部監査の周期",
+      "guarantee": "能力が上がっても短縮しない"
+    }
+  ]
+}

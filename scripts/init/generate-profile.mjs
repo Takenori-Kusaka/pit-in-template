@@ -32,6 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { readPolicy } from '../gate/org-assurance.mjs';
+import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import {
   reviewersRequiredOf,
   corePathsOf,
@@ -652,7 +653,8 @@ export function buildConfig(answers, opts = {}) {
     console.log(`[較正引き継ぎ] 既存の較正設定（ci.coverageThreshold: ${opts.coverageThreshold}%）を検出し、引き継ぎました（標準の導出初期値: ${derivedCoverage}%）`);
   }
 
-  const derivedAllowedLicenses = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0'];
+  // 許容的な SPDX(CC0-1.0・Unlicense・0BSD・BlueOak-1.0.0)を含む(#295 T-18)。法務方針は組織が変える。恒久の追加は種別 settings で行う
+  const derivedAllowedLicenses = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0', 'CC0-1.0', 'Unlicense', '0BSD', 'BlueOak-1.0.0'];
   const allowedLicenses = opts.allowedLicenses ?? derivedAllowedLicenses;
   if (opts.allowedLicenses !== undefined && JSON.stringify(opts.allowedLicenses) !== JSON.stringify(derivedAllowedLicenses)) {
     console.log(`[較正引き継ぎ] 既存の較正設定（ci.allowedLicenses: ${JSON.stringify(opts.allowedLicenses)}）を検出し、引き継ぎました（標準の導出初期値: ${JSON.stringify(derivedAllowedLicenses)}）`);
@@ -665,13 +667,14 @@ export function buildConfig(answers, opts = {}) {
   }
 
   const derivedMaxChangedLines = 400;
-  const maxChangedLines = opts.maxChangedLines ?? derivedMaxChangedLines;
+  // null は「基準なし」(#295 / ADR-0058)。?? で既定値へ戻さない
+  const maxChangedLines = opts.maxChangedLines === undefined ? derivedMaxChangedLines : opts.maxChangedLines;
   if (opts.maxChangedLines !== undefined && opts.maxChangedLines !== derivedMaxChangedLines) {
     console.log(`[較正引き継ぎ] 既存の較正設定（task.maxChangedLines: ${opts.maxChangedLines}）を検出し、引き継ぎました（標準の導出初期値: ${derivedMaxChangedLines}）`);
   }
 
   const derivedMaxChangedFiles = 15;
-  const maxChangedFiles = opts.maxChangedFiles ?? derivedMaxChangedFiles;
+  const maxChangedFiles = opts.maxChangedFiles === undefined ? derivedMaxChangedFiles : opts.maxChangedFiles;
   if (opts.maxChangedFiles !== undefined && opts.maxChangedFiles !== derivedMaxChangedFiles) {
     console.log(`[較正引き継ぎ] 既存の較正設定（task.maxChangedFiles: ${opts.maxChangedFiles}）を検出し、引き継ぎました（標準の導出初期値: ${derivedMaxChangedFiles}）`);
   }
@@ -731,7 +734,14 @@ export function buildConfig(answers, opts = {}) {
       recordFormat: gates.g6.params.recordFormat ?? 'standard',
     },
     aiReview: { enabled: true, canApprove: false, requiredCheck: false },
-    task: { maxChangedLines, maxChangedFiles, selfHealMaxIterations },
+    task: {
+      maxChangedLines,
+      maxChangedFiles,
+      selfHealMaxIterations,
+      // 規模の算定で別に数える置き場(既定のテスト・fixture・snapshot に足す。足す変更は閾値として扱う)と、担保水準の宣言(記録。緩和を自動で与えない)
+      ...(Array.isArray(opts.nonProductPaths) && opts.nonProductPaths.length ? { nonProductPaths: opts.nonProductPaths } : {}),
+      ...(opts.assurance && typeof opts.assurance === 'object' ? { assurance: opts.assurance } : {}),
+    },
     matchedRuleIds: result.matchedRuleIds,
     warnings: result.warnings,
     // 体制の変化点の記録(第3章 3.13.4)。構成の生成そのものを最初の1件とする
@@ -1514,13 +1524,32 @@ export function diffConfig(before, after) {
       push(`${label}: ${[...b].join(', ') || 'なし'} → ${[...a].join(', ') || 'なし'}`, loosens ? 1 : 0, loosens ? 0 : 1, M);
     }
     for (const [k, label] of [
-      ['maxChangedLines', '変更行数の上限'],
-      ['maxChangedFiles', '変更ファイル数の上限'],
+      ['maxChangedLines', '規模の基準値(行数)'],
+      ['maxChangedFiles', '規模の基準値(ファイル数)'],
       ['selfHealMaxIterations', '自己修正ループの反復上限'],
     ]) {
-      const b = num(before.task?.[k]);
-      const a = num(after.task?.[k]);
-      if (b !== null && a !== null && b !== a) push(`${label}: ${b} → ${a}`, -b, -a, M);
+      // null は「基準なし」。上げる向き(最も緩い)として扱う
+      const rawB = before.task?.[k];
+      const rawA = after.task?.[k];
+      const b = rawB === null ? Infinity : num(rawB);
+      const a = rawA === null ? Infinity : num(rawA);
+      if (b !== null && a !== null && b !== a) push(`${label}: ${rawB === null ? 'なし(null)' : b} → ${rawA === null ? 'なし(null)' : a}`, -b, -a, M);
+    }
+    // 規模の算定で別に数える置き場(task.nonProductPaths)。足すと算定の対象が減るため、緩める向き
+    {
+      const b = setOf(before.task?.nonProductPaths);
+      const a = setOf(after.task?.nonProductPaths);
+      const added = [...a].filter((x) => !b.has(x));
+      const removed = [...b].filter((x) => !a.has(x));
+      if (added.length || removed.length) push(`規模の算定で別に数える置き場: ${[...b].join(', ') || 'なし'} → ${[...a].join(', ') || 'なし'}`, added.length ? 1 : 0, added.length ? 0 : 1, M);
+    }
+    // 担保水準の宣言(task.assurance)。L0 から L1・L2 へ上げるのは緩める向き(記名と理由を要する)。宣言は記録であり、緩和を自動で与えない
+    {
+      const lv = (c) => ({ L0: 0, L1: 1, L2: 2 })[c.task?.assurance?.level ?? 'L0'] ?? 0;
+      const b = lv(before);
+      const a = lv(after);
+      if (b !== a) push(`担保水準の宣言: L${b} → L${a}`, a > b ? 1 : 0, a > b ? 0 : 1, M);
+      else if (a > 0 && JSON.stringify(before.task?.assurance ?? null) !== JSON.stringify(after.task?.assurance ?? null)) diff.push(`担保水準の宣言(L${a})の根拠・見直し日の更新`);
     }
     // 区分の下限の規則(第3章 3.8.1 の要求事項5)。下限を下げる変更・規則を削る変更・対象のパスを狭める変更は
     // 緩める向きとして、D-0 表1「体制と運用形態」の決定者の記名と理由を要する(seat は null)
@@ -1850,6 +1879,11 @@ export function renderChangeReport(report, clamps = [], config = null) {
   );
   section('無効になった確認の候補(やり直しの要否は文脈オーナーが決める)', report.candidates, 'なし');
   section('残作業', report.remaining, 'なし');
+  // 能力依存の定数の再評価待ち(#295 / ADR-0058 決定6)。値は自動で変えない。件数と契機だけを注記する
+  if (config) {
+    const note = recalibrationNote(recalibrationState(config));
+    section('再評価待ちの能力依存の定数(注記。値は自動で変えない)', note ? [note] : [], 'なし');
+  }
   return L.join('\n');
 }
 
@@ -3406,8 +3440,31 @@ if (isMain) {
     }
     for (const k of ['failOnSeverity', 'allowedLicenses']) if (S.ci?.[k] !== undefined && !strList(S.ci[k])) bad.push(`settings.ci.${k} は文字列の配列で書きます`);
     if (S.task !== undefined && !isObject(S.task)) bad.push('settings.task はオブジェクトで書きます');
-    for (const k of ['maxChangedLines', 'maxChangedFiles', 'selfHealMaxIterations']) {
-      if (S.task?.[k] !== undefined && !posInt(S.task[k])) bad.push(`settings.task.${k} は正の整数で書きます`);
+    for (const k of ['maxChangedLines', 'maxChangedFiles']) {
+      // null(基準なし)は、担保水準 L2 の宣言と根拠が実在するときだけ受け付ける(#295 / ADR-0058)
+      if (S.task?.[k] === null) {
+        const asr = S.task?.assurance ?? existing?.task?.assurance;
+        if (!(asr?.level === 'L2' && typeof asr.basis === 'string' && asr.basis.trim() && fs.existsSync(path.join(ROOT, asr.basis)))) {
+          bad.push(`settings.task.${k} の null(基準なし)は、task.assurance が L2 で、根拠(basis)のパスが実在するときだけ書けます`);
+        }
+        // 確約範囲・コア指定のパスが宣言されていない構成では、コア外の変更かを確かめられないため、null を受け付けない
+        if (!corePathsOf({ delegation: existing?.delegation, riskFloor: S.riskFloor !== undefined ? S.riskFloor : existing?.riskFloor }).paths.length) {
+          bad.push(`settings.task.${k} の null(基準なし)は、確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)を宣言した構成でだけ書けます`);
+        }
+      } else if (S.task?.[k] !== undefined && !posInt(S.task[k])) bad.push(`settings.task.${k} は正の整数、または null(基準なし。L2 の宣言と根拠が要る)で書きます`);
+    }
+    if (S.task?.selfHealMaxIterations !== undefined && !posInt(S.task.selfHealMaxIterations)) bad.push('settings.task.selfHealMaxIterations は正の整数で書きます');
+    if (S.task?.nonProductPaths !== undefined && !strList(S.task.nonProductPaths)) bad.push('settings.task.nonProductPaths は文字列(glob)の配列で書きます');
+    if (S.task?.assurance !== undefined) {
+      const A = S.task.assurance;
+      if (!isObject(A) || !['L0', 'L1', 'L2'].includes(A.level)) bad.push('settings.task.assurance は { "level": "L0" | "L1" | "L2", "basis": "<リポジトリ内のパス>", "declaredBy": "<氏名>", "declaredAt": "YYYY-MM-DD", "reviewAt": "YYYY-MM-DD" } で書きます');
+      else if (A.level !== 'L0') {
+        if (typeof A.basis !== 'string' || !A.basis.trim() || !fs.existsSync(path.join(ROOT, A.basis))) bad.push(`task.assurance の根拠(basis: ${A.basis ?? '未記入'})がリポジトリに実在しません。水準は自己申告でなく、条件の充足を示す記録の所在で宣言します`);
+        if (!isDay(A.reviewAt)) bad.push('task.assurance の見直し日(reviewAt)を YYYY-MM-DD で書きます。過ぎると L0 として扱います');
+        if (!isDay(A.declaredAt)) bad.push('task.assurance の宣言日(declaredAt)を YYYY-MM-DD で書きます');
+        if (typeof A.declaredBy !== 'string' || !A.declaredBy.trim()) bad.push('task.assurance の宣言者(declaredBy)の氏名を書きます');
+        else if (aiNameReason(A.declaredBy, { account: true })) bad.push(`宣言者 "${A.declaredBy}" は ${aiNameReason(A.declaredBy, { account: true })}。担保水準の宣言は人が記名する`);
+      }
     }
     if (S.guard !== undefined && S.guard !== null) {
       if (!isObject(S.guard) || typeof S.guard.enabled !== 'boolean') bad.push('settings.guard は { "enabled": true / false, "reviewBy": "YYYY-MM-DD", "reason": "<理由>" } で書きます。設定を消すときは null です');
@@ -3654,6 +3711,8 @@ if (isMain) {
       maxChangedLines: taskNow.maxChangedLines,
       maxChangedFiles: taskNow.maxChangedFiles,
       selfHealMaxIterations: taskNow.selfHealMaxIterations,
+      nonProductPaths: taskNow.nonProductPaths,
+      assurance: taskNow.assurance,
       platformHost: platformNow.host,
       platformHostUrl: platformNow.hostUrl,
     });
