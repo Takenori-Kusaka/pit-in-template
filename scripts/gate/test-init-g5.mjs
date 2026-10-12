@@ -110,9 +110,28 @@ for (const n of [1, 3]) {
   W.write('specs/F-001/plan.md', W.read('templates/07-implementation-plan.md'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 様式から機能仕様・実装計画・D-0・企画書を作った直後も spec-lint が通る`, r.ok, r.out);
-  W.write('specs/F-001/spec.md', W.read('specs/F-001/spec.md') + '\n| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |\n');
+  // 検査の範囲は受入基準の節(標準 第4章 G-2)。節の外の語は検出しない
+  const specBase = W.read('specs/F-001/spec.md');
+  const acRow = '| 3 | ユビキタス | システムは招待トークンをログへ出力してはならない |';
+  const withRow = (row) => specBase.replace(acRow, `${acRow}\n${row}`);
+  check(`${tag}: 様式の受入基準の表に、行を足す目印がある`, specBase.includes(acRow));
+  W.write('specs/F-001/spec.md', specBase + '\n| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |\n');
+  r = W.node('scripts/gate/spec-lint.mjs');
+  check(`${tag}: 受入基準の節の外の語では spec-lint が落ちない`, r.ok, r.out);
+  W.write('specs/F-001/spec.md', withRow('| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 機能仕様に曖昧語を足すと spec-lint が落ちる`, !r.ok && /specs.F-001.spec\.md/.test(r.out), r.out);
+  W.write('specs/F-001/spec.md', withRow('| 9 | ユビキタス | システムは一覧を高速に表示しなければならない |'));
+  r = W.node('scripts/gate/spec-lint.mjs');
+  check(`${tag}: 標準の表に足した検出語(高速に)で spec-lint が落ちる`, !r.ok && /高速に/.test(r.out), r.out);
+  W.write('specs/F-001/spec.md', withRow('| 9 | 望ましくない事象 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok --> |'));
+  r = W.node('scripts/gate/spec-lint.mjs');
+  check(`${tag}: 理由の無い除外の印は無効(spec-lint が落ちる)`, !r.ok && /理由がありません/.test(r.out), r.out);
+  W.write('specs/F-001/spec.md', withRow('| 9 | 望ましくない事象 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok: 「不適切に操作」は条件の名前で、E-01 の定義に閉じている --> |'));
+  r = W.node('scripts/gate/spec-lint.mjs');
+  check(`${tag}: 理由を書いた除外の印の行は検出から外し、件数と所在を出す`, r.ok && /除外の印で外した行 1 件/.test(r.out) && /specs.F-001.spec\.md:\d+ 除外の印/.test(r.out), r.out);
+  r = W.node('scripts/gate/spec-lint.mjs', ['--terms']);
+  check(`${tag}: spec-lint --terms が、標準の表の検出語(11語)を出す`, r.ok && r.out.trim().split(' / ').length === 11 && /高速に/.test(r.out), r.out);
   for (const f of ['docs/D-0-governance.md', 'docs/project-brief.md']) fs.rmSync(path.join(W.dir, f));
   fs.rmSync(path.join(W.dir, 'specs/F-001'), { recursive: true });
 

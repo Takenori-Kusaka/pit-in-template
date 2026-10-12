@@ -814,10 +814,37 @@ export function broadPathReason(glob) {
  * 機械が確かめるのは記入の有無だけである。内容は、登録する者が判定する
  */
 export const CHANGE_TYPE_BASIS = [
-  ['detection', '第5章 5.4.6 の検知条件を何で計測するか'],
+  ['detection', '第5章 5.4.6 の第2区分の検知条件ごとの、算出の所在'],
   ['rollback', '取り消しを実行した実績の所在'],
   ['tests', '既存のテストで検出できることの根拠'],
 ];
+
+/**
+ * basis.detection に書く検知条件(標準 第5章 5.4.6 の第2区分)。検知条件ごとに、算出の所在
+ * (算出元の記録と、算出する手段の置き場)を書く。1つの文にまとめた記入は、記入なしとして扱う
+ */
+export const CHANGE_TYPE_DETECTION = [
+  ['rejectionRate', '差し戻し率'],
+  ['duplicationRate', '重複率'],
+  ['reworkRate', '手戻り率'],
+];
+
+/** 登録の根拠のうち、記入が無いものを [キー, 名前] の配列で返す */
+function missingBasis(basis) {
+  const out = [];
+  const d = basis?.detection;
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) {
+    out.push(['detection', `${CHANGE_TYPE_BASIS[0][1]}(${CHANGE_TYPE_DETECTION.map(([k, label]) => `${k}: ${label}`).join('・')} を、それぞれ書く)`]);
+  } else {
+    for (const [k, label] of CHANGE_TYPE_DETECTION) {
+      if (typeof d[k] !== 'string' || !isFilledValue(d[k])) out.push([`detection.${k}`, `${label}の算出の所在`]);
+    }
+  }
+  for (const [k, label] of CHANGE_TYPE_BASIS.slice(1)) {
+    if (typeof basis?.[k] !== 'string' || !isFilledValue(basis[k])) out.push([k, label]);
+  }
+  return out;
+}
 
 export function changeTypeProblems(config, { checkRegistrant = true, only = null } = {}) {
   const list = config.delegation?.changeTypes;
@@ -845,11 +872,12 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     }
     if (only && !only.has(id)) return;
     // 様式の文言(<…>)や「—」「未定」などの記入でない値は、記入なしとして扱う(例外承認の記録の判定と同じ関数)
-    const missing = CHANGE_TYPE_BASIS.filter(([k]) => typeof t.basis?.[k] !== 'string' || !isFilledValue(t.basis[k]));
+    const missing = missingBasis(t.basis);
     if (missing.length) {
       out.push(
         `${at}: 変更種別 "${id}" に、登録の根拠(basis)がない(${missing.map(([k, label]) => `${k}: ${label}`).join(' / ')})。` +
-          '3点の記録が無い種別は登録しない(標準 第5章 5.5.4)。様式の文言(<…>)、「—」「未定」「なし」などは記入として扱わない。' +
+          '3点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・重複率・手戻り率)ごとに算出の所在を書く。' +
+          '様式の文言(<…>)、「—」「未定」「なし」などは記入として扱わない。' +
           '機械が確かめるのは記入の有無だけであり、内容は登録する者が判定する'
       );
     }

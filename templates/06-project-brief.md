@@ -67,7 +67,7 @@
 
 決裁制度が単一の金額を要求する場合は、**期待効果の幅の下限値**を用います。**上限値を提示してはなりません**。数値には算定根拠と効果が出ない条件を併記します。
 
-**この欄を稟議のために書き換えないでください**。作法は[附属書G](https://takenori-kusaka.github.io/process-compass/phase4-process-design/executive-projection/)によります。
+**この欄を稟議のために書き換えないでください**。規定は標準 第6章「決裁制度への提示」によります。手引きは[附属書G](https://takenori-kusaka.github.io/process-compass/phase4-process-design/executive-projection/)にあります。
 
 ## 品質の約束と保証範囲(層2 / G-1 基準2)
 

@@ -392,7 +392,6 @@ export function buildRoles(gates, separations = KB.separations ?? []) {
         exception: s.exception ?? 'none',
       })),
       mustNotJudge,
-      selfApproval: 'forbidden',
       notes: notes[r.id] ?? [],
     };
   });
@@ -778,6 +777,8 @@ export function seatSeparationFindings(config) {
   // 1〜2名の体制で、同一人物が占めた兼務禁止の組。拒否せず逸脱として記録する
   const deviated = [];
   for (const sep of config.separations ?? []) {
+    // 実行主体の文脈の単位でだけ課す規則は、席の責任者の兼務として検査しない(標準 第3章 3.5.3。人の単位では課さない)
+    if (sep.unit === 'context') continue;
     const [a, b] = sep.roles ?? [];
     if (!a || !b || !who[a] || who[a] !== who[b]) continue;
     const person = personName(config, seatOf(a).accountable);
@@ -2470,8 +2471,10 @@ export function renderProfileMd(config, result) {
     }
     L.push('');
     L.push(
-      '**起案した主体は、その成果物の判定者になりません**。役割の組み合わせによらず成立しない禁止です。' +
-        '分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します。'
+      '**成果物を起案した実行主体の文脈は、その成果物の判定の草案を作りません**(標準 第3章 3.5.3)。体制の人数によらない規定です。' +
+        '分離は、作業領域・セッション・認証情報の3つがすべて分かれている場合にのみ成立します。' +
+        '人の単位では、この規定を課しません。成果物の結果責任者が、要件合意(G-2)・技術設計判断(G-3)・機能仕様承認(G-4)・出荷判定(G-7)の判定者を兼ねることは、禁止に当たりません。' +
+        '人の単位で禁止する組み合わせは、上の表の「兼ねてはならない役割」に限ります。この規定を、機械は検査しません。'
     );
     L.push('');
   }

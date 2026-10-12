@@ -103,7 +103,11 @@
           "registeredBy": "鈴木 一郎",
           "registeredAt": "2026-09-30",
           "basis": {
-            "detection": "文言の表示崩れは画面の自動比較(visual-diff ジョブ)で検知する",
+            "detection": {
+              "rejectionRate": "docs/metrics/2026-Q3.md の「表示文言」の行。G-6 の判定記録(docs/gates/)の差し戻しの件数から、scripts/metrics/review-rates.mjs が算出する",
+              "duplicationRate": "docs/metrics/2026-Q3.md の「表示文言」の行。gate-g5 の類似の検知の出力から、同じスクリプトが算出する",
+              "reworkRate": "docs/metrics/2026-Q3.md の「表示文言」の行。取り込みから14日以内の書き換えの行数を、同じスクリプトが git の履歴から算出する"
+            },
             "rollback": "2026-09-12 の文言の取り消し(PR #88 の revert)",
             "tests": "i18n のキー欠落は既存の単体テスト i18n.test.js で失敗する"
           }

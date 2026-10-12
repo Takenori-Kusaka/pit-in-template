@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "b49a75deaffd5043f262e69cde07c80da2f1c937"
+    "commit": "ad3d78dda8311e9f8e0b14855384802d81a946c6"
   },
   "questions": [
     {
@@ -1369,8 +1369,9 @@
     {
       "id": "sep-self-approval",
       "roles": null,
+      "unit": "context",
       "scope": "same-work-product",
-      "reason": "起案した主体が判定すれば、判定は自己申告になる。役割の組み合わせによらず成立しない",
+      "reason": "成果物を起案した実行主体の文脈が判定の草案を作れば、判定の案は作成側の主張になる。体制の人数によらない。人の単位では課さない",
       "exception": "none",
       "gate": null,
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
@@ -1381,6 +1382,7 @@
         "dev-verifier",
         "independent-reviewer"
       ],
+      "unit": null,
       "scope": "same-work-product",
       "reason": "作成を指示した本人が見ても、作成時の思い込みは検出できない",
       "exception": "none",
@@ -1393,6 +1395,7 @@
         "dev-verifier",
         "qa-gatekeeper"
       ],
+      "unit": null,
       "scope": "same-project",
       "reason": "開発ラインの外の人による判定が成立しなくなる",
       "exception": "3名未満に限り、代償措置つきで兼務を認める(第3章 3.5.2 / ADR-0029)",
@@ -1405,6 +1408,7 @@
         "qa-gatekeeper",
         "biz-approver"
       ],
+      "unit": null,
       "scope": "same-project",
       "reason": "出荷判定者が書く異議を、事業決裁者が読んで残存リスクを受容する。同じ人が兼ねると、受容が自己完結する(ADR-0056 決定5)",
       "exception": "3名未満に限り、逸脱として D-0 体制図へ記録し、保証の開示の項目1 へ「異議を書く者と、残存リスクを受容する者が同一である」と表示する。3.5.2 の例外(代償措置つきの許容)は適用しない(第3章 3.5)",
@@ -1417,6 +1421,7 @@
         "ai-maintainer",
         "ai-ops"
       ],
+      "unit": null,
       "scope": "always",
       "reason": "案件の都合で全社の統制を緩める経路ができる",
       "exception": "1〜2名体制で兼務禁止が成立しない場合に限り、逸脱として D-0 体制図へ記録し、表示し続ける。兼務を認める例外ではなく、3.5.2 の例外(代償措置つきの許容)は適用しない(第3章 3.5)",
@@ -1424,6 +1429,53 @@
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
     }
   ],
+  "ambiguousTerms": [
+    {
+      "term": "可能な限り",
+      "kind": "逃げ道になる句"
+    },
+    {
+      "term": "必要に応じて",
+      "kind": "逃げ道になる句"
+    },
+    {
+      "term": "なるべく",
+      "kind": "逃げ道になる句"
+    },
+    {
+      "term": "基本的に",
+      "kind": "逃げ道になる句"
+    },
+    {
+      "term": "原則として",
+      "kind": "逃げ道になる句"
+    },
+    {
+      "term": "適切に",
+      "kind": "程度を定めない副詞・形容詞"
+    },
+    {
+      "term": "柔軟に",
+      "kind": "程度を定めない副詞・形容詞"
+    },
+    {
+      "term": "十分に",
+      "kind": "程度を定めない副詞・形容詞"
+    },
+    {
+      "term": "速やかに",
+      "kind": "程度を定めない副詞・形容詞"
+    },
+    {
+      "term": "高速に",
+      "kind": "程度を定めない副詞・形容詞"
+    },
+    {
+      "term": "など",
+      "kind": "末尾を開いた列挙"
+    }
+  ],
+  "ambiguousTermsSource": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/",
   "clauseScopes": [
     {
       "title": "AIエージェント安全リスクアセスメント",

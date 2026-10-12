@@ -48,6 +48,9 @@ const cases = [
   ['規則の承認者が AI維持管理者の席の責任者でない', (i) => (rule(i, 'DR-001').approvedBy = '山田 太郎'), false, ['条件2']],
   ['登録されていない変更種別', (i) => (i.config.delegation.changeTypes = []), false, ['条件2']],
   ['変更種別の一覧を持たない旧い構成', (i) => delete i.config.delegation.changeTypes, false, ['条件2']],
+  // 登録の根拠の detection は、検知条件ごとに算出の所在を書く(標準 第5章 5.5.4)。1つの文にまとめた記入は、記入なしとして扱う
+  ['登録の根拠の detection が1つの文(検知条件ごとでない)', (i) => (i.config.delegation.changeTypes[0].basis.detection = '計測している'), false, ['条件2']],
+  ['登録の根拠の detection の検知条件が1つ欠ける', (i) => delete i.config.delegation.changeTypes[0].basis.detection.reworkRate, false, ['条件2']],
   ['開発者の席の規則にだけ該当する(独立レビュアの席の規則なし)', (i) => i.config.delegation.rules.pop(), false, ['G-6'], 'performer-verified'],
   ['独立レビュアの席が委任を宣言していない', (i) => (seat(i, 'independent-reviewer').mode = 'collab'), false, ['G-6'], 'performer-verified'],
   [

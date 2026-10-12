@@ -18,7 +18,7 @@ scope: SC-M
 
 ## 受入基準
 
-EARS 記法で書きます。**曖昧語は使えません**。語の一覧は `scripts/gate/spec-lint.mjs`(正本)と `specs/README.md` にあります。CI の `spec-lint` が検出します。
+EARS 記法で書きます。**曖昧語は使えません**(標準 第4章 G-2 基準2)。検出語の正本は標準 第4章 G-2 の表です。`node scripts/gate/spec-lint.mjs --terms` で一覧を出せます。CI の `spec-lint` が、この節の中の検出語を検出します。
 
 | # | 型 | 受入基準 |
 | --- | --- | --- |
