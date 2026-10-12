@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "116b72f2c7649257596d57a670e0285f3cac592b"
+    "commit": "b49a75deaffd5043f262e69cde07c80da2f1c937"
   },
   "questions": [
     {
@@ -802,7 +802,7 @@
           "note": "既存の決裁ゲート(品質部門の判定・CTOレビュー等)に外殻ゲートを対応づける。新設や二重化はしない"
         }
       ],
-      "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計。既存制度への変更は、技術判断の分離・単独判定・出荷判定者の署名の意味の3点に限る",
+      "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計。既存制度への変更は、技術判断の分離・単独判定・出荷判定者の署名の意味・品質保証の方針と受容の基準の記名の4点である(附属書A A.5)",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
