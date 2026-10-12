@@ -466,7 +466,7 @@ G-6 の判定基準5項目のうち、4項目は開発者(検証)として自分
 
 ## 関連
 
-- 📖 [AIが実装する時代の開発プロセス — ピットイン方式](https://zenn.dev/takenori_kusaka/books/pit-in-process) — 要点をまとめた本(Zenn・無料・全10章)
+- 📖 [ピットイン方式とは — AI が実装する時代の開発プロセスを、一枚の図で理解する](https://zenn.dev/takenori_kusaka/articles/pit-in-process-overview) — 全体像の概要(Zenn)
 - [ピットイン方式 標準本文](https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/)
 - [テーラリング(第8章)](https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/)
 - [CI/CD ゲート構成](https://takenori-kusaka.github.io/process-compass/phase5-implementation/ci-gates/)
