@@ -344,7 +344,10 @@ const notWarned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [`${re} �
 const rv = (login, body = '挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた', state = 'APPROVED') => ({ author: { login }, state, body });
 scenario('承認者の数: レビューを読めないときは、その旨を出す(黙って通さない)', {}, () => write('src/a.js', lines(24)), passes(noticed(/G-6 の承認者の数: PR のレビューを読めない/)));
 scenario('承認者の数: 独立した人の承認 1 名 / 要求 2 名 → 警告(失敗にはしない)', { reviews: [rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
-scenario('承認者の数: 2 名が各自の挙動要約つきで承認 → 要求を満たす', { reviews: [rv('suzuki'), rv('sato')] }, () => write('src/a.js', lines(24)), passes(notWarned(/G-6 の承認者/), noticed(/G-6 の承認者 2 名 \/ 要求 2 名/)));
+scenario('承認者の数: 2 名が各自の挙動要約つきで承認 → 要求を満たす', { reviews: [rv('suzuki'), rv('sato', '挙動要約: 失効した招待を開くと再発行の画面へ進むことを、手元で操作して確かめた')] }, () => write('src/a.js', lines(24)), passes(notWarned(/G-6 の承認者/), noticed(/G-6 の承認者 2 名 \/ 要求 2 名/)));
+// 同一の文の挙動要約は、2件目に数えない(標準 第4章 G-6。#305 / ADR-0067 決定3)。空白・記号・見出し語の違いは同一として扱う
+scenario('承認者の数: 2 名が同一の文の挙動要約で承認 → 2件目を数えない', { reviews: [rv('suzuki'), rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*同一の文/)));
+scenario('承認者の数: 空白と記号だけが違う挙動要約も同一の文として扱う', { reviews: [rv('suzuki'), rv('sato', '差分を読み、 招待の失効の分岐を、自分で確かめた。')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*同一の文/)));
 scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
 scenario('承認者の数: 承認の後の変更要求は承認を取り下げる。bot の承認は数えない', { reviews: [rv('suzuki'), rv('suzuki', '', 'CHANGES_REQUESTED'), { author: { login: 'ai-review[bot]', is_bot: true }, state: 'APPROVED', body: '要約' }, rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
 
@@ -394,6 +397,7 @@ const defs = [
   ['ワークフロー: 集約(gate-g5)が pr-rules を待つ', /needs: \[[^\]]*pr-rules[^\]]*\]/.test(wf)],
   ['ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-check-pr\.mjs/.test(wf)],
   ['ワークフロー: contract で、再評価待ちの試験を実行する', /node scripts\/gate\/test-recalibration\.mjs/.test(wf)],
+  ['ワークフロー: contract で、独立と席の規則の試験を実行する', /node scripts\/gate\/test-roster-rules\.mjs/.test(wf)],
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
   ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
   ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],

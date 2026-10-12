@@ -80,6 +80,7 @@ import {
   canonicalJson,
   hasBehaviorSummary,
   behaviorSummaryShortfall,
+  behaviorSummaryKey,
   reviewersRequiredOf,
   touchesCore,
   assuranceOf,
@@ -456,7 +457,9 @@ export function approverFindings(config, pr, files = null) {
     const before = last.get(login);
     // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(集約と同じ。#288 第8巡 X8)
     const body = hasBehaviorSummary(r.body);
-    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary), summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
+    // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
+    const key = body ? behaviorSummaryKey(r.body) : before?.approved ? before.key ?? null : null;
+    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary), key, summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
     else last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false });
   }
   const counted = [];
@@ -480,7 +483,15 @@ export function approverFindings(config, pr, files = null) {
       notCounted.push(`@${login}(承認の本文に挙動要約が無い${v.summaryWhy ? `: ${v.summaryWhy}` : ''})`);
       continue;
     }
-    if (!counted.some((c) => c.id === person.id)) counted.push({ id: person.id, name: person.name, login });
+    if (counted.some((c) => c.id === person.id)) continue;
+    // 先に数えた別の承認者と同一の文の挙動要約は、2件目に数えない(標準 第4章 G-6。#305 / ADR-0067 決定3)。
+    // 機械が見るのは文の同一だけで、言い換えた写しは検出しない
+    const same = v.key ? counted.find((c) => c.key === v.key) : null;
+    if (same) {
+      notCounted.push(`@${login}(挙動要約が、先に数えた承認者 ${same.name} と同一の文。自分の言葉で書く)`);
+      continue;
+    }
+    counted.push({ id: person.id, name: person.name, login, key: v.key ?? null });
   }
   return { applies: true, readable: true, required, core, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
 }

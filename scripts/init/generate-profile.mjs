@@ -246,28 +246,45 @@ export function checkConstraints(answers, { reflectBelowMinimum = false } = {}) 
  * 1〜2名で、作成を指示した本人以外の確認者がいない場合、この条件を満たす構成が存在しない。
  * 標準は AI の確認を独立した人の確認に数えないため、省略ではなく未達として扱う。
  */
-export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, soleAuthor = null } = {}) {
+export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, soleAuthor = null, seatBlank = null } = {}) {
   const unmet = [];
   const small = answers['q-team-size'] === 'size-1-2';
   const noReviewer = small && answers['q-external-reviewer'] === 'reviewer-no';
+  // 確認者を置けるかどうかは、人の名簿と席から導く。設問への回答は判定の根拠にしない(標準 第4章 G-6。#302 / ADR-0065 決定5)。
+  // 未達は体制の表示であり、事業ステージで変わらない。G-6 を省略する構成(S0)にも当てる(同 決定2)。
+  // 「いない」と回答して省略になった構成は、従来どおり未達にする(byAnswer)。この構成で席へ別の人を記入する変更は、
+  // 回答と名簿の矛盾として拒否される(answersRosterProblems)ので、受け付けた構成では回答と名簿が食い違わない
+  const state = gates.g6.state;
+  const counts = isActiveState(state) || state === 'omitted';
+  const byAnswer = noReviewer && state === 'omitted';
   // 確認者がいると回答していても、独立レビュアの席の責任者が開発者の席と同一人物なら、
   // 1〜2名の体制では確認者がいないことが確定する。人の離脱で生じた場合も、決定を待たずに
   // 未達として反映する(第3章 3.13.3)
-  const sameReviewer = small && reviewerIsAuthor && isActiveState(gates.g6.state);
+  const sameReviewer = small && !byAnswer && reviewerIsAuthor && counts;
   // 名簿に、開発者の席の責任者のほかに人がいない(外部の確認者も含めて)。独立レビュアの席を空けたままでも、
   // 確認者を置けないことが確定する
-  const noConfirmer = small && !sameReviewer && soleAuthor && isActiveState(gates.g6.state);
+  const noConfirmer = small && !byAnswer && !sameReviewer && soleAuthor && counts;
+  // 開発者の席または独立レビュアの席の責任者が未記入で、確認者を名簿と席から確かめられない。未記入のあいだは未達の側へ倒す
+  const unshown = small && !byAnswer && !sameReviewer && !noConfirmer && Boolean(seatBlank) && counts;
+  // 回答が「いる」のまま、名簿と席からは確認者を確かめられない(回答と名簿の食い違い)。拒否はせず、未達の理由に出す
+  const answerNote =
+    (sameReviewer || noConfirmer || unshown) && answers['q-external-reviewer'] === 'reviewer-yes'
+      ? '。設問への回答は「確認者がいる」(q-external-reviewer: reviewer-yes)だが、回答は判定の根拠にしない'
+      : '';
 
-  if ((noReviewer && gates.g6.state === 'omitted') || sameReviewer || noConfirmer) {
+  if (byAnswer || sameReviewer || noConfirmer || unshown) {
     gates.g6.state = 'unmet';
     unmet.push({
       gate: 'g6',
       label: 'G-6 独立レビュー',
-      reason: sameReviewer
-        ? `作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(独立レビュアの席の責任者が、開発者の席の責任者と同一人物: ${reviewerIsAuthor})`
-        : noConfirmer
-          ? `作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(人の名簿に、開発者の席の責任者(${soleAuthor})のほかに確認できる人がいない)`
-          : '作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(最小体制3名未満、かつ作成を指示した本人以外の確認者がいない)',
+      reason:
+        (sameReviewer
+          ? `作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(独立レビュアの席の責任者が、開発者の席の責任者と同一人物: ${reviewerIsAuthor})`
+          : noConfirmer
+            ? `作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(人の名簿に、開発者の席の責任者(${soleAuthor})のほかに確認できる人がいない)`
+            : unshown
+              ? `作成を指示した本人以外が挙動を確認する構成を、人の名簿と席から確かめられない(${seatBlank}の席の責任者が未記入。別の人が記入されるまで未達として表示する)`
+              : '作成を指示した本人以外が挙動を確認する条件を満たす構成が存在しない(最小体制3名未満、かつ作成を指示した本人以外の確認者がいない)') + answerNote,
       whyNotAi:
         '独立は責任者(人)の単位で定義する。責任者が同一人物なら、AI を何体に分けても、モデルの系統を変えても独立は成立しない。AI の確認は検出の層であり、判定に数えない。生成物の確認を生成器へ委ねる構成は自動化バイアスによって見落としを増やす',
       compensation: ['ci-strict', 'post-release-audit'],
@@ -275,6 +292,9 @@ export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, so
       source: 'ADR-0028(未達と省略の区別)',
       sourceUrl: 'https://takenori-kusaka.github.io/process-compass/adr/0028-unmet-gate-distinct-from-omitted/',
       howToResolve: [
+        ...(unshown
+          ? ['確認できる人がいるなら、/process-change(種別 accountable)で人の名簿へ記入し、開発者の席と独立レビュアの席の責任者を別の人にする。設問への回答だけでは、確認者を置いたことにならない']
+          : []),
         '2名体制では、作成を指示していない側の人が確認する(相手も作成の指示に関与した変更は除く)',
         'リポジトリを公開し、コミュニティのレビューを受ける',
         '他の個人開発者と相互レビューの取り決めをする',
@@ -592,7 +612,10 @@ export function buildConfig(answers, opts = {}) {
   // 人の離脱で確認者を置けなくなった場合も、席の入力を待たずに未達へ反映する(K70 / 第3章 3.13.3)
   const authorRow = people.find((p) => p.id === author);
   const soleAuthor = authorRow && !people.some((p) => p.id !== author && p.appointer !== true) ? authorRow.name : null;
-  const unmet = detectUnmet(answers, gates, opts.stack ?? 'none', { reviewerIsAuthor, soleAuthor });
+  // 開発者の席・独立レビュアの席の責任者が未記入なら、確認者を名簿と席から確かめられない(未達の側へ倒す。#302 / ADR-0065 決定5)
+  const reviewerKeyNow = personKey({ people }, accountableOf('independent-reviewer'));
+  const seatBlank = !author || !reviewerKeyNow ? [!author ? '開発者' : null, !reviewerKeyNow ? '独立レビュア' : null].filter(Boolean).join('・') : null;
+  const unmet = detectUnmet(answers, gates, opts.stack ?? 'none', { reviewerIsAuthor, soleAuthor, seatBlank });
   // 記入済みの調達先は再生成で失わない
   for (const u of unmet) u.reviewSourcing = opts.reviewSourcing?.[u.gate] ?? u.reviewSourcing;
   const deviations = detectDeviations(answers, gates);
@@ -631,7 +654,10 @@ export function buildConfig(answers, opts = {}) {
     answers['q-quality'] === 'quality-regulated' ||
     ['cl2', 'cl3'].includes(answers['q-criticality']) ||
     reviewerCount >= 2;
-  const ruleset = gates.g6.state === 'required' ? (strict ? 'regulated' : 'team') : null;
+  // 強制する承認の数は、構成の承認者の数(review.reviewerCount)から導く。CL2 の独立レビューは1名(標準 第8章 軸E の表が正。
+  // #305 / ADR-0067 決定5)。CL2 が足すのは独立した安全性の評価であり、承認の数ではない。コードオーナー・署名・最後の push の
+  // 後の承認は、2名の構成(regulated)と同じに保つ(safety)
+  const ruleset = gates.g6.state === 'required' ? (strict ? (reviewerCount >= 2 ? 'regulated' : 'safety') : 'team') : null;
 
   const derivedCoverage = ciStrengthened ? 90 : 80;
   // 較正していない下限(導出値のまま引き継いだ値)は、導出値が上がれば追随する。厳しくする向きであり、
@@ -964,7 +990,7 @@ export function changeLogEntry(e) {
 
 const GATE_RANK = { required: 3, simplified: 2, unmet: 1, omitted: 0 };
 const gateRank = (s) => (String(s ?? '').startsWith('merged-into-') ? 1 : GATE_RANK[s] ?? 3);
-const RULESET_RANK = { regulated: 2, team: 1 };
+const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
 
 /**
  * 変化点の前後の構成を比べる(標準 第8章「準拠テンプレートが備える手段」)。
@@ -1791,8 +1817,13 @@ export function deciderProblems(config, report, decidedBy, before = null) {
   }
   for (const item of report.loosenItems) {
     if (allowedDeciders(config, item.seat).has(key)) continue;
+    // 独立レビュアの席の責任者が外部の確認者である席では、緩める向きの決定を、席の責任者の記名では受け付けない(標準 第3章 3.13.3)
+    const externalReviewer =
+      item.seat === 'independent-reviewer' && findPerson(config, (config.seats ?? []).find((s) => s.role === item.seat)?.accountable)?.external === true;
     out.push(
-      item.seat
+      externalReviewer
+        ? `「${item.line}」を決定できるのは、${decider}です("${decidedBy}" は該当しません)。独立レビュアの席の責任者は外部の確認者であり、この席の統制を緩める向きの決定を、席の責任者の記名では受け付けません(標準 第3章 3.13.3)`
+        : item.seat
         ? `「${item.line}」を決定できるのは、${seatName(item.seat)} の席の責任者、または${decider}です("${decidedBy}" はどちらでもありません)`
         : `「${item.line}」を決定できるのは、${decider}です("${decidedBy}" は該当しません)`
     );
@@ -2716,6 +2747,20 @@ export function renderProfileMd(config, result) {
     L.push('- [ ] コア機能の指定をやり直す');
     L.push('- [ ] 技術負債台帳の返却目安を設定する');
     L.push('');
+    // S0 で独立レビュー(G-6)・出荷判定(G-7)を省略する構成の前提(標準 第8章 軸B「S0 の省略が成立する前提」。#302 / ADR-0065 決定1)
+    const omittedInS0 = ['g6', 'g7'].filter((k) => config.gates?.[k]?.state === 'omitted').map((k) => config.gates[k].label);
+    if (omittedInS0.length) {
+      L.push('## S0 の省略が成立する前提');
+      L.push('');
+      L.push(`${omittedInS0.join(' と ')} の省略は、次の3つを前提に成立します(標準 第8章 軸B)。前提が成立しているかを、機械は確かめません。`);
+      L.push('');
+      L.push('1. コア機能の指定が無い');
+      L.push('2. 露出する利用者が、社内と実験参加者に限られる');
+      L.push('3. S1 へ移ると G-6 は適用に戻る。S0 の期間に独立した人の確認を経なかった変更は、S1 以降の出荷の範囲に入ると、記録の欠落として扱う');
+      L.push('');
+      L.push('**露出が前提2 を超える前に、S1 へ移します**(`/process-change` の種別 axis)。省略した構成の出荷は、保証の主張の成立条件3・4 を満たさず、品質保証の対象外として出荷した記録になります。');
+      L.push('');
+    }
   }
 
   if (result.warnings.length) {

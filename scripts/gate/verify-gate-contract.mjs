@@ -53,6 +53,8 @@ import {
   structureDeciderSeat,
   pendingNotices,
   answersRosterProblems,
+  answersRosterNotices,
+  confirmerOnRoster,
   SIGNED_DIRECTIONS,
   DIRECTION_LABEL,
   isRealDay,
@@ -481,17 +483,20 @@ if (!Array.isArray(config.seats)) {
   for (const v of sep.notIndependent) {
     notes.push(`責任者が同一人物のため、独立が成立しない組があります: ${v}。AI を何体に分けても独立は成立しません`);
   }
-  if (
-    a['q-team-size'] === 'size-1-2' &&
-    isActive(config.gates?.g6?.state) &&
-    personKey(config, config.seats.find((s) => s.role === 'dev-verifier')?.accountable) &&
-    personKey(config, config.seats.find((s) => s.role === 'dev-verifier')?.accountable) ===
-      personKey(config, config.seats.find((s) => s.role === 'independent-reviewer')?.accountable)
-  ) {
+  // 確認者を置けるかどうかは、人の名簿と席から導く(標準 第4章 G-6。#302 / ADR-0065 決定5)。1〜2名の体制で、名簿と席から
+  // 確認者を確かめられないのに、独立レビュー(G-6)が未達になっていない構成は、変化点を経ずに書き換えられたか、
+  // この規則より前の版で生成されている。G-6 を省略する構成(S0)にも当てる(未達は体制の表示であり、ステージで変わらない)
+  const roster = confirmerOnRoster(config);
+  if (roster.applies && !roster.shown && config.gates?.g6?.state !== 'unmet') {
+    const g6Word = isActive(config.gates?.g6?.state) ? '適用する' : '省略する';
     problems.push(
-      '独立レビュー(G-6)を適用する構成ですが、独立レビュアの席の責任者が、開発者の席の責任者と同一人物です。1〜2名の体制では、作成を指示した本人以外の確認者がいないため未達です。/process-change で構成を再生成してください'
+      roster.why === 'same'
+        ? `独立レビュー(G-6)を${g6Word}構成ですが、独立レビュアの席の責任者が、開発者の席の責任者と同一人物です。1〜2名の体制では、作成を指示した本人以外の確認者がいないため未達です。/process-change で構成を再生成してください`
+        : `独立レビュー(G-6)を${g6Word}構成ですが、${roster.blank.join('・')}の席の責任者が未記入で、作成を指示した本人以外の確認者を人の名簿と席から確かめられません。1〜2名の体制では、席が記入されるまで未達です(設問への回答は判定の根拠にしません)。/process-change で構成を再生成してください`
     );
   }
+  // 回答は「確認者がいる」のまま、名簿と席からは確かめられない(回答と名簿の食い違い)。拒否はせず、注記として出す
+  for (const n of answersRosterNotices(config)) notes.push(n);
   // 体制の人数と、チーム規模の回答のずれ
   for (const p of headcountProblems(config)) problems.push(`${p}。/process-change で反映してください(第3章 3.13.1)`);
   // 回答と名簿・席の矛盾(回答は確認者なし、席には別の人の確認者を記入、など)

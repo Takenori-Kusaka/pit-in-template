@@ -77,6 +77,8 @@ jobs:
       - run: node scripts/gate/test-check-pr.mjs
       # 能力依存の定数の再評価待ち(契機は performer の変化点と暦だけ。#295)
       - run: node scripts/gate/test-recalibration.mjs
+      # 独立と席の規則(確認者の有無を名簿と席から導く、出荷判定者が兼ねない席、強制する承認の数。process-compass #302・#304・#305・#307)
+      - run: node scripts/gate/test-roster-rules.mjs
       # 初期化した直後に G-5 の手元で確かめられる検査が通ることを、テンプレートの全ファイルで試験する(#286)。
       # 構成が設定済みのリポジトリでは省く(テンプレートの初期の状態が無いため)
       - run: node scripts/gate/test-init-g5.mjs

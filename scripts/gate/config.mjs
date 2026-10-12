@@ -512,6 +512,9 @@ export function allowedDeciders(config, seatRole = null) {
   for (const role of [seatRole, structureDeciderSeat(config)]) {
     const seat = role ? (config.seats ?? []).find((s) => s.role === role) : null;
     const key = personKey(config, seat?.accountable);
+    // 独立レビュアの席の責任者に置いた外部の確認者には、その席の統制を緩める向きの決定権を与えない
+    // (標準 第3章 3.5・3.13.3。#307 / ADR-0060 決定2)。決定できるのは D-0 表1「体制と運用形態」の決定者である
+    if (role === 'independent-reviewer' && role === seatRole && findPerson(config, seat?.accountable)?.external === true) continue;
     if (key) keys.add(key);
   }
   return keys;
@@ -724,6 +727,43 @@ export function answersRosterProblems(config) {
     );
   }
   return out;
+}
+
+/**
+ * 1〜2名の体制で、作成を指示した本人以外の確認者を、人の名簿と席から確かめられるか
+ * (標準 第4章 G-6。#302 / ADR-0065 決定5)。
+ *
+ * 確かめられるのは、開発者の席と独立レビュアの席の責任者がどちらも記入されており、別の人である場合に限る。
+ * テーラリングの設問(q-external-reviewer)への回答は、判定の根拠にしない。席が未記入のあいだは、確かめられない側
+ * (未達)へ倒す。3名以上の体制には当てない(applies: false)
+ */
+export function confirmerOnRoster(config) {
+  if (config?.answers?.['q-team-size'] !== 'size-1-2') return { applies: false, shown: true, why: null, blank: [] };
+  const seat = (role) => (config.seats ?? []).find((s) => s.role === role);
+  const dev = personKey(config, seat('dev-verifier')?.accountable);
+  const rev = personKey(config, seat('independent-reviewer')?.accountable);
+  const blank = [!dev ? '開発者' : null, !rev ? '独立レビュア' : null].filter(Boolean);
+  if (blank.length) return { applies: true, shown: false, why: 'blank', blank };
+  if (dev === rev) return { applies: true, shown: false, why: 'same', blank: [] };
+  return { applies: true, shown: true, why: null, blank: [] };
+}
+
+/**
+ * 回答と名簿の食い違いのうち、「確認者がいる」と回答して、名簿と席からは確認者を確かめられない向き
+ * (標準 第4章 G-6。#302 / ADR-0065 決定5)。
+ *
+ * 逆の向き(「いない」と回答して、席へ別の人を記入)は answersRosterProblems が拒否する。この向きは拒否しない。
+ * 人の離脱で確認者がいなくなった構成を、回答の書き換えを待たずに未達へ反映するためである(第3章 3.13.3)。
+ * 独立レビュー(G-6)は未達として表示され、ここで返す文は注記として出る
+ */
+export function answersRosterNotices(config) {
+  const c = confirmerOnRoster(config);
+  if (!c.applies || c.shown || config.answers?.['q-external-reviewer'] !== 'reviewer-yes') return [];
+  const why = c.why === 'same' ? '独立レビュアの席の責任者が、開発者の席の責任者と同一人物' : `${c.blank.join('・')}の席の責任者が未記入`;
+  return [
+    `回答は「作成を指示した本人以外の確認者がいる」(q-external-reviewer: reviewer-yes)ですが、人の名簿と席からは確認者を確かめられません(${why})。` +
+      '回答は判定の根拠にしません。独立レビュー(G-6)は未達として表示します。確認できる人がいるなら、人の名簿へ記入し、独立レビュアの席の責任者にします。いないなら、回答を reviewer-no へ改めます',
+  ];
 }
 
 /**
@@ -1069,6 +1109,24 @@ export function behaviorSummaryShortfall(text) {
   return null;
 }
 export const hasBehaviorSummary = (text) => behaviorSummaryShortfall(text) === null;
+
+/**
+ * 2件の挙動要約が同一の文かを比べるための形(第4章 G-6。#305 / ADR-0067 決定3)。見出し語「挙動要約」・コメント・空白・記号を除き、
+ * 英字の大小をそろえた文字の並び。最低限の形を満たさない本文は null(数えないので比べない)。
+ * 機械が見るのは文の同一だけであり、言い換えた写しは検出しない(内部監査の抜き取り)
+ */
+export function behaviorSummaryKey(text) {
+  if (behaviorSummaryShortfall(text) !== null) return null;
+  return String(text ?? '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .normalize('NFKC')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*(?:[#>*\-・]+\s*)?(?:\*\*)?挙動要約(?:\*\*)?\s*[::]?\s*/u, '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .toLowerCase();
+}
 
 // ---------------------------------------------------------------- コア機能のパスと、コア機能の変更に要する承認者の数(第8章 軸C 高。#288 第8巡 Z7)
 //

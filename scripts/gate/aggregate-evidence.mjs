@@ -83,6 +83,7 @@ import {
   nameProblems,
   gateExceptionTarget,
   hasBehaviorSummary,
+  behaviorSummaryKey,
   reviewersRequiredOf,
   corePathsOf,
   touchesCore,
@@ -308,7 +309,7 @@ const gateDetails = gateRecordList.map((r) => {
   const objectionRaw = rowValue(text, '出荷判定者の異議', false);
   const objection = normLine(objectionRaw ?? '');
   const judge = rowValue(text, '判定者');
-  // 監査対応書式(構成 review.recordFormat: audit。テンプレ4「監査対応書式」)の行。2人目の判定者は、G-6 を2名で行う体制の
+  // 監査対応書式(構成 review.recordFormat: audit。テンプレ4「監査対応書式」)の行。2人目の承認者は、G-6 を2名で行う体制の
   // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織的に独立した者(附属書F)。
   // 様式の説明(<…>)を残したままの欄は未記入として扱う(#288 第5巡)
   const auditCell = (key) => {
@@ -317,7 +318,10 @@ const gateDetails = gateRecordList.map((r) => {
     const cleaned = v.replace(/\*\*/g, '').trim();
     return { present: true, value: cleaned && !cleaned.startsWith('<') && !/^(—|-|―)$/.test(cleaned) ? cleaned : null };
   };
-  const second = auditCell('2人目の判定者');
+  // 行の題は「2人目の承認者」(標準 第6章 テンプレ4。#305 / ADR-0067 決定4)。旧い題「2人目の判定者」で書かれた判定記録も読む
+  // (成立した判定記録は書き換えないため)
+  const secondNew = auditCell('2人目の承認者');
+  const second = secondNew.present ? secondNew : auditCell('2人目の判定者');
   const secondSummary = auditCell('2人目の挙動要約');
   const safety = auditCell('安全性の評価者');
   const safetyRecord = auditCell('安全性の評価の記録の所在');
@@ -326,13 +330,15 @@ const gateDetails = gateRecordList.map((r) => {
     target: rowValue(text, '対象'),
     // 判定者の記名。様式の説明(<氏名>…)を残したままの欄は未記入
     judge: judge && !judge.startsWith('<') ? judge.replace(/。.*$/, '').trim() : null,
-    // 監査対応書式の行(欄の有無と、記入の有無)。2人目の判定者は、独立した人の確認の2人目の候補として数える
+    // 監査対応書式の行(欄の有無と、記入の有無)。2人目の承認者は、独立した人の確認の2人目の候補として数える
     audit: {
       rowsPresent: second.present || safety.present,
       secondJudge: second.value ? second.value.replace(/。.*$/, '').trim() : null,
       secondJudgeRowPresent: second.present,
       // 2人目の挙動要約も、挙動要約の最低限の形(承認の語だけでない、8文字以上)を要する(#288 第8巡 X8)
       secondSummaryPresent: Boolean(secondSummary.value) && hasBehaviorSummary(secondSummary.value),
+      // 同一の文かを比べる形(1人目の要約を写した2人目を、2件目に数えないため)
+      secondSummaryKey: secondSummary.value ? behaviorSummaryKey(secondSummary.value) : null,
       safetyAssessor: safety.value,
       safetyAssessorRowPresent: safety.present,
       safetyRecord: safetyRecord.value,
@@ -345,6 +351,7 @@ const gateDetails = gateRecordList.map((r) => {
     riskClass: ((m) => (m.size === 1 ? [...m][0] : null))(new Set((rowValue(text, '変更のリスク区分') ?? '').match(/R[123]/g) ?? [])),
     // 「挙動要約」の節は、様式の説明文を除いた本文が最低限の形(承認の語だけでない、8文字以上)を満たすときだけ有りとする(#288 第8巡 X8)
     behaviorSummaryPresent: summary.length > 0 && hasBehaviorSummary(summary.join('\n')),
+    behaviorSummaryKey: summary.length > 0 ? behaviorSummaryKey(summary.join('\n')) : null,
     objectionRowPresent: objectionRaw !== null,
     objection: objection && objection !== templateObjection && !objection.startsWith('<') ? objection : null,
   };
@@ -522,8 +529,8 @@ const UNCONFIRMED = {
 /** 承認者の数が要求に満たない変更の文言。「G-6 の承認者 N 名 / 要求 M 名」(#288 第5巡) */
 const insufficientText = (counted, required, core = null) =>
   core?.hit
-    ? `G-6 の承認者 ${counted} 名 / 要求 ${required} 名(コア機能。構成 gates.g6.params.coreReviewerCount。当たったパス: ${core.files.slice(0, 3).join(', ')}${core.files.length > 3 ? ' ほか' : ''}。独立した人の確認に数えられる承認者が要求に満たない。名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の判定者」に記名する)`
-    : `G-6 の承認者 ${counted} 名 / 要求 ${required} 名(独立した人の確認に数えられる承認者が、構成 review.reviewerCount の要求に満たない。名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の判定者」に記名する)`;
+    ? `G-6 の承認者 ${counted} 名 / 要求 ${required} 名(コア機能。構成 gates.g6.params.coreReviewerCount。当たったパス: ${core.files.slice(0, 3).join(', ')}${core.files.length > 3 ? ' ほか' : ''}。独立した人の確認に数えられる承認者が要求に満たない。名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の承認者」に記名する)`
+    : `G-6 の承認者 ${counted} 名 / 要求 ${required} 名(独立した人の確認に数えられる承認者が、構成 review.reviewerCount の要求に満たない。名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の承認者」に記名する)`;
 
 /** 数えない理由の識別子(evidence.json の prs[].g6.notCountedReason) */
 const NOT_COUNTED_CODE = {
@@ -660,7 +667,9 @@ function lastReviewStates(reviews) {
     const before = last.get(login);
     // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(#288 第8巡 X8)
     const body = hasBehaviorSummary(dropComments(r.body));
-    if (state === 'APPROVED') last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary) });
+    // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
+    const key = body ? behaviorSummaryKey(dropComments(r.body)) : before?.state === 'APPROVED' ? before.key ?? null : null;
+    if (state === 'APPROVED') last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary), key });
     else last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
   }
   for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
@@ -699,7 +708,7 @@ function independentConfirmation(ins, reviews, refers, { direct = false, files =
       ai++;
       continue;
     }
-    candidates.push({ login, label: login, person: reviewerPerson(personByAccountAt(login, at)), summary: v.summary ? 'review' : null, source: 'review' });
+    candidates.push({ login, label: login, person: reviewerPerson(personByAccountAt(login, at)), summary: v.summary ? 'review' : null, key: v.summary ? v.key ?? null : null, source: 'review' });
   }
   const judgeAt = (g, name) => personByNameAt(name, recordCommitOf(g.file));
   for (const g of records) {
@@ -708,18 +717,23 @@ function independentConfirmation(ins, reviews, refers, { direct = false, files =
       ai++;
       continue;
     }
-    candidates.push({ login: null, label: g.judge, person: reviewerPerson(judgeAt(g, g.judge)), summary: g.behaviorSummaryPresent ? 'gate-record' : null, source: 'gate-record', file: g.file });
-    // 監査対応書式の「2人目の判定者」(G-6 を2名で行う体制)。2人目の挙動要約は同じ書式の行に書く。1人目の挙動要約を2人目に流用しない
+    candidates.push({ login: null, label: g.judge, person: reviewerPerson(judgeAt(g, g.judge)), summary: g.behaviorSummaryPresent ? 'gate-record' : null, key: g.behaviorSummaryPresent ? g.behaviorSummaryKey ?? null : null, source: 'gate-record', file: g.file });
+    // 監査対応書式の「2人目の承認者」(G-6 を2名で行う体制。旧い題は「2人目の判定者」)。2人目の挙動要約は同じ書式の行に書く。1人目の挙動要約を2人目に流用しない
     const second = g.audit?.secondJudge;
     if (second) {
       if (aiNameBlocked(config, second)) ai++;
-      else candidates.push({ login: null, label: second, person: reviewerPerson(judgeAt(g, second)), summary: g.audit.secondSummaryPresent ? 'gate-record' : null, source: 'gate-record', file: g.file, second: true });
+      else candidates.push({ login: null, label: second, person: reviewerPerson(judgeAt(g, second)), summary: g.audit.secondSummaryPresent ? 'gate-record' : null, key: g.audit.secondSummaryPresent ? g.audit.secondSummaryKey ?? null : null, source: 'gate-record', file: g.file, second: true });
     }
   }
   // 承認レビューの本文に要約が無くても、当人が判定者の G-6 の判定記録に要約があれば足る
   for (const c of candidates) {
     if (c.summary || !c.person) continue;
-    if (records.some((g) => (g.behaviorSummaryPresent && judgeAt(g, g.judge)?.id === c.person.id) || (g.audit?.secondSummaryPresent && g.audit.secondJudge && judgeAt(g, g.audit.secondJudge)?.id === c.person.id))) c.summary = 'gate-record';
+    const own = records.find((g) => g.behaviorSummaryPresent && judgeAt(g, g.judge)?.id === c.person.id);
+    const ownSecond = own ? null : records.find((g) => g.audit?.secondSummaryPresent && g.audit.secondJudge && judgeAt(g, g.audit.secondJudge)?.id === c.person.id);
+    if (own || ownSecond) {
+      c.summary = 'gate-record';
+      c.key = own ? own.behaviorSummaryKey ?? null : ownSecond.audit.secondSummaryKey ?? null;
+    }
   }
   // 同じ人が PR の承認と判定記録の両方に現れても1人として出す(当時の名簿の所在は最初に引いたもの)
   about.formerApprovers = [...new Map(candidates.filter((c) => c.person?.former).map((c) => [c.person.name, `${c.person.name}(当時の名簿 ${c.person.formerAt})`])).values()];
@@ -732,8 +746,29 @@ function independentConfirmation(ins, reviews, refers, { direct = false, files =
   const eligible = g6Unmet || reviewerIsDeveloper ? others.filter((c) => c.person.external === true) : others;
   if (!eligible.length) return none('structure');
   if (ins.unresolved.length) return none('instructorUnresolved');
-  const summarized = eligible.filter((c) => c.summary);
-  if (!summarized.length) return none('noReviewerSummary');
+  const summarizedAll = eligible.filter((c) => c.summary);
+  if (!summarizedAll.length) return none('noReviewerSummary');
+  // 先に数えた別の承認者と同一の文の挙動要約は、2件目に数えない(標準 第4章 G-6。#305 / ADR-0067 決定3)。
+  // 機械が見るのは文の同一だけで、言い換えた写しは検出しない(内部監査の抜き取り)
+  const perPerson = new Map();
+  for (const c of summarizedAll) {
+    const e = perPerson.get(c.person.name) ?? { name: c.person.name, keys: new Set(), unkeyed: false, list: [] };
+    if (c.key) e.keys.add(c.key);
+    else e.unkeyed = true;
+    e.list.push(c);
+    perPerson.set(c.person.name, e);
+  }
+  const usedKeys = new Set();
+  const summarized = [];
+  about.copiedSummaries = [];
+  for (const e of perPerson.values()) {
+    if (!e.unkeyed && e.keys.size && [...e.keys].every((k) => usedKeys.has(k))) {
+      about.copiedSummaries.push(e.name);
+      continue;
+    }
+    for (const k of e.keys) usedKeys.add(k);
+    summarized.push(...e.list);
+  }
   const reviewerKey = whoKey('independent-reviewer');
   const byNames = [...new Set(summarized.map((c) => c.person.name))];
   // 承認者の数(構成 review.reviewerCount)。名簿の別人で、各自の挙動要約を伴う承認者の数が要求に満たない変更は、
@@ -742,7 +777,8 @@ function independentConfirmation(ins, reviews, refers, { direct = false, files =
   about.approversRequired = required;
   about.approverNames = byNames;
   if (byNames.length < required) {
-    return { ...none('insufficientApprovers'), reasonText: insufficientText(byNames.length, required, core) };
+    const copied = about.copiedSummaries.length ? `。先に数えた承認者と同一の文の挙動要約のため数えない承認者: ${about.copiedSummaries.join('、')}(自分の言葉で書く)` : '';
+    return { ...none('insufficientApprovers'), reasonText: insufficientText(byNames.length, required, core) + copied };
   }
   return {
     counted: true,
@@ -1244,7 +1280,7 @@ for (const p of prs) {
 // --- 監査対応書式(構成 review.recordFormat: audit)と、独立した安全性の評価(gates.g6.params.independentSafetyAssessment) ---
 //
 // 第8章 軸C の規制業は「レビュー記録は監査対応書式で残す」。PR の承認だけでは記録にならず、変更ごとに G-6 の判定記録
-// (テンプレ4。監査対応書式の節を持つ)を要する。G-6 を2名で行う体制では「2人目の判定者」の記名を要する。
+// (テンプレ4。監査対応書式の節を持つ)を要する。G-6 を2名で行う体制では「2人目の承認者」の記名を要する。
 // 軸E の CL2 以上は「独立レビューとは別に、実装の責任者から組織的に独立した安全性の評価を重ねる」。判定記録の
 // 「安全性の評価者」の記名(名簿の人で、開発者の席の責任者・作成を指示した者・当該の判定者と別人)、または
 // 「該当なし(理由)」を要する。機械が確かめるのは記名の有無と独立までで、評価の実施と内容は確かめない(附属書F は人が行う)。
@@ -1270,16 +1306,16 @@ if (auditFormat || safetyAssessmentRequired) {
     for (const g of own) {
       const a = g.audit ?? {};
       if (auditFormat && !a.rowsPresent) {
-        auditRecordGaps.push(`${g.file}: 監査対応書式の節(2人目の判定者・安全性の評価者の行)がありません。templates/04-gate-record.md の「監査対応書式」の表を写してください`);
+        auditRecordGaps.push(`${g.file}: 監査対応書式の節(2人目の承認者・安全性の評価者の行)がありません。templates/04-gate-record.md の「監査対応書式」の表を写してください`);
         continue;
       }
       if (auditFormat && reviewersRequired >= 2 && !a.secondJudge) {
-        auditRecordGaps.push(`${g.file}: 「2人目の判定者」が未記入です(G-6 を ${reviewersRequired} 名で行う体制)。2人目が自分で記名し、「2人目の挙動要約」を自分の言葉で書いてください`);
+        auditRecordGaps.push(`${g.file}: 「2人目の承認者」が未記入です(G-6 を ${reviewersRequired} 名で行う体制)。2人目が自分で記名し、「2人目の挙動要約」を自分の言葉で書いてください`);
       } else if (auditFormat && reviewersRequired >= 2 && a.secondJudge && !a.secondSummaryPresent) {
-        auditRecordGaps.push(`${g.file}: 「2人目の挙動要約」が未記入です(2人目の判定者 ${a.secondJudge})。承認した者自身の挙動要約を伴わない記名は、独立した人の確認に数えません`);
+        auditRecordGaps.push(`${g.file}: 「2人目の挙動要約」が未記入です(2人目の承認者 ${a.secondJudge})。承認した者自身の挙動要約を伴わない記名は、独立した人の確認に数えません`);
       }
       if (auditFormat && reviewersRequired >= 2 && a.secondJudge && g.judge && samePerson(config, a.secondJudge, g.judge)) {
-        auditRecordGaps.push(`${g.file}: 「2人目の判定者」(${a.secondJudge})が1人目の判定者と同一人物です。別の人が記名してください`);
+        auditRecordGaps.push(`${g.file}: 「2人目の承認者」(${a.secondJudge})が1人目の判定者と同一人物です。別の人が記名してください`);
       }
       if (safetyAssessmentRequired) {
         if (!a.safetyAssessorRowPresent || !a.safetyAssessor) {
@@ -2278,7 +2314,7 @@ const stopHistoryUnread = [];
   }
 }
 
-// ステージ移行ゲート・第三者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
+// ステージ移行ゲート・案件に関与していない者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
 const AI_EVAL_ROWS = ['評価の単位', '下流の指標と比較の基準値', '総費用の内訳', '評価に用いなかった入力', '判定', '縮小・停止の基準に当たる状態での継続'];
 for (const g of gateRecordList.filter((r) => /ステージ移行|^SG|棚卸し/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
   const text = fs.readFileSync(path.join(ROOT, g.file), 'utf8');
@@ -2721,7 +2757,7 @@ let cond2Reason = null;
 if (!isActive('g1')) cond2Reason = `G-1 が${config.gates.g1?.state === 'unmet' ? '未達' : '省略'}の構成であり、層2 の保証範囲を G-1 で宣言していない`;
 else if (!briefScope.declared) cond2Reason = briefScope.reason;
 else if (!g1Passed) cond2Reason = '企画承認(G-1)の判定記録(結果が通過)が無い';
-// 条件4: 出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している
+// 条件4: 出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している。出荷判定を記名した人は、範囲内の変更の作成を指示した者でも G-6 の承認者でもない
 const targetsRelease = (g) => !recordsInRange || recordsInRange.has(g.file) || (to !== 'HEAD' && (g.target ?? '').includes(to));
 const g7For = period ? [] : gateDetails.filter((g) => /G-7/.test(g.gate ?? '') && passed(g) && targetsRelease(g));
 const g8For = g8Records.filter((g) => passed(g));
@@ -2729,21 +2765,44 @@ const humanSigner = (name) => Boolean(name) && !nameProblems(config, name, { req
 let cond4 = { ok: false, basis: null, reason: null };
 const qaWho = seatOf('qa-gatekeeper')?.accountable ?? null;
 const bizWho = seatOf('biz-approver')?.accountable ?? null;
+// 出荷ごとの条件(標準 第4章 G-7 成立条件4。#304 / ADR-0066 決定2): 出荷判定(G-7)を記名した人が、範囲内の変更の
+// 作成を指示した者でも、G-6 の承認者でもない。席の兼務禁止(出荷判定者 × 開発者・独立レビュア)は、席の責任者でない担い手
+// としての指示・承認で迂回できるため、行為の記録で確かめる。指示者は、PR の「作成を指示した者」の欄(未記入なら PR の作成者と
+// 開発者の席の責任者)。承認者は、G-6 の独立した人の確認に数えた承認者(数が要求に満たない変更の承認者を含む)
+const g7SelfChecked = (judges) => {
+  const hits = [];
+  const labelsOf = (units) => `${units.slice(0, 3).map((u) => u.label).join(', ')}${units.length > 3 ? ' ほか' : ''}`;
+  // 開発ライン(同一案件の開発者の席と独立レビュアの席)の責任者が G-7 を記名した場合も当たる。席の兼務禁止は構成の条件であり、
+  // 判定記録の判定者が出荷判定者の席の責任者と別の人である場合を止めないため、記名した人で確かめる
+  const lineKeys = ['dev-verifier', 'independent-reviewer'].map((r) => whoKey(r)).filter(Boolean);
+  for (const j of [...new Set(judges)]) {
+    if (lineKeys.includes(personKey(config, j))) hits.push(`${personName(config, j)} は、開発ライン(開発者の席・独立レビュアの席)の責任者である`);
+    const instructed = changeUnits.filter((u) => (u.independent?.instructors ?? []).some((n) => samePerson(config, n, j)));
+    const approved = changeUnits.filter((u) => (u.independent?.approverNames ?? u.independent?.by ?? []).some((n) => samePerson(config, n, j)));
+    if (instructed.length) hits.push(`${personName(config, j)} は、範囲内の変更 ${instructed.length} 件の作成を指示した者である(${labelsOf(instructed)})`);
+    if (approved.length) hits.push(`${personName(config, j)} は、範囲内の変更 ${approved.length} 件の G-6 の承認者である(${labelsOf(approved)})`);
+  }
+  return hits;
+};
+const g7SelfReason = (hits) => `出荷判定(G-7)を記名する人が、開発ラインの責任者、範囲内の変更の作成を指示した者、または G-6 の承認者である: ${hits.join(' / ')}`;
 if (g8For.length && (period || g7For.length)) {
   const g7Judges = period ? (qaWho ? [qaWho] : []) : g7For.map((g) => g.judge).filter(Boolean);
   const g8Judges = g8For.map((g) => g.judge).filter(Boolean);
   const bad = [...g7Judges, ...g8Judges].filter((n) => !humanSigner(n));
+  const self = g7SelfChecked(g7Judges);
   if (!g7Judges.length || !g8Judges.length) cond4 = { ok: false, basis: 'record', reason: '判定記録に判定者の記名が無い' };
   else if (bad.length) cond4 = { ok: false, basis: 'record', reason: `判定者の記名を、名簿の自然人として受け付けられない(${bad.join(' / ')})` };
   else if (g7Judges.some((a) => g8Judges.some((b) => samePerson(config, a, b)))) {
     cond4 = { ok: false, basis: 'record', reason: `出荷判定${period ? '者(異議を書く者)' : '(G-7)'}と受容(G-8)を同じ人が記名している` };
-  } else cond4 = { ok: true, basis: 'record', reason: null };
+  } else if (self.length) cond4 = { ok: false, basis: 'record', reason: g7SelfReason(self) };
+  else cond4 = { ok: true, basis: 'record', reason: null };
 } else if (!period && !isActive('g7')) cond4 = { ok: false, basis: 'structure', reason: `G-7 が${config.gates.g7?.state === 'unmet' ? '未達' : '省略'}の構成` };
 else if (!isActive('g8')) cond4 = { ok: false, basis: 'structure', reason: `G-8 が${config.gates.g8?.state === 'unmet' ? '未達' : '省略'}の構成` };
-else if (g7Deviation) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者の席が兼務(代償措置つきの逸脱)であり、開発ラインから独立した人が記名しない' };
+else if (g7Deviation) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者の席が兼務(代償措置つきの逸脱)であり、開発ライン(開発者の席と独立レビュアの席)から独立した人が記名しない' };
 else if (!qaWho || !bizWho) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者または事業決裁者の席の責任者が未記入' };
 else if (objectionSelfAccepted) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者の席と事業決裁者の席の責任者が同一人物' };
 else if (!humanSigner(qaWho) || !humanSigner(bizWho)) cond4 = { ok: false, basis: 'structure', reason: '出荷判定者または事業決裁者の席の責任者を、名簿の自然人として受け付けられない' };
+else if (g7SelfChecked([qaWho]).length) cond4 = { ok: false, basis: 'structure', reason: g7SelfReason(g7SelfChecked([qaWho])) };
 else cond4 = { ok: true, basis: 'structure', reason: null };
 // 条件5: 検出能力の測定。未測定が層1 の定める期間を超えて続いていない
 const tol = policy.tolerance;
@@ -2794,7 +2853,7 @@ const gapsForClaim = claimGapsBefore;
 const releaseConditions = [
   { id: 1, label: '層1 の方針と受容の基準が、トップマネジメントの記名で有効である', ok: policy.valid, reason: policy.valid ? null : policy.problems.join(' / ') },
   { id: 2, label: '層2 の保証範囲が、G-1 で宣言されている', ok: !cond2Reason, reason: cond2Reason },
-  { id: 4, label: '出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している', ok: cond4.ok, reason: cond4.reason, basis: cond4.basis },
+  { id: 4, label: '出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している。出荷判定を記名した人は、範囲内の変更の作成を指示した者でも G-6 の承認者でもない', ok: cond4.ok, reason: cond4.reason, basis: cond4.basis },
   {
     id: 5,
     label: '検出能力を測定している(未測定が、層1 の定める期間を超えて続いていない)',
@@ -3367,7 +3426,7 @@ function renderAssurance(external) {
   R.push('');
   R.push(
     '承認を独立した人の確認に数えるのは、承認した者が名簿(people[])の人へ対応づき、その人が作成を指示した者でなく、構成上 G-6 が成立し(未達の体制では外部の確認者に限る)、承認した者自身の挙動要約を伴う場合に限ります(第4章 G-6 の4条件)。' +
-      '承認は、レビュアごとの最後の状態で数えます。PR のレビューの承認のほか、G-6 の判定記録(「対象」が当該の変更、結果が通過)も承認に数えます。監査対応書式の「2人目の判定者」は、2人目の挙動要約を伴う場合に承認者に数えます。' +
+      '承認は、レビュアごとの最後の状態で数えます。PR のレビューの承認のほか、G-6 の判定記録(「対象」が当該の変更、結果が通過)も承認に数えます。監査対応書式の「2人目の承認者」は、2人目の挙動要約を伴う場合に承認者に数えます。' +
       `4条件を満たす承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名)に満たない変更は、独立した人の確認を経ていない変更に数えます。` +
       '作成を指示した者は、PR 本文の欄「作成を指示した者」から取ります。PR を経ていないコミットでは、コミットの Author と開発者の席の責任者です。' +
       (ch.instructorsByDefault

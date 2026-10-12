@@ -24,7 +24,7 @@
 //      evidence/ は .gitignore のため、そこへ書いた測定値は clone した CI の集約に届かない(#288 第4巡)。
 //      測定値の層には blind:true と method(出所の印)を書く。出荷の集約は、この印の無い記録と、測定時点が判定の日より後の記録を
 //      測定値に数えない。AI の層には測定した担い手の識別(席・モデル・指示資産の版)を書き、現在の識別と一致しなければ失効になる。
-//      見つける者は複数(finders[]、findings[].by)でよく、検出率は和集合、各人の検出数は参考値。G-6 を2名で行う体制では2名で見つける。
+//      見つける者は複数(finders[]、findings[].by)でよく、検出率は和集合。人ごとの検出数は算出しない(標準 第5章 5.6.2)。G-6 を2名で行う体制では2名で見つける。
 //      目隠しを確かめられない層(見つける者の誰かが注入した者と同じ、見つける者の記録がコミットされていない、記録の前後関係が逆、など)は
 //      測定値として書かず、blind:false と理由だけを書く。出荷の集約はその層を未測定として扱う
 //   ④ 再実行の手順・入力・構成の版・出力の所在を記録に書く。記録の名前は秒までの時刻(record-YYYYMMDD-HHMMSS.md)。
@@ -226,15 +226,16 @@ function tally() {
       }
       return hits;
     };
-    // 和集合(全員の指摘をまとめて1対1で割り当てる)が層の検出数。各人の検出数は参考値として併記する。
-    // 各人が見つけた注入の添字(hits)も書く。見つける者の一部が後に名簿から離れたとき、出荷の集約が残る者の
+    // 和集合(全員の指摘をまとめて1対1で割り当てる)が層の検出数。人ごとの検出数・検出率は算出しない
+    // (標準 第5章 5.6.2「個人の検出率を算出しない」。#305 / ADR-0067 決定6)。
+    // 各人が見つけた注入の添字(hits)だけを書く。見つける者の一部が後に名簿から離れたとき、出荷の集約が残る者の
     // 指摘の和集合で値を読み直すため(#288 第6巡 O)。注入の位置は書かない(添字だけ)
     const hits = match(findings);
     const perFinder = Object.fromEntries(
       finders.map((who) => {
         const own = findings.filter((x) => byOf(x) && samePerson(config, byOf(x), who));
         const h = match(own);
-        return [who, { findings: own.length, detected: h.length, rate: m.injections.length ? h.length / m.injections.length : null, hits: h.map((x) => x.index).sort((a, b) => a - b) }];
+        return [who, { hits: h.map((x) => x.index).sort((a, b) => a - b) }];
       })
     );
     const byType = {};
@@ -283,7 +284,8 @@ function tally() {
   }
   writeText(SEEDED_FILE, JSON.stringify(seeded, null, 2) + '\n');
   const layerName = (k) => (k === 'human' ? '人の層' : 'AI の層');
-  const perText = (v) => (v.finders.length > 1 ? `。各人: ${Object.entries(v.perFinder).map(([who, p]) => `${who} ${p.detected} 件`).join(' / ')}(和集合 ${v.detected} 件)` : '');
+  // 見つける者が複数の層は、和集合であることだけを添える。人ごとの件数は出さない(標準 第5章 5.6.2)
+  const perText = (v) => (v.finders.length > 1 ? `(見つける者 ${v.finders.length} 名の和集合)` : '');
   notice(`${RESULT_FILE} と ${SEEDED_FILE} を書きました(注入 ${m.injections.length} 件。${Object.entries(layers).map(([k, v]) => `${layerName(k)} ${v.blind ? `${v.detected} 件${perText(v)}` : '未測定(目隠しを確かめられない。検出数は測定値として書かない)'}`).join(' / ')})。${SEEDED_FILE} をコミットすると、出荷の集約(項目6)が読む`);
   if (performers.length && layers.ai) notice(`AI の層の測定した担い手の識別: ${performers.map((p) => `${p.seat} ${p.model ?? '(モデル未記入)'} / ${p.instructions ?? '(指示資産の版 未記入)'}`).join(' / ')}。識別が変わると、出荷の集約はこの値を失効として扱う`);
   for (const [k, v] of Object.entries(layers)) for (const p of v.blindProblems) warn(`${layerName(k)}: ${p}。検出率に数えない。${SEEDED_FILE} には blind:false と理由だけを書いた`);
@@ -1056,7 +1058,7 @@ function run() {
   L.push('| 欄 | 記入 | 確かめる問い |');
   L.push('| --- | --- | --- |');
   L.push('| 実施者(氏名と席。席に就く予定の人) | <人が書く> | 要件② |');
-  L.push('| 下流の指標の基準値(検証の開発ラインで測った値。指標の名前、値、測定の期間、出所) | <人が書く> | Q10 |');
+  L.push('| 下流の指標の基準値(検証を行った開発組織で測った値。指標の名前、値、測定の期間、出所) | <人が書く> | Q10 |');
   L.push('| 検証の期間の工数の実績(AI の実行 / 検証 / 修正 / 教育 / 管理の5区分。区分ごとに値と出所。実績が取れない区分は「取れない」と書く) | <人が書く> | Q11 |');
   L.push('| 理解の確認の記録(生成に関与しなかった人が対象のコア機能を説明し、本人以外が日付を付けて確認した記録の所在と確認日) | <人が書く> | Q15 |');
   L.push('| 人事評価の規程と目標設定の様式の写しの所在(停止の申し立て・差し戻しの件数を減点に使わず、AI の利用量・PR の本数・リードタイムを人の目標値にしないことを照合できる箇所) | <人が書く> | Q17 |');
@@ -1081,10 +1083,11 @@ function run() {
     const cell = (v) => (!v ? '—' : layerBlind(v) ? '**未測定**(目隠しを確かめられない)' : String(v.detected));
     L.push(`| ${injection.injector} | ${[h?.finder, a?.finder].filter(Boolean).join(' / ')} | ${injection.injected} | ${Object.entries(injection.typeBreakdown).map(([k, v]) => `${k} ${v}`).join(' / ')} | ${cell(h)} | ${cell(a)} | 注入の記録をリポジトリの外に置き、要約値(${String(injection.digest).slice(0, 12)})を ${injection.sealedAt} に封じた。位置の許容 ±${injection.tolerance} 行 |`);
     L.push(`- 見逃した欠陥の類型: ${[h && !layerBlind(h) ? `人の層 ${h.missedTypes.join('・') || 'なし'}` : null, a && !layerBlind(a) ? `AI の層 ${a.missedTypes.join('・') || 'なし'}` : null].filter(Boolean).join(' / ') || '未測定の層は出さない'}`);
-    // 見つける者が2名以上の層は、各人の検出数を参考値として併記する(層の検出率は和集合。G-6 を2名で行う体制は2名で見つける)
+    // 見つける者が2名以上の層は、層の検出率が和集合であることを書く(G-6 を2名で行う体制は2名で見つける)。
+    // 人ごとの検出数は出さない(標準 第5章 5.6.2「個人の検出率を算出しない」)
     for (const [label, v] of [['人の層', h], ['AI の層', a]]) {
-      if (v && !layerBlind(v) && Array.isArray(v.finders) && v.finders.length > 1 && v.perFinder) {
-        L.push(`- ${label}の見つける者 ${v.finders.length} 名の各人の検出数(参考値。層の検出率は和集合 ${v.detected} 件): ${Object.entries(v.perFinder).map(([who, p]) => `${who} ${p.detected} 件(指摘 ${p.findings} 件)`).join(' / ')}`);
+      if (v && !layerBlind(v) && Array.isArray(v.finders) && v.finders.length > 1) {
+        L.push(`- ${label}の見つける者は ${v.finders.length} 名(${v.finders.join(' / ')})。層の検出率は和集合 ${v.detected} 件で数える。人ごとの検出数は算出しない(標準 第5章 5.6.2)`);
       }
     }
     for (const p of [...injection.blindProblems, ...(h?.blindProblems ?? []).map((x) => `人の層: ${x}`), ...(a?.blindProblems ?? []).map((x) => `AI の層: ${x}`)]) L.push(`- **目隠しを確かめられない**: ${p}(検出率に数えない。${SEEDED_FILE} には blind:false と理由だけを書いた。出荷の集約は未測定として扱う)`);
@@ -1161,7 +1164,7 @@ function run() {
   L.push(`- 記録(${TRIAL_DIR}/)は、記録だけのコミットとしてコミットする。出荷の証跡の集約は ${TRIAL_DIR}/ を記録の置き場として扱い、製品の変更に数えない`);
   L.push('');
   L.push('## 8. 根拠の水準(要件⑥。コマンドが埋める)');
-  L.push('- 本記録は1件の測定である(E2 単一事例)。検証した構成と開発ラインの外へ一般化しない');
+  L.push('- 本記録は1件の測定である(E2 単一事例)。検証した構成と開発組織の外へ一般化しない');
   if (notAdopter.length) L.push('- 採用者のコードと人で行っていない記録は、本標準の自己評価(E0)と同じ扱いになる(要件②)');
   L.push('');
   L.push('## 9. 範囲を限って受容する残余リスク(受容者と期限は採用者が書く)');
@@ -1169,7 +1172,7 @@ function run() {
   L.push('<!-- human-fields start cols=3,4 -->');
   L.push('| 残余リスク | 受容の範囲 | 受容者(層1 の項目4 の権限者) | 期限 | 確かめる運用の記録 |');
   L.push('| --- | --- | --- | --- | --- |');
-  L.push('| 結果の効果(欠陥の流出が減るか)は未実証 | 検証した構成と開発ライン | <人が書く> | <YYYY-MM-DD> | 保証の開示の推移、ポストモーテム |');
+  L.push('| 結果の効果(欠陥の流出が減るか)は未実証 | 検証した構成と開発組織 | <人が書く> | <YYYY-MM-DD> | 保証の開示の推移、ポストモーテム |');
   L.push('| 人と組織の挙動(記名の質、申し立ての使われ方、評価の運用)は未確認 | 同上 | <人が書く> | <YYYY-MM-DD> | 内部監査 観点14・20、申し立てと解除の記録 |');
   const notStopped = sc.scenes.filter((s) => s.result !== '止まった');
   L.push(`| 場面集で止まらなかった場面${notStopped.length ? `(${notStopped.map((s) => `#${s.id}`).join(', ')})` : '(なし)'} | 手で代える手順を置いた範囲 | <人が書く> | <YYYY-MM-DD> | 手で代えた記録 |`);
@@ -1312,7 +1315,7 @@ function envCheck() {
       if (!pr) bad.push('pull_request の規則が無い');
       else {
         if (!(Number(pr.required_approving_review_count) >= want)) bad.push(`要求する承認の数 ${pr.required_approving_review_count ?? '未設定'} < 構成 ${want}`);
-        if (ruleset === 'regulated') {
+        if (ruleset === 'regulated' || ruleset === 'safety') {
           if (pr.require_last_push_approval !== true) bad.push('最後の push の後の承認(require_last_push_approval)が無効');
           if (pr.require_code_owner_review !== true) bad.push('コードオーナーの承認(require_code_owner_review)が無効');
           if (pr.dismiss_stale_reviews_on_push !== true) bad.push('push で古い承認を無効にする設定(dismiss_stale_reviews_on_push)が無効');
@@ -1324,7 +1327,7 @@ function envCheck() {
       const evidence = { rulesetIds, api, fetchedAt };
       items.ruleset = bad.length
         ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset}。承認 ${want} 名)と一致しない: ${bad.join('。')}`, evidence }
-        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名${ruleset === 'regulated' ? '・最後の push の後の承認・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
+        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名${ruleset === 'regulated' || ruleset === 'safety' ? '・最後の push の後の承認・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
     }
   }
 
