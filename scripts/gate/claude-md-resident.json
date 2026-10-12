@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 0,
+  "note": "CLAUDE.md の常駐の規則の節の一覧。正本はテンプレートの CLAUDE.md。作り直し: node scripts/gate/check-process-rules.mjs --write-resident",
+  "sections": [
+    {
+      "level": 2,
+      "heading": "迷ったら"
+    },
+    {
+      "level": 2,
+      "heading": "人へ戻す3つの場合"
+    },
+    {
+      "level": 2,
+      "heading": "規則の索引"
+    },
+    {
+      "level": 3,
+      "heading": "行ってはならない作業"
+    },
+    {
+      "level": 3,
+      "heading": "一律で AI に委譲できない領域(第5章 5.8.3・5.4.3)"
+    },
+    {
+      "level": 3,
+      "heading": "判断の確定と委任(第5章 5.5)"
+    },
+    {
+      "level": 3,
+      "heading": "受信箱とラベル(Label Mailbox)"
+    },
+    {
+      "level": 3,
+      "heading": "基準を満たさないまま進めるとき"
+    },
+    {
+      "level": 3,
+      "heading": "停止の申し立てと品質保証の層1"
+    },
+    {
+      "level": 3,
+      "heading": "標準の条項を課すとき"
+    },
+    {
+      "level": 3,
+      "heading": "受入基準"
+    },
+    {
+      "level": 3,
+      "heading": "タスクの粒度"
+    },
+    {
+      "level": 3,
+      "heading": "自己修正ループ"
+    },
+    {
+      "level": 3,
+      "heading": "ブランチとコミット"
+    },
+    {
+      "level": 3,
+      "heading": "文脈への書き戻し"
+    },
+    {
+      "level": 3,
+      "heading": "コードの探索"
+    }
+  ]
+}

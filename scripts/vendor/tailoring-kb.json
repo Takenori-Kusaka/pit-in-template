@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "924b4aba9960f5e84fa5d0bbeb372144ac424c1e"
+    "commit": "7c950aa4e90bc447ba57f5d822688b050d67ce8a"
   },
   "questions": [
     {
@@ -555,7 +555,7 @@
           "action": "set",
           "param": "contractual",
           "value": true,
-          "note": "要件合意を契約・検収の節目に対応づける"
+          "note": "要件合意(G-2)を契約上の確認行為に対応づけるかどうかと、対応づける先を、締結時に決めて記録する(テンプレ8 第9項)"
         },
         {
           "target": {
@@ -565,7 +565,7 @@
           "action": "set",
           "param": "contractual",
           "value": true,
-          "note": "リリース判定を検収に対応づける"
+          "note": "リリース決裁(G-8)を契約上の確認行為に対応づけるかどうかと、対応づける先を、締結時に決めて記録する(テンプレ8 第9項)"
         },
         {
           "target": {
@@ -573,7 +573,7 @@
             "id": "acceptance"
           },
           "action": "note",
-          "note": "検収対象を受入基準への適合に限定し、生成手段(人・AIの別)を問わないと契約に明記する"
+          "note": "契約が成果物の適否を確認する行為を定める場合、確認の基準を受入基準への適合に限定し、生成手段(人・AIの別)を問わないと契約に明記する"
         },
         {
           "target": {
@@ -613,7 +613,7 @@
           "action": "set",
           "param": "contractual",
           "value": true,
-          "note": "要件合意を多段階契約の節目に対応づける"
+          "note": "要件合意(G-2)を契約上の確認行為に対応づけるかどうかと、対応づける先を、締結時に決めて記録する(テンプレ8 第9項)"
         },
         {
           "target": {
@@ -623,7 +623,7 @@
           "action": "set",
           "param": "contractual",
           "value": true,
-          "note": "リリース判定を検収に対応づける"
+          "note": "リリース決裁(G-8)を契約上の確認行為に対応づけるかどうかと、対応づける先を、締結時に決めて記録する(テンプレ8 第9項)"
         },
         {
           "target": {
@@ -631,7 +631,7 @@
             "id": "acceptance"
           },
           "action": "note",
-          "note": "検収基準を受入基準への適合に限定する構成を発注側へ提案する(生成手段を問わない)"
+          "note": "契約が成果物の適否を確認する行為を定める場合、確認の基準を受入基準への適合に限定する構成を発注側へ提案する(生成手段を問わない)"
         },
         {
           "target": {
@@ -642,7 +642,7 @@
           "note": "引き継ぎ文書の粒度を契約で規定する(委託解消時の理解の空白を防ぐ)"
         }
       ],
-      "reason": "AI生成コードの瑕疵担保責任は未整備の論点。検収を仕様適合に限定すれば既存の検収実務に載せられる",
+      "reason": "AI生成コードの契約不適合責任は未整備の論点。成果物の適否の確認の基準を受入基準への適合に限定すれば、既存の確認の実務に載せられる",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 20,
       "sourceFile": "rules-dev-form.yaml"
@@ -1143,8 +1143,8 @@
     },
     {
       "id": "acceptance",
-      "name": "検収の基準",
-      "description": "受託開発における検収対象の定義(受入基準への適合に限定し生成手段を問わない)",
+      "name": "成果物の適否の確認の基準",
+      "description": "受託開発で、契約が成果物の適否を確認する行為を定める場合の確認の基準(受入基準への適合に限定し生成手段を問わない)",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/"
     },
     {
@@ -1577,6 +1577,18 @@
       "range": "事業ステージ S0 で、標準品質かつ CL0 の構成",
       "unit": "per-project",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#s0-の省略が成立する前提適用-事業ステージ-s0-で標準品質かつ-cl0-の構成"
+    },
+    {
+      "title": "判定の結果を受け取る者を決める",
+      "range": "判定を置いた組織と、判定の対象を作成した組織が異なる場合",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#判定の結果を受け取る者を決める適用-判定を置いた組織と判定の対象を作成した組織が異なる場合"
+    },
+    {
+      "title": "既存規程との併存(移行期の措置)",
+      "range": "既存の規程を持つ組織",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/enablement/#既存規程との併存移行期の措置適用-既存の規程を持つ組織"
     },
     {
       "title": "規模の基準値",

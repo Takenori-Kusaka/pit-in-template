@@ -6,6 +6,8 @@
 // テンプレートの全ファイルを一時のディレクトリへ写し、1名と3名で初期化して、次を確かめます。
 //   - spec-lint(引数なし = CI と同じ範囲)が通る。様式から作る機能仕様・実装計画・D-0・企画書を置いた後も通る
 //   - 契約検査(verify-gate-contract)と生成区間の検査(check-process-rules)が通る
+//   - 既存の CLAUDE.md に区間の目印だけを足した状態(常駐の規則が無い)では、check-process-rules が落ちる。
+//     既存の内容を残してテンプレートの節を含めれば通る。常駐の規則の節の一覧は、テンプレートの CLAUDE.md と一致する
 //   - node の基盤(package.json の test と coverage、秘匿情報の検査の設定、テストの置き場)が作られ、既存のファイルを書き換えない
 //   - 初期化の PR(生成物と基盤だけ。トレーラ Spec: setup)が pr-rules(check-pr)を通る。製品のコードを足すと落ちる。
 //     リスク区分の節が無い本文は落ちる
@@ -21,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
+import { buildManifest, loadManifest } from './claude-md-resident.mjs';
 
 const own = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
 if (own.configured !== false) {
@@ -74,6 +77,17 @@ const ANSWERS = {
 };
 const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free' };
 const dirs = [];
+
+// 常駐の規則の節の一覧が、テンプレートの CLAUDE.md と一致する(節を変えたのに一覧を作り直していない状態を落とす)
+{
+  const built = buildManifest(fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'));
+  const stored = loadManifest();
+  check(
+    '常駐の規則の節の一覧(claude-md-resident.json)が、テンプレートの CLAUDE.md の節と一致する',
+    stored !== null && JSON.stringify(stored.sections) === JSON.stringify(built.sections) && built.sections.length > 0,
+    '作り直し: node scripts/gate/check-process-rules.mjs --write-resident'
+  );
+}
 
 for (const n of [1, 3]) {
   const W = workspace(`${n}`);
@@ -140,6 +154,35 @@ for (const n of [1, 3]) {
   check(`${tag}: verify-gate-contract が通る`, r.ok, r.out);
   r = W.node('scripts/gate/check-process-rules.mjs');
   check(`${tag}: check-process-rules が通る`, r.ok, r.out);
+
+  // 既存のリポジトリへの持ち込み(process-compass #306): 既存の CLAUDE.md を残し、区間の目印だけを足した状態
+  {
+    const full = W.read('CLAUDE.md');
+    const begin = '<!-- generated:process-rules start -->';
+    const end = '<!-- generated:process-rules end -->';
+    const region = full.slice(full.indexOf(begin), full.indexOf(end) + end.length);
+    const own = '# 既存の規約\n\n- 変数名はキャメルケースで書く\n';
+    W.write('CLAUDE.md', `${own}\n## このプロジェクトの構成(自動生成)\n\n${region}\n`);
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    check(
+      `${tag}: 区間の目印だけを足した既存の CLAUDE.md では check-process-rules が落ちる(常駐の規則が無い)`,
+      !r.ok && /常駐の規則の節が 16 件ありません/.test(r.out) && /見出しが無い: ### 行ってはならない作業/.test(r.out),
+      r.out
+    );
+    // 見出しだけを足して本文を持たない節は、あるものとして数えない
+    W.write('CLAUDE.md', `${full.replace(/(### 停止の申し立てと品質保証の層1\r?\n)[\s\S]*?(\r?\n### 標準の条項を課すとき)/, '$1$2')}`);
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    check(
+      `${tag}: 見出しだけで本文の無い節は check-process-rules が落とす`,
+      !r.ok && /本文が無い: ### 停止の申し立てと品質保証の層1/.test(r.out),
+      r.out
+    );
+    // 既存の内容を残して、テンプレートの節を含めれば通る
+    W.write('CLAUDE.md', `${own}\n${full}\n## 案件で足した節\n\n- 案件の規則\n`);
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    check(`${tag}: 既存の内容を残してテンプレートの節を含めた CLAUDE.md は check-process-rules が通る`, r.ok, r.out);
+    W.write('CLAUDE.md', full);
+  }
 
   // 初期化の PR(生成物と基盤だけ)
   W.git('switch', '-q', '-c', 'chore/process-init');

@@ -36,6 +36,16 @@ npx -y @nanonets/graft@0.12.1 build
 
 グラフ(`/graft/`)は clone ごとのローカルキャッシュで、commit しません。以後はどのコマンドも差分だけを取り込みます。
 
+#### 既存のリポジトリへ持ち込む場合
+
+既にコードと履歴があるリポジトリへ持ち込む手順の全体は、まだ定めていません(実際の GitHub 上での通しの検証が無いため)。確かめた範囲の定めは次の3つです。事実と根拠は、標準の[準拠テンプレートリポジトリ](https://takenori-kusaka.github.io/process-compass/phase5-implementation/template-repository/)の「既存のリポジトリへ持ち込む」にあります。
+
+1. テンプレートの履歴を併合しない。ファイルの複製で持ち込む(併合すると、テンプレートの開発履歴が、製品の変更として保証の開示に出る)
+2. 名前が重なるファイル(`CLAUDE.md`、`.github/CODEOWNERS`、`.gitignore`、`README.md`、`docs/README.md`)は、既存の内容を残したうえで、テンプレートの側の内容を含める。`CLAUDE.md` は、テンプレートの常駐の規則の節をすべて含める。区間の目印だけを足した `CLAUDE.md` は、`node scripts/gate/check-process-rules.mjs` が落とす
+3. 既存の `package.json` に、カバレッジの要約(`coverage/coverage-summary.json`)を出す `coverage` のスクリプトを、初期化の前に用意する(初期化は既存の `package.json` を書き換えない)
+
+持ち込みのコミットは、`/process-init` より前に置きます。`/process-init` が作るコミットが、標準の適用の開始に当たります(標準 第1章 1.10)。その後は、導いたゲートのすべてが同時に掛かります。
+
 ### 2. プロセス構成を決める
 
 Claude Code でリポジトリを開き、次を実行します。
