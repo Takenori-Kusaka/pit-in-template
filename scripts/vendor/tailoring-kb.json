@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "5c6ded492a28b116549e10e7b61438dcc8836826"
+    "commit": "bc407e5d09e93e5259759330a3f7905b23ee7955"
   },
   "questions": [
     {
@@ -1530,6 +1530,12 @@
       "range": "規模の基準値を超えた PR",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#基準値を超えた変更の扱い適用-規模の基準値を超えた-pr"
+    },
+    {
+      "title": "新規に変更した範囲へ限定する",
+      "range": "G-5 基準3 以外の定量条件",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#新規に変更した範囲へ限定する適用-g-5-基準3-以外の定量条件"
     },
     {
       "title": "5.5.4 委任の条件",

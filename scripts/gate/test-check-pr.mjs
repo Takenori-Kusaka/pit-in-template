@@ -216,9 +216,21 @@ scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア�
   cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
   write('process.config.json', cfg);
   write('docs/assurance.md', '# 根拠\n');
+  // 区分の下限の規則のパス(src/auth/**)が追跡中のファイルに当たる(当たらなければ未宣言として扱う。#296 L-9)
+  write('src/auth/login.js', lines(3, 'l'));
   advanceBase('null-l2');
   write('src/big.js', lines(450, 'x'));
 }, passes((r) => (!r.size.sizeOver && r.size.maxLines === null ? [] : ['基準なしが効いていない'])));
+rewindBase();
+scenario('基準なし(null): コア指定のパスが追跡中のファイルに1件も当たらなければ未宣言として扱い、効かない(#296 L-9)', { body: OVER_BODY(ATT()) }, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.riskFloor = { rules: [{ id: 'auth', paths: ['src/authz/**'], floor: 'R1', why: '認証・認可(誤記で何にも当たらない)' }] };
+  cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
+  write('process.config.json', cfg);
+  write('docs/assurance.md', '# 根拠\n');
+  advanceBase('null-unmatched');
+  write('src/big.js', lines(450, 'x'));
+}, passes(overOk, (r) => (r.notices.some((m) => /追跡中のファイルに1件も当たらない.*src\/authz/.test(m)) ? [] : ['当たらないパスを未宣言として扱った旨を出していない'])));
 rewindBase();
 scenario('基準なし(null): 確約範囲・コア指定のパスが宣言されていない構成では効かない(既定値で判定する)', { body: OVER_BODY(ATT()) }, () => {
   const cfg = JSON.parse(read('process.config.json'));
@@ -239,6 +251,19 @@ scenario('別集計の抜け道: 5 倍以内は超過にしない', {}, () => {
 scenario('文書の置き場に置いたコード(docs/ の .js)は製品として数える', {}, () => {
   write('docs/hidden.js', lines(450, 'h'));
 }, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 ? [] : [`算定 ${r.size.lines}`])));
+// 文書の置き場の判定は、文書・データの拡張子を製品に数えない側に列挙し、それ以外を製品に数える(拡張子の列挙の逆転。#296 L-8)
+scenario('文書の置き場の、列挙に無い拡張子(docs/ の .pl)は製品として数える', {}, () => {
+  write('docs/tool.pl', lines(450, 'p'));
+}, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 ? [] : [`算定 ${r.size.lines}`])));
+scenario('文書の置き場の拡張子の無いファイルは、先頭の shebang があれば製品として数える', {}, () => {
+  write('docs/tool', '#!/usr/bin/env bash\n' + lines(450, 's'));
+}, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 ? [] : [`算定 ${r.size.lines}`])));
+scenario('文書の置き場の拡張子の無いファイルで shebang が無いもの(文章)は数えない', {}, () => {
+  write('docs/meeting-notes', lines(3000, 'd'));
+}, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+scenario('文書の置き場のデータ(docs/ の .csv)は数えない', {}, () => {
+  write('docs/data.csv', lines(3000, 'c'));
+}, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
 scenario('文書の置き場の .md は従来どおり数えない', {}, () => {
   write('docs/big.md', lines(3000, 'd'));
 }, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));

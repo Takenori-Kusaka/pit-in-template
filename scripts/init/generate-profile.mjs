@@ -36,6 +36,8 @@ import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs
 import {
   reviewersRequiredOf,
   corePathsOf,
+  trackedFiles,
+  unmatchedCoreText,
   SEAT_CEILING,
   MODE_LABEL,
   CHANGE_KINDS,
@@ -133,6 +135,16 @@ export function rosterEditText(x) {
 const NO_NOTICE_TARGET = '通知先なし(出荷判定者の席・前任者・D-0 表1 の決定者・品質保証部門の通知先がいずれも無い)';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+/** アダプタが変更の範囲のカバレッジを測れるか(行単位の被覆の置き場 coverageDetail を持つか。#296) */
+function adapterMeasuresChanged(stack) {
+  try {
+    const a = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', `${stack}.json`), 'utf8'));
+    return typeof a.coverageDetail === 'string' && a.coverageDetail.length > 0;
+  } catch {
+    return false;
+  }
+}
 const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-kb.json'), 'utf8'));
 
 /** engine のゲート id → 構成ファイルの短縮キー */
@@ -583,6 +595,8 @@ export function buildConfig(answers, opts = {}) {
     accounts: p.accounts === undefined ? [] : p.accounts,
     // 名義の機械検査に当たる氏名を、人が確認した旨。真の人だけに持たせる
     ...(p.nameConfirmed === true ? { nameConfirmed: true } : {}),
+    // AI を示す語に当たるアカウントを、人のアカウントとして確認した旨。確認は本人以外の記名に限る(変化点の記録。#296)
+    ...(Array.isArray(p.accountsConfirmed) && p.accountsConfirmed.length ? { accountsConfirmed: p.accountsConfirmed } : {}),
     // 所属(任意。チーム・部門)。10名以上の規則(コア機能は別チームがレビューする、出荷判定は QA 部門・専任)を
     // 出荷の集約が確かめるときに使う(#288 第6巡 Q)。無ければ「判定できない」と出る
     ...(typeof p.team === 'string' && p.team.trim() ? { team: p.team.trim() } : {}),
@@ -677,6 +691,11 @@ export function buildConfig(answers, opts = {}) {
   if (opts.coverageThreshold !== undefined && coverageThreshold !== derivedCoverage) {
     console.log(`[較正引き継ぎ] 既存の較正設定（ci.coverageThreshold: ${opts.coverageThreshold}%）を検出し、引き継ぎました（標準の導出初期値: ${derivedCoverage}%）`);
   }
+  // カバレッジの測る範囲(標準 第4章 G-5 基準3。process-compass #296)。既定は変更で加えた・変えたコード(changed)。
+  // アダプタが行単位の被覆(coverageDetail)を持たず変更の範囲を測れない場合だけ、全体(whole)を既定にする。
+  // 全体で判定する場合、変更の未被覆は全体の被覆で薄まる。その旨を保証の開示に出す(coverage-check の結果)
+  const derivedCoverageScope = adapterMeasuresChanged(opts.stack ?? 'none') ? 'changed' : 'whole';
+  const coverageScope = opts.coverageScope ?? derivedCoverageScope;
 
   // 許容的な SPDX(CC0-1.0・Unlicense・0BSD・BlueOak-1.0.0)を含む(#295 T-18)。法務方針は組織が変える。恒久の追加は種別 settings で行う
   const derivedAllowedLicenses = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Python-2.0', 'MPL-2.0', 'CC0-1.0', 'Unlicense', '0BSD', 'BlueOak-1.0.0'];
@@ -708,6 +727,12 @@ export function buildConfig(answers, opts = {}) {
   const selfHealMaxIterations = opts.selfHealMaxIterations ?? derivedSelfHealMaxIterations;
   if (opts.selfHealMaxIterations !== undefined && opts.selfHealMaxIterations !== derivedSelfHealMaxIterations) {
     console.log(`[較正引き継ぎ] 既存の較正設定（task.selfHealMaxIterations: ${opts.selfHealMaxIterations}）を検出し、引き継ぎました（標準の導出初期値: ${derivedSelfHealMaxIterations}）`);
+  }
+  // 無進捗(同じ失敗したテストの集合が続く回数)の停止条件。標準 第3章 3.12.10 の初期値 2 回(EV-0001)。#296
+  const derivedSelfHealNoProgressLimit = 2;
+  const selfHealNoProgressLimit = opts.selfHealNoProgressLimit ?? derivedSelfHealNoProgressLimit;
+  if (opts.selfHealNoProgressLimit !== undefined && opts.selfHealNoProgressLimit !== derivedSelfHealNoProgressLimit) {
+    console.log(`[較正引き継ぎ] 既存の較正設定（task.selfHealNoProgressLimit: ${opts.selfHealNoProgressLimit}）を検出し、引き継ぎました（標準の導出初期値: ${derivedSelfHealNoProgressLimit}）`);
   }
 
   const config = {
@@ -748,6 +773,7 @@ export function buildConfig(answers, opts = {}) {
     ci: {
       coverageThreshold,
       derivedCoverageThreshold: derivedCoverage,
+      coverageScope,
       failOnSeverity,
       allowedLicenses,
       strengthened: ciStrengthened,
@@ -763,6 +789,7 @@ export function buildConfig(answers, opts = {}) {
       maxChangedLines,
       maxChangedFiles,
       selfHealMaxIterations,
+      selfHealNoProgressLimit,
       // 規模の算定で別に数える置き場(既定のテスト・fixture・snapshot に足す。足す変更は閾値として扱う)と、担保水準の宣言(記録。緩和を自動で与えない)
       ...(Array.isArray(opts.nonProductPaths) && opts.nonProductPaths.length ? { nonProductPaths: opts.nonProductPaths } : {}),
       ...(opts.assurance && typeof opts.assurance === 'object' ? { assurance: opts.assurance } : {}),
@@ -965,6 +992,8 @@ export function changeLogEntry(e) {
     ...(e.appointerSigned ? { appointerSigned: true } : {}),
     // 人の名簿の表記の変更(同じ人の氏名またはアカウント)。旧い値と新しい値を残す(K67)
     ...(e.rosterEdits?.length ? { rosterEdits: e.rosterEdits } : {}),
+    // アカウント名の機械検査を、人のアカウントとして確認した記録(本人以外の記名。decidedBy が記名。#296)
+    ...(e.accountConfirmations?.length ? { accountConfirmations: e.accountConfirmations } : {}),
     // 承認待ちのあいだ保持していた委任の宣言を、この変化点で有効にした席(宣言した時点の決定者と理由)
     ...(e.intentApplied?.length ? { intentApplied: e.intentApplied } : {}),
     // 委任の規則の追加・拡大を承認した者(AI維持管理者の席の責任者)と、対象の規則(ADR-0038)
@@ -1251,6 +1280,22 @@ export function diffConfig(before, after) {
     }
   }
   for (const [id, p] of Object.entries(bp)) if (!ap[id]) diff.push(`人の名簿: 削除 ${p.name}`);
+  // アカウント名の確認済みの上書き(#296)。足した確認は、本人以外の決定した者の記名を要する(accountConfirmItems)
+  const accountConfirmItems = [];
+  for (const [id, p] of Object.entries(ap)) {
+    const had = new Set((Array.isArray(bp[id]?.accountsConfirmed) ? bp[id].accountsConfirmed : []).map(accountKey));
+    const now = Array.isArray(p.accountsConfirmed) ? p.accountsConfirmed : [];
+    for (const a of now) {
+      if (had.has(accountKey(a))) continue;
+      const line = `人の名簿: ${p.name} のアカウント ${a} を人のアカウントとして確認した(アカウント名の機械検査の上書き)`;
+      diff.push(line);
+      accountConfirmItems.push({ id, account: a, name: p.name, line });
+    }
+    const nowKeys = new Set(now.map(accountKey));
+    for (const a of Array.isArray(bp[id]?.accountsConfirmed) ? bp[id].accountsConfirmed : []) {
+      if (!nowKeys.has(accountKey(a))) diff.push(`人の名簿: ${p.name} のアカウント ${a} の確認を外した`);
+    }
+  }
   // 組織上の任命権者を名簿へ置く変更。決定者が体制に残っている間は、決定者の記名を要する(任命権者の
   // 名義で決定者を替える経路を、記名なしに作らせない)。決定者の席が空いている場合は、記名を待たずに置ける
   const priorDeciderHere = findPerson(after, (before.seats ?? []).find((s) => s.role === structureDeciderSeat(before))?.accountable);
@@ -1538,6 +1583,10 @@ export function diffConfig(before, after) {
     const bc = num(before.ci?.coverageThreshold);
     const ac = num(after.ci?.coverageThreshold);
     if (bc !== null && ac !== null && bc !== ac) push(`カバレッジの下限: ${bc}% → ${ac}%`, bc, ac, M);
+    // 測る範囲を変更の範囲から全体へ移すのは緩める向き(変更の未被覆が全体の被覆で薄まる。#296)
+    const bs = before.ci?.coverageScope ?? null;
+    const as = after.ci?.coverageScope ?? null;
+    if (bs && as && bs !== as) push(`カバレッジの測る範囲: ${bs} → ${as}`, bs === 'changed' ? 1 : 0, as === 'changed' ? 1 : 0, M);
     for (const [k, label, addLoosens] of [
       ['failOnSeverity', '失敗させる重大度', false],
       ['allowedLicenses', '許可するライセンス', true],
@@ -1553,7 +1602,8 @@ export function diffConfig(before, after) {
     for (const [k, label] of [
       ['maxChangedLines', '規模の基準値(行数)'],
       ['maxChangedFiles', '規模の基準値(ファイル数)'],
-      ['selfHealMaxIterations', '自己修正ループの反復上限'],
+      ['selfHealMaxIterations', '自己修正ループの連続失敗の上限'],
+      ['selfHealNoProgressLimit', '自己修正ループの無進捗の上限'],
     ]) {
       // null は「基準なし」。上げる向き(最も緩い)として扱う
       const rawB = before.task?.[k];
@@ -1738,6 +1788,7 @@ export function diffConfig(before, after) {
   return {
     appointItems,
     renameItems,
+    accountConfirmItems,
     rosterSwaps,
     rosterEdits,
     allBlankBefore,
@@ -2688,6 +2739,9 @@ export function renderProfileMd(config, result) {
         : ''
     } |`
   );
+  L.push(
+    `| カバレッジの測る範囲 | ${config.ci.coverageScope === 'whole' ? 'コードの全体(変更の未被覆は全体の被覆で薄まる。保証の開示に出る)' : config.ci.coverageScope === 'changed' ? '変更で加えた・変えたコード' : '未記入(アダプタの既定で測る)'}。企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃える |`
+  );
   L.push(`| 失敗させる重大度 | ${config.ci.failOnSeverity.join(' / ')} |`);
   L.push(`| 許可するライセンス | ${config.ci.allowedLicenses.join(', ')} |`);
   L.push(`| 必須の承認数 | ${config.review.requiredApprovals} |`);
@@ -2909,9 +2963,9 @@ export function renderProcessRules(config) {
   {
     const rc = reviewersRequiredOf(config);
     if (rc.coreDeclared && rc.core > rc.all && ['required', 'simplified'].includes(config.gates?.g6?.state)) {
-      const cp = corePathsOf(config);
+      const cp = corePathsOf(config, { tracked: trackedFiles(ROOT, 'HEAD') });
       L.push(
-        `- **コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。全変更は ${rc.all} 名)。コア機能のパス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く。未宣言のあいだ、G-5 と出荷の集約は「確かめられない」と出す)'}。` +
+        `- **コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。全変更は ${rc.all} 名)。コア機能のパス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く。未宣言のあいだ、G-5 と出荷の集約は「確かめられない」と出す)'}。${cp.unmatched.length ? `${unmatchedCoreText(cp)}(当たるパスが無ければ未宣言として扱う)。` : ''}` +
           'コア機能に触れる変更の承認者が要求に満たなければ、G-5(pr-rules)が警告し、出荷の証跡の集約が「G-6 の承認者 N 名 / 要求 M 名(コア機能)」として独立した人の確認を経ていない変更に数える'
       );
     }
@@ -3077,7 +3131,7 @@ export function scaffoldStack(stack, root = ROOT) {
       engines: { node: '>=22' },
       scripts: {
         test: 'node --test "tests/**/*.test.*"',
-        coverage: 'c8 --all --src src --include "src/**" --reporter=json-summary --reporter=text node --test "tests/**/*.test.*"',
+        coverage: 'c8 --all --src src --include "src/**" --reporter=json-summary --reporter=json --reporter=text node --test "tests/**/*.test.*"',
       },
       devDependencies: NODE_DEV_DEPS,
     };
@@ -3487,6 +3541,7 @@ if (isMain) {
       bad.push('settings.ci.coverageThreshold は 0〜100 の数値で書きます');
     }
     for (const k of ['failOnSeverity', 'allowedLicenses']) if (S.ci?.[k] !== undefined && !strList(S.ci[k])) bad.push(`settings.ci.${k} は文字列の配列で書きます`);
+    if (S.ci?.coverageScope !== undefined && !['changed', 'whole'].includes(S.ci.coverageScope)) bad.push('settings.ci.coverageScope は "changed"(変更で加えた・変えたコード)か "whole"(全体)で書きます');
     if (S.task !== undefined && !isObject(S.task)) bad.push('settings.task はオブジェクトで書きます');
     for (const k of ['maxChangedLines', 'maxChangedFiles']) {
       // null(基準なし)は、担保水準 L2 の宣言と根拠が実在するときだけ受け付ける(#295 / ADR-0058)
@@ -3496,12 +3551,13 @@ if (isMain) {
           bad.push(`settings.task.${k} の null(基準なし)は、task.assurance が L2 で、根拠(basis)のパスが実在するときだけ書けます`);
         }
         // 確約範囲・コア指定のパスが宣言されていない構成では、コア外の変更かを確かめられないため、null を受け付けない
-        if (!corePathsOf({ delegation: existing?.delegation, riskFloor: S.riskFloor !== undefined ? S.riskFloor : existing?.riskFloor }).paths.length) {
-          bad.push(`settings.task.${k} の null(基準なし)は、確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)を宣言した構成でだけ書けます`);
+        if (!corePathsOf({ delegation: existing?.delegation, riskFloor: S.riskFloor !== undefined ? S.riskFloor : existing?.riskFloor }, { tracked: trackedFiles(ROOT, 'HEAD') }).paths.length) {
+          bad.push(`settings.task.${k} の null(基準なし)は、確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)を宣言し、そのパスが追跡中のファイルに1件以上当たる構成でだけ書けます`);
         }
       } else if (S.task?.[k] !== undefined && !posInt(S.task[k])) bad.push(`settings.task.${k} は正の整数、または null(基準なし。L2 の宣言と根拠が要る)で書きます`);
     }
     if (S.task?.selfHealMaxIterations !== undefined && !posInt(S.task.selfHealMaxIterations)) bad.push('settings.task.selfHealMaxIterations は正の整数で書きます');
+    if (S.task?.selfHealNoProgressLimit !== undefined && !posInt(S.task.selfHealNoProgressLimit)) bad.push('settings.task.selfHealNoProgressLimit は正の整数で書きます');
     if (S.task?.nonProductPaths !== undefined && !strList(S.task.nonProductPaths)) bad.push('settings.task.nonProductPaths は文字列(glob)の配列で書きます');
     if (S.task?.assurance !== undefined) {
       const A = S.task.assurance;
@@ -3752,6 +3808,7 @@ if (isMain) {
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
       coverageThreshold: ciNow.coverageThreshold,
+      coverageScope: ciNow.coverageScope,
       // 変化点では、較正していない下限(導出値のまま)を、導出値の引き上げへ追随させる
       coverageUncalibrated:
         Boolean(change) && S.ci?.coverageThreshold === undefined && kept.ci?.derivedCoverageThreshold != null && kept.ci.coverageThreshold === kept.ci.derivedCoverageThreshold,
@@ -3759,6 +3816,7 @@ if (isMain) {
       maxChangedLines: taskNow.maxChangedLines,
       maxChangedFiles: taskNow.maxChangedFiles,
       selfHealMaxIterations: taskNow.selfHealMaxIterations,
+      selfHealNoProgressLimit: taskNow.selfHealNoProgressLimit,
       nonProductPaths: taskNow.nonProductPaths,
       assurance: taskNow.assurance,
       platformHost: platformNow.host,
@@ -4210,6 +4268,21 @@ if (isMain) {
           '同じ人の表記の変更は、名簿へ足したときの値と比べて、氏名かアカウントの一方に限ります'
       );
     }
+    // アカウント名の確認済みの上書きは、名簿の変更として、そのアカウントの本人以外が記名した場合に限る(#296)
+    if (report.accountConfirmItems?.length) {
+      if (!change.decidedBy) {
+        refused.push(
+          `アカウント名の機械検査の上書き(${report.accountConfirmItems.map((i) => i.account).join(', ')})を含みます。決定した者の記名(decidedBy)と理由(reason)が要ります。` +
+            '記名できるのは、そのアカウントの本人以外の、人の名簿の人です。AI が決めてはなりません'
+        );
+      } else {
+        for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`アカウント名の確認の記名を受け付けられません: ${p}`);
+        const by = personKey(config, change.decidedBy);
+        for (const i of report.accountConfirmItems) {
+          if (by === i.id) refused.push(`アカウント ${i.account} の確認を、本人(${i.name})の記名では確定できません。本人以外の人の名簿の人が記名します`);
+        }
+      }
+    }
     if ((openItems.length || report.appointItems.length || report.renameItems.length) && signedNow) {
       // 緩める向きを決定できるのは、対象の席の責任者、または D-0 表1「体制と運用形態」の決定者に限る。
       // 任免は、変更前の決定者(体制から外れていれば、組織上の任命権者)に限る
@@ -4413,6 +4486,7 @@ if (isMain) {
         intentApplied: intentApplied.map(({ seat, decidedBy, reason, at }) => ({ seat, decidedBy, reason, at })),
         ...(appointerSigned ? { appointerSigned: true } : {}),
         rosterEdits: report.rosterEdits,
+        accountConfirmations: (report.accountConfirmItems ?? []).map(({ id, account }) => ({ id, account })),
         ruleApprovedBy: approvedNow.length ? change.ruleApprovedBy : null,
         nameOverrides: nameOverrides(config),
         ruleApproval: approvedNow.length

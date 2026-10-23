@@ -191,6 +191,32 @@ for (const n of [1, 3]) {
     );
     W.write(wfPath, wfText);
   }
+  // 承認は承認した差分に対して数える(標準 第4章 G-6。#296 L-2)。適用するルールセットの dismiss_stale_reviews_on_push を外すと契約検査が落ちる
+  {
+    const cfg = JSON.parse(W.read('process.config.json'));
+    const rsPath = `.github/rulesets/${cfg.ruleset}.json`;
+    if (cfg.ruleset && W.exists(rsPath) && cfg.gates?.g5?.state !== 'omitted') {
+      const rsText = W.read(rsPath);
+      const cut = rsText.replace('"dismiss_stale_reviews_on_push": true', '"dismiss_stale_reviews_on_push": false');
+      check(`${tag}: ルールセット ${cfg.ruleset} に dismiss_stale_reviews_on_push がある`, cut !== rsText);
+      W.write(rsPath, cut);
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: ルールセット ${cfg.ruleset} の dismiss_stale_reviews_on_push を外すと、契約検査が落ちる`, !r.ok && /dismiss_stale_reviews_on_push/.test(r.out), r.out);
+      W.write(rsPath, rsText);
+    }
+    // カバレッジの測る範囲(G-5 基準3。#296 L-1): node の既定は「変更で加えた・変えたコード」。企画書の記録と食い違えば契約検査が落ちる
+    check(`${tag}: node の構成のカバレッジの測る範囲の既定は changed`, cfg.ci?.coverageScope === 'changed', JSON.stringify(cfg.ci));
+    const brief = W.read('templates/06-project-brief.md');
+    const row = (v) => brief.replace(/^\| カバレッジの測る範囲\(G-5 基準3\) \|.*$/m, `| カバレッジの測る範囲(G-5 基準3) | ${v} |`);
+    check(`${tag}: 企画書の様式に「カバレッジの測る範囲」の行がある`, row('全体') !== brief, brief.split('\n').filter((l) => l.includes('カバレッジ')).join(' / '));
+    W.write('docs/project-brief.md', row('全体'));
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 企画書の範囲(全体)と構成の範囲(変更)が食い違えば、契約検査が落ちる`, !r.ok && /企画書に記録したカバレッジの測る範囲/.test(r.out), r.out);
+    W.write('docs/project-brief.md', row('変更で加えた・変えたコード'));
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 企画書の範囲と構成の範囲が一致すれば、契約検査が通る`, r.ok, r.out);
+    fs.rmSync(path.join(W.dir, 'docs/project-brief.md'));
+  }
   r = W.node('scripts/gate/check-process-rules.mjs');
   check(`${tag}: check-process-rules が通る`, r.ok, r.out);
 

@@ -27,7 +27,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `date` | 発効日(YYYY-MM-DD)。省略すると実行日(手元の時刻帯の日付)。記録には時刻 `at`(オフセットつき)も残る。**暦に実在する日付で、今日以前、かつ最後の記録の日付以降に限る** |
 | `summary` | 何が変わったかを1行で |
 | `answers` | 変える軸の回答だけ。書かなかった回答は現在の値を引き継ぐ。文言は `scripts/vendor/tailoring-kb.json` の `questions` のものに限る |
-| `people` | 人の名簿。**書くと全体を置き換える**。`{ "id", "name", "external", "appointer", "accounts", "nameConfirmed", "team" }`。`team` は所属(任意。10名以上の規則の判定に使う)。詳細: `kinds/accountable.md` |
+| `people` | 人の名簿。**書くと全体を置き換える**。`{ "id", "name", "external", "appointer", "accounts", "accountsConfirmed", "nameConfirmed", "team" }`。`team` は所属(任意。10名以上の規則の判定に使う)。詳細: `kinds/accountable.md` |
 | `seats` | 席(ロール ID)ごとに、変える欄だけ。`accountable` / `mode` / `performer` / `fallback` / `qualification` / `competence` |
 | `delegation` | `rules` / `changeTypes` / `protectedPaths`。**書いた一覧は全体を置き換える**。詳細: `kinds/mode.md` |
 | `governance` | D-0 表1 の2行の決定者の席と、品質保証部門の通知先。`{ "structureDecider", "catalogRegistrar", "qaNotice" }`。決定者の席を変えるのは、変更前の「体制と運用形態」の決定者に限る(記名と理由)。`qaNotice` を定めるのは厳しくする向き、外す(`null`)のは緩める向き |

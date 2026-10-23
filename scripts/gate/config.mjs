@@ -1,6 +1,7 @@
 // 構成ファイルとアダプタの読み込み。ゲートのスクリプトが共通で使う。
 // 依存パッケージなし。
 
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -263,6 +264,13 @@ export function rosterProblems(config) {
       );
     }
     if (p.nameConfirmed !== undefined && typeof p.nameConfirmed !== 'boolean') out.push(`${at}: nameConfirmed は true / false で書く`);
+    if (p.accountsConfirmed !== undefined) {
+      if (!Array.isArray(p.accountsConfirmed) || p.accountsConfirmed.some((c) => typeof c !== 'string' || !accountKey(c))) out.push(`${at}: accountsConfirmed はアカウント名の配列で書く`);
+      else {
+        const own = new Set((Array.isArray(p.accounts) ? p.accounts : []).map(accountKey));
+        for (const c of p.accountsConfirmed) if (!own.has(accountKey(c))) out.push(`${at}: accountsConfirmed の "${c}" は、この人の accounts に無い`);
+      }
+    }
     if (performers.has(n)) out.push(`${at}: "${n}" は担い手の識別(performer)と同じ文字列である`);
     if (p.external !== undefined && typeof p.external !== 'boolean') out.push(`${at}: external は true / false で書く`);
     // 組織上の任命権者(第3章 3.13.3)。体制の外の人として記載する。実際に任命の権限を持つかは、機械で確かめない
@@ -282,7 +290,15 @@ export function rosterProblems(config) {
             continue;
           }
           const bot = aiNameReason(a, { account: true });
-          if (bot) out.push(`${at}: アカウント "${a}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない`);
+          // 人が確認したアカウント(accountsConfirmed)は、AI を示す語に当たっても名簿に置ける。ただし [bot] の表記は上書きしない。
+          // 確認は名簿の変更として、本人以外が記名した変化点の記録を要する(accountConfirmationProblems。#296)
+          const confirmed = Array.isArray(p.accountsConfirmed) && p.accountsConfirmed.some((c) => accountKey(c) === key) && !/\[bot\]$/i.test(a.trim());
+          if (bot && !confirmed) {
+            out.push(
+              `${at}: アカウント "${a}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない` +
+                '(同じ語を含む実在の人のアカウントは、本人以外の記名で accountsConfirmed へ書く)'
+            );
+          }
           if (accounts.has(key)) out.push(`${at}: アカウント "${a}" が重複している。1つのアカウントは1人に対応づける`);
           accounts.add(key);
         }
@@ -1134,12 +1150,37 @@ export function behaviorSummaryKey(text) {
 //   - 確約範囲・コア指定のパス(delegation.protectedPaths。委任を適用しない案件でも種別 mode で宣言できる)
 //   - 区分の下限の規則のパス(riskFloor.rules[].paths。下限 R1・R2 のいずれも。kinds は見ない)
 // どちらも無い構成では「未宣言」であり、コア機能の変更を判定できない(黙って通さず、未宣言と表示する)
-export function corePathsOf(config) {
+// 宣言したパスが追跡中のファイルに1件も当たらなければ、そのパスは効いていない(誤記・移動の取り残し)。
+// tracked(追跡中のファイルの一覧)を渡すと、当たるパスだけを数え、当たらないパスを unmatched に出す。
+// 当たるパスが1件も無ければ「未宣言」とする(宣言が空振りしているのを、宣言済みとして扱わない。#296 L-9)。
+// tracked を渡さない呼び出し(一覧を得られない場面)は、従来どおり宣言の有無だけで判定する
+export function corePathsOf(config, { tracked = null } = {}) {
   const fromProtected = Array.isArray(config?.delegation?.protectedPaths) ? config.delegation.protectedPaths.filter((p) => typeof p === 'string' && p.trim()) : null;
   const fromFloor = (Array.isArray(config?.riskFloor?.rules) ? config.riskFloor.rules : []).flatMap((r) => (Array.isArray(r?.paths) ? r.paths.filter((p) => typeof p === 'string' && p.trim()) : []));
-  const declared = fromProtected !== null || fromFloor.length > 0;
-  const paths = [...new Set([...(fromProtected ?? []), ...fromFloor])];
-  return { declared, paths, sources: { protectedPaths: fromProtected, riskFloorRules: (config?.riskFloor?.rules ?? []).length } };
+  const declaredPaths = [...new Set([...(fromProtected ?? []), ...fromFloor])];
+  const sources = { protectedPaths: fromProtected, riskFloorRules: (config?.riskFloor?.rules ?? []).length };
+  if (!Array.isArray(tracked)) {
+    const declared = fromProtected !== null || fromFloor.length > 0;
+    return { declared, paths: declaredPaths, declaredPaths, unmatched: [], trackedChecked: false, sources };
+  }
+  const paths = declaredPaths.filter((g) => tracked.some((f) => matchGlob(g, f)));
+  const unmatched = declaredPaths.filter((g) => !paths.includes(g));
+  return { declared: paths.length > 0, paths, declaredPaths, unmatched, trackedChecked: true, sources };
+}
+/** 追跡中のファイルの一覧(rev を渡せばその版の一覧)。得られなければ null */
+export function trackedFiles(root = ROOT, rev = null) {
+  try {
+    const out = rev
+      ? execFileSync('git', ['ls-tree', '-r', '-z', '--name-only', rev], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 })
+      : execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 });
+    return out.split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+/** 当たらないパスの表示(空なら空文字) */
+export function unmatchedCoreText(core) {
+  return core?.unmatched?.length ? `追跡中のファイルに1件も当たらない宣言のパス(効いていない): ${core.unmatched.map((g) => `\`${g}\``).join(' ')}` : '';
 }
 /** G-6 に要する独立した人の承認者の数。全変更の数(review.reviewerCount)と、コア機能の変更の数(gates.g6.params.coreReviewerCount)。大きいほうが掛かる */
 export function reviewersRequiredOf(config) {
@@ -1149,11 +1190,11 @@ export function reviewersRequiredOf(config) {
   return { all, core, coreDeclared: Number.isFinite(coreParam) && coreParam > 0, coreParam: Number.isFinite(coreParam) ? coreParam : null };
 }
 /** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
-export function touchesCore(config, files) {
-  const core = corePathsOf(config);
+export function touchesCore(config, files, { tracked = null } = {}) {
+  const core = corePathsOf(config, { tracked });
   if (!core.declared) return null;
   const hit = (files ?? []).filter((f) => core.paths.some((g) => matchGlob(g, f)));
-  return { hit: hit.length > 0, files: hit, paths: core.paths };
+  return { hit: hit.length > 0, files: hit, paths: core.paths, unmatched: core.unmatched };
 }
 
 // ---------------------------------------------------------------- 規模の基準値と担保水準の宣言(#295 / ADR-0058)
@@ -1555,4 +1596,77 @@ export function hasTarget(adapter) {
     return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------- 承認と承認した版(標準 第4章 G-6。process-compass #296)
+//
+// 承認は、承認した差分に対して数える。差分を変える更新の後は数えない。差分が同一であることを機械で確かめられない
+// 更新は、差分を変える更新として扱う。ここでは、承認したコミット(レビューの commit)と、取り込んだ PR の先頭のコミットを
+// 比べる。異なれば、承認の後に更新があった(差分の同一を確かめていない)として数えない。承認の版が記録に無ければ、
+// 確かめられないとして数えない。
+
+/** 承認が取り込んだ版に対するものか。'bound'(同じ版)/ 'stale'(承認の後に更新があった)/ 'unknown'(承認の版を確かめられない) */
+export function approvalBinding(review, headOid) {
+  const oid = review?.commit?.oid ?? review?.commit_id ?? null;
+  if (!headOid || !oid) return 'unknown';
+  return String(oid).toLowerCase() === String(headOid).toLowerCase() ? 'bound' : 'stale';
+}
+
+// ---------------------------------------------------------------- アカウント名の確認済みの上書き(#296)
+//
+// アカウント名が AI を示す語(Devin・Kiro・Cline など)に当たる実在の人のアカウントは、機械の検査では AI と区別できない。
+// 名簿の人の accountsConfirmed に書いたアカウントを、人のアカウントとして扱う。ただし、確認は名簿の変更として、
+// そのアカウントの本人以外が記名した変化点の記録(changeLog[].accountConfirmations と decidedBy)に限る。
+// 本人の記名・AI の名義・記録の無い確認は効かない。[bot] の表記と、ホスティングが bot と返す名義(is_bot)は上書きしない。
+// 上書きで数えた承認の件数は、出荷の証跡の集約が保証の開示へ出す。名簿の記載が正しいかは監査の観点6 で確かめる
+
+/** 変化点の記録から、有効なアカウントの確認(本人以外の記名)を引く。キーは accountKey、値は { id, decidedBy, date } */
+export function confirmedAccounts(config) {
+  const out = new Map();
+  for (const e of config?.changeLog ?? []) {
+    for (const c of Array.isArray(e?.accountConfirmations) ? e.accountConfirmations : []) {
+      const key = accountKey(c?.account);
+      if (!key || !c?.id || !e.decidedBy) continue;
+      if (aiNameReason(e.decidedBy)) continue;
+      const by = personKey(config, e.decidedBy);
+      if (!by || by === c.id) continue;
+      out.set(key, { id: c.id, decidedBy: e.decidedBy, date: e.date ?? null });
+    }
+  }
+  return out;
+}
+
+/** 名簿の accountsConfirmed のうち、本人以外の記名の記録が無い確認(契約検査が落とす) */
+export function accountConfirmationProblems(config) {
+  const valid = confirmedAccounts(config);
+  const out = [];
+  for (const p of config?.people ?? []) {
+    for (const a of Array.isArray(p?.accountsConfirmed) ? p.accountsConfirmed : []) {
+      const v = valid.get(accountKey(a));
+      if (!v || v.id !== p.id) {
+        out.push(
+          `人の名簿 ${p.name} のアカウント "${a}" の確認(accountsConfirmed)に、本人以外が記名した変化点の記録がありません。` +
+            '確認は /process-change(種別 accountable)で、本人以外の決定した者の記名(decidedBy)を付けて行います'
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * アカウントが AI・bot の名義か。理由を返す(人のアカウントなら null)。bot はホスティングが返す is_bot。
+ * 名簿で本人以外が確認したアカウントは、語の一致を上書きする(overridden: true を返す呼び出しは aiAccountCheck)
+ */
+export function aiAccountCheck(config, login, bot = false) {
+  if (bot) return { reason: 'bot の表記を含む(ホスティングの bot)', overridden: false };
+  const reason = aiNameReason(login ?? '', { account: true });
+  if (!reason) return { reason: null, overridden: false };
+  if (/\[bot\]$/i.test(String(login ?? '').trim())) return { reason, overridden: false };
+  const key = accountKey(login);
+  const person = findPersonByAccount(config, login);
+  const listed = Boolean(person) && (Array.isArray(person.accountsConfirmed) ? person.accountsConfirmed : []).some((c) => accountKey(c) === key);
+  const v = confirmedAccounts(config).get(key);
+  if (listed && v && v.id === person.id) return { reason: null, overridden: true, by: v.decidedBy };
+  return { reason, overridden: false };
 }

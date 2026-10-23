@@ -91,6 +91,12 @@ jobs:
       # 初期化した直後に G-5 の手元で確かめられる検査が通ることを、テンプレートの全ファイルで試験する(#286)。
       # 構成が設定済みのリポジトリでは省く(テンプレートの初期の状態が無いため)
       - run: node scripts/gate/test-init-g5.mjs
+      # カバレッジの測る範囲(変更で加えた・変えたコード / 全体)の判定と、範囲・分母・未計測の製品ファイルの件数(標準 第4章 G-5 基準3。process-compass #296)
+      - run: node scripts/gate/test-coverage-scope.mjs
+      # 自己修正ループの停止条件(無進捗・連続失敗)と保留の解除の名義(標準 第3章 3.12.10。process-compass #296)
+      - run: node scripts/gate/test-self-heal.mjs
+      # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)
+      - run: node scripts/gate/test-size-observation.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:
@@ -99,7 +105,10 @@ jobs:
     if: needs.config.outputs.configured == 'true'
     runs-on: ubuntu-latest
     steps:
+      # 変更の範囲のカバレッジは、比較の起点との差分を読む(全履歴を取得する。#296)
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup-stack
       - name: テスト
         id: test
@@ -117,8 +126,20 @@ jobs:
           if-no-files-found: ignore
       - name: カバレッジの取得
         run: node scripts/gate/adapter.mjs run coverage
+      # 測る範囲が変更の範囲(構成 ci.coverageScope: changed。既定)のとき、比較の起点が要る(process-compass #296)。
+      # PR では基底ブランチ、既定ブランチへの push では push の直前のコミット、それ以外(手動の実行・ブランチの作成)では直前のコミット
       - name: カバレッジの判定
-        run: node scripts/gate/coverage-check.mjs
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            node scripts/gate/coverage-check.mjs --base "origin/${BASE_REF}"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            node scripts/gate/coverage-check.mjs --base "$BEFORE"
+          else
+            node scripts/gate/coverage-check.mjs --base HEAD^
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
