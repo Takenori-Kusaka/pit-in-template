@@ -3540,6 +3540,8 @@ function renderAssurance(external) {
       R.push(`  - ${t.id}: ${t.level}${t.stops.length ? `(**委任を止めている**。${why})` : '(停止なし)'}。差し戻し率: ${rejectionText(t)}`);
     }
     if (au.types.length) R.push(`  - ${au.rework}`);
+    for (const n of au.notes ?? []) R.push(`  - 評価の時点: ${n}`);
+    if (au.cap?.reason) R.push(`  - 上限の理由: ${au.cap.reason}`);
   }
   R.push('');
   const detail = A.changes.byRiskClassDetail;

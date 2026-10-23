@@ -35,6 +35,7 @@ import { readPolicy } from '../gate/org-assurance.mjs';
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import {
+  isFilledValue,
   reviewersRequiredOf,
   corePathsOf,
   trackedFiles,
@@ -2098,14 +2099,26 @@ export function renderAutonomyTable(config, blank = false) {
   const where = '判定のたびに記録から導く(`/pit` の注記、保証の開示の項目3)';
   const types = d.allowed ? (d.changeTypes ?? []) : [];
   for (const t of types) {
-    const level = levelRank(cap.level) < levelRank('L3') ? `L1(上限 ${cap.level} のため登録を適用しない)` : 'L3(停止中は L1)';
+    // 計測していない検知条件のある範囲へ L2 以上を書かない(第6章 テンプレ0)。手戻り率は準拠テンプレートの外で
+    // 集計する(登録の根拠の所在)。所在が未記入なら「未計測」とし、レベルを L1 と書く(突合 X-4)
+    const rework = t.basis?.detection?.reworkRate;
+    const reworkMeasured = isFilledValue(rework);
+    const level =
+      levelRank(cap.level) < levelRank('L3')
+        ? `L1(上限 ${cap.level} のため登録を適用しない)`
+        : !reworkMeasured
+          ? 'L1(手戻り率が未計測)'
+          : 'L3(停止中は L1)';
+    const reworkCell = reworkMeasured
+      ? `準拠テンプレートの外(登録の根拠: ${cell(rework)})。発火は機械で確かめない(標準の IMPL-0285 は降りていない)`
+      : '未計測(登録の根拠の reworkRate が未記入)';
     L.push(
-      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${WINDOW_MONTHS}か月の窓、最小標本数 ${MIN_SAMPLE} 件) | 未計測(準拠テンプレートは集計しない)。登録の根拠: ${cell(t.basis?.detection?.reworkRate ?? '未記入')} | ${where} |`
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${WINDOW_MONTHS}か月の窓、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
     );
   }
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
   L.push('');
-  L.push(`- AI自律レベルの上限: ${cap.level}(${cap.source === 'config' ? '構成の `autonomy.maxLevel`' : 'テーラリングの規則から導いた値'})`);
+  L.push(`- AI自律レベルの上限: ${cap.level}(${cap.source === 'config' ? '構成の `autonomy.maxLevel`' : 'テーラリングの規則から導いた値'}${cap.reason ? `。${cap.reason}` : ''})`);
   return L;
 }
 

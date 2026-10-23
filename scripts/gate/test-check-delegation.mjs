@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, parseDefectRows, parseRejection, capRefusal } from './autonomy.mjs';
+import { autonomyCap, autonomyState, autonomyNoteLines, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -38,6 +38,16 @@ const cases = [
   ['強制層に触れる(.github/**)', (i) => i.files.push({ path: '.github/workflows/gate-g5.yml', additions: 1, deletions: 1 }), false, ['条件2']],
   ['強制層に触れる(process.config.json)', (i) => (i.files = [{ path: 'process.config.json', additions: 1, deletions: 1 }]), false, ['条件2']],
   ['強制層に触れる(判定記録の置き場)', (i) => i.files.push({ path: 'docs/gates/g6-x.md', additions: 5, deletions: 0 }), false, ['条件2']],
+  // 検知の入力となる記録(欠陥の台帳・運用引き継ぎ文書)は、規則の範囲に入れても委任しない(突合 X-1)
+  ...['docs/defect-ledger.md', 'docs/handover.md'].map((f) => [
+    `検知の入力となる記録に触れる(${f}。規則の範囲が docs/** でも)`,
+    (i) => {
+      for (const r of i.config.delegation.rules) r.paths.push('docs/**');
+      i.files = [{ path: f, additions: 1, deletions: 1 }];
+    },
+    false,
+    ['条件2'],
+  ]),
   ['名前の変更で、元のパスが範囲外', (i) => (i.files[0].previousPath = 'src/pay.json'), false, ['条件2']],
   ['リスク区分が R2', (i) => setRisk(i, 'R2'), false, ['条件2']],
   ['リスク区分が未記入(選択肢のまま)', (i) => setRisk(i, 'R1 / R2 / R3'), false, ['条件2']],
@@ -233,7 +243,13 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('生成: 上限が L3 の回答では委任を許す', buildDelegation({ 'q-criticality': 'cl0', 'q-quality': 'quality-standard' }).allowed === true);
   check('生成: 上限が L3 未満の回答では委任を許さない(理由に上限を出す)', buildDelegation({ 'q-criticality': 'cl3' }).blockedBy.some((b) => /上限が L1/.test(b)));
   const table = renderAutonomyTable(base().config).join('\n');
-  check('生成: D-0 の表に、登録した変更種別の L3 と、それ以外の L1 と、計測の所在を出す', /表示文言 \| L3/.test(table) && /\| それ以外 \| L1/.test(table) && /最小標本数 30 件/.test(table) && /未計測/.test(table));
+  check('生成: D-0 の表に、登録した変更種別の L3 と、それ以外の L1 と、計測の所在を出す', /表示文言 \| L3/.test(table) && /\| それ以外 \| L1/.test(table) && /最小標本数 30 件/.test(table) && /準拠テンプレートの外/.test(table) && !/\| L3 \|[^\n]*未計測/.test(table));
+  {
+    const nr = base();
+    delete nr.config.delegation.changeTypes[0].basis.detection.reworkRate;
+    const t2 = renderAutonomyTable(nr.config).join('\n');
+    check('生成: 手戻り率の根拠が未記入の種別は、L3 と「未計測」を同じ行に出さない(L1 と出す。突合 X-4)', t2.includes('L1(手戻り率が未計測)') && !/\| L3 \|[^\n]*未計測/.test(t2));
+  }
   const s0 = autonomyState(base().config, base().records);
   check('導出: 登録した変更種別は L3、それ以外は L1', s0.types[0].level === 'L3' && s0.otherLevel === 'L1');
   check('導出: 手戻り率は降りていないと出す', /集計していない/.test(s0.rework));
@@ -255,6 +271,111 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('原因を特定できない: 止まる', autonomyState(c.config, c.records).types[0].stops.some((x) => x.kind === 'cause-unknown'));
   c.records.defects.rows[0].aiCause = 'なし';
   check('原因を特定できない: 特定して AI 起因でないと分かれば戻る', autonomyState(c.config, c.records).types[0].level === 'L3');
+  // 原因を特定できない事象は、事象の日より後に登録し直しても戻らない(突合 X-3)
+  c.records.defects.rows[0].aiCause = '特定できない';
+  c.config.delegation.changeTypes[0].registeredAt = '2026-10-10';
+  check('原因を特定できない: 事象の日より後に登録し直しても止まったまま', autonomyState(c.config, c.records).types[0].level === 'L1');
+  c.records.defects.rows[0].aiCause = 'あり';
+  check('AI 起因あり: 事象の日より後の登録の判定で戻る', autonomyState(c.config, c.records).types[0].level === 'L3');
+  c.config.delegation.changeTypes[0].registeredAt = '2026-09-30';
+  check('AI 起因あり: 事象の日より前の登録のままなら止まる(引き下げ)', autonomyState(c.config, c.records).types[0].stops.some((x) => x.kind === 'downgrade'));
+  // 出荷前に検出した欠陥は数えない(突合 X-6)
+  c.records.defects.rows[0].phase = '出荷前';
+  check('出荷前に検出した Sev1 は停止に数えない', autonomyState(c.config, c.records).types[0].level === 'L3');
+  // 判定の日より後の事象は数えない(突合 X-10)
+  c.records.defects.rows[0].phase = '運用';
+  c.records.defects.rows[0].date = '2026-10-25';
+  check('判定の日(2026-10-20)より後の事象は数えない', autonomyState(c.config, c.records).types[0].level === 'L3');
+  // 登録日の無い種別は止まる(突合 X-9)
+  const nd = base();
+  delete nd.config.delegation.changeTypes[0].registeredAt;
+  const nds = autonomyState(nd.config, nd.records).types[0];
+  check('登録日の無い種別は、理由を付けて止める', nds.level === 'L1' && nds.stops.some((x) => /registeredAt/.test(x.reason)));
+  // コア機能の理解保持者数(突合 X-2)
+  const h = base();
+  h.records.core.rows[0].holders = 1;
+  check('保持者1名: 止まる(引き下げ)', autonomyState(h.config, h.records).types[0].stops.some((x) => x.kind === 'downgrade'));
+  h.records.core.rows[0].holders = 2;
+  h.records.core.rows[0].lowUntil = '2026-10-05';
+  check('保持者が回復しても、回復の後の登録の判定が無ければ止まる', autonomyState(h.config, h.records).types[0].stops.some((x) => x.kind === 'downgrade' && /2026-10-05/.test(x.reason)));
+  h.config.delegation.changeTypes[0].registeredAt = '2026-10-06';
+  check('保持者の回復の後に登録し直すと戻る', autonomyState(h.config, h.records).types[0].level === 'L3');
+  h.records.core.history = { available: false, reason: '浅い取得' };
+  const hs = autonomyState(h.config, h.records).types[0];
+  check('運用引き継ぎ文書の履歴を読めない: 判定できないものとして止め、理由を出す', hs.level === 'L1' && hs.stops.some((x) => x.kind === 'unmeasurable' && /浅い取得/.test(x.reason)));
+  // 登録より後の、最新でない評価の日の0%の窓でも止まる(突合 X-15)
+  const e = base();
+  const july = Array.from({ length: 16 }, (_, k) => ({ ref: `00000000000000000000000000000000000001${String(k).padStart(2, '0')}`, date: `2026-07-${String(k + 1).padStart(2, '0')}`, pr: String(100 + k), files: ['src/i18n/ja.json'] }));
+  e.records.history.changes = [...july, ...e.records.history.changes];
+  e.records.rejections = [{ file: 'docs/gates/g6-PR-56.md', date: '2026-09-05', target: 'PR #56', cited: true }];
+  e.config.delegation.changeTypes[0].registeredAt = '2026-07-15';
+  const es = autonomyState(e.config, e.records).types[0];
+  check('差し戻し率0%: 最新の窓は判定可能でも、登録より後の前の月(2026-09-01)の0%の窓で止まる', es.level === 'L1' && es.rejection.state === '判定可能' && es.stops.some((x) => x.kind === 'downgrade' && /2026-09-01/.test(x.reason)));
+  e.config.delegation.changeTypes[0].registeredAt = '2026-09-02';
+  check('差し戻し率0%: その評価の日より後に登録し直すと戻る', autonomyState(e.config, e.records).types[0].level === 'L3');
+  // 判定不能は、判定可能な窓が得られた時点で、登録し直さずに戻る(突合 X-15)
+  const r = base();
+  r.config.delegation.changeTypes[0].registeredAt = '2026-08-20';
+  r.records.asOf = '2026-09-20';
+  const rs1 = autonomyState(r.config, r.records);
+  check('判定不能からの回復: 窓が最小標本数に満たない間は止める', rs1.types[0].level === 'L1' && rs1.types[0].rejection.state === '判定不能');
+  r.records.asOf = '2026-10-20';
+  check('判定不能からの回復: 判定可能な窓が得られると、登録し直さずに戻る', autonomyState(r.config, r.records).types[0].level === 'L3');
+  // 表示は判定不能を「異常なし」と書かない(突合 X-15)
+  const lines1 = autonomyNoteLines(rs1).join('\n');
+  check('表示: 判定不能を出し、「異常なし」と書かない', /判定不能/.test(lines1) && !/異常なし/.test(lines1) && /判定を待たずに戻る/.test(lines1));
+  const lines0 = autonomyNoteLines(autonomyState(base().config, base().records)).join('\n');
+  check('表示: 停止の無い種別でも「異常なし」と書かず、手戻り率を集計していないと出す', /停止なし/.test(lines0) && !/異常なし/.test(lines0) && /集計していない/.test(lines0));
+  // 上限の理由(突合 X-16)
+  const capNoQ = autonomyCap({ configured: true, answers: {} });
+  check('上限: 回答に安全重要度の無い構成は L1 とし、理由を出す', capNoQ.level === 'L1' && /q-criticality/.test(capNoQ.reason));
+  check('上限: CL2 の L2 は、安全関連部の範囲を持たないため案件の全体へ掛ける旨を出す', /案件の全体/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? ''));
+}
+
+// 履歴の読み方(実際の git。突合 X-15)
+{
+  const os = await import('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autonomy-git-'));
+  const g = (args, date = null) =>
+    execFileSync('git', args, {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, ...(date ? { GIT_AUTHOR_DATE: `${date}T12:00:00`, GIT_COMMITTER_DATE: `${date}T12:00:00` } : {}) },
+    });
+  try {
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 't@example.com']);
+    g(['config', 'user.name', 't']);
+    g(['config', 'commit.gpgsign', 'false']);
+    const commit = (date, file, text, msg) => {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), text);
+      g(['add', '-A']);
+      g(['commit', '-q', '-m', msg], date);
+    };
+    commit('2026-07-01', 'src/i18n/ja.json', '1', 'fix: 文言 (#10)');
+    commit('2026-08-01', 'docs/handover.md', 'v1', 'docs: 引き継ぎ');
+    commit('2026-09-01', 'src/i18n/ja.json', '2', 'fix: 文言 (#11)');
+    commit('2026-10-01', 'docs/handover.md', 'v2', 'docs: 引き継ぎ');
+    const all = readHistory({ root: dir });
+    check('履歴: 実際の git から変更の日付・PR 番号((#N))・ファイルを読む', all.available && all.changes.length === 4 && all.changes.some((c) => c.pr === '11' && c.date === '2026-09-01' && c.files.join() === 'src/i18n/ja.json'));
+    const ranged = readHistory({ root: dir, since: '2026-08-01', until: '2026-09-15' });
+    check('履歴: --since と --until で期間を絞る', ranged.changes.map((c) => c.date).sort().join() === '2026-08-01,2026-09-01', ranged.changes.map((c) => c.date).join());
+    const hv = readHandoverVersions({ root: dir, until: '2026-09-15' });
+    check('履歴: 運用引き継ぎ文書の版を古い順に、判定の日までに限って読む', hv.available && hv.list.length === 1 && hv.list[0].text === 'v1' && hv.list[0].date === '2026-08-01');
+    const shallow = fs.mkdtempSync(path.join(os.tmpdir(), 'autonomy-shallow-'));
+    try {
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dir}`, shallow], { stdio: 'ignore' });
+      const sh = readHistory({ root: shallow });
+      const shv = readHandoverVersions({ root: shallow });
+      check('履歴: 浅い取得(shallow)は読めないものとし、理由を出す', !sh.available && /浅い取得/.test(sh.reason) && !shv.available && /浅い取得/.test(shv.reason));
+    } finally {
+      fs.rmSync(shallow, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // 記録の読み方(欠陥の台帳と G-6 の判定記録)
