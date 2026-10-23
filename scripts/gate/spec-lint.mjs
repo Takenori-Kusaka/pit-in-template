@@ -27,7 +27,7 @@
 //   node scripts/gate/spec-lint.mjs --gate G-2 specs/F-NNN
 //   node scripts/gate/spec-lint.mjs --gate G-4 specs/F-NNN
 // 曖昧語の検出に加えて、次を出します。G-5 の CI は --gate を付けずに実行するため、CI の合否は変わりません。
-//   - 未確定事項の印([NEEDS CLARIFICATION])の件数と行(G-2 基準6・G-4 基準7)。1件でも残れば失敗させます
+//   - 未確定事項の印([NEEDS CLARIFICATION])の件数と行(G-2・G-4 の前提条件1)。1件でも残れば失敗させます(判定を開始しない)
 //     (判定を開始しない)。コードブロック・HTML コメント・インラインコードの中は数えません
 //   - G-4 のときは、どのタスクの「対応する受入基準」にも現れない受入基準の一覧(G-4 基準6)。
 //     一覧は判定の材料で、合否に使いません(判定者が見て判定する)。対応の内容と束ね方は見ません
@@ -178,7 +178,7 @@ if (GATE) {
       open++;
       continue;
     }
-    const basis = GATE === 'G-2' ? 'G-2 基準6' : 'G-4 基準7';
+    const basis = `${GATE} 前提条件1`;
     if (c.count) {
       open += c.count;
       fail(
