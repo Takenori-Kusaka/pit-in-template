@@ -323,6 +323,9 @@ const text = render(result, { number, merge: mergeNote });
 console.log(text);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
 
+// 判定の結果をワークフローの後続のジョブへ渡す(delegation.yml の merge は eligible のときだけ動く)
+if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `eligible=${result.eligible ? 'true' : 'false'}\n`);
+
 if (has('--status')) {
   postStatus(
     headSha,

@@ -236,8 +236,8 @@ node scripts/gate/test-check-delegation.mjs
 
 1. 必須承認を回避できる権限を持つ、**専用の**トークンを用意する(GitHub App、または専用の機械アカウント)。人の個人トークンを使わない
 2. そのトークンの主体を、ブランチ保護(ルールセット)のバイパスの一覧へ加える
-3. **ワークフローが参照する前に**、Environment `delegated-merge` を作る(Settings → Environments)。配備のブランチは「Selected branches」で既定ブランチだけに限る。参照した Environment が無いと、保護の無い Environment が自動で作られる
-4. Environment `delegated-merge` の秘密情報 `DELEGATED_MERGE_TOKEN` へトークンを登録する。**リポジトリの秘密情報には置かない**(任意のブランチのワークフローから読めるため。手動の起動は、選んだブランチのワークフローの定義で動く)
+3. **ワークフローが参照する前に**、Environment `delegated-merge` を作る(Settings → Environments)。配備のブランチは「Selected branches」で既定ブランチだけに限る。参照した Environment が無いと、保護の無い Environment が自動で作られる。Environment を参照するのは、変数 `DELEGATED_MERGE_ENABLED` が `true` のときだけ動くマージのジョブ(`delegation-merge`)である。判定のジョブ(`delegation-check`)は参照しないため、有効化するまで Environment は作られない。既定ブランチ以外へ向けた PR では、マージのジョブを Environment が拒む
+4. Environment `delegated-merge` の秘密情報 `DELEGATED_MERGE_TOKEN` へトークンを登録する。**リポジトリの秘密情報には置かない**(任意のブランチのワークフローから読めるため。手動の起動は、選んだブランチのワークフローの定義で動く)。以前の手順でリポジトリの秘密情報 `DELEGATED_MERGE_TOKEN` を置いた場合は、それを削除する(残っている限り、任意のブランチのワークフローから読める)
 5. リポジトリの変数 `DELEGATED_MERGE_ENABLED` を `true` にする
 6. 試験用のリポジトリで、該当する変更と該当しない変更を流し、期待どおりに動くことを確かめる。既定ブランチ以外から手動で起動したジョブを、Environment が拒むことも確かめる
 
