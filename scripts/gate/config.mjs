@@ -171,50 +171,101 @@ export function personName(config, ref) {
   return findPerson(config, ref)?.name ?? normName(ref);
 }
 
+/** 名簿の体制の内の人(外部の確認者・任命権者を除く)の数。氏名の確認で本人の記名を受け付けるかに使う */
+export function insiderCount(config) {
+  return (Array.isArray(config?.people) ? config.people : []).filter((p) => p && p.external !== true).length;
+}
+
 /**
- * 氏名の確認(nameConfirmed)の有効な記録。変化点の記録(changeLog[].nameConfirmations の { id } と decidedBy)のうち、
- * 確認された本人以外が、AI の名義でなく記名したものに限る(アカウント名の確認と同じ。process-compass #296 裁定 8 の付記)。
- * キーは名簿の id、値は { decidedBy, date }
+ * 氏名の確認(nameConfirmed)の記録。変化点の記録(changeLog[].nameConfirmations の { id } と decidedBy)のうち、AI の名義でない
+ * 名簿の人が記名したもの。キーは名簿の id、値は { decidedBy, date, self }。self は確認された本人の記名(自己申告)。
+ * 本人の記名を有効に数えるのは、体制の内の人が1名の名簿に限る(nameConfirmationState。process-compass #296 裁定 8 の付記と追加の裁定)
  */
 export function confirmedNames(config) {
   const out = new Map();
   for (const e of config?.changeLog ?? []) {
     for (const c of Array.isArray(e?.nameConfirmations) ? e.nameConfirmations : []) {
       if (!c?.id || !e.decidedBy) continue;
-      if (aiNameReason(e.decidedBy)) continue;
       const by = findPerson(config, e.decidedBy)?.id ?? null;
-      if (!by || by === c.id) continue;
-      out.set(c.id, { decidedBy: e.decidedBy, date: e.date ?? null });
-    }
-  }
-  return out;
-}
-
-/** 名簿の人の氏名の確認が効くか(nameConfirmed: true と、本人以外の記名の記録の両方) */
-export function nameConfirmedValid(config, person) {
-  return person?.nameConfirmed === true && Boolean(person.id) && confirmedNames(config).has(person.id);
-}
-
-/** 名簿の nameConfirmed のうち、本人以外の記名の記録が無い確認(契約検査が落とす) */
-export function nameConfirmationProblems(config) {
-  const out = [];
-  for (const p of config?.people ?? []) {
-    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
-    if (!nameConfirmedValid(config, p)) {
-      out.push(
-        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、本人以外が記名した変化点の記録がありません。この確認は効かず、名義は AI の名義として拒否されます。` +
-          '確認は /process-change(種別 accountable)で、本人以外の決定した者の記名(decidedBy)を付けて行います(#296 より前に書いた確認も、記名し直します)'
-      );
+      if (!by) continue;
+      const self = by === c.id;
+      // 本人以外の記名は、AI を示す語を含まない名義に限る。本人の記名は、確認される氏名そのものが語を含むため、語では落とさない
+      if (!self && aiNameReason(e.decidedBy)) continue;
+      const prev = out.get(c.id);
+      // 本人以外の記名があれば、それを優先する
+      if (!prev || (prev.self && !self)) out.set(c.id, { decidedBy: e.decidedBy, date: e.date ?? null, self });
     }
   }
   return out;
 }
 
 /**
+ * 名簿の人の氏名の確認の状態。nameConfirmed: true でなければ null。
+ *   'other'       本人以外が記名した記録がある(効く)
+ *   'self'        本人が記名した記録がある。体制の内の人が1名の名簿でだけ効き、自己申告の氏名として開示する
+ *   'unrecorded'  記録が無い(#296 より前に書いた確認を含む)。体制の内の人が1名の名簿では効かせ、未記録として出す
+ *   'invalid'     2名以上の名簿で、本人以外の記名の記録が無い(効かない。契約検査が落とす)
+ */
+export function nameConfirmationState(config, person) {
+  if (person?.nameConfirmed !== true || !person.id) return null;
+  const rec = confirmedNames(config).get(person.id);
+  if (rec && !rec.self) return 'other';
+  const single = insiderCount(config) === 1;
+  if (!single) return 'invalid';
+  return rec ? 'self' : 'unrecorded';
+}
+
+/** 名簿の人の氏名の確認が効くか */
+export function nameConfirmedValid(config, person) {
+  const st = nameConfirmationState(config, person);
+  return st === 'other' || st === 'self' || st === 'unrecorded';
+}
+
+const RECORD_NAME_CONFIRMATION = '/process-change(種別 accountable)で、名簿をそのまま渡し、決定した者の記名(decidedBy)と理由を付けて記録します';
+
+/** 名簿の nameConfirmed のうち、2名以上の名簿で本人以外の記名の記録が無い確認(契約検査が落とす) */
+export function nameConfirmationProblems(config) {
+  const out = [];
+  for (const p of config?.people ?? []) {
+    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    if (nameConfirmationState(config, p) === 'invalid') {
+      out.push(
+        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、本人以外が記名した変化点の記録がありません。体制の内の人が2名以上の名簿では、この確認は効かず、名義は AI の名義として拒否されます。` +
+          `${RECORD_NAME_CONFIRMATION}。記名するのは本人以外の名簿の人です(#296 より前に書いた確認も、記名し直します)`
+      );
+    }
+  }
+  return out;
+}
+
+/** 落とさないが知らせる氏名の確認(体制の内の人が1名の名簿の、自己申告の確認と記録の無い確認)。/pit と契約検査の注記へ出す */
+export function nameConfirmationNotices(config) {
+  const out = [];
+  for (const p of config?.people ?? []) {
+    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    const st = nameConfirmationState(config, p);
+    if (st === 'unrecorded') {
+      out.push(`人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、変化点の記録がありません(未記録の確認)。1名の体制のため効かせていますが、記録してください: ${RECORD_NAME_CONFIRMATION}`);
+    } else if (st === 'self') {
+      out.push(`人の名簿 ${p.name} の氏名は、本人の記名による確認です(自己申告の氏名。1名の体制のため受け付けています)。2人目が名簿に加わったら、本人以外が記名し直します`);
+    }
+  }
+  return out;
+}
+
+/** 名義の機械検査を上書きした確認の内訳。{ name, how }。how は 'other' / 'self'(自己申告)/ 'unrecorded'(未記録) */
+export function nameOverrideDetails(config) {
+  const roster = Array.isArray(config?.people) ? config.people : [];
+  return roster
+    .filter((p) => aiNameReason(p?.name) && nameConfirmedValid(config, p))
+    .map((p) => ({ name: normName(p.name), how: nameConfirmationState(config, p) }));
+}
+
+/**
  * 記名として受け付けない理由を返す。受け付ける場合は null。
  *
  * AI を示す語に当たった名義は、既定では拒否する。名簿の該当者に、人が確認した旨(nameConfirmed: true)があり、
- * その確認を本人以外が記名した記録がある場合に限り通す(nameConfirmedValid)。通した名義は nameOverrides が返し、出力へ表示する。
+ * その確認を本人以外が記名した記録がある場合(体制の内の人が1名の名簿では、本人の記名と未記録も)に限り通す(nameConfirmedValid)。通した名義は nameOverrides が返し、出力へ表示する。
  * 担い手の識別と同じ文字列と、名簿に無い名義の拒否は、上書きできない(nameProblems)
  */
 export function aiNameBlocked(config, name) {
@@ -224,7 +275,7 @@ export function aiNameBlocked(config, name) {
   return nameConfirmedValid(config, person) ? null : why;
 }
 
-/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧。本人以外の記名の記録がある確認に限る) */
+/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧。効いている確認に限る。内訳は nameOverrideDetails) */
 export function nameOverrides(config) {
   const roster = Array.isArray(config.people) ? config.people : [];
   return roster.filter((p) => nameConfirmedValid(config, p) && aiNameReason(p.name)).map((p) => normName(p.name));

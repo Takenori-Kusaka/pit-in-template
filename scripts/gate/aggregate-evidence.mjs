@@ -75,6 +75,7 @@ import {
   outagePeriods,
   aiNameBlocked,
   nameOverrides,
+  nameOverrideDetails,
   configIntegrityProblems,
   isRealDay,
   localDay,
@@ -2513,6 +2514,8 @@ if (isMain) {
     objectionSelfAccepted,
     rosterPresent: roster.length > 0,
     nameOverrides: nameOverrides(config),
+    // 上書きの内訳。self は自己申告の氏名(1名の体制の本人の記名)、unrecorded は未記録の確認(追加の裁定)
+    nameOverrideDetails: nameOverrideDetails(config),
     changes: {
       total: changesTotal,
       withoutIndependentHuman,
@@ -4073,11 +4076,17 @@ if (isMain) {
     }
     if (external && A.independence.nameOverrides.length) {
       R.push('');
-      R.push(`名義の機械検査を人が上書きした記録: ${A.independence.nameOverrides.length} 件(内容は組織の内側の開示にある)`);
+      const selfCount = (A.independence.nameOverrideDetails ?? []).filter((d) => d.how === 'self' || d.how === 'unrecorded').length;
+      R.push(`名義の機械検査を人が上書きした記録: ${A.independence.nameOverrides.length} 件${selfCount ? `(うち自己申告・未記録の確認 ${selfCount} 件。1名の体制)` : ''}(内容は組織の内側の開示にある)`);
     } else {
+      const how = new Map((A.independence.nameOverrideDetails ?? []).map((d) => [d.name, d.how]));
       for (const n of A.independence.nameOverrides) {
         R.push('');
-        R.push(`名義の機械検査を人が上書きした: ${n}`);
+        const h = how.get(n);
+        R.push(
+          `名義の機械検査を人が上書きした: ${n}` +
+            (h === 'self' ? '(自己申告の氏名。1名の体制で、本人の記名による確認)' : h === 'unrecorded' ? '(未記録の確認。1名の体制のため効かせている。変化点の記録が無い)' : '')
+        );
       }
     }
     if (!A.independence.rosterPresent) {

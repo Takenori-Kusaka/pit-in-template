@@ -59,7 +59,8 @@ import {
   RULE_APPROVER_SEAT,
   belowMinimumStaffing,
   nameOverrides,
-  nameConfirmedValid,
+  nameConfirmationState,
+  insiderCount,
   delegationRuleProblems,
   ruleChangeDirection,
   findPerson,
@@ -1288,8 +1289,11 @@ export function diffConfig(before, after) {
   const nameConfirmItems = [];
   for (const [id, p] of Object.entries(ap)) {
     if (p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
-    if (nameConfirmedValid(before, { ...p, id })) continue;
-    const line = `人の名簿: ${p.name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き)`;
+    // 記録で効いている確認(本人以外の記名、1名の体制の本人の記名)は項目にしない。未記録の確認と、2名以上になって本人の記名では
+    // 足りなくなった確認は、この変化点で記名して記録する(追加の裁定。1名の体制は本人の記名を受け付ける)
+    const st = nameConfirmationState({ ...after, changeLog: before.changeLog ?? [] }, { ...p, id });
+    if (st === 'other' || st === 'self') continue;
+    const line = `人の名簿: ${p.name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き${insiderCount(after) === 1 ? '。1名の体制のため本人の記名を受け付け、自己申告の氏名として開示する' : ''})`;
     diff.push(line);
     nameConfirmItems.push({ id, name: p.name, line });
   }
@@ -4345,8 +4349,10 @@ if (isMain) {
       } else {
         for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
         const by = personKey(config, change.decidedBy);
+        // 体制の内の人が1名の名簿では、本人の記名を受け付ける(自己申告の氏名として記録し、開示する)
+        const single = insiderCount(config) === 1;
         for (const i of report.nameConfirmItems) {
-          if (by === i.id) refused.push(`${i.name} の氏名の確認を、本人の記名では確定できません。本人以外の人の名簿の人が記名します`);
+          if (by === i.id && !single) refused.push(`${i.name} の氏名の確認を、本人の記名では確定できません。体制の内の人が2名以上の名簿では、本人以外の人の名簿の人が記名します`);
         }
       }
     }
