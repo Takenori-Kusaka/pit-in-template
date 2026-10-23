@@ -418,7 +418,7 @@ scenario('承認者の数: 承認の後の変更要求は承認を取り下げ�
   const rows = [
     ['スタック: 既定ブランチから読むと、下の層で緩めた基準値で上の層を判定しない(size:over を出す)', () => {
       const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
-      return r.size?.sizeOver === true && r.policy?.ref === 'main' && r.policy.sameAsBase === false && r.notices.some((x) => /既定ブランチ\(main\)から読む/.test(x));
+      return r.size?.sizeOver === true && r.policy?.ref === 'main' && r.policy.sameAsBase === false && r.notices.some((x) => /既定ブランチ\(main\)の先端から読む/.test(x));
     }],
     ['スタック: 既定ブランチを渡さない(手元)と、基底(下の層)の基準値で判定する(差を確かめる対照)', () => {
       const r = analyzePr({ root: TMP, base: 'stack-lower', pr });
@@ -437,6 +437,46 @@ scenario('承認者の数: 承認の後の変更要求は承認を取り下げ�
       return r.errors.some((e) => /既定ブランチ origin\/no-such-branch を解決できません/.test(e));
     }],
   ];
+  // 下の層で区分の下限の規則を外し、上の層の停止の申し立ての解除の記録を足す(process-compass #294 突合 X-11)
+  git('switch', '-q', '-C', 'stack-lower2', 'main');
+  {
+    const cfg = JSON.parse(read('process.config.json'));
+    delete cfg.riskFloor;
+    write('process.config.json', cfg);
+  }
+  write('docs/gates/stop-stack-993.md', release(993, '佐藤 花子'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'lower2: 区分の下限の規則を外し、解除の記録を足す');
+  git('switch', '-q', '-C', 'stack-upper2', 'stack-lower2');
+  write('src/auth/stacked.js', lines(10, 'a'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'upper2: 認証のコード');
+  const pr2 = { number: 993, title: 'feat: y', body: BODY(), author: 'yamada', labels: STOP };
+  const authHit = (r) => Boolean(r.riskFloor?.hits.some((h) => h.id === 'auth'));
+  rows.push(
+    ['スタック: 下の層で外した区分の下限の規則は、既定ブランチから読むと効かない(R1 の下限が残る)', () => (git('switch', '-q', 'stack-upper2'), authHit(analyzePr({ root: TMP, base: 'stack-lower2', policyBase: 'main', pr: pr2 })))],
+    ['スタック: 区分の下限の規則の対照(既定ブランチを渡さないと、下の層の規則で下限が外れる)', () => (git('switch', '-q', 'stack-upper2'), !authHit(analyzePr({ root: TMP, base: 'stack-lower2', pr: pr2 })))],
+    ['スタック: 下の層に足した停止の申し立ての解除の記録は、既定ブランチから読むと数えない', () => {
+      git('switch', '-q', 'stack-upper2');
+      const r = analyzePr({ root: TMP, base: 'stack-lower2', policyBase: 'main', pr: pr2 });
+      return r.stop?.requested === true && !r.stop.released && r.errors.some((e) => /停止の申し立て/.test(e));
+    }],
+    ['スタック: 停止の解除の記録の対照(既定ブランチを渡さないと、下の層の解除で通る)', () => {
+      git('switch', '-q', 'stack-upper2');
+      const r = analyzePr({ root: TMP, base: 'stack-lower2', pr: pr2 });
+      return r.stop?.requested === true && r.stop.released === true;
+    }],
+  );
+  // 既定ブランチの構成が未設定で、PR の基底(下の層)が設定済み → PR の側の構成へ戻らず失敗する(突合 X-10)
+  git('switch', '-q', '-C', 'unconfigured-default', 'main');
+  git('rm', '-q', 'process.config.json');
+  git('commit', '-q', '-m', '構成を外した既定ブランチ');
+  rows.push(['スタック: 既定ブランチに構成が無く、基底に構成がある場合は失敗する(PR の側の構成へ戻らない)', () => {
+    git('switch', '-q', 'stack-upper');
+    const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'unconfigured-default', pr });
+    return r.errors.some((e) => /構成\(process\.config\.json\)が未設定ですが、PR の基底 stack-lower は設定済み/.test(e));
+  }]);
+  git('switch', '-q', 'stack-upper');
   for (const [name, fn] of rows) {
     let ok = false;
     try {
