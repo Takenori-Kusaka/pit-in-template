@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
+import { autonomyCap, autonomyState, parseDefectRows, parseRejection, capRefusal } from './autonomy.mjs';
+import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
 const base = () => JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
@@ -25,6 +27,9 @@ const reviewerOnly = (input) => {
   input.config.delegation.rules = input.config.delegation.rules.filter((r) => r.id !== 'DR-001');
   for (const c of input.commits) c.message = c.message.replace('DR-001', 'DR-002');
 };
+
+// 欠陥の台帳の行(Sev1・Sev2 の AI 起因。第5章 5.4.6)
+const sev = (severity, aiCause, date, changeTypes = null) => ({ id: 'BUG-9', severity, aiCause, date, changeTypes });
 
 // [場面, 入力を変える関数, 該当するか(G-6 を事後へ移す委任), 満たさないはずの条件, 扱い(省略時は該当=post-hoc / 該当しない=collab)]
 const cases = [
@@ -120,7 +125,31 @@ const cases = [
   ['Draft の PR', (i) => (i.pr.draft = true), false, ['前提']],
   ['基底が既定ブランチでない', (i) => (i.pr.baseRef = 'release'), false, ['前提']],
   ['フォークからの PR', (i) => (i.pr.fromFork = true), false, ['前提']],
-  ['プロセス構成が未設定', (i) => (i.config.configured = false), false, ['前提']],
+  ['プロセス構成が未設定', (i) => (i.config.configured = false), false, ['前提', '5.4.6']],
+  // 第5章 5.4.6。登録した変更種別の停止(第1区分・第2区分・上限)。止まった種別の変更は協働で扱う
+  ['5.4.6: AI 起因の Sev1(登録の判定より後)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05')), false, ['5.4.6']],
+  ['5.4.6: 原因を特定できない Sev2', (i) => i.records.defects.rows.push(sev('Sev2', '特定できない', '2026-10-05')), false, ['5.4.6']],
+  ['5.4.6: AI 起因の欄が空欄の Sev1(特定できないと同じく扱う)', (i) => i.records.defects.rows.push(sev('Sev1', '', '2026-10-05')), false, ['5.4.6']],
+  ['5.4.6: 発生日の無い AI 起因の Sev1', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', null)), false, ['5.4.6']],
+  ['5.4.6: AI 起因でない Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'なし', '2026-10-05')), true, []],
+  ['5.4.6: AI 起因の Sev3 は止めない', (i) => i.records.defects.rows.push(sev('Sev3', 'あり', '2026-10-05')), true, []],
+  ['5.4.6: 登録の判定より前の AI 起因の Sev1 は止めない(登録し直した)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-09-01')), true, []],
+  ['5.4.6: ほかの変更種別だけの AI 起因の Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05', ['決済'])), true, []],
+  ['5.4.6: 欠陥の台帳が無い(判定できない)', (i) => (i.records.defects = { present: false, rows: [] }), false, ['5.4.6']],
+  ['5.4.6: コア機能の理解保持者数が1名', (i) => (i.records.core.rows[0].holders = 1), false, ['5.4.6']],
+  ['5.4.6: コア機能の理解保持者数が0名(2名から一度に減った)', (i) => (i.records.core.rows[0].holders = 0), false, ['5.4.6']],
+  ['5.4.6: 関わらない種別のコア機能の保持者1名は止めない', (i) => Object.assign(i.records.core.rows[0], { holders: 1, changeTypes: [] }), true, []],
+  ['5.4.6: 運用引き継ぎ文書が無い(判定できない)', (i) => (i.records.core = { present: false, rows: [] }), false, ['5.4.6']],
+  ['5.4.6: 差し戻し率0%の2か月継続(最小標本数以上)', (i) => (i.records.rejections = []), false, ['5.4.6']],
+  ['5.4.6: 判定基準の番号を引かない差し戻しは数えない(0%の継続を切らない)', (i) => (i.records.rejections[0].cited = false), false, ['5.4.6']],
+  ['5.4.6: 窓が最小標本数に満たない(判定不能)', (i) => (i.records.history.changes = i.records.history.changes.slice(0, 29)), false, ['5.4.6']],
+  ['5.4.6: 範囲外の変更は母数に数えない(判定不能)', (i) => i.records.history.changes.slice(0, 3).forEach((c) => (c.files = ['src/pay.js'])), false, ['5.4.6']],
+  ['5.4.6: 既定ブランチの履歴を読めない(浅い取得)', (i) => (i.records.history = { available: false, reason: '浅い取得', changes: [] }), false, ['5.4.6']],
+  ['5.4.6: 検知の記録を渡していない', (i) => delete i.records, false, ['5.4.6']],
+  ['5.4.6: AI自律レベルの上限が L2(構成)', (i) => (i.config.autonomy = { maxLevel: 'L2', source: 'tailoring' }), false, ['5.4.6']],
+  ['5.4.6: 上限の欄の無い旧い構成は回答から導く(CL0 は L3)', (i) => delete i.config.autonomy, true, []],
+  // 検知条件から外した欄が残る旧い構成は、読まずに受け付ける(登録の要件にも数えない)
+  ['旧い構成の外した検知条件の欄は読まない', (i) => (i.config.delegation.changeTypes[0].basis.detection.duplicationRate = '旧い記入'), true, []], // retired-ok: 外した旧い欄の後方互換を試す
 ];
 
 let failed = 0;
@@ -191,6 +220,63 @@ check('ワークフロー: 判定のジョブは Environment を参照しない(
 check('ワークフロー: マージのジョブだけが、既定ブランチに限った Environment の秘密情報からトークンを読み、有効化の変数で動く', /^\s{4}environment:\s*delegated-merge\s*$/m.test(jobBlock('merge')) && /vars\.DELEGATED_MERGE_ENABLED == 'true'/.test(jobBlock('merge')) && /secrets\.DELEGATED_MERGE_TOKEN/.test(jobBlock('merge')));
 check('ワークフロー: pull_request_review で動かない(PR の側の定義で動くため)', !/^\s{2}pull_request_review:/m.test(body));
 check('ワークフロー: pull_request ではなく pull_request_target で動く(定義を基底ブランチから読む)', /^\s{2}pull_request_target:/m.test(body) && !/^\s{2}pull_request:/m.test(body));
+
+check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓。浅い取得では判定できない)', (body.match(/fetch-depth:\s*0/g) ?? []).length === 2);
+
+// AI自律レベルの上限と導出(第5章 5.4.4・5.4.6)
+{
+  const cfg = (answers) => ({ configured: true, answers });
+  check('上限: 欄の無い旧い構成の CL0 は L3', autonomyCap(cfg({ 'q-criticality': 'cl0' })).level === 'L3');
+  check('上限: 欄の無い旧い構成の CL2 は L2(登録を拒む)', autonomyCap(cfg({ 'q-criticality': 'cl2' })).level === 'L2' && capRefusal(cfg({ 'q-criticality': 'cl2' })) !== null);
+  check('上限: 欄の無い旧い構成の CL3 は L1', autonomyCap(cfg({ 'q-criticality': 'cl3' })).level === 'L1');
+  check('上限: 未設定の構成は L1', autonomyCap({ configured: false }).level === 'L1');
+  check('生成: 上限が L3 の回答では委任を許す', buildDelegation({ 'q-criticality': 'cl0', 'q-quality': 'quality-standard' }).allowed === true);
+  check('生成: 上限が L3 未満の回答では委任を許さない(理由に上限を出す)', buildDelegation({ 'q-criticality': 'cl3' }).blockedBy.some((b) => /上限が L1/.test(b)));
+  const table = renderAutonomyTable(base().config).join('\n');
+  check('生成: D-0 の表に、登録した変更種別の L3 と、それ以外の L1 と、計測の所在を出す', /表示文言 \| L3/.test(table) && /\| それ以外 \| L1/.test(table) && /最小標本数 30 件/.test(table) && /未計測/.test(table));
+  const s0 = autonomyState(base().config, base().records);
+  check('導出: 登録した変更種別は L3、それ以外は L1', s0.types[0].level === 'L3' && s0.otherLevel === 'L1');
+  check('導出: 手戻り率は降りていないと出す', /集計していない/.test(s0.rework));
+  // 差し戻し率0%で止めた種別は、評価の日より後の登録で戻る
+  const z = base();
+  z.records.rejections = [];
+  check('差し戻し率0%: 評価の日(2026-10-01)より前の登録では止まる', autonomyState(z.config, z.records).types[0].level === 'L1');
+  z.config.delegation.changeTypes[0].registeredAt = '2026-10-02';
+  const zs = autonomyState(z.config, z.records).types[0];
+  check('差し戻し率0%: 評価の日より後に登録し直すと、引き下げは戻る(最新の窓は0%と表示する)', zs.level === 'L3' && zs.rejection.state === '0%');
+  // 判定不能は、判定可能な窓が得られた時点で戻る(登録の判定を待たない)
+  const u = base();
+  u.records.history.changes = u.records.history.changes.slice(0, 20);
+  const us = autonomyState(u.config, u.records).types[0];
+  check('判定不能: 適用の条件の欠落として止め、「判定不能」と表示する', us.level === 'L1' && us.rejection.state === '判定不能' && us.stops.every((x) => x.kind === 'unmeasurable'));
+  // 原因を特定できない事象は、「なし」へ改めれば戻る
+  const c = base();
+  c.records.defects.rows.push({ id: 'BUG-1', severity: 'Sev1', aiCause: '特定できない', date: '2026-10-05', changeTypes: null });
+  check('原因を特定できない: 止まる', autonomyState(c.config, c.records).types[0].stops.some((x) => x.kind === 'cause-unknown'));
+  c.records.defects.rows[0].aiCause = 'なし';
+  check('原因を特定できない: 特定して AI 起因でないと分かれば戻る', autonomyState(c.config, c.records).types[0].level === 'L3');
+}
+
+// 記録の読み方(欠陥の台帳と G-6 の判定記録)
+{
+  const ledger = [
+    '| ID | 現象 | 重大度(Sev1 / Sev2 / Sev3) | 優先度 | 状態(未解決 / 解決済み) | コア機能(はい / いいえ) | 回避策(文書の所在) | 発生日 | AI 起因(あり / なし / 特定できない) | 原因の変更 | 登録した変更種別 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| BUG-1 | 停止 | Sev1 | 高 | 解決済み | はい | — | 2026-10-05 | あり | PR #50 | 表示文言 |',
+    '| BUG-2 | 遅延 | Sev2 | 中 | 未解決 | いいえ | docs/x.md | 2026-10-06 | | | なし |',
+  ].join('\n');
+  const rows = parseDefectRows(ledger);
+  check('欠陥の台帳: AI 起因・発生日・変更種別の列を読む', rows[0].aiCause === 'あり' && rows[0].date === '2026-10-05' && rows[0].changeTypes.join() === '表示文言');
+  check('欠陥の台帳: 空欄の AI 起因は空欄として読み、「なし」の変更種別は関わる種別なしと読む', rows[1].aiCause === '' && rows[1].changeTypes.length === 0);
+  const old = parseDefectRows('| ID | 現象 | 重大度 | 優先度 | 状態 |\n| --- | --- | --- | --- | --- |\n| BUG-3 | 停止 | Sev1 | 高 | 未解決 |');
+  check('欠陥の台帳: 列の無い旧い台帳は、AI 起因を空欄・すべての種別として読む', old[0].aiCause === '' && old[0].changeTypes === null);
+  const gate = (reason) =>
+    ['| 項目 | 値 |', '| --- | --- |', '| ゲート | G-6 独立レビュー |', '| 対象 | PR #45 |', '| 判定日時 | 2026-08-07 10:00 |', '| 結果 | 差し戻し |', '', '## 差し戻しの理由', '', reason].join('\n');
+  check('判定記録: 判定基準の番号を引いた差し戻しを数える', parseRejection(gate('基準3を満たしていません。境界の値のテストが無い。')).cited === true);
+  check('判定記録: 番号を引かない差し戻しは数えない', parseRejection(gate('全体的に見直してください。')).cited === false);
+  check('判定記録: 様式の例の文は番号の引用に数えない', parseRejection(gate('> 項目2を満たしていません。受入基準3に対応するテストが見つかりません。')).cited === false);
+  check('判定記録: 通過の記録は差し戻しに数えない', parseRejection(gate('').replace('差し戻し |', '通過 |')) === null);
+}
 
 console.log('');
 if (failed) {

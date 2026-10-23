@@ -32,6 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { readPolicy } from '../gate/org-assurance.mjs';
+import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import {
   reviewersRequiredOf,
@@ -476,6 +477,9 @@ export function buildDelegation(answers, prev = {}) {
   const blockedBy = [];
   if (answers['q-criticality'] !== 'cl0') blockedBy.push('安全重要度が CL1 以上');
   if (answers['q-quality'] === 'quality-regulated') blockedBy.push('規制業に該当する');
+  // 委任の登録は L3 の適用である(第5章 5.4.4)。準拠テンプレートは L2 を支えないため、上限が L3 未満なら委任しない
+  const cap = capFromAnswers(answers, KB);
+  if (levelRank(cap) < levelRank('L3')) blockedBy.push(`AI自律レベルの上限が ${cap}(テーラリング)`);
   return {
     allowed: blockedBy.length === 0,
     blockedBy,
@@ -772,6 +776,9 @@ export function buildConfig(answers, opts = {}) {
     people,
     seats,
     delegation,
+    // AI自律レベルの上限(テーラリングの maxAutonomyLevel。規則が置かない回答は L3)。レベルそのものは書かない。
+    // 登録した変更種別は L3、それ以外は L1 として、委任の登録から導く(scripts/gate/autonomy.mjs)
+    autonomy: { maxLevel: capFromAnswers(answers, KB), source: 'tailoring' },
     ci: {
       coverageThreshold,
       derivedCoverageThreshold: derivedCoverage,
@@ -2072,6 +2079,36 @@ const D0_SEAT_NOTE = {
 const cell = (v) => String(v ?? '').replace(/\|/g, '/').replace(/\r?\n/g, ' ');
 
 /** D-0 の生成区間1つの中身を返す。構成が未設定のときは、空欄の表を返す(様式の初期状態) */
+/**
+ * AI自律レベルの適用の表(標準 第6章 テンプレ0 表7 の下、第5章 5.4.4・5.4.6)。レベルは委任の登録から導く。
+ * 停止は判定のたびに記録から導くため、この生成区間には書かず、所在を書く(区間を構成だけから決めるため)
+ */
+export function renderAutonomyTable(config, blank = false) {
+  const L = [];
+  L.push('AI自律レベルの適用(標準 第5章 5.4.4・5.4.6。レベルは委任の登録から導く。準拠テンプレートは L2 を支えない):');
+  L.push('');
+  L.push('| 範囲 | 現在のレベル | 停止の原因 | 差し戻し率の計測の所在 | 手戻り率の計測の所在 | 直近の評価 |');
+  L.push('| --- | --- | --- | --- | --- | --- |');
+  if (blank) {
+    L.push('| — | — | — | — | — | — |');
+    return L;
+  }
+  const cap = autonomyCap(config);
+  const d = config.delegation ?? {};
+  const where = '判定のたびに記録から導く(`/pit` の注記、保証の開示の項目3)';
+  const types = d.allowed ? (d.changeTypes ?? []) : [];
+  for (const t of types) {
+    const level = levelRank(cap.level) < levelRank('L3') ? `L1(上限 ${cap.level} のため登録を適用しない)` : 'L3(停止中は L1)';
+    L.push(
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${WINDOW_MONTHS}か月の窓、最小標本数 ${MIN_SAMPLE} 件) | 未計測(準拠テンプレートは集計しない)。登録の根拠: ${cell(t.basis?.detection?.reworkRate ?? '未記入')} | ${where} |`
+    );
+  }
+  L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
+  L.push('');
+  L.push(`- AI自律レベルの上限: ${cap.level}(${cap.source === 'config' ? '構成の `autonomy.maxLevel`' : 'テーラリングの規則から導いた値'})`);
+  return L;
+}
+
 export function renderD0Section(key, config) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
@@ -2183,6 +2220,8 @@ export function renderD0Section(key, config) {
         }`
       );
     }
+    L.push('');
+    L.push(...renderAutonomyTable(config, blank));
   } else if (key === 'history') {
     L.push(
       '| 日付 | 変化点の種別 | 概要 | 変更前後の版 | 兼務禁止と独立性の再判定の結果 | 無効になった確認(やり直しの要否) | 失効した確認と例外(再確認の期日) | 決定した者(理由) | 通知先と通知日(即時の通知を要する事象) |'
@@ -2685,6 +2724,12 @@ export function renderProfileMd(config, result) {
         '委任は独立性の未達を解消しません。規則の変更種別は、標準変更カタログ(標準 第3章 3.7.4)に登録した種別に限ります(`delegation.changeTypes[]`)。' +
         '規則の追加と範囲の拡大は統制の弱化として扱い、席の責任者の決定に加えて、AI維持管理者の承認(`state:needs-platform`)を要します。' +
         '独立レビュー(G-6)の判定の時点が事後へ移るのは、独立レビュアの席が委任で、規則に該当し、リスク区分が R3 と記録された変更だけです。'
+    );
+    L.push('');
+    L.push(
+      `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
+        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の2か月継続、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
+        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は集計しません(降りていない)。'
     );
     L.push('');
     L.push(`**${MERGE_PATH_NOTE_POLITE}`);
@@ -4193,6 +4238,8 @@ if (isMain) {
     const priorTypes = new Set((prior.delegation?.changeTypes ?? []).map((t) => JSON.stringify(t)));
     const newTypes = new Set((config.delegation.changeTypes ?? []).filter((t) => !priorTypes.has(JSON.stringify(t))).map((t) => String(t?.id ?? '').trim()));
     for (const p of changeTypeProblems(config, { only: newTypes })) refused.push(`標準変更カタログ: ${p}`);
+    // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
+    if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
     // 登録する者がリリース判定会(B-4)のとき、機械が確かめるのは、登録した者が名簿にいることだけである
     const registrarNote =
       newTypes.size && (config.governance?.catalogRegistrar ?? structureDeciderSeat(config)) === 'b4'

@@ -95,6 +95,7 @@ import {
   aiAccountCheck,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
+import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
 import {
   readPolicy,
@@ -2632,8 +2633,18 @@ if (undeclared.length) {
   );
 }
 
+// AI自律レベル(第5章 5.4.4・5.4.6)。登録した変更種別ごとの現在のレベル・停止・差し戻し率の窓。
+// 委任の判定(check-delegation)と同じ導出を、出荷の終点の日で使う。判定不能を「異常なし」と出さない
+let autonomy;
+try {
+  autonomy = autonomyState(config, readAutonomyRecords({ config, root: ROOT, today: releaseDay }));
+} catch (e) {
+  autonomy = { error: String(e.message).split('\n')[0], types: [] };
+}
+
 const assurance = {
   independence,
+  autonomy,
   tailoring,
   changes: changeCounts,
   machineChecks,
@@ -3519,6 +3530,17 @@ function renderAssurance(external) {
       `。対象外にしたコミット: 記録だけのコミット ${dc.exempt.recordOnly} 件 / ファイルの変更を持たないコミット ${dc.exempt.empty} 件(変更の件数に数えていない)`
   );
   R.push(`- 参照した D-0 の版の記載がない判定記録: ${A.changes.gateRecordsWithoutD0Version} 件`);
+  // AI自律レベル(第5章 5.4.6)。登録した変更種別ごとに、現在のレベルと停止を出す。判定不能を「異常なし」と書かない
+  const au = A.autonomy;
+  if (au?.error) R.push(`- AI自律レベル: 検知の記録を読めない(${au.error})。委任の判定は、登録した変更種別を判定できないものとして止める`);
+  else if (au) {
+    R.push(`- AI自律レベル(登録した変更種別は L3、それ以外は L1。準拠テンプレートは L2 を支えない。上限 ${au.cap?.level ?? '不明'}): ${au.types.length ? '' : '登録した変更種別なし(すべて L1)'}`);
+    for (const t of au.types) {
+      const why = external ? t.stops.map((x) => x.category).join('・') : stopsText(t);
+      R.push(`  - ${t.id}: ${t.level}${t.stops.length ? `(**委任を止めている**。${why})` : '(停止なし)'}。差し戻し率: ${rejectionText(t)}`);
+    }
+    if (au.types.length) R.push(`  - ${au.rework}`);
+  }
   R.push('');
   const detail = A.changes.byRiskClassDetail;
   if (detail !== NO_RECORD) {
