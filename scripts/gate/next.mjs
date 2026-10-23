@@ -6,6 +6,9 @@
 //   node scripts/gate/next.mjs --role <ロール>   ロールの詳細(判定するゲート・受信箱など)と、そのロールの次の一手
 //   node scripts/gate/next.mjs --scopes   標準の条項の適用範囲と判定の単位
 //
+// 未確定事項の印([NEEDS CLARIFICATION])が残る機能は G-2・G-4 の判定待ちへ進めない(G-2 基準6・G-4 基準7)。
+// G-4 の判定待ちには、どのタスクにも現れない受入基準の一覧を材料として添える(G-4 基準6。合否は出さない)。
+//
 // 読むもの: process.config.json、docs/D-0-governance.md(check-d0 と、節3 の手で書く行の空欄)、docs/project-brief.md、
 // docs/assumptions.md(前提の台帳の有無だけ)、
 // docs/gates/(判定記録)、specs/F-NNN/(spec.md・plan.md)、ローカルの git(既定ブランチのトレーラ
@@ -25,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf } from './config.mjs';
 import { readLock } from './self-heal.mjs';
+import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
@@ -152,6 +156,31 @@ function recordIssues(records, gateKey, target = null, since = null) {
 /** ゲートの判定待ちに、通過に数えなかった記録の所在と理由を添える */
 function withIssues(step, issues) {
   return issues.length ? { ...step, detail: issues.join(' / '), recordIssues: issues } : step;
+}
+
+/**
+ * G-2 基準6・G-4 基準7: 未確定事項の印([NEEDS CLARIFICATION])が残る機能は、判定待ちへ進めない(判定を開始しない)。
+ * waiting は、そのゲートが有効で、対象の機能の通過の記録がまだ無いこと。印が無いか待っていなければ null
+ */
+export function clarificationStep(feature, specText, { gate, waiting }) {
+  const clar = countClarifications(specText);
+  if (!waiting || !clar.count) return null;
+  const basis = gate === 'g2' ? 'G-2 基準6' : 'G-4 基準7';
+  return {
+    stage: '未確定事項が残る',
+    ...cmd(
+      `/spec-write ${feature}`,
+      `specs/${feature}/spec.md に [NEEDS CLARIFICATION] が ${clar.count} 件(行 ${clar.lines.join(', ')})。${basis} により判定を開始しない。決めて本文に書く / 確かめて本文に書く / 前提として引き受け、前提の表へ移す、のいずれかで閉じる(どれで閉じるかを決めるのは人)`
+    ),
+    read: ['.claude/skills/spec-write/SKILL.md', READ.artifact('01-feature-spec')],
+  };
+}
+
+/** G-4 基準6 の材料: どのタスクにも現れない受入基準の一覧を、G-4 の判定待ちの詳細へ添える。合否は出さない */
+export function withG4Material(step, feature, { root = ROOT } = {}) {
+  const u = unmappedCriteria(feature, { root });
+  const material = `G-4 基準6 の材料(合否は出さない。判定者が見る): どのタスクにも現れない受入基準 ${u.unmapped.length ? u.unmapped.join(', ') : 'なし'}${u.problem ? `(${u.problem})` : ''}`;
+  return { ...step, detail: [material, step.detail].filter(Boolean).join(' / '), unmappedCriteria: u.unmapped };
 }
 
 /** D-0 節3「決定の権限」の、「決定」が空欄の行(手で書く欄。/process-change の種別は無い) */
@@ -472,6 +501,14 @@ export function computeNext() {
       F({ stage: '受入基準に曖昧語', ...cmd(`/spec-write ${f}`, `spec-lint が検出した(node scripts/gate/spec-lint.mjs specs/${f})`), read: ['.claude/skills/spec-write/SKILL.md', READ.artifact('01-feature-spec')] });
       continue;
     }
+    // G-2 基準6・G-4 基準7: 未確定事項の印が残る機能は、判定待ちへ進めない(判定を開始しない)
+    const g2Waiting = isGateActive(config, 'g2') && !passed(records, 'g2', f);
+    const g4Waiting = isGateActive(config, 'g4') && !passed(records, 'g4', f);
+    const clarG2 = clarificationStep(f, spec, { gate: 'g2', waiting: g2Waiting });
+    if (clarG2) {
+      F(clarG2);
+      continue;
+    }
     if (isGateActive(config, 'g2') && !passed(records, 'g2', f)) {
       F({ stage: '要件合意(G-2)待ち', ...withIssues(gateWait(config, 'g2', f), recordIssues(records, 'g2', f)) });
       continue;
@@ -485,8 +522,13 @@ export function computeNext() {
       F({ stage: '実装計画にタスクなし', ...cmd(`/task-breakdown ${f}`, '「タスク」の表に Task-N の行がない'), read: ['.claude/skills/task-breakdown/SKILL.md', READ.artifact('07-implementation-plan')] });
       continue;
     }
-    if (isGateActive(config, 'g4') && !passed(records, 'g4', f)) {
-      F({ stage: '機能仕様承認(G-4)待ち', ...withIssues(gateWait(config, 'g4', f), recordIssues(records, 'g4', f)) });
+    const clarG4 = clarificationStep(f, spec, { gate: 'g4', waiting: g4Waiting });
+    if (clarG4) {
+      F(clarG4);
+      continue;
+    }
+    if (g4Waiting) {
+      F({ stage: '機能仕様承認(G-4)待ち', ...withG4Material(withIssues(gateWait(config, 'g4', f), recordIssues(records, 'g4', f)), f) });
       continue;
     }
     if (done === null || branches === null) {

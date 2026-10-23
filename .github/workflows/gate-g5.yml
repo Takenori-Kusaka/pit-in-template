@@ -85,6 +85,9 @@ jobs:
       # G-5 の判定基準を実装する検査が集約(gate-g5)の合否に使われていることの読み方を、ワークフローの写しで試験する。
       # 契約検査と保証の開示 項目4 が同じ読み方を使う(標準 第4章 G-5「判定基準を実装する検査と集約」。process-compass #290)
       - run: node scripts/gate/test-g5-aggregate.mjs
+      # 受入基準 → タスクの対応の一覧(G-4 基準6)と、未確定事項の印の件数(G-2 基準6・G-4 基準7)を、一時の置き場で試験する。
+      # 一覧は判定の材料で合否に使わない。未確定事項が残れば spec-lint --gate が失敗する(process-compass #291)
+      - run: node scripts/gate/test-plan-trace.mjs
       # 初期化した直後に G-5 の手元で確かめられる検査が通ることを、テンプレートの全ファイルで試験する(#286)。
       # 構成が設定済みのリポジトリでは省く(テンプレートの初期の状態が無いため)
       - run: node scripts/gate/test-init-g5.mjs
