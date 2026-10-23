@@ -2,7 +2,8 @@
 # GITHUB_TOKEN がルールセットの無い別ブランチへ push できるかを確かめる
 name: test-321-records-push
 on:
-  workflow_dispatch:
+  push:
+    branches: [test/321-e0]
 permissions:
   contents: write
 jobs:
