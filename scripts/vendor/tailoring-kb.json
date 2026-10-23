@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "7c950aa4e90bc447ba57f5d822688b050d67ce8a"
+    "commit": "46b056f947baa4f50bd708e20009491f008def59"
   },
   "questions": [
     {
@@ -1233,7 +1233,7 @@
         "機能仕様に検証可能な受入基準が含まれる",
         "タスク分解の粒度が1タスク=1レビュー単位",
         "対象機能のコア/非コア指定が明示されている",
-        "各タスクの規模が分割基準の範囲内である",
+        "各タスクの規模が分割基準の範囲内である。範囲を超える見込みのタスクは、関心事が1つであること(行数に合わせて細切れにしていないこと)を確かめる",
         "合意した範囲の内か外かの判定が記入されている"
       ],
       "criteriaComplete": false,
@@ -1500,6 +1500,12 @@
   ],
   "ambiguousTermsSource": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/",
   "clauseScopes": [
+    {
+      "title": "置く場合の規定",
+      "range": "プロダクトの原則を置いた場合",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#置く場合の規定適用-プロダクトの原則を置いた場合"
+    },
     {
       "title": "AIエージェント安全リスクアセスメント",
       "range": "物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか",

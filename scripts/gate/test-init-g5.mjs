@@ -109,6 +109,9 @@ for (const n of [1, 3]) {
     check(`${tag}: 既存の package.json を書き換えない`, JSON.parse(W.read('package.json')).name === 'kept');
     check(`${tag}: 既存のファイルを変更しなかったことを出力に出す`, /既にあるため変更せず: package\.json/.test(init.out), init.out);
   }
+  // 保管領域の読み込みの拒否は、ステージ(1名は S0 で guard 無効、3名は S1)に依らず残る(標準 第3章 3.11.4 要求事項7)
+  const deny = JSON.parse(W.read('.claude/settings.json')).permissions?.deny ?? [];
+  check(`${tag}: 権限設定が保管領域(context/_archive/)の読み込みを拒否する`, deny.includes('Read(./context/_archive/**)'), JSON.stringify(deny));
   check(`${tag}: 秘匿情報の検査の設定(.secretlintrc.json)がある`, W.exists('.secretlintrc.json'));
   check(`${tag}: テストの置き場(tests/)がある`, W.exists('tests/README.md'));
   check(`${tag}: ロックファイルを npm install で作る案内が出る`, /npm install/.test(init.out), init.out);

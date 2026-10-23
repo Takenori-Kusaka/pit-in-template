@@ -89,7 +89,8 @@ scenario('テストを先に書いた PR(新しいテストの追加だけ。既
   write('test/b.test.js', "test('new', () => {\n  expect(1).toBe(1);\n});\n");
   write('src/b.js', lines(5, 'b'));
 }, passes(testListed(0)));
-scenario('閾値だけの PR(既存の除外設定だけを変える)', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}` }, () => {
+const NEG = (f = {}) => `## 統制の設定の陰性の確認\n\n通した違反の場面: ${f.scene ?? '未使用の変数を含むファイルを push した'}\n結果: ${f.result ?? '止まった'}\n確かめた者: ${f.checker ?? '鈴木 一郎'}\n\n`;
+scenario('閾値だけの PR(既存の除外設定だけを変える。陰性の確認の記録あり)', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
   write('.eslintrc.json', '{ "rules": { "no-unused-vars": "warn" } }\n');
 }, passes((r) => (r.thresholds.changed.length === 1 ? [] : ['閾値の変更として識別していない'])));
 scenario('初回の設定(基底に無い閾値のファイルを足し、製品のコードも変える)', {}, () => {
@@ -238,6 +239,27 @@ scenario('文書の置き場に置いたコード(docs/ の .js)は製品とし�
 scenario('文書の置き場の .md は従来どおり数えない', {}, () => {
   write('docs/big.md', lines(3000, 'd'));
 }, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+scenario('リポジトリの直下の .md は数えない', {}, () => {
+  write('NOTES.md', lines(3000, 'd'));
+}, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+scenario('置き場の外(src/)の .md は算定に含める(製品のディレクトリへ置いて R2 の下限から外す経路を塞ぐ。#289 D-10)', {}, () => {
+  write('src/prompts/system.md', lines(450, 'm'));
+}, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 && r.size.sizeOver ? [] : [`算定 ${r.size.lines}`])));
+scenario('強制層(.claude/skills)の .md は従来どおり数えない', {}, () => {
+  write('.claude/skills/x/SKILL.md', lines(3000, 'd'));
+}, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+
+// ---------------------------------------------------------------- 統制の設定の陰性の確認(第4章 G-5。ADR-0072)
+const NEG_BODY = (neg) => `## 変更の概要\n\n説明\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${neg}`;
+scenario('統制の設定: 強制層の設定(.claude/guard.json)を変える PR に陰性の確認の記録が無い', { body: NEG_BODY('') }, () => write('.claude/guard.json', read('.claude/guard.json').replace('{', '{\n  "note": "x",')), failsWith(/統制の設定の陰性の確認: .*\.claude\/guard\.json.*節がありません/));
+scenario('統制の設定: 記録があり、結果が止まった → 通る', { body: NEG_BODY(NEG()) }, () => write('.claude/guard.json', read('.claude/guard.json').replace('{', '{\n  "note": "x",')), passes((r) => (r.negativeCheck?.record?.ok ? [] : ['記録を読んでいない'])));
+scenario('統制の設定: 結果が「止まらなかった」→ 失敗', { body: NEG_BODY(NEG({ result: '止まらなかった' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/「止まらなかった」/));
+scenario('統制の設定: 結果が様式の選択肢のまま → 失敗', { body: NEG_BODY(NEG({ result: '止まった / 止まらなかった' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/どちらでもない/));
+scenario('統制の設定: 確かめた者が AI の名義 → 失敗', { body: NEG_BODY(NEG({ checker: 'Claude' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/確かめた者 "Claude" が AI の名義/));
+scenario('統制の設定: 記録がコメントの中だけにある → 無いものとして扱う', { body: NEG_BODY('<!--\n' + NEG() + '-->\n') }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/節がありません/));
+scenario('統制の設定: 構成の guard の変更も対象', { body: NEG_BODY('') }, () => write('process.config.json', { ...config, guard: { x: 1 } }), failsWith(/統制の設定の陰性の確認: .*process\.config\.json\(guard\)/));
+scenario('統制の設定: 初回の設定(基底に無いワークフローを足す)は対象外', { body: NEG_BODY('') }, () => write('.github/workflows/new.yml', 'on: push\n'), passes((r) => (r.negativeCheck?.record === null ? [] : ['対象にしている'])));
+scenario('統制の設定: 統制の設定を変えない PR は対象外', {}, () => write('src/a.js', lines(21)), passes((r) => (r.negativeCheck?.changed.length === 0 ? [] : ['対象にしている'])));
 scenario('規模の確認: HTML コメントの中の節は無いものとして扱う', { body: OVER_BODY('<!--\n' + ATT() + '-->\n') }, () => write('src/big.js', lines(450, 'x')), failsWith(/「## 規模の確認」の節がありません/));
 scenario('規模の確認: 「はい、ただし…」は答えとして数えない', { body: OVER_BODY(ATT({ read: 'はい、ただし一部は読んでいない' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「はい」「いいえ」のどちらでもない/));
 scenario('規模の確認: 実施者が名簿の外(名簿に指示した者以外がいる体制)は失敗', { body: OVER_BODY(ATT({ performer: '見知らぬ 太郎' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/人の名簿\(people\[\]\)の人へ対応づかない/));

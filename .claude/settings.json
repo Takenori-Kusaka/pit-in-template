@@ -25,6 +25,7 @@
       "Bash(npx -y @nanonets/graft@0.12.1 build:*)"
     ],
     "deny": [
+      "Read(./context/_archive/**)"
     ],
     "ask": [
       "Bash(npm publish:*)",
