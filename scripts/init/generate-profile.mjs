@@ -59,6 +59,7 @@ import {
   RULE_APPROVER_SEAT,
   belowMinimumStaffing,
   nameOverrides,
+  nameConfirmedValid,
   delegationRuleProblems,
   ruleChangeDirection,
   findPerson,
@@ -994,6 +995,8 @@ export function changeLogEntry(e) {
     ...(e.rosterEdits?.length ? { rosterEdits: e.rosterEdits } : {}),
     // アカウント名の機械検査を、人のアカウントとして確認した記録(本人以外の記名。decidedBy が記名。#296)
     ...(e.accountConfirmations?.length ? { accountConfirmations: e.accountConfirmations } : {}),
+    // 氏名の確認(nameConfirmed)の記録(本人以外の記名。decidedBy が記名。#296 裁定 8 の付記)
+    ...(e.nameConfirmations?.length ? { nameConfirmations: e.nameConfirmations } : {}),
     // 承認待ちのあいだ保持していた委任の宣言を、この変化点で有効にした席(宣言した時点の決定者と理由)
     ...(e.intentApplied?.length ? { intentApplied: e.intentApplied } : {}),
     // 委任の規則の追加・拡大を承認した者(AI維持管理者の席の責任者)と、対象の規則(ADR-0038)
@@ -1280,6 +1283,16 @@ export function diffConfig(before, after) {
     }
   }
   for (const [id, p] of Object.entries(bp)) if (!ap[id]) diff.push(`人の名簿: 削除 ${p.name}`);
+  // 氏名の確認(nameConfirmed)。有効な記録(本人以外の記名)が無いまま true の確認は、この変化点で本人以外の記名を要する
+  // (#296 より前に書いた確認を含む。nameConfirmItems。process-compass #296 裁定 8 の付記)
+  const nameConfirmItems = [];
+  for (const [id, p] of Object.entries(ap)) {
+    if (p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    if (nameConfirmedValid(before, { ...p, id })) continue;
+    const line = `人の名簿: ${p.name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き)`;
+    diff.push(line);
+    nameConfirmItems.push({ id, name: p.name, line });
+  }
   // アカウント名の確認済みの上書き(#296)。足した確認は、本人以外の決定した者の記名を要する(accountConfirmItems)
   const accountConfirmItems = [];
   for (const [id, p] of Object.entries(ap)) {
@@ -1584,9 +1597,10 @@ export function diffConfig(before, after) {
     const ac = num(after.ci?.coverageThreshold);
     if (bc !== null && ac !== null && bc !== ac) push(`カバレッジの下限: ${bc}% → ${ac}%`, bc, ac, M);
     // 測る範囲を変更の範囲から全体へ移すのは緩める向き(変更の未被覆が全体の被覆で薄まる。#296)
-    const bs = before.ci?.coverageScope ?? null;
-    const as = after.ci?.coverageScope ?? null;
-    if (bs && as && bs !== as) push(`カバレッジの測る範囲: ${bs} → ${as}`, bs === 'changed' ? 1 : 0, as === 'changed' ? 1 : 0, M);
+    // 値の無い構成は、実効の範囲(whole。coverage-check.mjs の coverageScopeOf)を前・後の値として比べる(突合 X-4)
+    const bs = before.ci?.coverageScope ?? 'whole';
+    const as = after.ci?.coverageScope ?? 'whole';
+    if (bs !== as) push(`カバレッジの測る範囲: ${bs} → ${as}`, bs === 'changed' ? 1 : 0, as === 'changed' ? 1 : 0, M);
     for (const [k, label, addLoosens] of [
       ['failOnSeverity', '失敗させる重大度', false],
       ['allowedLicenses', '許可するライセンス', true],
@@ -1789,6 +1803,7 @@ export function diffConfig(before, after) {
     appointItems,
     renameItems,
     accountConfirmItems,
+    nameConfirmItems,
     rosterSwaps,
     rosterEdits,
     allBlankBefore,
@@ -4320,6 +4335,21 @@ if (isMain) {
           '同じ人の表記の変更は、名簿へ足したときの値と比べて、氏名かアカウントの一方に限ります'
       );
     }
+    // 氏名の確認(nameConfirmed)も、名簿の変更として、本人以外が記名した場合に限る(#296 裁定 8 の付記)
+    if (report.nameConfirmItems?.length) {
+      if (!change.decidedBy) {
+        refused.push(
+          `氏名の確認(${report.nameConfirmItems.map((i) => i.name).join(', ')})を含みます。決定した者の記名(decidedBy)と理由(reason)が要ります。` +
+            '記名できるのは、確認される本人以外の、人の名簿の人です。AI が決めてはなりません'
+        );
+      } else {
+        for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
+        const by = personKey(config, change.decidedBy);
+        for (const i of report.nameConfirmItems) {
+          if (by === i.id) refused.push(`${i.name} の氏名の確認を、本人の記名では確定できません。本人以外の人の名簿の人が記名します`);
+        }
+      }
+    }
     // アカウント名の確認済みの上書きは、名簿の変更として、そのアカウントの本人以外が記名した場合に限る(#296)
     if (report.accountConfirmItems?.length) {
       if (!change.decidedBy) {
@@ -4539,6 +4569,7 @@ if (isMain) {
         ...(appointerSigned ? { appointerSigned: true } : {}),
         rosterEdits: report.rosterEdits,
         accountConfirmations: (report.accountConfirmItems ?? []).map(({ id, account }) => ({ id, account })),
+        nameConfirmations: (report.nameConfirmItems ?? []).map(({ id }) => ({ id })),
         ruleApprovedBy: approvedNow.length ? change.ruleApprovedBy : null,
         nameOverrides: nameOverrides(config),
         ruleApproval: approvedNow.length

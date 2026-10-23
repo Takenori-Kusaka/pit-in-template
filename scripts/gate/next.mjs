@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount, trackedFiles, unmatchedCoreText } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
+import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
@@ -701,6 +702,13 @@ export function computeNext({ fetch = true, network = true } = {}) {
 
   // 技術判断者 = AI運用担当者(基準集合の範囲の起案と承認を別の自然人で行えない。標準 第3章 3.12.3 の要求事項10)。段階を止めない
   if (config.configured !== false) for (const n of seatPairingNotes(config)) result.notes.push(n);
+
+  // 企画書のカバレッジの測る範囲の行(#296 で足した行)。G-1 を通過済みの企画書に無ければ欠落として出す(突合 X-4)
+  if (config.configured !== false) {
+    const briefPath = path.join(ROOT, 'docs/project-brief.md');
+    const briefText = fs.existsSync(briefPath) ? fs.readFileSync(briefPath, 'utf8') : null;
+    if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
+  }
 
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と
   // 読まれないよう、注記として常に出す(#288 第5巡)。段階を止めない

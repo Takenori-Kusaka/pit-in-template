@@ -172,23 +172,62 @@ export function personName(config, ref) {
 }
 
 /**
+ * 氏名の確認(nameConfirmed)の有効な記録。変化点の記録(changeLog[].nameConfirmations の { id } と decidedBy)のうち、
+ * 確認された本人以外が、AI の名義でなく記名したものに限る(アカウント名の確認と同じ。process-compass #296 裁定 8 の付記)。
+ * キーは名簿の id、値は { decidedBy, date }
+ */
+export function confirmedNames(config) {
+  const out = new Map();
+  for (const e of config?.changeLog ?? []) {
+    for (const c of Array.isArray(e?.nameConfirmations) ? e.nameConfirmations : []) {
+      if (!c?.id || !e.decidedBy) continue;
+      if (aiNameReason(e.decidedBy)) continue;
+      const by = findPerson(config, e.decidedBy)?.id ?? null;
+      if (!by || by === c.id) continue;
+      out.set(c.id, { decidedBy: e.decidedBy, date: e.date ?? null });
+    }
+  }
+  return out;
+}
+
+/** 名簿の人の氏名の確認が効くか(nameConfirmed: true と、本人以外の記名の記録の両方) */
+export function nameConfirmedValid(config, person) {
+  return person?.nameConfirmed === true && Boolean(person.id) && confirmedNames(config).has(person.id);
+}
+
+/** 名簿の nameConfirmed のうち、本人以外の記名の記録が無い確認(契約検査が落とす) */
+export function nameConfirmationProblems(config) {
+  const out = [];
+  for (const p of config?.people ?? []) {
+    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    if (!nameConfirmedValid(config, p)) {
+      out.push(
+        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、本人以外が記名した変化点の記録がありません。この確認は効かず、名義は AI の名義として拒否されます。` +
+          '確認は /process-change(種別 accountable)で、本人以外の決定した者の記名(decidedBy)を付けて行います(#296 より前に書いた確認も、記名し直します)'
+      );
+    }
+  }
+  return out;
+}
+
+/**
  * 記名として受け付けない理由を返す。受け付ける場合は null。
  *
- * AI を示す語に当たった名義は、既定では拒否する。名簿の該当者に、人が確認した旨
- * (nameConfirmed: true)がある場合に限り通す。通した名義は nameOverrides が返し、出力へ表示する。
+ * AI を示す語に当たった名義は、既定では拒否する。名簿の該当者に、人が確認した旨(nameConfirmed: true)があり、
+ * その確認を本人以外が記名した記録がある場合に限り通す(nameConfirmedValid)。通した名義は nameOverrides が返し、出力へ表示する。
  * 担い手の識別と同じ文字列と、名簿に無い名義の拒否は、上書きできない(nameProblems)
  */
 export function aiNameBlocked(config, name) {
   const person = findPerson(config, name);
   const why = aiNameReason(person?.name ?? name);
   if (!why) return null;
-  return person?.nameConfirmed === true ? null : why;
+  return nameConfirmedValid(config, person) ? null : why;
 }
 
-/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧) */
+/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧。本人以外の記名の記録がある確認に限る) */
 export function nameOverrides(config) {
   const roster = Array.isArray(config.people) ? config.people : [];
-  return roster.filter((p) => p?.nameConfirmed === true && aiNameReason(p.name)).map((p) => normName(p.name));
+  return roster.filter((p) => nameConfirmedValid(config, p) && aiNameReason(p.name)).map((p) => normName(p.name));
 }
 
 /** 担い手の識別に使われている文字列の一覧。責任者の欄へ同じ文字列を書く経路を塞ぐ */
@@ -1595,6 +1634,32 @@ export function approvalBinding(review, headOid) {
   const oid = review?.commit?.oid ?? review?.commit_id ?? review?.commitId ?? null;
   if (!headOid || !oid) return 'unknown';
   return String(oid).toLowerCase() === String(headOid).toLowerCase() ? 'bound' : 'stale';
+}
+
+/**
+ * gh がレビューの承認した版(reviews[].commit.oid)を返す最初の版。cli/cli の api/query_builder.go の prReviews の断片が
+ * v2.30.0 から commit{oid} を含む(v2.20.0 には無い。2026-10-23 に確かめた。process-compass #296 突合 X-7)
+ */
+export const GH_MIN_REVIEW_COMMIT = '2.30.0';
+/** `gh --version` の出力から版を読む。読めなければ null */
+export function parseGhVersion(text) {
+  return String(text ?? '').match(/gh version (\d+\.\d+\.\d+)/)?.[1] ?? null;
+}
+/** 版 v が min より前か。v が null なら null(判定できない) */
+export function versionBelow(v, min) {
+  if (!v) return null;
+  const a = v.split('.').map(Number);
+  const b = min.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  return false;
+}
+/** 承認した版を確かめられない承認(unknown)の原因の文。gh の版が古い・読めない場合に、その旨を返す。問題が無ければ null */
+export function unboundCauseText(ghVersion) {
+  const below = versionBelow(ghVersion, GH_MIN_REVIEW_COMMIT);
+  if (below === false) return null;
+  return below === null
+    ? `gh の版を読めません。gh ${GH_MIN_REVIEW_COMMIT} より前の gh はレビューの承認した版(commit.oid)を返さず、すべての承認が「確かめられない」になります。gh --version を確かめてください`
+    : `gh ${ghVersion} は ${GH_MIN_REVIEW_COMMIT} より前の版で、レビューの承認した版(commit.oid)を返しません。すべての承認が「確かめられない」として数えられません。gh を ${GH_MIN_REVIEW_COMMIT} 以上へ上げてください`;
 }
 
 // ---------------------------------------------------------------- アカウント名の確認済みの上書き(#296)

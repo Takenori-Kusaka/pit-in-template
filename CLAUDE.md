@@ -144,7 +144,7 @@
 ### 自己修正ループ
 
 - 始める: `node scripts/gate/self-heal.mjs start --spec F-NNN --task Task-N`。修正ごとに `iterate`(テストを実行し、同じ失敗が続く・上限で保留)。ロック中のテストへの書き込みはフックが遮断する `[機械]`
-- 停止条件は、同じ失敗したテストの集合が `task.selfHealNoProgressLimit` 回(既定2回)続く無進捗と、失敗の反復が `task.selfHealMaxIterations` 回(既定3回)に達する連続失敗。当たれば保留になり、人が受入基準へ戻る。保留を解くのは名簿の人 `[機械]` `iterate`
+- 停止条件は、同じテストが同じ理由で失敗した状態が `task.selfHealNoProgressLimit` 回(既定2回)続く無進捗と、失敗の反復が `task.selfHealMaxIterations` 回(既定3回)に達する連続失敗。当たれば保留になり、人が受入基準へ戻る。保留を解くのは名簿の人。記録(`docs/self-heal/`)は同じ PR でコミットする `[機械]` `iterate`
 - **テストの修正を要すると判明したら、ループを終える**(`stop --reason test-change`)。ロックのファイルを自分で消さない。保留を自分で解かない
 - 詳細: `.claude/skills/implement/SKILL.md` の手順4
 

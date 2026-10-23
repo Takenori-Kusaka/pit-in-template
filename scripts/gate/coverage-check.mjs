@@ -5,7 +5,12 @@
 // 測る範囲は構成 ci.coverageScope で決める(標準 第4章 G-5「カバレッジの測る範囲と規模(基準3)」。process-compass #296)。
 //   changed  変更で加えた・変えた行(git の差分の追加行)だけを分母にする。既定。行単位の被覆(アダプタの coverageDetail)を要する
 //   whole    コードの全体の行の割合(アダプタの coverageSummary)。変更の未被覆が全体の被覆で薄まることを、結果と保証の開示に出す
-// 構成に範囲が無い場合は、アダプタが変更の範囲を測れるなら changed、測れないなら whole として扱い、その旨を出す。
+// 構成に範囲が無い場合は、従来どおり whole として扱い、範囲が既定から補われたことを結果と保証の開示に出す(既存の採用者を
+// 壊さない。緩める向きの変更ではなく、#296 より前の挙動の維持。突合 X-4)。新しく生成する構成は、アダプタが変更の範囲を
+// 測れるなら changed を書く(generate-profile.mjs)。
+//
+// 変更の範囲の分母は、追加行のうち文の開始行に当たる行である(istanbul の行の割合と同じ近似)。複数行にわたる文の
+// 2 行目以降だけを変えた変更は分母に入らない(限界。結果の approximation に出す)。
 // 比較の起点は --base、無ければ GITHUB_BASE_REF(origin/<基底>)。changed で起点を解決できなければ失敗させる(測っていない状態を
 // 通過として残さない)。
 //
@@ -28,14 +33,63 @@ const NODE_MEASURABLE = /\.(m?[jt]sx?|c[jt]s)$/i;
 /** アダプタが変更の範囲を測れるか(行単位の被覆の置き場を持つか) */
 export const canMeasureChanged = (adapter) => typeof adapter?.coverageDetail === 'string' && adapter.coverageDetail.length > 0;
 
+/** 新しく生成する構成に書く範囲(アダプタが変更の範囲を測れるなら changed、測れないなら whole) */
+export const derivedCoverageScope = (adapter) => (canMeasureChanged(adapter) ? 'changed' : 'whole');
+
 /**
- * 適用する測る範囲。構成 ci.coverageScope があればそれ。無ければ、アダプタが変更の範囲を測れるなら changed、測れないなら whole。
- * declared は構成に範囲が書かれていたか
+ * 適用する測る範囲。構成 ci.coverageScope があればそれ。無ければ従来どおり whole(既存の構成を壊さない。突合 X-4)。
+ * declared は構成に範囲が書かれていたか。defaulted は既定から補ったか
  */
 export function coverageScopeOf(config, adapter) {
   const v = config?.ci?.coverageScope;
-  if (COVERAGE_SCOPES.includes(v)) return { scope: v, declared: true };
-  return { scope: canMeasureChanged(adapter) ? 'changed' : 'whole', declared: false, invalid: v !== undefined && v !== null ? v : undefined };
+  if (COVERAGE_SCOPES.includes(v)) return { scope: v, declared: true, defaulted: false };
+  return { scope: 'whole', declared: false, defaulted: true, invalid: v !== undefined && v !== null ? v : undefined };
+}
+
+/** 企画書の範囲の行の名前 */
+export const BRIEF_SCOPE_ROW = 'カバレッジの測る範囲(G-5 基準3)';
+
+/**
+ * 企画書に範囲の行が無いことの扱い(突合 X-4)。行は #296 で足した。既に G-1 を通過した企画書を遡って失敗させず、
+ * 欠落として /pit と出荷の証跡の集約に出す。G-1 を通過する前の企画書(新しい G-1 の判定)では必須。
+ * records は config.mjs の readGateRecords() の戻り値。戻り値: null(行がある・企画書が無い)、'gap'(欠落として出す)、'required'(失敗させる)
+ */
+export function briefScopeRowState(briefText, records) {
+  if (briefText === null || briefText === undefined) return null;
+  if (briefCoverageScope(briefText) !== null) return null;
+  const g1Passed = (records ?? []).some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+  return g1Passed ? 'gap' : 'required';
+}
+export const BRIEF_SCOPE_GAP_TEXT =
+  `企画書(docs/project-brief.md)に「${'カバレッジの測る範囲(G-5 基準3)'}」の行がありません(#296 で足した行。G-1 を通過済みのため遡って失敗させません)。` +
+  '記載の欠落です。様式(templates/06-project-brief.md)から行を写し、構成の ci.coverageScope と同じ範囲を書きます(範囲の記録と構成の一致は契約検査が確かめます)';
+
+/** git の引用符つきのパス("b/src/\346\227\245.js")を戻す。C の8進のエスケープは UTF-8 のバイトとして読む */
+export function unquoteGitPath(p) {
+  const s = String(p ?? '');
+  if (!(s.startsWith('"') && s.endsWith('"'))) return s;
+  const bytes = [];
+  const body = s.slice(1, -1);
+  const SIMPLE = { n: 10, t: 9, r: 13, '"': 34, '\\': 92, a: 7, b: 8, f: 12, v: 11 };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\' && i + 1 < body.length) {
+      const o = body.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(o)) {
+        bytes.push(parseInt(o, 8));
+        i += 3;
+        continue;
+      }
+      const nx = body[i + 1];
+      if (SIMPLE[nx] !== undefined) {
+        bytes.push(SIMPLE[nx]);
+        i += 1;
+        continue;
+      }
+    }
+    for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
+  }
+  return Buffer.from(bytes).toString('utf8');
 }
 
 /**
@@ -61,7 +115,7 @@ export function parseAddedLines(diffText) {
   let file = null;
   for (const line of String(diffText ?? '').split('\n')) {
     if (line.startsWith('+++ ')) {
-      const p = line.slice(4).trim();
+      const p = unquoteGitPath(line.slice(4).replace(/\t$/, '').trimEnd());
       file = p === '/dev/null' ? null : p.replace(/^b\//, '');
       if (file && !out.has(file)) out.set(file, new Set());
       continue;
@@ -185,8 +239,15 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
     say('fail', `構成 ci.coverageScope の値 "${invalid}" は changed / whole のいずれでもありません`);
     return { code: 1, result: { measured: false, reason: 'ci.coverageScope の値が不正', scope: null }, messages };
   }
-  if (!declared) say('notice', `構成に測る範囲(ci.coverageScope)がありません。アダプタ ${adapter.id} の既定として「${SCOPE_LABEL[scope]}」で測ります`);
-  const scopeInfo = { scope, scopeLabel: SCOPE_LABEL[scope], scopeDeclared: declared };
+  if (!declared) {
+    say(
+      'warn',
+      `構成に測る範囲(ci.coverageScope)がありません。従来どおり「${SCOPE_LABEL[scope]}」で測ります(範囲を既定から補った旨を結果と保証の開示に出します)。` +
+        `範囲を記録するには /process-change(種別 settings)で ci.coverageScope を書き、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃えます` +
+        (canMeasureChanged(adapter) ? `。changed にする場合は、node では c8 に --reporter=json を足します(行単位の被覆 ${adapter.coverageDetail} を出すため)` : '')
+    );
+  }
+  const scopeInfo = { scope, scopeLabel: SCOPE_LABEL[scope], scopeDeclared: declared, scopeDefaulted: !declared };
 
   const rel = adapter.coverageSummary;
   if (!rel) {
@@ -226,7 +287,9 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
   if (canMeasureChanged(adapter) && fs.existsSync(path.join(root, adapter.coverageDetail))) {
     coverage = indexCoverage(JSON.parse(fs.readFileSync(path.join(root, adapter.coverageDetail), 'utf8')), root);
   }
-  const wholeUnmeasured = coverage ? product.filter((f) => NODE_MEASURABLE.test(f) && !coverage.has(f)) : null;
+  // 行単位の記録に載らない製品のファイル。アダプタが測れない拡張子の製品のファイルも、測っていない製品のファイルに数える(突合 X-5)
+  const wholeNotMeasurable = canMeasureChanged(adapter) ? product.filter((f) => !NODE_MEASURABLE.test(f)) : null;
+  const wholeUnmeasured = coverage ? [...product.filter((f) => NODE_MEASURABLE.test(f) && !coverage.has(f)), ...wholeNotMeasurable] : null;
 
   if (scope === 'whole') {
     if (wholePct === null) {
@@ -243,6 +306,7 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
       denominator: wholeDenominator,
       unmeasuredProductFiles: wholeUnmeasured === null ? null : wholeUnmeasured.length,
       unmeasured: wholeUnmeasured === null ? null : wholeUnmeasured.slice(0, 20),
+      notMeasurableFiles: wholeNotMeasurable === null ? null : wholeNotMeasurable.length,
       // 全体で判定する場合、変更の未被覆は全体の被覆で薄まる。保証の開示に記録する(標準 第4章 G-5 基準3)
       dilution: true,
     };
@@ -273,7 +337,8 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
     say('fail', `変更の範囲の起点${ref ? ` ${ref}` : ''}を解決できません。--base で比較の起点を渡してください(基底ブランチを取得してから実行する)。起点が無いまま通過として残しません`);
     return { code: 1, result: { measured: false, reason: '変更の範囲の起点を解決できない', ...scopeInfo }, messages };
   }
-  const added = parseAddedLines(git(['diff', '-U0', '--no-color', '--no-ext-diff', '--diff-filter=AMR', mergeBase, '--']) ?? '');
+  // core.quotePath=false: ASCII 以外を含むパスを引用符で囲ませない(parseAddedLines は引用符つきのパスも戻す。突合 X-5)
+  const added = parseAddedLines(git(['-c', 'core.quotePath=false', 'diff', '-U0', '--no-color', '--no-ext-diff', '--diff-filter=AMR', mergeBase, '--']) ?? '');
   const c = changedScopeCoverage({ added, coverage, isTarget });
   const result = {
     measured: true,
@@ -283,9 +348,12 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
     threshold,
     denominator: c.denominator,
     covered: c.covered,
-    unmeasuredProductFiles: c.unmeasured.length,
-    unmeasured: c.unmeasured.slice(0, 20),
+    // 測っていない製品のファイル = 被覆の記録に無い測れるファイル + アダプタが測れない拡張子の製品のファイル(突合 X-5)
+    unmeasuredProductFiles: c.unmeasured.length + c.notMeasurable.length,
+    unmeasured: [...c.unmeasured, ...c.notMeasurable].slice(0, 20),
     notMeasurableFiles: c.notMeasurable.length,
+    notMeasurable: c.notMeasurable.slice(0, 20),
+    approximation: '分母は追加行のうち文の開始行に当たる行。複数行にわたる文の 2 行目以降だけの変更は分母に入らない',
     uncovered: c.uncovered.slice(0, 20),
     whole: { pct: wholePct, denominator: wholeDenominator, unmeasuredProductFiles: wholeUnmeasured?.length ?? null },
     ok: false,
@@ -297,6 +365,9 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
         '測定の対象(node では package.json の coverage の --include)を、製品のコードの置き場に合わせてください。測っていないファイルを分母から外して通しません'
     );
     return { code: 1, result, messages };
+  }
+  if (c.notMeasurable.length) {
+    say('warn', `変更した製品のファイルのうち ${c.notMeasurable.length} 件は、アダプタ ${adapter.id} が行単位の被覆を測れない拡張子です(${c.notMeasurable.slice(0, 5).join(', ')})。測っていない製品のファイルとして数えます(分母には入りません)`);
   }
   if (!c.denominator) {
     result.ok = true;

@@ -55,7 +55,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso } from './config.mjs';
+import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 
@@ -1501,7 +1501,17 @@ function envCheck() {
   // 4. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
   const findings = recordsFindings({ repo, branch, latestPr });
   const allOk = Object.values(items).every((i) => i.status === 'confirmed');
+  // gh の版。2.30.0 より前の gh はレビューの承認した版(commit.oid)を返さず、集約がすべての承認を数えない(突合 X-7)
+  let ghVersion = null;
+  try {
+    ghVersion = parseGhVersion(execFileSync('gh', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    ghVersion = null;
+  }
+  const ghCause = unboundCauseText(ghVersion);
+  if (ghCause) warn(ghCause);
   const record = {
+    ghVersion,
     checkedAt: localIso(),
     checkedBy: by,
     repo: repo ?? null,
