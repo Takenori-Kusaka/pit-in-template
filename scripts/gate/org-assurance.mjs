@@ -647,11 +647,25 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
   const iHolder = colOf(ho.header, /理解保持者|保持者/);
   const iBy = colOf(ho.header, /確認した者/);
   const iRec = colOf(ho.header, /確認の記録|確認日/);
+  // 関わる登録した変更種別(第5章 5.4.6。保持者数が1名以下の機能に関わる種別の委任を止める)。
+  // 列が無い旧い様式と空欄は、すべての登録した変更種別に関わるものとして扱う(null)。「なし」は関わる種別が無い
+  const iTypes = colOf(ho.header, /変更種別/);
+  const typesOf = (cell) => {
+    const v = nfkc(cell);
+    if (/^(なし|無し)$/.test(v)) return [];
+    if (!isFilledValue(v)) return null;
+    return v.split(/[、,，/／]/).map((x) => x.trim()).filter(Boolean);
+  };
   const coreMap = new Map();
   for (const r of ho.rows.filter((x) => isFilledValue(x[0]))) {
     const name = r[0];
-    if (!coreMap.has(name)) coreMap.set(name, { name, holders: [], uncounted: [] });
+    if (!coreMap.has(name)) coreMap.set(name, { name, holders: [], uncounted: [], changeTypes: iTypes >= 0 ? typesOf(r[iTypes]) : null });
     const c = coreMap.get(name);
+    if (iTypes >= 0 && c.changeTypes !== null) {
+      // 同じ機能の行で書き方が違う場合は、広い側(null はすべての種別)へ倒す
+      const more = typesOf(r[iTypes]);
+      c.changeTypes = more === null ? null : [...new Set([...c.changeTypes, ...more])];
+    }
     const by = iBy >= 0 ? r[iBy] : null;
     const rec = iRec >= 0 ? nfkc(r[iRec]) : '';
     const at = rec.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
