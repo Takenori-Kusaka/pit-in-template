@@ -1,8 +1,13 @@
 // G-5 の PR 単位の検査(#286)。gate-g5.yml の pr-rules ジョブが呼ぶ。手元ではフィクスチャで試験する
 // (scripts/gate/test-check-pr.mjs)。
 //
-//   node scripts/gate/check-pr.mjs --base origin/main [--pr <PR の JSON>] [--report <出力先>] [--comment] [--json]
+//   node scripts/gate/check-pr.mjs --base origin/<PR の基底> [--policy-base origin/<既定ブランチ>] [--pr <PR の JSON>] [--report <出力先>] [--comment] [--json]
 //
+// 差分は PR の基底(--base)から取る。基準値・名簿・区分の下限の規則・除外設定(.gitattributes)・台帳の例外承認・
+// 停止の申し立ての解除の記録は、既定ブランチ(--policy-base)から読む(標準 フェーズ5「スタック型 PR」・CI/CD ゲート構成
+// の pr-rules。process-compass #294 / ADR-0077)。スタックの上の層の PR は基底が下の層のブランチになり、まだ既定ブランチへ
+// 入っていない下の層で緩めた基準値で判定される経路を開くためである。--policy-base を省くと --base から読む(手元の実行)。
+// 以下の「基底ブランチの構成」「基底ブランチの台帳」は、この既定ブランチの側を指す
 // PR の情報(番号・題名・本文・作成者)は、--pr の JSON({ number, title, body, author })か、環境変数
 // PR_NUMBER / PR_TITLE / PR_BODY / PR_AUTHOR から読む。題名と本文をシェルへ展開しないため、ワークフローは
 // 環境変数で渡す。
@@ -736,7 +741,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
 }
 
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
-export function analyzePr({ root = ROOT, base, pr = {} }) {
+export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   const git = gitIn(root);
   const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
   const mergeBase = (git(['merge-base', base, 'HEAD']) ?? '').trim();
@@ -745,6 +750,17 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
     return result;
   }
   const atBase = (file) => git(['show', `${mergeBase}:${file}`]);
+  // 基準値・名簿・規則・台帳を読む起点。既定ブランチ(policyBase)と HEAD の分岐点。PR の基底が既定ブランチなら mergeBase と同じ。
+  // スタックの上の層(基底が下の層のブランチ)でも、まだ既定ブランチへ入っていない下の層の構成・台帳を読まない(ADR-0077)
+  const policyRef = policyBase ?? base;
+  const policyPoint = policyRef === base ? mergeBase : (git(['merge-base', policyRef, 'HEAD']) ?? '').trim();
+  if (!policyPoint) {
+    result.errors.push(`既定ブランチ ${policyRef} を解決できません。既定ブランチを取得してから実行する(基準値と台帳は既定ブランチから読む)`);
+    return result;
+  }
+  const atPolicy = policyPoint === mergeBase ? atBase : (file) => git(['show', `${policyPoint}:${file}`]);
+  result.policy = { ref: policyRef, sameAsBase: policyPoint === mergeBase };
+  if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})から読む`);
   const atHead = (file) => {
     const p = path.join(root, file);
     return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
@@ -759,8 +775,10 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   const headConfig = json(atHead('process.config.json')) ?? {};
   const baseConfig = json(atBase('process.config.json'));
   const baseConfigured = Boolean(baseConfig) && baseConfig.configured !== false;
-  // 上限と名簿は基底ブランチの構成から読む。同じ PR で上限を書き換えても、その PR の検査は変わらない
-  const limitsFrom = baseConfigured ? baseConfig : headConfig;
+  const policyConfig = atPolicy === atBase ? baseConfig : json(atPolicy('process.config.json'));
+  const policyConfigured = Boolean(policyConfig) && policyConfig.configured !== false;
+  // 上限と名簿は既定ブランチの構成から読む。同じ PR(とスタックの下の層)で上限を書き換えても、その PR の検査は変わらない
+  const limitsFrom = policyConfigured ? policyConfig : headConfig;
 
   const all = parseNumstatZ(git(['diff', '--numstat', '-z', '-M', mergeBase, 'HEAD']));
   // 空白を無視した差分。空白だけが変わったファイル(一括整形)は、この出力に現れない。取得に失敗した場合は、空白を含めて数える
@@ -777,13 +795,13 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   // (b) 区分の下限を R2 へ引き上げ(下の 7)、(c) PR の本文の「規模の確認」を要する。確認が無い・AI の名義・読み切れなかった場合だけ失敗させる。
   // 算定は、製品のコードのファイルごとの max(追加, 削除)の合計。テスト・fixture・snapshot は別に数え、基準値の判定に入れない。
   // ただし別集計が基準行数の TEST_OVER_FACTOR 倍を超えたら、別集計の側も size:over とする(別集計に上限が無い抜け道を塞ぐ)
-  const genPatterns = generatedPatterns(atBase('.gitattributes'));
+  const genPatterns = generatedPatterns(atPolicy('.gitattributes'));
   const extraNonProduct = Array.isArray(limitsFrom.task?.nonProductPaths) ? limitsFrom.task.nonProductPaths.filter((g) => typeof g === 'string' && g.trim()) : [];
   const isTestPath = (f) => [...TEST_PATTERNS, ...extraNonProduct].some((g) => matchGlob(g, f));
   const { excluded, counted, testCounted } = classifySize(all, ws, { atBase, genPatterns, isTestPath });
   // 区分の下限の規則と変更の種類。size:over の下限(7)と、基準なし(null)の適用条件の両方が使う
   const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
-  const assurance = assuranceOf(limitsFrom, { exists: (p) => atBase(p) !== null });
+  const assurance = assuranceOf(limitsFrom, { exists: (p) => atPolicy(p) !== null });
   const declaredRisk = riskClassOf(pr.body);
   const eff = effectiveSizeLimits(limitsFrom, {
     assurance,
@@ -812,7 +830,7 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   for (const n of eff.notes) result.notices.push(n);
   if (assurance.problems.length && assurance.declared !== 'L0') result.notices.push(`担保水準の宣言(${assurance.declared})は成立していない: ${assurance.problems.join('、')}。L0 として扱う`);
   if (testCounted.length) result.notices.push(`変更規模(別集計): テスト・fixture・snapshot ${testLines} 行 / ${testCounted.length} ファイル。基準値の判定に入れない(基準行数の ${TEST_OVER_FACTOR} 倍を超えたら別集計の側も size:over とする)`);
-  if (!baseConfigured) {
+  if (!policyConfigured) {
     size.skipped = '基底ブランチの構成が未設定(初回の chore/process-init)のため、規模の判定を行わない';
     result.notices.push(`変更規模: ${size.skipped}`);
   } else {
@@ -823,7 +841,7 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   if (size.over.length) {
     size.sizeOver = true;
     // 既存の台帳の例外承認の行は有効のまま(過去の記録を壊さない)。新しい超過は、台帳でなく規模の確認で扱う
-    const ex = exceptionFor(atBase('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author);
+    const ex = exceptionFor(atPolicy('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author);
     size.exception = ex;
     if (ex.matched.length) {
       size.exceptionApproved = true;
@@ -861,8 +879,8 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   const thresholdChanges = [];
   const initial = [];
   const product = all.filter((e) => !isNonProduct(e.path) && !matchAny(THRESHOLD_FILES, e.path) && !isLock(e.path)).map((e) => e.path);
-  const stack = (baseConfig ?? headConfig).adapters?.stack ?? null;
-  const baseAdapter = stack ? json(atBase(`adapters/${stack}.json`)) : null;
+  const stack = (policyConfig ?? baseConfig ?? headConfig).adapters?.stack ?? null;
+  const baseAdapter = stack ? json(atPolicy(`adapters/${stack}.json`)) : null;
   const thresholdGlobs = [...THRESHOLD_FILES, ...(Array.isArray(baseAdapter?.thresholdFiles) ? baseAdapter.thresholdFiles : [])];
   for (const e of all) {
     const f = e.path;
@@ -977,7 +995,7 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
 
   // --- 7. 区分の下限と確定者(標準 第3章 3.8.1「区分の下限と確定者」) ---
   // 規則は基底ブランチの構成から読む。同じ PR で規則を書き換えても、その PR の下限は変わらない
-  const rulesConfig = baseConfigured ? baseConfig : headConfig;
+  const rulesConfig = policyConfigured ? policyConfig : headConfig;
   const floorResult = riskFloorOf(rulesConfig.riskFloor?.rules, changes);
   // 規模の基準値の超過(size:over)は、区分の下限を R2 へ引き上げる(#295 / ADR-0058。既存の台帳の例外承認を得た PR を除く)
   if (size.sizeOver && !size.exceptionApproved) {
@@ -1028,7 +1046,7 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
   }
 
   // --- 6. 停止の申し立て(標準 第7章 7.11) ---
-  result.stop = stopFindings({ git, base, pr, config: baseConfigured ? baseConfig : headConfig });
+  result.stop = stopFindings({ git, base: policyRef, pr, config: policyConfigured ? policyConfig : headConfig });
   if (result.stop.requested) {
     if (result.stop.released) result.notices.push(result.stop.message);
     else result.errors.push(result.stop.message);
@@ -1036,7 +1054,7 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
   // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
-  result.approvers = approverFindings(baseConfigured ? baseConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
+  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
   if (result.approvers.applies) {
     const a = result.approvers;
     const coreText = a.core
@@ -1148,6 +1166,8 @@ if (isMain) {
   const argv = process.argv.slice(2);
   const arg = (k, d = null) => (argv.indexOf(k) >= 0 ? argv[argv.indexOf(k) + 1] : d);
   const base = arg('--base', process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : null);
+  // 基準値・台帳を読む既定ブランチ。ワークフローは github.event.repository.default_branch を渡す。省くと --base から読む
+  const policyBase = arg('--policy-base', null);
   if (!base) {
     fail('比較の起点(--base)を指定してください');
     process.exit(2);
@@ -1166,7 +1186,7 @@ if (isMain) {
         // G-6 の承認者の数(検査8)。レビューの一覧(JSON)。無ければ「読めない」として出す
         reviews: parseJsonEnv('PR_REVIEWS') ?? undefined,
       };
-  const r = analyzePr({ base, pr });
+  const r = analyzePr({ base, policyBase, pr });
   if (argv.includes('--json')) {
     console.log(JSON.stringify(r, null, 2));
   } else {

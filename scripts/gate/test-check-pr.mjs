@@ -400,6 +400,57 @@ scenario('承認者の数: 空白と記号だけが違う挙動要約も同一�
 scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
 scenario('承認者の数: 承認の後の変更要求は承認を取り下げる。bot の承認は数えない', { reviews: [rv('suzuki'), rv('suzuki', '', 'CHANGES_REQUESTED'), { author: { login: 'ai-review[bot]', is_bot: true }, state: 'APPROVED', body: '要約' }, rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
 
+// ---------------------------------------------------------------- スタックの上の層(基準値は既定ブランチから読む。process-compass #294 / ADR-0077)
+// 下の層のブランチで基準値を緩め、台帳に上の層の例外承認の行を足す。上の層の PR の基底は下の層のブランチになる。
+// --policy-base(既定ブランチ)を渡すと、まだ既定ブランチへ入っていない下の層の基準値と台帳を読まない
+{
+  git('switch', '-q', 'main');
+  git('switch', '-q', '-C', 'stack-lower', 'main');
+  write('process.config.json', { ...JSON.parse(read('process.config.json')), task: { ...config.task, maxChangedLines: 5000 } });
+  write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-090', 990));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'lower: 基準値を緩める');
+  git('switch', '-q', '-C', 'stack-upper', 'stack-lower');
+  write('src/stacked.js', lines(450, 's'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'upper: 製品のコード');
+  const pr = { number: 991, title: 'feat: x', body: BODY(), author: 'yamada' };
+  const rows = [
+    ['スタック: 既定ブランチから読むと、下の層で緩めた基準値で上の層を判定しない(size:over を出す)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
+      return r.size?.sizeOver === true && r.policy?.ref === 'main' && r.policy.sameAsBase === false && r.notices.some((x) => /既定ブランチ\(main\)から読む/.test(x));
+    }],
+    ['スタック: 既定ブランチを渡さない(手元)と、基底(下の層)の基準値で判定する(差を確かめる対照)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', pr });
+      return r.size?.sizeOver === false && r.policy?.sameAsBase === true;
+    }],
+    ['スタック: 下の層の台帳に足した例外承認の行は、既定ブランチから読むと数えない', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr: { ...pr, number: 990 } });
+      return r.size?.sizeOver === true && !r.size.exceptionApproved;
+    }],
+    ['スタック: 差分は PR の基底から取る(下の層の変更を上の層の差分に数えない)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
+      return r.size?.lines === 450 && r.thresholds.changed.length === 0;
+    }],
+    ['スタック: 既定ブランチを解決できなければ失敗する(黙って基底から読まない)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'origin/no-such-branch', pr });
+      return r.errors.some((e) => /既定ブランチ origin\/no-such-branch を解決できません/.test(e));
+    }],
+  ];
+  for (const [name, fn] of rows) {
+    let ok = false;
+    try {
+      ok = fn();
+    } catch {
+      ok = false;
+    }
+    if (!ok) failures++;
+    n++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
+  }
+  git('switch', '-q', 'main');
+}
+
 // ---------------------------------------------------------------- マージ済みの変更の規模(出荷の集約が使う。measureCommitSize)
 {
   git('switch', '-q', '-C', 'pr-merged', 'main');
@@ -450,6 +501,7 @@ const defs = [
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
   ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
   ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],
+  ['ワークフロー: 基準値・台帳を既定ブランチから読む(--policy-base に github.event.repository.default_branch を渡し、取得する)', /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/.test(wf) && /check-pr\.mjs[^\n]*--policy-base "origin\/\$\{DEFAULT_BRANCH\}"/.test(wf) && /refs\/heads\/\$\{DEFAULT_BRANCH\}:refs\/remotes\/origin\/\$\{DEFAULT_BRANCH\}/.test(wf)],
   ['ワークフロー: PR のレビューの一覧を環境変数で渡す(G-6 の承認者の数)', /pulls\/\$\{PR_NUMBER\}\/reviews/.test(wf) && /PR_REVIEWS: \$\{\{ steps\.reviews\.outputs\.reviews \}\}/.test(wf)],
 ];
 for (const [name, ok] of defs) {
