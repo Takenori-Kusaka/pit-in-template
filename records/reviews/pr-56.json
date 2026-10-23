@@ -1,0 +1,37 @@
+{
+  "repository": "Takenori-Kusaka/pit-in-template",
+  "pr": 56,
+  "title": "test(#54): 署名構成の record-copy の実機確認(一時)",
+  "body": "pit-in-template #54。records-signed.json と RECORDS_SIGNED=true の下で、record-copy.yml が GraphQL createCommitOnBranch で署名つきの写しを置くことを確かめる。\n\n## リスク区分\nR3",
+  "head_ref": "test/321-s2-signed",
+  "merge_commit_sha": "cca776b35691c72694fd1bcefc4ba185f83eaba3",
+  "head_sha": "35555fa897309d157536a29461039458ba734fa6",
+  "author": {
+    "id": 22556919,
+    "login": "Takenori-Kusaka"
+  },
+  "merged_at": "2026-10-23T13:38:17Z",
+  "merged_by": {
+    "login": "Takenori-Kusaka"
+  },
+  "base": {
+    "ref": "main"
+  },
+  "copied_at": "2026-10-23T13:38:29Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [
+    {
+      "body": "G-4: 通過\n確認した項目: 1(#54 署名構成の実機確認)",
+      "commit_id": "35555fa897309d157536a29461039458ba734fa6",
+      "id": 5629020709,
+      "state": "COMMENTED",
+      "submitted_at": "2026-10-23T13:38:14Z",
+      "user": {
+        "id": 22556919,
+        "login": "Takenori-Kusaka",
+        "type": "User"
+      }
+    }
+  ],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}
