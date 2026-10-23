@@ -1,0 +1,37 @@
+{
+  "repository": "Takenori-Kusaka/pit-in-template",
+  "pr": 55,
+  "title": "test(#54): 段階2 record-copy の実機確認(一時)",
+  "body": "pit-in-template #54 段階2 の実機確認。マージで record-copy.yml が起動し、records/reviews/pr-<n>.json が置かれることを確かめる。\n\n## リスク区分\nR3",
+  "head_ref": "test/321-s2-copy",
+  "merge_commit_sha": "63d915cef7e7e44fa2aff4216f8d43b89b51cd21",
+  "head_sha": "349d96a100932784e214c7590c2d816af76ac92a",
+  "author": {
+    "id": 22556919,
+    "login": "Takenori-Kusaka"
+  },
+  "merged_at": "2026-10-23T13:20:46Z",
+  "merged_by": {
+    "login": "Takenori-Kusaka"
+  },
+  "base": {
+    "ref": "main"
+  },
+  "copied_at": "2026-10-23T13:20:56Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [
+    {
+      "body": "G-4: 通過\n確認した項目: 1, 2(#54 段階2 の実機確認。作成者本人の COMMENTED レビュー)",
+      "commit_id": "349d96a100932784e214c7590c2d816af76ac92a",
+      "id": 5628804945,
+      "state": "COMMENTED",
+      "submitted_at": "2026-10-23T13:20:43Z",
+      "user": {
+        "id": 22556919,
+        "login": "Takenori-Kusaka",
+        "type": "User"
+      }
+    }
+  ],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}
