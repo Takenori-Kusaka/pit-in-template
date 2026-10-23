@@ -1,0 +1,13 @@
+{
+  "name": "records-signed",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "include": ["refs/heads/records"], "exclude": [] }
+  },
+  "rules": [
+    { "type": "required_signatures" },
+    { "type": "non_fast_forward" },
+    { "type": "deletion" }
+  ]
+}

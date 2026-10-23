@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "7c950aa4e90bc447ba57f5d822688b050d67ce8a"
+    "commit": "f21e1f7cdf45e656455092fef3dd32afdabd305d"
   },
   "questions": [
     {
@@ -1505,6 +1505,12 @@
       "range": "物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか"
+    },
+    {
+      "title": "承認レビューを判定記録とする条件",
+      "range": "G-6。規制業の監査対応書式を除く",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#承認レビューを判定記録とする条件適用-g-6規制業の監査対応書式を除く"
     },
     {
       "title": "委任の変更は判定の時点を事後へ移す",

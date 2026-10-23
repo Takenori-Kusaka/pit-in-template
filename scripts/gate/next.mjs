@@ -119,6 +119,11 @@ function gateWait(config, key, target, extra = {}) {
 
 const forTarget = (r, target) => target === null || (r.target ?? '').split(/[\s,、/]+/).includes(target);
 
+// TODO(段階 2, process-compass #321): 判定記録の媒体は様式に限らない(ADR-0070)。対象が PR として存在する判定
+// (G-6、仕様が PR の G-2・G-4)は判定者本人のレビューの本文が記録であり、その写しは record-copy.yml が
+// 記録用ブランチ records の records/reviews/pr-<番号>.json へ置く。ここは docs/gates/ の様式しか読まないため、
+// 段階 2 で写し(宣言行 `G-4: 通過` / `G-4: 差し戻し / 基準 N / 期限 YYYY-MM-DD` と commit_id)も読む。
+// 「記録が無い = 未判定」の表示は保つ(写しが読めない間は、様式の無い判定を通過に数えない)
 function passed(records, gateKey, target = null) {
   const prefix = gateArg(gateKey);
   return records.some((r) => r.gate?.startsWith(prefix) && r.result === PASS && forTarget(r, target));

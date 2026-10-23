@@ -23,3 +23,10 @@
 # 強制層。エージェント自身の操作で変えられてはならない
 # /.claude/settings.json  @tech-lead
 # /.github/rulesets/      @tech-lead
+
+# 判定記録の置き場(process-compass #321)。記録だけの PR の承認者を、記名者の席へ誘導する。
+# これは誘導層であり、遮断に数えない(所有者の誰か 1 人で足り、bypass actor は素通りする)。
+# require_code_owner_review が偽の構成(team.json)では、承認者の候補として表示されるだけ。
+# 席ごとに分けるなら、ゲートごとの判定者の席(価値責任者・出荷判定者・事業決裁者)をここへ書く
+# /docs/gates/            @gate-judges
+# /records/               @gate-judges

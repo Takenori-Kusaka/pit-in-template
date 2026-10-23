@@ -1,0 +1,109 @@
+# マージを契機に、その PR の承認レビューの写しを記録用ブランチ(records)へ置く(process-compass #321 D5〜D7)
+#
+# 写しは、人の判断を含まない機械の複製です。要約と評価を足しません。
+# 承認レビューの本文は編集でき、監査ログは 180 日で消え、承認者が退会すると user が ghost になります。
+# 写しをマージと同じ時期に取り出し、記名者と判定される側が書き換えられない場所へ置くことで、
+# 出荷判定(G-7)の時点で、ホスティングから引き直した承認レビューと突き合わせられるようにします。
+#
+# 置き場は、既定ブランチではなく、同じリポジトリの記録用ブランチ `records` です(`.github/rulesets/README.md`「記録用ブランチ」)。
+# 既定ブランチのルールセットは一切緩めません。bypass actor を足さず、`exempt` を使いません。
+# `records` ブランチには `pull_request` の規則が無いため、GITHUB_TOKEN(contents: write)の push が通ります
+# (2026-10-23 の実機確認: orphan ブランチの初期化と push。committer は github-actions[bot])。
+#
+# 書き込みは追記だけです。既存のファイルを書き換えません(同じ PR の写しが既にあれば、何もせずに終えます)。
+# `required_signatures` を課す構成(records-signed.json)では、git push のコミットは署名を持たないため止まります。
+# GitHub が署名する API 経由のコミット(GraphQL createCommitOnBranch)への置き換えは段階 2 で扱います(未確認)。
+#
+# 写しに含めるのは最小の組だけです: レビューの識別子・状態・commit_id・submitted_at・user.id・login・本文・PR 番号・merge_commit_sha。
+# 同じ期間の bypass・保護の変更の記録(監査ログ)は、無料のプランでは API で取れません。取れないことを写しに書きます。
+#
+# 出荷の証跡の集約(aggregate-evidence.mjs)と next.mjs がこの写しを読むのは段階 2 です。
+# それまで、写しは G-7 の突合の材料として records ブランチに置かれるだけです。
+
+name: record-copy
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: record-copy
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    name: record-copy
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      RECORDS_BRANCH: records
+    steps:
+      # 既定ブランチの定義で動く(pull_request の closed は、マージ後の基底ブランチの定義を読む)。
+      # PR の先頭を checkout しない
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 承認レビューの写しを取り出す
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p /tmp/record-copy
+          # レビューはページを跨いで全件取る。推定を含まない写しにするため、欄を選ぶ以外の加工をしない
+          gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+            --jq '[.[] | {id, state, commit_id, submitted_at, user: {id: .user.id, login: .user.login}, body}]' \
+            | jq -s 'add // []' > /tmp/record-copy/reviews.json
+          jq -n \
+            --arg repo "$REPO" \
+            --argjson pr "$PR" \
+            --arg merge "$MERGE_SHA" \
+            --arg head "$HEAD_SHA" \
+            --arg copied "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile reviews /tmp/record-copy/reviews.json \
+            '{
+              repository: $repo,
+              pr: $pr,
+              merge_commit_sha: $merge,
+              head_sha_at_merge: $head,
+              copied_at: $copied,
+              copied_by: "record-copy workflow (GITHUB_TOKEN)",
+              reviews: $reviews[0],
+              audit_log: "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+            }' > /tmp/record-copy/pr.json
+          echo "::notice::PR #$PR のレビュー $(jq '.reviews | length' /tmp/record-copy/pr.json) 件を写しました"
+
+      - name: 記録用ブランチへ追記する
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 記録用ブランチが無ければ、履歴を持たない(orphan)ブランチとして初期化する
+          if git fetch origin "$RECORDS_BRANCH" 2>/dev/null; then
+            git checkout -B "$RECORDS_BRANCH" "origin/$RECORDS_BRANCH"
+          else
+            git checkout --orphan "$RECORDS_BRANCH"
+            git rm -rf --quiet . || true
+            printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
+            git add README.md
+            git commit -m "chore: 記録用ブランチを初期化する"
+          fi
+          dest="records/reviews/pr-$PR.json"
+          if [ -e "$dest" ]; then
+            # 追記だけを行う。既存の写しは書き換えない(書き換えは、成立済みの記録の書き換えとして集約が所見に出す対象)
+            echo "::warning::$dest は既にあります。書き換えません"
+            exit 0
+          fi
+          mkdir -p "$(dirname "$dest")"
+          cp /tmp/record-copy/pr.json "$dest"
+          git add "$dest"
+          git commit -m "records: PR #$PR の承認レビューの写しを置く"
+          git push origin "$RECORDS_BRANCH"

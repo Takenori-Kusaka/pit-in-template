@@ -112,7 +112,14 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/checks-only.json
 gh api -X PATCH repos/{owner}/{repo} -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=PR_BODY
 ```
 
-**ルールセットを使えない場合**: 私有リポジトリでルールセット(ブランチ保護)を使えるかは、GitHub のプランに依ります(2026-10 時点で、無料のプランでは公開リポジトリに限られます)。使えない場合、G-5 が落ちた PR も、G-5 を経ない直接の push もマージを止められません。このテンプレートが代わりに行えるのは**事後の検出だけ**です。出荷判定(G-7)の証跡の集約が、gate-g5 の成功を持たない PR(結果の記録が無い PR を含む)と、トレーラ `Risk`・`Verification` を持たない PR を経ないコミットを、欠落として失敗させます。止めることはできず、出荷の時点まで気づかない点を受け入れて運用してください。
+記録用ブランチ(`records`)にも、別のルールセットを適用します。このブランチには、マージを契機にワークフロー `record-copy.yml` が承認レビューの写しを置きます。既定ブランチのルールセットは緩めず、bypass actor も足しません(`.github/rulesets/README.md`「記録用ブランチ」)。
+
+```bash
+gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json          # 既定
+gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records-signed.json   # 規制業・CL2 以上(署名を必須にする)
+```
+
+**ルールセットを使えない場合**: 私有リポジトリでルールセット(ブランチ保護)を使えるかは、GitHub のプランに依ります(2026-10 時点で、無料のプランでは公開リポジトリに限られます)。使えない場合、G-5 が落ちた PR も、G-5 を経ない直接の push もマージを止められません。このテンプレートが代わりに行えるのは**事後の検出だけ**です。出荷判定(G-7)の証跡の集約が、gate-g5 の成功を持たない PR(結果の記録が無い PR を含む)と、トレーラ `Risk`・`Verification` を持たない PR を経ないコミットを、欠落として失敗させます。止めることはできず、出荷の時点まで気づかない点を受け入れて運用してください。記録用ブランチも同じく保護できません。写しと判定記録の書き換えを止められず、判定記録の日時は判定者の自己申告になります。この点は保証の開示に出します。
 
 ### 4. 体制が変わったら
 
