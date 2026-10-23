@@ -1,0 +1,25 @@
+# #321 E0 の実機確認(一時ファイル。確認後に削除する)
+# GITHUB_TOKEN がルールセットの無い別ブランチへ push できるかを確かめる
+name: test-321-records-push
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: push a record copy to records branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan records-test-321
+          git rm -rf --quiet . || true
+          mkdir -p records
+          echo "{\"test\":\"321\",\"run_id\":\"${GITHUB_RUN_ID}\",\"actor\":\"${GITHUB_ACTOR}\"}" > records/copy-${GITHUB_RUN_ID}.json
+          git add records
+          git commit -m "test(#321): write a record copy with GITHUB_TOKEN"
+          git push origin HEAD:records-test-321 --force
