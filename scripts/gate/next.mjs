@@ -26,7 +26,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, trackedFiles, unmatchedCoreText } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
@@ -416,6 +416,8 @@ export function computeNext() {
     const briefPath = path.join(ROOT, 'docs/project-brief.md');
     const briefText = fs.existsSync(briefPath) ? fs.readFileSync(briefPath, 'utf8') : null;
     if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
+    // 氏名の確認のうち、1名の体制の自己申告と未記録の確認(追加の裁定。2名以上の名簿の記録の無い確認は契約検査が落とす)
+    for (const n of nameConfirmationNotices(config)) result.notes.push(n);
   }
 
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と

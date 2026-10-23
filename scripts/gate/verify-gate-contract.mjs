@@ -60,6 +60,7 @@ import {
   isRealDay,
   accountConfirmationProblems,
   nameConfirmationProblems,
+  nameConfirmationNotices,
   confirmedAccounts,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
@@ -467,6 +468,7 @@ if (!Array.isArray(config.seats)) {
   // アカウント名の確認済みの上書きは、名簿の変更として本人以外が記名した記録に限る(#296)
   for (const p of accountConfirmationProblems(config)) problems.push(p);
   for (const p of nameConfirmationProblems(config)) problems.push(p);
+  for (const n of nameConfirmationNotices(config)) notes.push(n);
   for (const [key, v] of confirmedAccounts(config)) notes.push(`アカウント名の機械検査を人が上書きした: ${key}(${v.date ?? '日付なし'}、決定 ${v.decidedBy})`);
   if (!(config.people ?? []).length) {
     notes.push(

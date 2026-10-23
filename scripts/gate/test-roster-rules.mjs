@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
+import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings } from '../init/generate-profile.mjs';
 
 let failures = 0;
@@ -186,7 +186,18 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('氏名の確認: 本人の記名では効かない', aiNameBlocked(rec('Devin Smith'), 'Devin Smith') !== null && nameConfirmationProblems(rec('Devin Smith')).length === 1);
   check('氏名の確認: AI の名義の記名では効かない', aiNameBlocked(rec('Claude'), 'Devin Smith') !== null);
   check('氏名の確認: 記録があっても名簿の nameConfirmed が無ければ効かない', aiNameBlocked({ ...rec('山田 太郎'), people: [{ id: 'd', name: 'Devin Smith' }, other] }, 'Devin Smith') !== null);
+  // 体制の内の人が1名の名簿(追加の裁定): 本人の記名を受け付け、自己申告の氏名として出す。記録の無い確認は落とさず、未記録として知らせる
+  const solo = { people: [devin, { id: 'x', name: '外部 確認', external: true }] };
+  const soloSelf = { ...solo, changeLog: [{ date: '2026-10-20', decidedBy: 'Devin Smith', nameConfirmations: [{ id: 'd' }] }] };
+  check('1名の体制: 本人の記名の確認を受け付け、自己申告として開示する', aiNameBlocked(soloSelf, 'Devin Smith') === null && nameConfirmationState(soloSelf, devin) === 'self' && nameConfirmationProblems(soloSelf).length === 0 && nameOverrideDetails(soloSelf)[0]?.how === 'self' && /自己申告/.test(nameConfirmationNotices(soloSelf)[0] ?? ''));
+  check('1名の体制: 記録の無い確認は落とさず効かせ、未記録として記録する手順を知らせる', aiNameBlocked(solo, 'Devin Smith') === null && nameConfirmationProblems(solo).length === 0 && /未記録/.test(nameConfirmationNotices(solo)[0] ?? '') && /\/process-change/.test(nameConfirmationNotices(solo)[0] ?? ''));
+  check('2名以上の体制: 本人の記名の記録は効かず、契約検査が落とす(記録する手順を出す)', nameConfirmationState(rec('Devin Smith'), devin) === 'invalid' && /\/process-change/.test(nameConfirmationProblems(rec('Devin Smith'))[0] ?? ''));
+  check('2名以上の体制: 本人以外の記名は自己申告として扱わない', nameConfirmationState(rec('山田 太郎'), devin) === 'other' && nameConfirmationNotices(rec('山田 太郎')).length === 0);
   const { diffConfig } = await import('../init/generate-profile.mjs');
+  const soloBefore = { configured: true, gates: {}, seats: [], people: solo.people };
+  check('1名の体制: 未記録の確認は、次の変化点で記名して記録する項目になる', diffConfig(soloBefore, soloBefore).nameConfirmItems.length === 1);
+  check('1名の体制: 本人の記名の記録がある確認は、再び項目にしない', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, changeLog: soloSelf.changeLog }).nameConfirmItems.length === 0);
+  check('2人目が加わると、本人の記名だけの確認は本人以外の記名を要する項目になる', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, people: [devin, other], changeLog: soloSelf.changeLog }).nameConfirmItems.length === 1);
   const before = { configured: true, gates: {}, people: [{ id: 'd', name: 'Devin Smith' }, other], seats: [] };
   const after = { ...before, people: [devin, other] };
   const rep = diffConfig(before, after);
