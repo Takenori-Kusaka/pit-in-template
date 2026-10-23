@@ -87,6 +87,9 @@ jobs:
       # 判断記録の状態と置き換えの両側の参照、状態に応じた置き場(標準 第6章 テンプレ2「置き換えと廃止」、第4章 G-3「記載の検査」。process-compass #289)
       - run: node scripts/gate/check-decisions.mjs
       - run: node scripts/gate/test-decisions.mjs
+      # G-5 の判定基準を実装する検査が集約(gate-g5)の合否に使われていることの読み方を、ワークフローの写しで試験する。
+      # 契約検査と保証の開示 項目4 が同じ読み方を使う(標準 第4章 G-5「判定基準を実装する検査と集約」。process-compass #290)
+      - run: node scripts/gate/test-g5-aggregate.mjs
       # 初期化した直後に G-5 の手元で確かめられる検査が通ることを、テンプレートの全ファイルで試験する(#286)。
       # 構成が設定済みのリポジトリでは省く(テンプレートの初期の状態が無いため)
       - run: node scripts/gate/test-init-g5.mjs

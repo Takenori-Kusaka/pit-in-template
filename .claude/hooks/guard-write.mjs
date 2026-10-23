@@ -8,7 +8,8 @@
 //   2. 自己修正ループ中のテストへの書き込み
 //      → 渡された失敗をテスト側の変更で解消する経路を塞ぐため(附属書E E.7)
 //      ロックは scripts/gate/self-heal.mjs が始めて終える。ロックのファイルそのものへの書き込みも拒否する。
-//      この遮断は guard.enabled に依らず有効である(探索ステージでも外さない。#286)。
+//      この遮断は guard.enabled に依らず有効である(構成の guard の上書きで一時緩和しても外さない。#286)。
+//      強制層そのものの遮断(1)も事業ステージに依らず有効である(PoC でも外さない。標準 第8章 軸B、ADR-0050。process-compass #290)。
 //      ロックの外(テストを先に書く作業)は遮断しない
 //
 // 拒否した操作は .claude/denied.log へ残します。拒否の発生そのものが、
@@ -95,7 +96,7 @@ function main() {
     process.exit(2);
   };
 
-  // 1. 強制層そのもの。探索フェーズ（S0）などで強制層が無効化されている場合は適用しない
+  // 1. 強制層そのもの。構成の guard の上書き(期限と理由つき)で一時緩和されている場合だけ適用しない(事業ステージでは外さない。#290)
   if (guard.enabled !== false) {
     for (const item of guard.protectedPatterns ?? []) {
       const isObj = typeof item === 'object' && item !== null && 'pattern' in item;

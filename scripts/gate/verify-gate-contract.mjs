@@ -61,6 +61,7 @@ import {
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
+import { aggregateFindings } from './g5-aggregate.mjs';
 
 const config = loadConfig();
 const problems = [];
@@ -582,6 +583,12 @@ if (config.gates?.g5?.state !== 'omitted') {
     problems.push('gate-g5 が有効ですが .github/workflows/gate-g5.yml がありません');
   } else if (!/^\s{2}gate-g5:/m.test(g5wf)) {
     problems.push('gate-g5.yml に集約ジョブ "gate-g5" がありません。必須ステータスチェックの名前は gate-g5 に固定です');
+  } else {
+    // G-5 の判定基準を実装する検査が、集約の合否に使われていること(標準 第4章 G-5「判定基準を実装する検査と集約」。#290 / ADR-0074)。
+    // 集約が在ることだけを見ると、needs から検査を外して基準を黙って外せる
+    const agg = aggregateFindings(g5wf);
+    for (const p of agg.problems) problems.push(`gate-g5.yml: ${p}`);
+    for (const n of agg.notes) notes.push(n);
   }
 }
 

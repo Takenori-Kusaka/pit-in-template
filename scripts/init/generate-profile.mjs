@@ -4640,8 +4640,11 @@ if (isMain) {
         const existingDeny = Array.isArray(settingsObj.permissions?.deny) ? settingsObj.permissions.deny : [...standardSecrets];
         const customDenyRules = existingDeny.filter(rule => !allStandardRules.includes(rule));
         
-        // 2. guard.enabled の設定。process.config.json の上書き設定があればそれを最優先する
-        let guardEnabled = answers['q-biz-phase'] !== 'poc';
+        // 2. guard.enabled の設定。事業ステージ(PoC を含む)に依らず有効にする(標準 第8章 軸B「本軸は、強制層に置くと決めた規則
+        // そのものを動かしません」、ADR-0050 決定1。process-compass #290 / ADR-0074)。かつては PoC で無効にしており、ADR-0050 が
+        // 退けた「S0 に限り強制層の適用を免除する」を初期化が既定で行っていた(#286 の評価で重大)。
+        // 外すのは process.config.json の guard の上書き(期限 guard.reviewBy と理由 guard.reason を要し、契約検査が期限を確かめる)だけ
+        let guardEnabled = true;
         let isOverridden = false;
         
         if (config.guard && typeof config.guard.enabled === 'boolean') {
@@ -4661,15 +4664,11 @@ if (isMain) {
             ...customDenyRules
           ];
           
-          if (isOverridden) {
-            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
-          } else {
-            console.log('[プロセス構成] 探索ステージ（PoC）のため、エージェント用書き込み遮断ガードを無効化（enabled: false）し、settings.json の編集遮断や Bash 遮断も一時的に解放しました。');
-          }
+          console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
           // 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、enabled に依らずフックが適用する(#286)
           console.log('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
         } else {
-          // S1/S2（構築・拡大ステージ）では、エージェント用ガードを有効化（enabled: true）し、
+          // 事業ステージに依らず、エージェント用ガードを有効化（enabled: true）し、
           // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
           guardObj.enabled = true;
           
@@ -4694,7 +4693,7 @@ if (isMain) {
           if (isOverridden) {
             console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持し、全ファイルを厳格にロックダウン（遮断）しました。理由: ${config.guard.reason || '未記入'}`);
           } else {
-            console.log('[プロセス構成] 構築・拡大ステージのため、エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。');
+            console.log('[プロセス構成] エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。事業ステージ（PoC を含む）に依らず有効です（標準 第8章 軸B、ADR-0050）。');
           }
         }
         
