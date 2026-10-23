@@ -27,5 +27,5 @@
   },
   "review": { "requiredApprovals": 1, "reviewerCount": 1, "mode": null, "recordFormat": "standard" },
   "aiReview": { "enabled": true, "canApprove": false, "requiredCheck": false },
-  "task": { "maxChangedLines": 400, "maxChangedFiles": 15, "selfHealMaxIterations": 3 }
+  "task": { "maxChangedLines": 400, "maxChangedFiles": 15, "selfHealMaxIterations": 3, "selfHealNoProgressLimit": 2 }
 }

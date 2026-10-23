@@ -53,7 +53,7 @@ node scripts/gate/self-heal.mjs start --spec F-012 --task Task-3
 
 ロックがある間、`.claude/hooks/guard-write.mjs` がテストへの書き込みを拒否します。渡された失敗をテスト側の変更で解消する経路を塞ぐためです。この遮断は段階に依らず有効です(構成の guard の上書きで強制層を一時緩和しても外れません)。ロックのファイル(`.claude/.self-heal`)への直接の書き込みも拒否します。ロックの外(手順2 のテストを先に書く作業)は遮断しません。
 
-反復のたびに、修正の前に回数を数えます。
+修正するたびに、反復を記録します。スクリプトがテストを実行し、失敗したテストを記録します。結果を自分で申告しません。
 
 ```bash
 node scripts/gate/self-heal.mjs iterate
@@ -61,23 +61,23 @@ node scripts/gate/self-heal.mjs iterate
 
 | # | 規則 |
 | --- | --- |
-| 1 | 反復上限は `process.config.json` の `task.selfHealMaxIterations`(既定3回)。上限に達すると `iterate` が終了コード3を返し、ロックが**保留**になる |
-| 2 | 保留は**人の判断待ち**。人が受入基準へ戻る。実装の再試行を続けない |
-| 3 | 同じ失敗を3回繰り返す場合、原因は実装ではなく受入基準の不備であることが多い |
+| 1 | 停止条件は標準 第3章 3.12.10 による。同じ失敗したテストの集合が `task.selfHealNoProgressLimit` 回(既定2回)続く(無進捗)か、失敗の反復が `task.selfHealMaxIterations` 回(既定3回)に達する(連続失敗)と、`iterate` が終了コード3を返し、ロックが**保留**になる。テストが通れば、ロックを終える |
+| 2 | 保留は**人の判断待ち**。人が受入基準へ戻る。実装の再試行を続けない。同じタスクで保留が繰り返されるなら、実装計画へ差し戻す |
+| 3 | 失敗したテストを出力から識別できない反復は、無進捗に数えない(連続失敗の上限は効く)。単一タスクの累積消費は、このスクリプトでは見ない |
 | 4 | テストの修正を要すると判明したら、`stop --reason test-change` でループを終える(保留になる)。**ループの内側で続けない** |
-| 5 | 反復回数と、拒否された操作の件数を記録する(`.claude/self-heal.log`・`.claude/denied.log`) |
+| 5 | 反復・保留・解除は `docs/self-heal-log.tsv`(git で追跡する)に、拒否された操作は `.claude/denied.log` に記録される。停止の記録は閾値の較正の入力になる |
 
 ループを終えるときは、終え方を理由で選びます。
 
 | 状態 | コマンド | 結果 |
 | --- | --- | --- |
 | 自動検証が通った | `node scripts/gate/self-heal.mjs stop --reason pass` | スクリプトがテストを実行し、通った場合だけロックを終える |
-| 反復上限に達した | `node scripts/gate/self-heal.mjs stop --reason limit` | 保留。テストの遮断は続く |
+| 反復を続けても進まないと判断した | `node scripts/gate/self-heal.mjs stop --reason limit` | 保留。テストの遮断は続く |
 | テストの修正を要する | `node scripts/gate/self-heal.mjs stop --reason test-change` | 保留。テストの遮断は続く |
 
-保留を解くのは**人の操作**です(`node scripts/gate/self-heal.mjs release --by "<氏名>"`)。エージェントが保留を解く、ロックのファイルを削除する、またはロックを終えて反復を続けた場合、それは禁止事項3(テストの失敗をテスト側の変更で解消する)に該当します。保留の間は `state:needs-po` を付け、どの受入基準で失敗し続けているか・その基準が実装可能な粒度か・分割すべき点を提示します。
+保留を解くのは**人の操作**です(`node scripts/gate/self-heal.mjs release --by "<氏名>"`。名簿の人に限り、AI の名義と名簿に無い名義は拒否される)。エージェントが保留を解く、ロックのファイルを削除する、またはロックを終えて反復を続けた場合、それは禁止事項3(テストの失敗をテスト側の変更で解消する)に該当します。保留の間は `state:needs-po` を付け、どの受入基準で失敗し続けているか・その基準が実装可能な粒度か・分割すべき点を提示します。
 
-限界: フックは Claude Code の書き込み(Edit・Write)だけを遮断します。シェルからのファイル操作と、担い手による `release` の実行は、機械では止められません。操作は `.claude/self-heal.log` に残ります。
+限界: フックは Claude Code の書き込み(Edit・Write)だけを遮断します。シェルからのファイル操作と、担い手による `release` の実行は、機械では止められません。操作は `docs/self-heal-log.tsv` に残ります。
 
 ### 5. ローカルで検証する
 

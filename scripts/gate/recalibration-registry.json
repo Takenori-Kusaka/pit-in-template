@@ -40,11 +40,11 @@
     },
     {
       "id": "RC-05",
-      "name": "自己修復の反復上限 3回",
+      "name": "自己修正の停止条件の初期値(連続失敗3回・無進捗2回。第3章 3.12.10)",
       "capabilityDependent": true,
-      "configKey": "task.selfHealMaxIterations",
-      "assumption": "修正ループが収束する回数",
-      "guarantee": "上限で保留にして人が受入基準へ戻る"
+      "configKey": "task.selfHealMaxIterations / task.selfHealNoProgressLimit",
+      "assumption": "正当な修正の反復を止めない回数",
+      "guarantee": "停止を失敗として記録し人へ返す(3.12.10 要求事項3)"
     },
     {
       "id": "RC-06",
@@ -88,10 +88,18 @@
     },
     {
       "id": "RC-11",
-      "name": "監査の周期",
+      "name": "監査の周期と抽出数",
       "capabilityDependent": false,
       "configKey": null,
-      "assumption": "内部監査の周期",
+      "assumption": "内部監査の周期と、母集団の大きさに比例させない抽出数",
+      "guarantee": "能力が上がっても短縮・削減しない"
+    },
+    {
+      "id": "RC-12",
+      "name": "段階の引き下げの観測期間(差し戻し率0%が2か月)",
+      "capabilityDependent": false,
+      "configKey": null,
+      "assumption": "形骸化を疑う観測の期間",
       "guarantee": "能力が上がっても短縮しない"
     }
   ]

@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster } from './config.mjs';
+import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings } from '../init/generate-profile.mjs';
 
 let failures = 0;
@@ -150,6 +150,34 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('同: D-0 表1 の決定者(事業決裁者の席の責任者)の記名なら受け付ける', deciderProblems(ext, report, '山田 太郎', ext).length === 0, JSON.stringify(deciderProblems(ext, report, '山田 太郎', ext)));
   check('体制の内の人が責任者である独立レビュアの席: 席の責任者の記名で受け付ける(従来どおり)', deciderProblems(two, report, '佐藤 花子', two).length === 0, JSON.stringify(deciderProblems(two, report, '佐藤 花子', two)));
 }
+
+// ---------------------------------------------------------------- アカウント名の確認済みの上書き(#296 L-9)
+// AI を示す語に当たる実在の人のアカウントは、本人以外が記名した名簿の変更(変化点の記録)でだけ人として扱う
+{
+  const devin = { id: 'd', name: 'Devin Smith', accounts: ['devin-smith'], accountsConfirmed: ['devin-smith'], nameConfirmed: true };
+  const other = { id: 'y', name: '山田 太郎', accounts: ['yamada'] };
+  const base = { people: [devin, other] };
+  const byOther = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: '山田 太郎', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  const bySelf = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Devin Smith', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  const byAi = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Claude', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  check('上書き: 記録が無ければ AI の名義として扱う', aiAccountCheck(base, 'devin-smith').reason !== null && !aiAccountCheck(base, 'devin-smith').overridden);
+  check('上書き: 記録が無い accountsConfirmed は契約検査が落とす', accountConfirmationProblems(base).length === 1, JSON.stringify(accountConfirmationProblems(base)));
+  const ok = aiAccountCheck(byOther, 'devin-smith');
+  check('上書き: 本人以外が記名した名簿の変更があれば、人のアカウントとして扱う(上書きした旨を返す)', ok.reason === null && ok.overridden === true && ok.by === '山田 太郎', JSON.stringify(ok));
+  check('上書き: 本人以外の記名があれば契約検査は落とさない', accountConfirmationProblems(byOther).length === 0, JSON.stringify(accountConfirmationProblems(byOther)));
+  check('上書き: 本人の記名では効かない', aiAccountCheck(bySelf, 'devin-smith').reason !== null && confirmedAccounts(bySelf).size === 0 && accountConfirmationProblems(bySelf).length === 1);
+  check('上書き: AI の名義の記名では効かない', aiAccountCheck(byAi, 'devin-smith').reason !== null && confirmedAccounts(byAi).size === 0);
+  check('上書き: [bot] の表記は上書きしない', aiAccountCheck(byOther, 'devin-smith[bot]').reason !== null);
+  check('上書き: ホスティングが bot と返す名義は上書きしない', aiAccountCheck(byOther, 'devin-smith', true).reason !== null);
+  check('上書き: 名簿の accountsConfirmed に無ければ、記録があっても効かない', aiAccountCheck({ ...byOther, people: [{ ...devin, accountsConfirmed: [] }, other] }, 'devin-smith').reason !== null);
+  const rp = rosterProblems({ ...byOther, people: [{ ...devin, accountsConfirmed: ['someone-else'] }, other] });
+  check('名簿: accountsConfirmed は本人の accounts に無いアカウントを書けない', rp.some((m) => /accounts に無い/.test(m)), JSON.stringify(rp));
+}
+
+// ---------------------------------------------------------------- 承認した版(#296 L-2)
+check('承認した版: 先頭のコミットと同じなら数える', approvalBinding({ commit: { oid: 'ABC' } }, 'abc') === 'bound');
+check('承認した版: 承認の後に更新があれば数えない(stale)', approvalBinding({ commit_id: 'abc' }, 'def') === 'stale');
+check('承認した版: 版を確かめられなければ数えない(unknown)', approvalBinding({}, 'def') === 'unknown' && approvalBinding({ commit: { oid: 'abc' } }, null) === 'unknown');
 
 console.log('');
 if (failures) {

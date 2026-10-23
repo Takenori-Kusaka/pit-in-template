@@ -58,10 +58,13 @@ import {
   SIGNED_DIRECTIONS,
   DIRECTION_LABEL,
   isRealDay,
+  accountConfirmationProblems,
+  confirmedAccounts,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
+import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL } from './coverage-check.mjs';
 
 const config = loadConfig();
 const problems = [];
@@ -460,6 +463,9 @@ if (!Array.isArray(config.seats)) {
   // 記名の欄。責任者・承認者は記名の自然人であり、AI の名義と、名簿に無い名義を受け付けない
   for (const p of namingProblems(config)) problems.push(`記名を受け付けられません: ${p}(第5章 5.5.1)`);
   for (const n of nameOverrides(config)) notes.push(`名義の機械検査を人が上書きした: ${n}`);
+  // アカウント名の確認済みの上書きは、名簿の変更として本人以外が記名した記録に限る(#296)
+  for (const p of accountConfirmationProblems(config)) problems.push(p);
+  for (const [key, v] of confirmedAccounts(config)) notes.push(`アカウント名の機械検査を人が上書きした: ${key}(${v.date ?? '日付なし'}、決定 ${v.decidedBy})`);
   if (!(config.people ?? []).length) {
     notes.push(
       '人の名簿(people[])が未記入です。人が /process-change の people で記入してください(D-0 体制図の節1 は、構成から生成されます)。名簿が無いあいだ、席を委任にできず、緩める向きの決定を受け付けません'
@@ -575,6 +581,34 @@ if (adapter) {
   }
 }
 
+// ---------------------------------------------------------- 5.5 カバレッジの測る範囲(G-5 基準3。#296)
+//
+// 基準3 の基準値は、測る範囲(変更で加えた・変えたコードか、全体か)を併せて企画時に決めて記録する(標準 第4章 G-5)。
+// 構成の範囲(ci.coverageScope。無ければアダプタの既定)と、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」の記録が
+// 食い違えば、測っている範囲は記録した基準値の範囲ではない。食い違いを落とす。企画書が無い段階は注記に留める
+
+if (adapter && config.gates?.g5?.state !== 'omitted') {
+  const sc = coverageScopeOf(config, adapter);
+  if (sc.invalid !== undefined) problems.push(`構成 ci.coverageScope の値 "${sc.invalid}" は changed / whole のいずれでもありません`);
+  else {
+    if (sc.scope === 'changed' && !canMeasureChanged(adapter)) {
+      problems.push(`構成のカバレッジの測る範囲は「変更で加えた・変えたコード」ですが、アダプタ ${adapter.id} は行単位の被覆(coverageDetail)を持たず、変更の範囲を測れません。範囲を whole にするか、アダプタに行単位の被覆を足してください`);
+    }
+    if (!sc.declared) notes.push(`構成にカバレッジの測る範囲(ci.coverageScope)がありません。アダプタ ${adapter.id} の既定(${SCOPE_LABEL[sc.scope]})で測ります。/process-change(種別 settings)で記録してください`);
+    const brief = read('docs/project-brief.md');
+    if (brief !== null) {
+      const rec = briefCoverageScope(brief);
+      if (!rec) notes.push('企画書(docs/project-brief.md)に「カバレッジの測る範囲(G-5 基準3)」の行がありません。構成の範囲と記録の一致を確かめていません');
+      else if (rec.blank) notes.push('企画書の「カバレッジの測る範囲(G-5 基準3)」が未記入です。構成の範囲と記録の一致を確かめていません(G-1 の検査が未記入を落とします)');
+      else if (!rec.scope) problems.push(`企画書の「カバレッジの測る範囲」の記載 "${rec.raw}" から、範囲(変更で加えた・変えたコード / 全体)を読み取れません`);
+      else if (rec.scope !== sc.scope) {
+        problems.push(`企画書に記録したカバレッジの測る範囲(${SCOPE_LABEL[rec.scope]})と、構成の範囲(${SCOPE_LABEL[sc.scope]})が一致しません。測っている範囲が、記録した基準値の範囲ではありません`);
+      }
+    }
+    if (sc.scope === 'whole') notes.push('カバレッジは全体で判定します。変更の未被覆は全体の被覆で薄まります(結果と保証の開示に出ます)');
+  }
+}
+
 // ---------------------------------------------------------- 6. CI の設定
 
 const g5wf = read('.github/workflows/gate-g5.yml');
@@ -621,6 +655,13 @@ if (config.gates?.g6?.state === 'required') {
     if (pr?.parameters?.require_last_push_approval !== true) {
       problems.push(
         'ルールセットの require_last_push_approval が true ではありません。最後に push した本人の承認を無効化する設定です'
+      );
+    }
+    // 承認は承認した差分に対して数える(標準 第4章 G-6。#296)。push のたびに古い承認を失効させる設定が、差分を変える更新の後の
+    // 承認を数えない規定を、マージの時点で満たす。差分を変えない更新で承認を維持する設定は課さない(差分の同一を機械で確かめない)
+    if (pr?.parameters?.dismiss_stale_reviews_on_push !== true) {
+      problems.push(
+        'ルールセットの dismiss_stale_reviews_on_push が true ではありません。承認の後の push で古い承認を失効させる設定です(標準 第4章 G-6「承認は承認した差分に対して数える」)'
       );
     }
     const checks = (activeRuleset.rules ?? []).find((r) => r.type === 'required_status_checks');

@@ -1426,10 +1426,12 @@ function envCheck() {
       if (!pr) bad.push('pull_request の規則が無い');
       else {
         if (!(Number(pr.required_approving_review_count) >= want)) bad.push(`要求する承認の数 ${pr.required_approving_review_count ?? '未設定'} < 構成 ${want}`);
+        // 承認は承認した差分に対して数える(標準 第4章 G-6。#296)。team を含むすべてのルールセットで、push での古い承認の失効と、
+        // 最後の push の後の承認を確かめる(要件⑦。標準 附属書I と フェーズ5 の準拠テンプレートの頁で同じ一覧)
+        if (pr.dismiss_stale_reviews_on_push !== true) bad.push('push で古い承認を無効にする設定(dismiss_stale_reviews_on_push)が無効');
+        if (pr.require_last_push_approval !== true) bad.push('最後の push の後の承認(require_last_push_approval)が無効');
         if (ruleset === 'regulated' || ruleset === 'safety') {
-          if (pr.require_last_push_approval !== true) bad.push('最後の push の後の承認(require_last_push_approval)が無効');
           if (pr.require_code_owner_review !== true) bad.push('コードオーナーの承認(require_code_owner_review)が無効');
-          if (pr.dismiss_stale_reviews_on_push !== true) bad.push('push で古い承認を無効にする設定(dismiss_stale_reviews_on_push)が無効');
         }
       }
       if (!checks.includes('gate-g5')) bad.push('必須チェックに gate-g5 が無い');
@@ -1438,7 +1440,7 @@ function envCheck() {
       const evidence = { rulesetIds, api, fetchedAt };
       items.ruleset = bad.length
         ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset}。承認 ${want} 名)と一致しない: ${bad.join('。')}`, evidence }
-        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名${ruleset === 'regulated' || ruleset === 'safety' ? '・最後の push の後の承認・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
+        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名・push での古い承認の失効・最後の push の後の承認${ruleset === 'regulated' || ruleset === 'safety' ? '・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
     }
   }
 

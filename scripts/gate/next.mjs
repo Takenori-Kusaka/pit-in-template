@@ -40,7 +40,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount, trackedFiles, unmatchedCoreText } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
@@ -711,13 +711,13 @@ export function computeNext({ fetch = true, network = true } = {}) {
     const safety = config.gates?.g6?.params?.independentSafetyAssessment === true;
     // コア機能の変更の承認者の数(第8章 軸C 高 coreReviewerCount。#288 第8巡 Z7)。パスの未宣言は確かめられない旨を出す
     const coreApplies = rc.coreDeclared && rc.core > n;
-    const cp = coreApplies ? corePathsOf(config) : null;
+    const cp = coreApplies ? corePathsOf(config, { tracked: trackedFiles(ROOT, 'HEAD') }) : null;
     if (n >= 2 || audit || safety || coreApplies) {
       result.notes.push(
         `独立レビュー(G-6)は承認者 ${n} 名(構成 review.reviewerCount。名簿の別人が各自の挙動要約を書く。挙動要約は承認の語だけ(LGTM など)でなく、1〜2文(8文字以上)の本文)。` +
           (n >= 2 ? '1名の承認でマージした変更は、出荷の証跡の集約が「G-6 の承認者 1 名 / 要求 2 名」として独立した人の確認を経ていない変更に数える。G-5(pr-rules)はレビューを読めるとき承認者の数を出す(合否にしない)。' : '') +
           (coreApplies
-            ? `**コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。パス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言。コア機能に当たる変更を確かめられない**。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く'})。コア機能に触れる変更の承認者が ${rc.core} 名に満たなければ、G-5 が警告し、出荷の集約が「承認者 N 名 / 要求 ${rc.core} 名(コア機能)」として独立した人の確認を経ていない変更に数える。`
+            ? `**コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。パス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言。コア機能に当たる変更を確かめられない**。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く'})。${cp.unmatched.length ? `${unmatchedCoreText(cp)}(当たるパスが無ければ未宣言として扱う)。` : ''}コア機能に触れる変更の承認者が ${rc.core} 名に満たなければ、G-5 が警告し、出荷の集約が「承認者 N 名 / 要求 ${rc.core} 名(コア機能)」として独立した人の確認を経ていない変更に数える。`
             : '') +
           (audit ? '判定記録は監査対応書式(構成 review.recordFormat: audit)。変更ごとに G-6 の判定記録を残し、「監査対応書式」の表(2人目の承認者・安全性の評価者)を埋める。PR の承認だけでは記録にならない。' : '') +
           (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
@@ -749,7 +749,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
       kind: 'human-wait',
       what: `受入基準へ戻るかの判断(${[lock.spec, lock.task].filter(Boolean).join(' / ') || '対象不明'}。理由: ${lock.reason ?? '—'})`,
       seat: seatOf(config, 'value-owner'),
-      after: '人が判断した後に、人が `node scripts/gate/self-heal.mjs release --by "<氏名>"` で保留を解く',
+      after: '人が判断した後に、名簿の人が `node scripts/gate/self-heal.mjs release --by "<氏名>"` で保留を解く(名簿に無い名義・AI の名義は受け付けない)。同じタスクで保留が繰り返されるなら、実装計画へ差し戻す(標準 第3章 3.12.10)',
       read: '.claude/skills/implement/SKILL.md',
       roles: [
         { role: 'value-owner', action: '失敗し続けている受入基準を見て、受入基準・分解を直すかを決める' },
@@ -848,7 +848,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
     if (lock && lock.state !== 'held' && lock.spec === f) {
       F({
         stage: `自己修正ループ中(${lock.task})`,
-        ...cmd('node scripts/gate/self-heal.mjs iterate', `反復 ${lock.iterations ?? 0} / ${lock.max ?? '—'}。直したら反復を数える。テストが通ったら stop --reason pass、テストの修正を要するなら stop --reason test-change`),
+        ...cmd('node scripts/gate/self-heal.mjs iterate', `失敗の反復 ${lock.iterations ?? 0} / ${lock.max ?? '—'}。直したら iterate を実行する(スクリプトがテストを実行し、失敗したテストを記録する。同じ失敗が続く・上限に達すると保留、通ればロックを終える)。テストの修正を要するなら stop --reason test-change`),
         read: '.claude/skills/implement/SKILL.md',
       });
       continue;
