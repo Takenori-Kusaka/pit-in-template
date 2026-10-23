@@ -7,14 +7,15 @@
 // PR_NUMBER / PR_TITLE / PR_BODY / PR_AUTHOR から読む。題名と本文をシェルへ展開しないため、ワークフローは
 // 環境変数で渡す。
 //
-// 検査は6つ。1〜3・5・6 は失敗させる。4 は失敗させない。
+// 検査は 1〜8 と 3b。1〜3・3b・5〜7 は失敗させる。4・8 は失敗させない。
 //   1. トレーラ Spec: スカッシュのメッセージになる PR の本文の末尾の段落に `Spec: F-NNN / Task-N` があり、
 //      指す仕様(specs/F-NNN/spec.md)と実装計画のタスクが実在すること。製品のコードを変えない PR と、
 //      依存の更新の bot の PR は対象外(出力に出す)
 //   2. 変更規模の基準値(#295 / ADR-0058): 構成の task.maxChangedLines / maxChangedFiles(基底ブランチの構成)を、
 //      製品のコードの差分で数える。算定は、ファイルごとの max(追加, 削除)の合計。テスト・fixture・snapshot
 //      (TEST_PATTERNS と構成 task.nonProductPaths)は別に数え、基準値の判定に入れない。算定から除くのは、文書・記録・
-//      強制層(下の NON_PRODUCT)、ロックファイル、生成物(基底ブランチの .gitattributes の linguist-generated、または
+//      強制層(下の NON_PRODUCT。ただし *.md は、文書の置き場(DOC_ONLY_DIRS)とリポジトリの直下にあるものだけを除き、
+//      置き場の外の *.md は数える。#289 D-10 / ADR-0072)、ロックファイル、生成物(基底ブランチの .gitattributes の linguist-generated、または
 //      基底で生成の印を持つファイル)、空白だけの変更(一括整形)、内容の変わらない名前の変更。
 //      **基準値の超過は失敗にしない**(遮断として運用しない)。超過した PR は、(a) size:over を結果に出し、(b) 区分の下限を
 //      R2 へ引き上げ(7)、(c) PR の本文の「規模の確認」(実施者・読み切れたか・分割しなかった理由・保証の所在)を要する。
@@ -25,6 +26,10 @@
 //   3. 閾値・除外設定と製品のコードの同時変更(禁止事項6): 基底に既にある閾値・除外設定のファイルと、製品の
 //      コードが、同じ PR でともに変わった場合だけ失敗させる。閾値だけの PR と、初回の設定(基底に無いファイル、
 //      基底の構成が未設定)は通す
+//   3b. 統制の設定の陰性の確認(標準 第4章 G-5 / ADR-0073): 閾値・除外設定(3 と同じ)、ルールセット・フック・権限・
+//      ワークフロー・コード所有者の設定(CONTROL_FILES)を変える PR は、本文の「## 統制の設定の陰性の確認」に
+//      通した違反の場面・結果(止まった / 止まらなかった)・確かめた者を要する。欠けている、結果が「止まらなかった」、
+//      確かめた者が AI の名義なら失敗させる。初回の設定と依存の更新の bot の PR は対象外。場面が実際に止まるかは確かめない
 //   4. 既存のテストの変更: 基底にあるテスト(.claude/guard.json の testPatterns)の削除・名前の変更・行の削除を
 //      一覧にする。独立レビュー(G-6)の材料であり、合否には使わない。--comment で PR へ出す
 //   5. リスク区分: PR の本文の「リスク区分」の節に R1 / R2 / R3 のいずれか1つだけが残っていること。変更の種類に
@@ -225,6 +230,55 @@ export const isNonProduct = (f) => {
   if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f)) && CODE_EXTENSIONS.test(f)) return false;
   return NON_PRODUCT.some((g) => (g === '*.md' ? /\.md$/i.test(f) : matchGlob(g, f)));
 };
+/**
+ * 変更規模の算定から除くか(標準 第4章「タスクの分割基準」。ADR-0072)。除くのは、文書の置き場(DOC_ONLY_DIRS)と
+ * リポジトリの直下にある散文(*.md)と、強制層・構成のファイル。置き場の外(src/ など製品のディレクトリ)に置いた *.md は数える。
+ * 製品のディレクトリへ *.md を置いて、算定と区分の下限 R2 から外す経路を塞ぐ(#289 D-10)。同時変更の判定(isNonProduct)は変えない
+ */
+export const isExcludedFromSize = (f) => {
+  if (!isNonProduct(f)) return false;
+  if (!/\.md$/i.test(f)) return true;
+  if (!f.includes('/')) return true;
+  if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f))) return true;
+  // 強制層・構成の置き場(.claude・.github・scripts/gate ほか)の *.md は、強制層の一部として除く
+  return NON_PRODUCT.some((g) => g !== '*.md' && matchGlob(g, f));
+};
+/**
+ * 統制の設定のファイル(標準 第4章 G-5「統制の設定の陰性の確認」。ADR-0073)。閾値・除外設定(thresholdGlobs と構成の ci・task・guard)に加え、
+ * ルールセット・フック・権限・ワークフロー・コード所有者の設定。これを変える PR は、本文に陰性の確認の記録を要する
+ */
+export const CONTROL_FILES = ['.claude/settings.json', '.claude/guard.json', '.claude/hooks/**', '.github/workflows/**', '.github/rulesets/**', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'];
+/**
+ * 「統制の設定の陰性の確認」の節。通した違反の場面・結果(止まった / 止まらなかった)・確かめた者。節が無ければ present: false。
+ * HTML コメントの中の節・欄は読まない
+ */
+export function negativeCheckOf(body) {
+  const parts = String(body ?? '').replace(/\r\n/g, '\n').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*統制の設定の陰性の確認.*$/m);
+  if (parts.length < 2) return { present: false };
+  const section = parts[1].split(/^(?:##\s|---\s*$)/m)[0];
+  const field = (label) => {
+    const m = section.match(new RegExp(`^[ \\t]*[-*]?[ \\t]*${label}[ \\t]*[::][ \\t]*(.*?)[ \\t]*$`, 'm'));
+    return m ? m[1].trim() : null;
+  };
+  const t = String(field('結果') ?? '').normalize('NFKC').trim();
+  return {
+    present: true,
+    scene: field('通した違反の場面'),
+    result: /^止まった$/.test(t) ? 'stopped' : /^止まらなかった$/.test(t) ? 'not-stopped' : null,
+    checker: field('確かめた者'),
+  };
+}
+/** 陰性の確認の不備を理由の配列で返す */
+export function negativeCheckProblems(nc, { config }) {
+  if (!nc.present) return ['PR の本文に「## 統制の設定の陰性の確認」の節がありません(本文は .github/PULL_REQUEST_TEMPLATE.md から作る)'];
+  const p = [];
+  if (!isFilledValue(nc.scene)) p.push('通した違反の場面が未記入');
+  if (nc.result === 'not-stopped') p.push('結果が「止まらなかった」である(変更した統制の設定が、違反を止めていない。設定を直してから確かめ直す)');
+  else if (nc.result === null) p.push('結果が「止まった」「止まらなかった」のどちらでもない(1つだけ残す)');
+  if (!isFilledValue(nc.checker)) p.push('確かめた者が未記入');
+  else if (aiNameBlocked(config, nc.checker)) p.push(`確かめた者 "${nc.checker}" が AI の名義である(確かめるのは人)`);
+  return p;
+}
 export const isLock = (f) => LOCK_FILES.includes(basename(f));
 export const isSetupFile = (f) => matchAny(SETUP_FILES, f);
 /** 製品のコードか(文書・記録・強制層・閾値の設定・ロックファイル・基盤のファイル以外)。thresholdGlobs はアダプタの分を足したもの */
@@ -628,7 +682,7 @@ export function classifySize(all, ws, { atBase, genPatterns, isTestPath }) {
   const testCounted = [];
   for (const e of all) {
     const f = e.path;
-    if (isNonProduct(f)) continue;
+    if (isExcludedFromSize(f)) continue;
     if (matchAny(THRESHOLD_FILES, f)) continue;
     if (isLock(f)) {
       excluded.push(`${f}(ロックファイル)`);
@@ -853,6 +907,26 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
     result.notices.push(`閾値・除外設定だけを変える PR です(${thresholdChanges.join(', ')})。緩める向きの変更は /process-change と記名を要する`);
   }
   if (initial.length) result.notices.push(`閾値・除外設定の初回の設定(基底に無い): ${initial.join(', ')}。同時変更の検査の対象外`);
+
+  // --- 3b. 統制の設定の陰性の確認(標準 第4章 G-5。ADR-0073) ---
+  // 統制の設定(閾値・除外設定・ルールセット・フック・権限・ワークフロー)を変える PR は、違反の場面を1つ通して止まることを人が確かめ、本文に記録する。
+  // 初回の設定(基底に無い・基底の構成が未設定)と、依存の更新の bot の PR は対象外。場面が実際に止まるかは、この検査では確かめない
+  const controlChanged = [
+    ...thresholdChanges,
+    ...all.filter((e) => matchAny(CONTROL_FILES, e.path) && !thresholdChanges.includes(e.path) && atBase(e.from ?? e.path) !== null).map((e) => e.path),
+  ];
+  result.negativeCheck = { changed: controlChanged, record: null };
+  if (controlChanged.length && baseConfigured && !DEPENDENCY_BOTS.includes(String(pr.author ?? ''))) {
+    const nc = negativeCheckOf(pr.body);
+    const problems = negativeCheckProblems(nc, { config: limitsFrom });
+    result.negativeCheck.record = { ...nc, ok: !problems.length, problems };
+    if (problems.length) {
+      result.errors.push(
+        `統制の設定の陰性の確認: 統制の設定(${controlChanged.slice(0, 5).join(', ')}${controlChanged.length > 5 ? ` ほか ${controlChanged.length - 5} 件` : ''})を変える PR です。${problems.join('。')}。` +
+          '`## 統制の設定の陰性の確認` の節へ、通した違反の場面・結果(止まった / 止まらなかった)・確かめた者を書く(標準 第4章 G-5。人が確かめ、人が書く)'
+      );
+    } else result.notices.push(`統制の設定の陰性の確認: 記録あり(${nc.scene.slice(0, 60)} → 止まった。確かめた者 ${nc.checker})。場面が実際に止まるかは、この検査では確かめていない`);
+  }
 
   // --- 1. トレーラ Spec ---
   const author = String(pr.author ?? '');

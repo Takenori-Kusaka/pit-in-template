@@ -27,6 +27,7 @@ description: 成果物(テンプレ00〜11)を作る・見直すときの入口�
 | `09` | AIエージェント安全リスクアセスメント表 | `artifacts/09-safety-risk-assessment.md` | `docs/safety-risk-assessment.md` |
 | `10` | 前提の台帳 | `artifacts/10-assumption-ledger.md` | `docs/assumptions.md` |
 | `11` | 品質保証の方針と受容の基準(層1。組織に1つ) | `artifacts/11-quality-assurance-policy.md` | `docs/quality-assurance-policy.md` |
+| `12` | プロダクトの原則(置くことは義務ではない) | `artifacts/12-product-principles.md` | `context/standards/principles.md` |
 | `defect` | 欠陥の台帳(G-7 基準2。様式番号なし) | `artifacts/defect-ledger.md` | `docs/defect-ledger.md` |
 | `adoption-trial` | 導入前の検証(合否の基準・欠陥注入・場面集・記録。附属書I I.11) | `artifacts/adoption-trial.md` | `docs/adoption-trial/` |
 | `incident` | 障害時に使う記録(D-0 表4・引き継ぎの復旧手順・ポストモーテム) | `artifacts/incident.md` | — |

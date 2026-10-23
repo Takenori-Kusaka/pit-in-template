@@ -4597,6 +4597,12 @@ if (isMain) {
           "Read(./**/.ssh/**)"
         ];
 
+        // 保管領域の読み込みの拒否(標準 第3章 3.11.4 要求事項7)。ステージと guard.enabled に依らず残す。
+        // 全部を置き換えた判断記録・廃止した判断記録も、ここへ移して読み込みから外す(第6章 テンプレ2「置き換えと廃止」)
+        const standardArchive = [
+          "Read(./context/_archive/**)"
+        ];
+
         const standardCategoryAB = [
           "Edit(./.claude/settings.json)",
           "Edit(./.claude/guard.json)",
@@ -4624,6 +4630,7 @@ if (isMain) {
         // テンプレート標準プロセスが管理する全遮断パターンの集合
         const allStandardRules = [
           ...standardSecrets,
+          ...standardArchive,
           ...standardCategoryAB,
           ...standardCategoryC,
           ...standardBash
@@ -4650,6 +4657,7 @@ if (isMain) {
           // 最小限の秘匿ファイル Read 遮断および利用者が手動で追加したカスタムルールのみを残します（Issue #23 解決）。
           settingsObj.permissions.deny = [
             ...standardSecrets,
+            ...standardArchive,
             ...customDenyRules
           ];
           
@@ -4676,6 +4684,7 @@ if (isMain) {
           
           settingsObj.permissions.deny = [
             ...standardSecrets,
+            ...standardArchive,
             ...standardCategoryAB,
             ...standardCategoryC,
             ...standardBash,

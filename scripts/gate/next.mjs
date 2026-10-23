@@ -864,7 +864,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
         // G-7 基準4。証跡の集約は引き継ぎ文書が無いことを欠落として扱うため、集約より先に作る
         result.ship.push({
           stage: '出荷前(運用引き継ぎ文書なし)',
-          ...cmd('cp templates/05-handover.md docs/handover.md', '出荷判定(G-7)の判定対象(基準4)。監視項目・障害時の連絡先・復旧手順を書く。切り戻しは実行した実績のある経路だけを書く'),
+          ...cmd('cp templates/05-handover.md docs/handover.md', '出荷判定(G-7)の判定の材料(基準4。判定の対象は出荷)。監視項目・障害時の連絡先・復旧手順を書く。切り戻しは実行した実績のある経路だけを書く'),
           read: READ.artifact('05-handover'),
         });
       } else if (isGateActive(config, 'g7') && !judgedAfter('G-7')) {

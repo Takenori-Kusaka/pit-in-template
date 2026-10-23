@@ -117,6 +117,7 @@ import {
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
+import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -593,7 +594,9 @@ if (isMain) {
   }
 
   const gateRecords = listDir('docs/gates');
-  const adrs = listDir('context/decisions');
+  // 判断記録は件数を出さない。状態ごとの件数と、置き換えの両側の参照の不一致の件数を出す(README を数えない。
+  // 運用メトリクス「採用しない指標」、標準 第6章 テンプレ2「置き換えと廃止」。process-compass #289)
+  const decisionCheck = checkDecisions(loadDecisions(ROOT));
   const debtFile = 'docs/debt-ledger.md';
   const handoverFile = 'docs/handover.md';
 
@@ -3635,7 +3638,7 @@ if (isMain) {
     gateRecordsInRange: records.map((r) => r.file),
     // 記録だけの PR(変更の単位に数えない。承認者と記名者の照合は assurance.records.attribution)
     recordPrs: recordsDisclosure.recordPrs,
-    adrs,
+    decisions: { counts: decisionCheck.counts, problems: decisionCheck.problems },
     ipClearance: licenseScan,
     shipBlocked: config.shipBlocked ?? null,
     unmet,
@@ -4524,7 +4527,8 @@ if (isMain) {
   R.push(
     `- ゲート判定記録: 当該出荷の範囲で追加 ${records.length} 件(リポジトリの全体 ${gateRecords.length} 件)。承認レビューの写しによる判定 ${copyJudgementsInRange.length} 件、写しの G-6 の承認 ${copyG6InRange.length} 件、記録用ブランチの様式 ${branchFormsInRange.length} 件`
   );
-  R.push(`- 判断記録(ADR): ${adrs.length} 件`);
+  R.push(`- 判断記録(状態ごと): ${countsLine(decisionCheck)}`);
+  R.push(`- 判断記録の置き換えの両側の参照・状態・置き場の不一致: ${decisionCheck.problems.length} 件${decisionCheck.problems.length ? `(${decisionCheck.problems.slice(0, 3).join(' / ')}${decisionCheck.problems.length > 3 ? ' ほか' : ''})` : ''}`);
   R.push(`- 技術負債台帳: ${exists(debtFile) ? 'あり' : '**なし**'}`);
   R.push(`- 運用引き継ぎ文書: ${exists(handoverFile) ? 'あり' : '**なし**'}`);
   R.push(`- 知財潔白性の検査: ${licenseScan.scanRun ? '実施' : '**未実施**'}`);

@@ -25,6 +25,7 @@ scope: '**'
 
 - 用語の定義・変更 → `../glossary.md`
 - 設計標準・レビュー観点 → `../standards/`
-- あとから変えにくい決定 → `../decisions/`
+- 設計上の選択(標準 第2章 2.6「判断記録の範囲」) → `../decisions/`
+- 原則・規約 → `../standards/`(プロダクトの原則は `templates/12-product-principles.md` を写して `../standards/principles.md` へ)。判断記録へ置かない
 
 書き戻しは**サイクルの終わりに行います**。「あとでまとめて」は行われません。
