@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isFilledValue, isRealDay, nameProblems, resolveSigner, signerKey, loadConfig, localDay, aiNameReason } from './config.mjs';
+import { ROOT, isFilledValue, isRealDay, nameProblems, resolveSigner, signerKey, loadConfig, localDay, aiNameReason, personKey, personName } from './config.mjs';
 
 export const POLICY_FILE = 'docs/quality-assurance-policy.md';
 export const BRIEF_FILE = 'docs/project-brief.md';
@@ -536,6 +536,66 @@ export function readExitRehearsals({ root = ROOT } = {}) {
  * 依存先の一覧と単一障害点の一覧を、構成と記録から生成する(標準 第3章 3.12.11)。受容の記録(D-0 節15)と
  * 照合し、期限を過ぎた受容(状態が解消していないもの)を expired に出す。day は判定の日(出荷の終点の日付)
  */
+/**
+ * 非推奨の兼務(標準 第3章 3.5。#312 / ADR-0082)。拒否せず、D-0 節2「非推奨の兼務の記録」への記録を求める組。
+ *   価値責任者 × 技術判断者: 3〜9名で非推奨(10名以上は禁止。規模の規則の mustSplitFrom が兼務禁止の組を足す)
+ *   事業決裁者 × 価値責任者: 3名以上で非推奨(どの規模でも禁止しない)
+ * 1〜2名は許容。回答の無い構成は対象にしない。返すのは席の責任者が同じ人である組
+ */
+export const DISCOURAGED_PAIRS = [
+  { id: 'value-tech', roles: ['value-owner', 'tech-lead'], sizes: ['size-3-9'] },
+  { id: 'biz-value', roles: ['biz-approver', 'value-owner'], sizes: ['size-3-9', 'size-10plus'] },
+];
+export function discouragedPairings(config) {
+  const size = config?.answers?.['q-team-size'];
+  const seats = config?.seats ?? [];
+  const seatOf = (id) => seats.find((s) => s.role === id);
+  const out = [];
+  for (const p of DISCOURAGED_PAIRS) {
+    if (!p.sizes.includes(size)) continue;
+    const [a, b] = p.roles.map(seatOf);
+    if (!a?.accountable || !b?.accountable) continue;
+    if (personKey(config, a.accountable) !== personKey(config, b.accountable)) continue;
+    out.push({ id: p.id, roles: p.roles, names: [a.name ?? p.roles[0], b.name ?? p.roles[1]], person: personName(config, a.accountable) });
+  }
+  return out;
+}
+
+/** 席の名から、表の「兼務する組」の欄と照らすための語(括弧書きを落とし、空白をそろえる) */
+const pairWord = (name) => nfkc(String(name ?? '').split(/[((]/)[0]).replace(/\s+/g, '');
+const PAIR_WORDS = { 'value-owner': ['価値責任者'], 'tech-lead': ['技術判断者'], 'biz-approver': ['事業決裁者'] };
+
+/**
+ * D-0 節2「非推奨の兼務の記録」の表に、兼務している組の行(責任者と理由が記入された行)が無い組を返す。
+ * 記録の無い非推奨の兼務は記載の欠落(第6章 テンプレ0 表5)。理由の中身の妥当性は確かめない(内部監査で確かめる)
+ */
+export function discouragedUnrecorded(config, d0) {
+  const pairs = discouragedPairings(config);
+  if (!pairs.length || !d0) return [];
+  const t = tableWithHeader(sectionLines(d0, /2\.\s*兼務の可否/), { after: /^###\s*非推奨の兼務の記録/ });
+  const iPair = colOf(t.header, /兼務する組/);
+  const iWho = colOf(t.header, /責任者/);
+  const iWhy = colOf(t.header, /理由/);
+  return pairs.filter((p) => {
+    const words = p.roles.map((r) => [...(PAIR_WORDS[r] ?? []), pairWord(p.names[p.roles.indexOf(r)])]);
+    return !t.rows.some((r) => {
+      const cell = pairWord(r[iPair >= 0 ? iPair : 0]);
+      if (!words.every((ws) => ws.some((w) => w && cell.includes(w)))) return false;
+      return isFilledValue(r[iWho >= 0 ? iWho : 1]) && isFilledValue(r[iWhy >= 0 ? iWhy : 2]);
+    });
+  });
+}
+
+/** 非推奨の兼務の注記の文(/pit・構成の生成の出力・証跡の集約で同じ文を使う) */
+export function discouragedText(p, { recorded = null } = {}) {
+  return (
+    `${p.names.join('と')}の責任者が同じ人(${p.person})。非推奨の兼務です(標準 第3章 3.5。拒否しません)。` +
+    'D-0 節2「非推奨の兼務の記録」に、兼務する組・責任者・兼務を選んだ理由を書きます。記録が無いと、出荷判定の証跡の集約が記載の欠落として扱います' +
+    (recorded === true ? '(記録あり)' : recorded === false ? '(**記録なし**)' : '') +
+    '。標準は代替の統制を課しません'
+  );
+}
+
 export function continuityState(config, policy, { root = ROOT, day = null } = {}) {
   const d0 = readText(D0_FILE, root);
   const seats = config.seats ?? [];
@@ -839,6 +899,8 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
     degradation,
     emergencyBlank: d0 ? emergencyBlank : null,
     emergencyMissing,
+    // 記録の無い非推奨の兼務(第3章 3.5。#312)。D-0 が無ければ読まない
+    discouragedUnrecorded: discouragedUnrecorded(config, d0),
     baselineScope,
     cycle: { drill: cycle.drill?.raw ?? null, exit: cycle.exit?.raw ?? null, degradation: cycle.degradation?.raw ?? null, competence: cycle.competence?.raw ?? null, successorMin: cycle.successorMin, trainer: cycle.trainer },
     cycleNotices,

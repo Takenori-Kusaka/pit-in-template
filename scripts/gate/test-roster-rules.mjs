@@ -11,11 +11,16 @@
 //   - 強制する承認の数は、構成の承認者の数から導く。CL2 は 1名(ADR-0067 決定5)
 //   - 同一の文の挙動要約は、2件目に数えない(ADR-0067 決定3)
 //   - 独立レビュアの席の責任者に置いた外部の確認者に、その席の統制を緩める向きの決定権を与えない(ADR-0060 決定2)
+//   - 価値責任者 × 技術判断者は 10名以上で拒否、3〜9名は非推奨(拒否せず注記と D-0 の記録)。事業決裁者 × 価値責任者は 3名以上で非推奨、どの規模でも拒否しない(process-compass #312)
+//   - state:dev-done の受け手は独立レビュアだけ。ready-to-merge は独立レビュアが付ける(process-compass #312)
+//   - 回答と名簿・席の人数の食い違いを 3名・10名の境界で出す(process-compass #312 で IMPL-0300 として固定)
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
-import { buildConfig, deciderProblems, seatSeparationFindings } from '../init/generate-profile.mjs';
+import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, seatPairingNotes, renderD0Section, d0SectionProblems } from '../init/generate-profile.mjs';
+import { headcountProblems } from './config.mjs';
+import { discouragedPairings, discouragedUnrecorded } from './org-assurance.mjs';
 
 let failures = 0;
 let n = 0;
@@ -216,6 +221,60 @@ check('gh の版: 読めなければ確かめるよう出す', /読めません/
 check('承認した版: 先頭のコミットと同じなら数える', approvalBinding({ commit: { oid: 'ABC' } }, 'abc') === 'bound');
 check('承認した版: 承認の後に更新があれば数えない(stale)', approvalBinding({ commit_id: 'abc' }, 'def') === 'stale');
 check('承認した版: 版を確かめられなければ数えない(unknown)', approvalBinding({}, 'def') === 'unknown' && approvalBinding({ commit: { oid: 'abc' } }, null) === 'unknown');
+
+// ---------------------------------------------------------------- 非推奨の兼務と 10名以上の禁止(#312)
+{
+  const many = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊己庚辛壬癸'[i]}`, accounts: [`acc${i}`] }));
+  const base = { 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' };
+  const seats10 = seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p0', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' });
+  const large = build({ ...base, 'q-team-size': 'size-10plus' }, { people: many, seats: seats10 });
+  check('10名以上: 価値責任者 × 技術判断者の兼務は拒否する(sep-size)', seatSeparationFindings(large).violations.some((v) => /価値責任者/.test(v) && /技術判断者/.test(v)), JSON.stringify(seatSeparationFindings(large).violations));
+  check('10名以上: 価値責任者 × 技術判断者の禁止は非推奨の注記にしない', discouragedPairings(large).length === 0);
+  const mid = build({ ...base, 'q-team-size': 'size-3-9' }, { people: many.slice(0, 5), seats: seats10 });
+  check('3〜9名: 価値責任者 × 技術判断者の兼務は拒否しない', seatSeparationFindings(mid).violations.length === 0, JSON.stringify(seatSeparationFindings(mid).violations));
+  check('3〜9名: 価値責任者 × 技術判断者の兼務を非推奨の注記に出す', seatPairingNotes(mid).some((n) => /非推奨の兼務/.test(n) && /価値責任者/.test(n)), JSON.stringify(seatPairingNotes(mid)));
+  const bizSeats = seatsOf({ 'value-owner': 'p0', 'biz-approver': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3' });
+  const bizLarge = build({ ...base, 'q-team-size': 'size-10plus' }, { people: many, seats: bizSeats });
+  check('10名以上: 事業決裁者 × 価値責任者の兼務は拒否しない', seatSeparationFindings(bizLarge).violations.length === 0, JSON.stringify(seatSeparationFindings(bizLarge).violations));
+  check('10名以上: 事業決裁者 × 価値責任者の兼務を非推奨の注記に出す', discouragedPairings(bizLarge).some((p) => p.id === 'biz-value'));
+  const small = build({ ...base, 'q-team-size': 'size-1-2' }, { people: [A, B], seats: seatsOf({ 'value-owner': 'a', 'tech-lead': 'a', 'biz-approver': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'b' }) });
+  check('1〜2名: 非推奨の兼務の対象にしない(許容)', discouragedPairings(small).length === 0);
+
+  const d0 = (rows) => `# D-0\n\n## 2. 兼務の可否\n\n### 非推奨の兼務の記録\n\n| 兼務する組 | 責任者 | 兼務を選んだ理由 | 記録日 |\n| --- | --- | --- | --- |\n${rows}\n\n## 3. 決定の権限\n`;
+  check('記録: 表の行が無ければ記載の欠落', discouragedUnrecorded(mid, d0('| | | | |')).length === 1);
+  check('記録: 組・責任者・理由のある行があれば欠落にしない', discouragedUnrecorded(mid, d0('| 価値責任者 × 技術判断者 | 名簿 甲 | 技術判断を担える人が他にいない | 2026-10-23 |')).length === 0);
+  check('記録: 理由が空欄なら欠落', discouragedUnrecorded(mid, d0('| 価値責任者 × 技術判断者 | 名簿 甲 | | 2026-10-23 |')).length === 1);
+  check('記録: 別の組の行では欠落を解かない', discouragedUnrecorded(mid, d0('| 事業決裁者 × 価値責任者 | 名簿 甲 | 理由 | 2026-10-23 |')).length === 1);
+  check('記録: D-0 が無ければ欠落を出さない(D-0 の欠落は別に出る)', discouragedUnrecorded(mid, null).length === 0);
+}
+
+// ---------------------------------------------------------------- 受信箱のラベル(#312)
+check('dev-done の受け手は独立レビュアだけ', Object.entries(MAILBOX).filter(([, m]) => m.inbox.includes('state:dev-done')).map(([r]) => r).join(',') === 'independent-reviewer');
+check('ready-to-merge を付けるのは独立レビュアだけ', Object.entries(MAILBOX).filter(([, m]) => m.hands.includes('state:ready-to-merge')).map(([r]) => r).join(',') === 'independent-reviewer');
+check('ready-to-merge は出荷判定者の受信箱に入る', MAILBOX['qa-gatekeeper'].inbox.includes('state:ready-to-merge'));
+check('事業決裁者の受信箱は needs-owner(価値責任者の受信箱と分ける)', MAILBOX['biz-approver'].inbox.includes('state:needs-owner') && !MAILBOX['value-owner'].inbox.includes('state:needs-owner'));
+
+// ---------------------------------------------------------------- 回答と人数の食い違い(#312。IMPL-0300)
+{
+  const people = (k) => Array.from({ length: k }, (_, i) => ({ id: `h${i}`, name: `人数 ${i}号`, accounts: [`h${i}`] }));
+  const cfg = (size, k) => ({ answers: { 'q-team-size': size }, people: people(k), seats: [] });
+  check('人数: 1〜2名の回答で名簿に3名なら出す', headcountProblems(cfg('size-1-2', 3)).length === 1);
+  check('人数: 3〜9名の回答で名簿に10名なら出す', headcountProblems(cfg('size-3-9', 10)).length === 1);
+  check('人数: 10名以上の回答で名簿に5名なら出す', headcountProblems(cfg('size-10plus', 5)).length === 1);
+  check('人数: 3〜9名の回答で名簿に2名なら出す', headcountProblems(cfg('size-3-9', 2)).length === 1);
+  check('人数: 3名以上の回答で名簿が空なら出さない(降りていない差。IMPL-0278)', headcountProblems(cfg('size-3-9', 0)).length === 0);
+  check('人数: 外部の確認者は数えない', headcountProblems({ answers: { 'q-team-size': 'size-1-2' }, people: [...people(2), { ...X }], seats: [] }).length === 0);
+}
+
+// ---------------------------------------------------------------- D-0 節1 の氏名の確認の列(#312)
+{
+  const nc = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes' }, { people: [{ ...A, nameConfirmed: true }], seats: seatsOf({ 'dev-verifier': 'a' }) });
+  const cur = renderD0Section('seats', nc);
+  const old = renderD0Section('seats', nc, { legacy: true });
+  check('名簿に nameConfirmed があれば、氏名の確認の列を出す', /氏名の確認/.test(cur) && !/氏名の確認/.test(old));
+  const wrap = (body) => ['seats', 'performers', 'history'].map((k) => `<!-- generated:d0-${k} start -->\n\n${k === 'seats' ? body : renderD0Section(k, nc)}\n\n<!-- generated:d0-${k} end -->`).join('\n\n');
+  check('列の無い旧い生成区間も一致として受け付ける', d0SectionProblems(wrap(old), nc).length === 0 && d0SectionProblems(wrap(cur), nc).length === 0, JSON.stringify(d0SectionProblems(wrap(old), nc)));
+}
 
 console.log('');
 if (failures) {
