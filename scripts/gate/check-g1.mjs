@@ -8,8 +8,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice, warn, isFilledValue } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
+import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -92,11 +93,17 @@ const REQUIRED_ROWS = [
   ['投資対効果', 'AI の利用で期待する成果'],
   ['投資対効果', 'AI を使わない場合との比較の基準値'],
   ['投資対効果', 'AI の利用の拡大と停止の基準'],
-  // 基準3 の基準値は、測る範囲を併せて企画時に決めて記録する(標準 第4章 G-5。#296)。構成との一致は契約検査が確かめる
-  ['指標の閾値と予算区分', 'カバレッジの測る範囲(G-5 基準3)'],
+  // 基準3 の基準値は、測る範囲を併せて企画時に決めて記録する(標準 第4章 G-5。#296)。構成との一致は契約検査が確かめる。
+  // G-1 を通過済みの企画書に行が無い場合は、遡って失敗させず欠落として出す(突合 X-4)
+  ['指標の閾値と予算区分', BRIEF_SCOPE_ROW],
 ];
+const scopeRowState = briefScopeRowState(text, readGateRecords());
 for (const [section, key] of REQUIRED_ROWS) {
   const row = lines.find((l) => l.replace(/\*/g, '').startsWith(`| ${key} |`));
+  if (!row && key === BRIEF_SCOPE_ROW && scopeRowState === 'gap') {
+    warn(BRIEF_SCOPE_GAP_TEXT);
+    continue;
+  }
   if (!row) {
     problems.push(`「${section}」の欄「${key}」がありません(templates/06-project-brief.md の様式から写す)`);
     continue;

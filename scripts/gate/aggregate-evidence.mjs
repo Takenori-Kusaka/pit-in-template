@@ -89,6 +89,8 @@ import {
   touchesCore,
   trackedFiles,
   approvalBinding,
+  parseGhVersion,
+  unboundCauseText,
   aiAccountCheck,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
@@ -114,6 +116,7 @@ import {
   qaAffiliationText,
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
+import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
@@ -287,7 +290,7 @@ const handoverFile = 'docs/handover.md';
  */
 function coverageScopeText(c) {
   if (!c?.scope) return '。測った範囲と分母の記録なし';
-  const parts = [`範囲 ${c.scope === 'changed' ? '変更で加えた・変えたコード' : 'コードの全体'}`, `分母 ${c.denominator ?? '—'} 行`];
+  const parts = [`範囲 ${c.scope === 'changed' ? '変更で加えた・変えたコード' : 'コードの全体'}${c.scopeDefaulted ? '(構成に範囲が無く、既定から補った。#296 より前の構成)' : ''}`, `分母 ${c.denominator ?? '—'} 行`];
   if (c.unmeasuredProductFiles !== undefined) parts.push(`測っていない製品のファイル ${c.unmeasuredProductFiles ?? '数えていない'} 件`);
   if (c.scope === 'whole') parts.push('**変更の未被覆は全体の被覆で薄まる**');
   return `。${parts.join('、')}`;
@@ -712,6 +715,19 @@ function lastReviewStates(reviews, headOid = undefined) {
   return { last, withdrawn, stale, unbound };
 }
 
+/** 集約を実行している gh の版(読めなければ null)。一度だけ読む */
+let ghVersionCache;
+function ghVersionNow() {
+  if (ghVersionCache === undefined) {
+    try {
+      ghVersionCache = parseGhVersion(execFileSync('gh', ['--version'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    } catch {
+      ghVersionCache = null;
+    }
+  }
+  return ghVersionCache;
+}
+
 /** 承認者として名簿の人へ対応づける。組織上の任命権者(appointer)は確認者ではないため、対応づけない */
 const reviewerPerson = (p) => (p && p.appointer !== true ? p : null);
 // 名簿で本人以外が確認したアカウントは、語の一致を上書きする(#296)。is_bot は上書きしない
@@ -968,7 +984,7 @@ const sizeObservation = summarizeSizeObservation(prs);
 // docs/safety/ は独立した安全性の評価の記録(附属書F。CL2 以上の監査対応書式の「安全性の評価の記録の所在」)の置き場。記録を
 // リポジトリに置く組織が、記録のコミットを製品の変更に数えられないようにする(#288 第8巡 W8)。文書管理システム(DHF など)を
 // 所在にする組織は、この置き場を使わず、判定記録の所在の欄に文書管理システムの識別子を書く
-const RECORD_PATHS = ['docs/gates/**', 'evidence/**', 'docs/self-heal-log.tsv', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
+const RECORD_PATHS = ['docs/gates/**', 'evidence/**', 'docs/self-heal/**', 'docs/self-heal-log.tsv', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
 
 /**
  * 内容を見て対象外にするファイル。パスだけで対象外にすると、構成の手での書き換えと、指示資産の
@@ -1980,6 +1996,8 @@ const independence = {
     // 承認の後に PR が更新され、その承認を数えなかった変更と、承認した版を確かめられず数えなかった変更(#296)
     staleApprovals: count(prs, (p) => (p.g6.staleApprovals ?? 0) > 0),
     unboundApprovals: count(prs, (p) => (p.g6.unboundApprovals ?? 0) > 0),
+    // 承認した版を確かめられない承認があるとき、gh の版(2.30.0 より前はレビューの commit.oid を返さない。突合 X-7)
+    ...(prs.some((p) => (p.g6.unboundApprovals ?? 0) > 0) ? { ghVersion: ghVersionNow(), unboundCause: unboundCauseText(ghVersionNow()) } : {}),
   },
   accountsRegistered: roster.some((p) => Array.isArray(p?.accounts) && p.accounts.length > 0),
   // R1 の変更を、独立した人の確認を経ないまま出荷する場合の例外承認(変更ごと)
@@ -2273,6 +2291,8 @@ if (briefQuality.missingIds.length) {
       '記載の欠落です。「壊してはならない品質条件(識別子)」の表で条件ごとに識別子を振り、受入基準とテストから参照させます'
   );
 }
+// 企画書のカバレッジの測る範囲の行(#296 で足した行)。G-1 を通過済みの企画書に無ければ記載の欠落(突合 X-4)
+if (briefScopeRowState(exists('docs/project-brief.md') ? fs.readFileSync(path.join(ROOT, 'docs/project-brief.md'), 'utf8') : null, gateRecordList) === 'gap') gaps.push(BRIEF_SCOPE_GAP_TEXT);
 // G-7 基準2: 欠陥の台帳。台帳が無い出荷は、基準2 を確かめられないため記載の欠落
 if (!period && isActive('g7')) {
   if (!defects.present) {
@@ -3390,7 +3410,7 @@ function renderAssurance(external) {
     R.push(`| 承認の後に PR が更新された(承認した版と取り込んだ版が異なる承認は数えていない) | ${ch.staleApprovals} 件 | ${prev((p) => p.independence.changes.staleApprovals ?? '値なし')} |`);
   }
   if (ch.unboundApprovals) {
-    R.push(`| 承認した版を記録から確かめられない(その承認は数えていない) | ${ch.unboundApprovals} 件 | ${prev((p) => p.independence.changes.unboundApprovals ?? '値なし')} |`);
+    R.push(`| 承認した版を記録から確かめられない(その承認は数えていない${ch.unboundCause ? `。${ch.unboundCause}` : ''}) | ${ch.unboundApprovals} 件 | ${prev((p) => p.independence.changes.unboundApprovals ?? '値なし')} |`);
   }
   if (ch.withdrawnApprovals) {
     R.push(`| 承認の後に同じ人が変更要求を出した(取り下げた承認は数えていない) | ${ch.withdrawnApprovals} 件 | ${prev((p) => p.independence.changes.withdrawnApprovals ?? '値なし')} |`);

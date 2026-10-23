@@ -59,6 +59,7 @@ import {
   DIRECTION_LABEL,
   isRealDay,
   accountConfirmationProblems,
+  nameConfirmationProblems,
   confirmedAccounts,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
@@ -465,6 +466,7 @@ if (!Array.isArray(config.seats)) {
   for (const n of nameOverrides(config)) notes.push(`名義の機械検査を人が上書きした: ${n}`);
   // アカウント名の確認済みの上書きは、名簿の変更として本人以外が記名した記録に限る(#296)
   for (const p of accountConfirmationProblems(config)) problems.push(p);
+  for (const p of nameConfirmationProblems(config)) problems.push(p);
   for (const [key, v] of confirmedAccounts(config)) notes.push(`アカウント名の機械検査を人が上書きした: ${key}(${v.date ?? '日付なし'}、決定 ${v.decidedBy})`);
   if (!(config.people ?? []).length) {
     notes.push(
@@ -584,7 +586,7 @@ if (adapter) {
 // ---------------------------------------------------------- 5.5 カバレッジの測る範囲(G-5 基準3。#296)
 //
 // 基準3 の基準値は、測る範囲(変更で加えた・変えたコードか、全体か)を併せて企画時に決めて記録する(標準 第4章 G-5)。
-// 構成の範囲(ci.coverageScope。無ければアダプタの既定)と、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」の記録が
+// 構成の範囲(ci.coverageScope。無ければ従来どおり whole。突合 X-4)と、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」の記録が
 // 食い違えば、測っている範囲は記録した基準値の範囲ではない。食い違いを落とす。企画書が無い段階は注記に留める
 
 if (adapter && config.gates?.g5?.state !== 'omitted') {
@@ -594,7 +596,7 @@ if (adapter && config.gates?.g5?.state !== 'omitted') {
     if (sc.scope === 'changed' && !canMeasureChanged(adapter)) {
       problems.push(`構成のカバレッジの測る範囲は「変更で加えた・変えたコード」ですが、アダプタ ${adapter.id} は行単位の被覆(coverageDetail)を持たず、変更の範囲を測れません。範囲を whole にするか、アダプタに行単位の被覆を足してください`);
     }
-    if (!sc.declared) notes.push(`構成にカバレッジの測る範囲(ci.coverageScope)がありません。アダプタ ${adapter.id} の既定(${SCOPE_LABEL[sc.scope]})で測ります。/process-change(種別 settings)で記録してください`);
+    if (!sc.declared) notes.push(`構成にカバレッジの測る範囲(ci.coverageScope)がありません。従来どおり「${SCOPE_LABEL[sc.scope]}」で測り、既定から補った旨を結果と保証の開示に出します。/process-change(種別 settings)で範囲を記録し、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃えてください`);
     const brief = read('docs/project-brief.md');
     if (brief !== null) {
       const rec = briefCoverageScope(brief);

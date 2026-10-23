@@ -9,8 +9,10 @@
 //   node scripts/gate/self-heal.mjs status [--json]                     状態を出す
 //
 // 停止条件は第3章 3.12.10 による。回数だけの遮断を採らない(同節)。
-//   - 無進捗: 失敗したテストの集合が、直前の反復と同一のまま task.selfHealNoProgressLimit 回(既定 2)続いたら保留にする。
-//             同一かは、スクリプト自身がテストを実行して読んだ失敗したテストの識別で比べる(担い手の申告を使わない)。
+//   - 無進捗: 同じ検査が同じ理由で失敗した状態(失敗したテストの識別と、失敗の理由の要約の組の集合)が、
+//             直前の反復と同一のまま task.selfHealNoProgressLimit 回(既定 2)続いたら保留にする。理由が変われば進捗とみなす。
+//             同一かは、スクリプト自身がテストを実行して読んだ出力で比べる(担い手の申告を使わない)。
+//             理由を読めない失敗は、テストの識別だけで比べる(3.12.10 の定義より多く止まる向き。その旨を出力と記録に出す)。
 //             識別を読めない失敗は、同一と確かめられないため無進捗に数えない(連続失敗の上限は効く)
 //   - 連続失敗: 失敗の反復が task.selfHealMaxIterations 回(既定 3)に達したら保留にする。失敗の内容が毎回変わる振動を
 //             止める歯止めであり、費用の歯止めでもある(上限を外さない。process-compass #296)
@@ -23,13 +25,16 @@
 // 受入基準へ戻る判断は人が行うため、保留を解くまでテストの遮断を続ける。保留を解く名義は、人の名簿の人に限り、
 // AI の名義を受け付けない。
 //
-// 操作は docs/self-heal-log.tsv へ追記する(git で追跡する。停止の記録は 3.12.10 の閾値の較正の入力になる)。
+// 操作は機能・タスクごとの記録(docs/self-heal/<機能>-<タスク>.tsv)へ追記する。git で追跡し、同じ PR でコミットする
+// (停止の記録は 3.12.10 の閾値の較正の入力になる)。タスクごとに分けるのは、並行するブランチの追記が競合しないためである。
+// 記録の書き込みに失敗したら警告を出す(黙って捨てない)。
 // ロックのファイル(.claude/.self-heal)は端末ごとの状態であり、追跡しない。
 //
 // 限界: フックは Claude Code の Edit/Write だけを遮断する。シェルからのファイル削除・書き込みは止めない。
 // 保留の解除(release)を、担い手が人の氏名を書いて実行することも、機械では止められない。記録に残して人が確かめる。
 
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,9 +49,13 @@ const lockRel = () => {
   }
 };
 export const LOCK = path.join(ROOT, lockRel());
-/** 操作の記録。追跡する置き場(以前の .claude/self-heal.log は *.log として git から外れていた。#296) */
-export const LOG_REL = 'docs/self-heal-log.tsv';
-const LOG = path.join(ROOT, LOG_REL);
+/** 操作の記録の置き場。追跡する(以前の .claude/self-heal.log は *.log として git から外れていた。#296) */
+export const LOG_DIR_REL = 'docs/self-heal';
+const safePart = (v) => String(v ?? '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
+/** 機能・タスクごとの記録のファイル(リポジトリの直下からの相対) */
+export function logRelFor(lock) {
+  return `${LOG_DIR_REL}/${safePart(lock?.spec)}-${safePart(lock?.task)}.tsv`;
+}
 
 /** ロックの状態を読む。無ければ null。旧い形(空のファイル)は、対象不明の実行中として読む */
 export function readLock() {
@@ -67,12 +76,15 @@ function writeLock(lock) {
 
 const clean = (v) => String(v ?? '').replace(/[\t\r\n]+/g, ' ');
 function log(event, lock, detail = '') {
+  const rel = logRelFor(lock);
+  const file = path.join(ROOT, rel);
   try {
-    fs.mkdirSync(path.dirname(LOG), { recursive: true });
-    if (!fs.existsSync(LOG)) fs.writeFileSync(LOG, '日時\t操作\t機能\tタスク\t反復\t内容\n', 'utf8');
-    fs.appendFileSync(LOG, `${new Date().toISOString()}\t${event}\t${clean(lock?.spec)}\t${clean(lock?.task)}\t${lock?.iterations ?? ''}\t${clean(detail)}\n`);
-  } catch {
-    /* 記録に失敗しても操作は続ける */
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!fs.existsSync(file)) fs.writeFileSync(file, '日時\t操作\t機能\tタスク\t反復\t内容\n', 'utf8');
+    fs.appendFileSync(file, `${new Date().toISOString()}\t${event}\t${clean(lock?.spec)}\t${clean(lock?.task)}\t${lock?.iterations ?? ''}\t${clean(detail)}\n`);
+  } catch (e) {
+    // 操作は続けるが、較正の入力が欠けたことを黙って捨てない
+    console.error(`[self-heal] 警告: 記録(${rel})へ書き込めません(${e.message})。この操作(${event})は記録に残っていません。人へ伝えてください`);
   }
 }
 
@@ -91,25 +103,80 @@ const arg = (name) => {
   return i >= 0 ? process.argv[i + 1] : null;
 };
 
+/** 失敗の見出しの行を読む。テストの識別を返す。見出しでなければ null */
+function headerOf(line) {
+  let m;
+  if ((m = line.match(/^\s*not ok \d+ - (.+?)\s*$/))) return { id: m[1], kind: 'tap' };
+  if ((m = line.match(/^\s*✖ (.+?)(?: \([\d.]+m?s\))?\s*$/))) return /^failing tests:?$/i.test(m[1]) ? null : { id: m[1], kind: 'generic' };
+  if ((m = line.match(/^\s*● (.+?)\s*$/))) return JEST_NOT_FAILURE.test(m[1]) ? null : { id: m[1], kind: 'generic' };
+  if ((m = line.match(/^\s*(?:FAIL|×)\s+(.+?)(?: \d+m?s)?\s*$/))) return { id: m[1], kind: 'generic' };
+  if ((m = line.match(/^FAILED (\S+)(?: - (.*))?$/))) return { id: m[1], kind: 'pytest', reason: m[2] ?? null };
+  if ((m = line.match(/^\s*--- FAIL: (\S+)/))) return { id: m[1], kind: 'generic' };
+  return null;
+}
+/** jest が ● で出す、失敗したテストでない見出し(console の出力など) */
+const JEST_NOT_FAILURE = /^Console\b/;
+/** 失敗の理由として読む行(assertion・例外・期待値と実際の値) */
+const REASON_LINE = /(Error\b|Exception\b|[Aa]ssert|[Ee]xpected|Received|\bactual\b|\bgot\b|\bwant\b|panic|\.go:\d+:|^\s*E\s{2,})/;
+
+/** 理由の要約を正規化する(所要時間・位置・アドレスなど、同じ理由でも変わる部分を落とす) */
+export function normalizeReason(text) {
+  return String(text ?? '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/^\s*error:\s*/i, '')
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/^\s*\S+\.(go|py|[cm]?[jt]sx?):\d+:\s*/, '')
+    .replace(/:\d+:\d+\b/g, '')
+    .replace(/\(?\b\d+(\.\d+)?\s*m?s\)?/g, '')
+    .replace(/0x[0-9a-f]+/gi, '0x')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
- * テストの出力から、失敗したテストの識別を読む。読めなければ空の配列。並びを揃え、重複を除く。
- * 対応する形: node --test(TAP の `not ok`、spec の `✖`)、jest(`●`)、vitest(`FAIL`・`×`)、pytest(`FAILED`)、go(`--- FAIL:`)
+ * テストの出力から、失敗したテストと失敗の理由の要約を読む(標準 第3章 3.12.10 の「同一の検査が同一の理由で落ち続ける」)。
+ * 戻り値は { id, reason } の配列(reason は読めなければ null)。識別で並べ、重複を除く。
+ * 対応する形: node --test(TAP の `not ok` と YAML の error、spec の `✖`)、jest(`●`。`● Console` を除く)、
+ * vitest(`FAIL`・`×`)、pytest(`FAILED id - 理由`)、go(`--- FAIL:` と続く `file.go:N:` の行)
  */
-export function failingTestIds(output) {
-  const ids = new Set();
-  const text = String(output ?? '').replace(/\x1b\[[0-9;]*m/g, '');
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/\s+#\s*(time|duration)[=:].*$/i, '');
-    let m;
-    if ((m = line.match(/^\s*not ok \d+ - (.+?)\s*$/))) ids.add(m[1]);
-    else if ((m = line.match(/^\s*✖ (.+?)(?: \([\d.]+m?s\))?\s*$/))) {
-      if (!/^failing tests:?$/i.test(m[1])) ids.add(m[1]);
-    } else if ((m = line.match(/^\s*● (.+?)\s*$/))) ids.add(m[1]);
-    else if ((m = line.match(/^\s*(?:FAIL|×)\s+(.+?)(?: \d+m?s)?\s*$/))) ids.add(m[1]);
-    else if ((m = line.match(/^FAILED (\S+)/))) ids.add(m[1]);
-    else if ((m = line.match(/^\s*--- FAIL: (\S+)/))) ids.add(m[1]);
+export function failureSignatures(output) {
+  const lines = String(output ?? '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).map((raw) => raw.replace(/\s+#\s*(time|duration)[=:].*$/i, ''));
+  const found = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const h = headerOf(lines[i]);
+    if (!h) continue;
+    let reason = null;
+    if (h.kind === 'pytest') reason = h.reason ? normalizeReason(h.reason) : null;
+    else {
+      const parts = [];
+      for (let j = i + 1; j < lines.length && j <= i + 40 && parts.length < 3; j++) {
+        if (headerOf(lines[j]) || /^\s*(ok \d+ - |✔ |# Subtest:)/.test(lines[j])) break;
+        let line = lines[j];
+        if (h.kind === 'tap') {
+          const e = line.match(/^\s*error:\s*(.*)$/);
+          if (!e) continue;
+          line = /^[|>]-?$/.test(e[1].trim()) ? (lines[j + 1] ?? '') : e[1];
+          parts.push(normalizeReason(line));
+          break;
+        }
+        if (REASON_LINE.test(line) && normalizeReason(line)) parts.push(normalizeReason(line));
+      }
+      reason = parts.length ? parts.join(' / ') : null;
+    }
+    const prev = found.get(h.id);
+    if (!prev || (!prev.reason && reason)) found.set(h.id, { id: h.id, reason });
   }
-  return [...ids].sort();
+  return [...found.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** 失敗したテストの識別だけを読む(failureSignatures の識別の列) */
+export function failingTestIds(output) {
+  return failureSignatures(output).map((f) => f.id);
+}
+
+/** 失敗の組(識別と理由の要約)を、比べるための文字列にする。理由を読めなければ識別だけ */
+export function signatureKey({ id, reason }) {
+  return reason ? `${id} ⟨${crypto.createHash('sha1').update(reason).digest('hex').slice(0, 8)}⟩` : id;
 }
 
 const sameSet = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length > 0 && a.length === b.length && a.every((x, i) => x === b[i]);
@@ -125,7 +192,7 @@ export function nextIteration(lock, failures, { max, noProgress }) {
   const entry = { n: iterations, failures, streak: failures ? streak : 0, at: new Date().toISOString() };
   const next = { ...lock, iterations, max, noProgress, history: [...(lock.history ?? []), entry] };
   if (failures && streak >= noProgress) {
-    return { ...next, state: 'held', condition: 'no-progress', reason: `無進捗: 同じ失敗したテストの集合が ${streak} 回続いた(${failures.slice(0, 3).join(', ')}${failures.length > 3 ? ' ほか' : ''})`, heldAt: entry.at };
+    return { ...next, state: 'held', condition: 'no-progress', reason: `無進捗: 同じ検査が同じ理由で失敗した状態が ${streak} 回続いた(${failures.slice(0, 3).join(', ')}${failures.length > 3 ? ' ほか' : ''})`, heldAt: entry.at };
   }
   if (iterations >= max) {
     return { ...next, state: 'held', condition: 'consecutive-failures', reason: `連続失敗: 失敗の反復が上限(${max}回)に達した`, heldAt: entry.at };
@@ -210,12 +277,15 @@ function main() {
       console.log('[self-heal] テストが通ったため、ロックを終えました');
       process.exit(0);
     }
-    const ids = failingTestIds(t.output);
-    const failures = ids.length ? ids : null;
+    const sigs = failureSignatures(t.output);
+    const failures = sigs.length ? sigs.map(signatureKey) : null;
+    const nameOnly = sigs.filter((f) => !f.reason).map((f) => f.id);
     const { max, noProgress } = { ...limits(), ...(lock.max ? { max: lock.max } : {}), ...(lock.noProgress ? { noProgress: lock.noProgress } : {}) };
     const next = nextIteration(lock, failures, { max, noProgress });
     writeLock(next);
-    log(next.state === 'held' ? 'hold' : 'iterate', next, `${failures ? failures.join(' | ') : '失敗したテストを識別できない'}${next.state === 'held' ? ` / ${next.reason}` : ''}`);
+    const nameOnlyNote = nameOnly.length ? `(理由を読めず識別だけで比べた: ${nameOnly.join(', ')})` : '';
+    log(next.state === 'held' ? 'hold' : 'iterate', next, `${failures ? failures.join(' | ') : '失敗したテストを識別できない'}${nameOnlyNote}${next.state === 'held' ? ` / ${next.reason}` : ''}`);
+    if (nameOnly.length) console.error(`[self-heal] 失敗の理由を出力から読めないテストがあります(${nameOnly.join(', ')})。これらはテストの識別だけで同一を比べるため、理由が変わる正当な反復でも無進捗として止まることがあります(標準 第3章 3.12.10 の定義より多く止まる向き)`);
     if (!failures) console.error('[self-heal] テストは失敗したが、失敗したテストを出力から識別できない。無進捗の判定はこの反復で行わない(連続失敗の上限は効く)');
     if (next.state === 'held') {
       console.error(`[self-heal] ${describe(next)}`);

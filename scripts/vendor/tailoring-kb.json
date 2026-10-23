@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "bc407e5d09e93e5259759330a3f7905b23ee7955"
+    "commit": "a778b1904ba718eb6b62996fd0cbe637cfb053cb"
   },
   "questions": [
     {
@@ -1530,6 +1530,12 @@
       "range": "規模の基準値を超えた PR",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#基準値を超えた変更の扱い適用-規模の基準値を超えた-pr"
+    },
+    {
+      "title": "AI 品質指標の扱い",
+      "range": "AI が関与した成果物の品質を比率で扱う場合。傾向の確認と第5章 5.4.6 の検知条件を含む",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#ai-品質指標の扱い適用-ai-が関与した成果物の品質を比率で扱う場合傾向の確認と第5章-546-の検知条件を含む"
     },
     {
       "title": "新規に変更した範囲へ限定する",
