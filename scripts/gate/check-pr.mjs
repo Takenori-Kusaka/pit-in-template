@@ -4,9 +4,10 @@
 //   node scripts/gate/check-pr.mjs --base origin/<PR の基底> [--policy-base origin/<既定ブランチ>] [--pr <PR の JSON>] [--report <出力先>] [--comment] [--json]
 //
 // 差分は PR の基底(--base)から取る。基準値・名簿・区分の下限の規則・除外設定(.gitattributes)・台帳の例外承認・
-// 停止の申し立ての解除の記録は、既定ブランチ(--policy-base)から読む(標準 フェーズ5「スタック型 PR」・CI/CD ゲート構成
+// 停止の申し立ての解除の記録は、既定ブランチ(--policy-base)の先端から読む(標準 フェーズ5「スタック型 PR」・CI/CD ゲート構成
 // の pr-rules。process-compass #294 / ADR-0078)。スタックの上の層の PR は基底が下の層のブランチになり、まだ既定ブランチへ
-// 入っていない下の層で緩めた基準値で判定される経路を開くためである。--policy-base を省くと --base から読む(手元の実行)。
+// 入っていない下の層で緩めた基準値で判定される経路を開くためである。既定ブランチの構成が未設定で基底が設定済みなら、PR の
+// 側の構成へ戻らず失敗する。--policy-base を省くと --base との分岐点から読む(手元の実行)。
 // 以下の「基底ブランチの構成」「基底ブランチの台帳」は、この既定ブランチの側を指す
 // PR の情報(番号・題名・本文・作成者)は、--pr の JSON({ number, title, body, author })か、環境変数
 // PR_NUMBER / PR_TITLE / PR_BODY / PR_AUTHOR から読む。題名と本文をシェルへ展開しないため、ワークフローは
@@ -802,17 +803,17 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
     return result;
   }
   const atBase = (file) => git(['show', `${mergeBase}:${file}`]);
-  // 基準値・名簿・規則・台帳を読む起点。既定ブランチ(policyBase)と HEAD の分岐点。PR の基底が既定ブランチなら mergeBase と同じ。
+  // 基準値・名簿・規則・台帳を読む起点。--policy-base を渡したときは既定ブランチの先端、省いたとき(手元の実行)は PR の基底との分岐点。
   // スタックの上の層(基底が下の層のブランチ)でも、まだ既定ブランチへ入っていない下の層の構成・台帳を読まない(ADR-0078)
   const policyRef = policyBase ?? base;
-  const policyPoint = policyRef === base ? mergeBase : (git(['merge-base', policyRef, 'HEAD']) ?? '').trim();
+  const policyPoint = policyBase ? (git(['rev-parse', '--verify', '--quiet', `${policyBase}^{commit}`]) ?? '').trim() : mergeBase;
   if (!policyPoint) {
     result.errors.push(`既定ブランチ ${policyRef} を解決できません。既定ブランチを取得してから実行する(基準値と台帳は既定ブランチから読む)`);
     return result;
   }
   const atPolicy = policyPoint === mergeBase ? atBase : (file) => git(['show', `${policyPoint}:${file}`]);
   result.policy = { ref: policyRef, sameAsBase: policyPoint === mergeBase };
-  if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})から読む`);
+  if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})の先端から読む`);
   const atHead = (file) => {
     const p = path.join(root, file);
     return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
@@ -829,6 +830,12 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   const baseConfigured = Boolean(baseConfig) && baseConfig.configured !== false;
   const policyConfig = atPolicy === atBase ? baseConfig : json(atPolicy('process.config.json'));
   const policyConfigured = Boolean(policyConfig) && policyConfig.configured !== false;
+  // 既定ブランチが未設定なのに PR の基底(スタックの下の層)が設定済みなら、PR の側の構成へ戻らず失敗させる(緩める向きの代替を持たない)。
+  // 基底も未設定の初回の chore/process-init は、従来どおり規模の判定を行わない
+  if (!policyConfigured && atPolicy !== atBase && baseConfigured) {
+    result.errors.push(`既定ブランチ ${policyRef} の構成(process.config.json)が未設定ですが、PR の基底 ${base} は設定済みです。構成を PR の側から読まないため、既定ブランチへ初期化を先に入れてから実行する`);
+    return result;
+  }
   // 上限と名簿は既定ブランチの構成から読む。同じ PR(とスタックの下の層)で上限を書き換えても、その PR の検査は変わらない
   const limitsFrom = policyConfigured ? policyConfig : headConfig;
 
