@@ -134,7 +134,7 @@ for (const n of [1, 3]) {
   W.write('specs/F-001/plan.md', W.read('templates/07-implementation-plan.md'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 様式から機能仕様・実装計画・D-0・企画書を作った直後も spec-lint が通る`, r.ok, r.out);
-  // 未確定事項(G-2 基準6・G-4 基準7)と、受入基準 → タスクの対応の一覧(G-4 基準6)。process-compass #291
+  // 未確定事項(G-2・G-4 の前提条件1)と、受入基準 → タスクの対応の一覧(G-4 基準6)。process-compass #291
   {
     r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-2', 'specs/F-001');
     check(`${tag}: 様式のままの機能仕様は、未確定事項の印が残るため spec-lint --gate G-2 が落ちる`, !r.ok && /未確定事項が 1 件/.test(r.out), r.out);

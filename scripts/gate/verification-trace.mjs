@@ -6,7 +6,7 @@
 //   G-7 基準2 欠陥の台帳(docs/defect-ledger.md)の取り込みと、欠陥トリアージ基準の区分ごとの未解決の件数
 //   企画書の総費用の内訳(5区分 × 値・実績 / 見積り・出所)                    第6章 テンプレ6、第7章 7.7.8
 //   G-4 基準6 どのタスクにも現れない受入基準の一覧(unmappedCriteria)            第4章 G-4「受入基準とタスクの対応(基準6)」
-//   G-2 基準6・G-4 基準7 未確定事項の印の件数(countClarifications)              第4章 G-2「未確定事項(基準6)」
+//   G-2・G-4 前提条件1 未確定事項の印の件数(countClarifications)                第4章 G-2「未確定事項(前提条件1)」
 //
 // 機械が数えるのは参照の有無と件数までである。参照したテストが条件や受入基準を確かめているか、計画したテストが
 // 十分かは判定しない(G-6 の独立レビュアと出荷判定者が確かめる)。
@@ -182,15 +182,28 @@ const AC_REF = /\b(F-\d+)\s*[/#:]?\s*AC-?(\d+)\b/g;
 
 /**
  * 実装計画の「対応する受入基準」の升から、受入基準の番号を読む(G-4 基準6。process-compass #291 / ADR-0074)。
- * 読む書き方は 1 / AC-1 / CR-1 / F-001/AC-1 の4つ。範囲(1〜3)は読まず、両端も対応に数えない
- * (対応を1つずつ書く。読めない書き方は一覧に出て、判定者が見る)。別の機能の識別子(F-002/AC-1)は、この機能の受入基準に数えない。
+ * 升を区切り(`,`・`、`・空白)で語に分け、識別子の形の語だけを読む。識別子の形は 1 / AC-1 / CR-1 / F-001/AC-1 の4つ。
+ * 範囲(1〜3、1-3)は読まず、両端も対応に数えない。タスクの ID(Task-2)や文中の数を含む升は、推定を避けるため1つも読まない
+ * (対応を1つずつ書く。読めない書き方をした受入基準は一覧に出て、判定者が見る)。
+ * 別の機能の識別子(F-002/AC-1)は、この機能の受入基準に数えない。
  */
+const ID_FORM = /^(?:(F-\d+)[/#:]?)?(?:(?:AC|CR)-?)?(\d+)$/i;
+const RANGE_FORM = /^(?:F-\d+[/#:]?)?(?:(?:AC|CR)-?)?\d+[〜~-](?:F-\d+[/#:]?)?(?:(?:AC|CR)-?)?\d+$/i;
 export function criterionNumbers(cell, feature = null) {
+  const text = nfkc(cell)
+    .replace(/\s*([/#:〜~])\s*/g, '$1')
+    .replace(/\s+-\s*|\s*-\s+/g, '-');
+  const tokens = text.split(/[,、\s]+/).filter((t) => t && !/^[—–-]$/.test(t));
   const out = [];
-  const text = nfkc(cell).replace(/(?:(?:AC|CR)-?)?\d+\s*[〜~]\s*(?:(?:AC|CR)-?)?\d+/gi, ' ');
-  for (const m of text.matchAll(/(?:\b(F-\d+)\s*[/#:]?\s*)?(?:\b(?:AC|CR)-?)?(\d+)\b/gi)) {
-    if (m[1] && feature && m[1].toUpperCase() !== feature.toUpperCase()) continue;
-    out.push(Number(m[2]));
+  for (const t of tokens) {
+    const m = t.match(ID_FORM);
+    if (m) {
+      if (m[1] && feature && m[1].toUpperCase() !== feature.toUpperCase()) continue;
+      out.push(Number(m[2]));
+      continue;
+    }
+    if (RANGE_FORM.test(t)) continue;
+    return [];
   }
   return [...new Set(out)];
 }
@@ -230,7 +243,7 @@ export function unmappedCriteria(feature, { root = ROOT } = {}) {
 }
 
 /**
- * G-2 基準6・G-4 基準7: 機能仕様に残る未確定事項の印([NEEDS CLARIFICATION])を数える。
+ * G-2・G-4 の前提条件1: 機能仕様に残る未確定事項の印([NEEDS CLARIFICATION])を数える。
  * コードブロック・HTML コメント・インラインコードの中は数えない(印を説明する文を数えないため)。
  * 閉じ方(決める / 確かめる / 前提として引き受ける)が正しいかは判定しない。
  */

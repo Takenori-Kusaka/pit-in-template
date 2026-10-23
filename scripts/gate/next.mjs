@@ -6,7 +6,7 @@
 //   node scripts/gate/next.mjs --role <ロール>   ロールの詳細(判定するゲート・受信箱など)と、そのロールの次の一手
 //   node scripts/gate/next.mjs --scopes   標準の条項の適用範囲と判定の単位
 //
-// 未確定事項の印([NEEDS CLARIFICATION])が残る機能は G-2・G-4 の判定待ちへ進めない(G-2 基準6・G-4 基準7)。
+// 未確定事項の印([NEEDS CLARIFICATION])が残る機能は G-2・G-4 の判定待ちへ進めない(G-2・G-4 の前提条件1)。
 // G-4 の判定待ちには、どのタスクにも現れない受入基準の一覧を材料として添える(G-4 基準6。合否は出さない)。
 //
 // 読むもの: process.config.json、docs/D-0-governance.md(check-d0 と、節3 の手で書く行の空欄)、docs/project-brief.md、
@@ -159,13 +159,13 @@ function withIssues(step, issues) {
 }
 
 /**
- * G-2 基準6・G-4 基準7: 未確定事項の印([NEEDS CLARIFICATION])が残る機能は、判定待ちへ進めない(判定を開始しない)。
+ * G-2・G-4 の前提条件1: 未確定事項の印([NEEDS CLARIFICATION])が残る機能は、判定待ちへ進めない(判定を開始しない)。
  * waiting は、そのゲートが有効で、対象の機能の通過の記録がまだ無いこと。印が無いか待っていなければ null
  */
 export function clarificationStep(feature, specText, { gate, waiting }) {
   const clar = countClarifications(specText);
   if (!waiting || !clar.count) return null;
-  const basis = gate === 'g2' ? 'G-2 基準6' : 'G-4 基準7';
+  const basis = gate === 'g2' ? 'G-2 前提条件1' : 'G-4 前提条件1';
   return {
     stage: '未確定事項が残る',
     ...cmd(
@@ -501,7 +501,7 @@ export function computeNext() {
       F({ stage: '受入基準に曖昧語', ...cmd(`/spec-write ${f}`, `spec-lint が検出した(node scripts/gate/spec-lint.mjs specs/${f})`), read: ['.claude/skills/spec-write/SKILL.md', READ.artifact('01-feature-spec')] });
       continue;
     }
-    // G-2 基準6・G-4 基準7: 未確定事項の印が残る機能は、判定待ちへ進めない(判定を開始しない)
+    // G-2・G-4 の前提条件1: 未確定事項の印が残る機能は、判定待ちへ進めない(判定を開始しない)
     const g2Waiting = isGateActive(config, 'g2') && !passed(records, 'g2', f);
     const g4Waiting = isGateActive(config, 'g4') && !passed(records, 'g4', f);
     const clarG2 = clarificationStep(f, spec, { gate: 'g2', waiting: g2Waiting });

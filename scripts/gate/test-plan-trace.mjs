@@ -1,9 +1,9 @@
-// 受入基準 → タスクの対応の一覧(G-4 基準6)と、未確定事項の印の件数(G-2 基準6・G-4 基準7)を、一時の置き場の
+// 受入基準 → タスクの対応の一覧(G-4 基準6)と、未確定事項の印の件数(G-2・G-4 の前提条件1)を、一時の置き場の
 // 機能仕様と実装計画で試験する。
 //
 //   node scripts/gate/test-plan-trace.mjs
 //
-// 標準 第4章 G-4「受入基準とタスクの対応(基準6)」と G-2「未確定事項(基準6)」(process-compass #291 / ADR-0074)。
+// 標準 第4章 G-4「受入基準とタスクの対応(基準6)」と G-2「未確定事項(前提条件1)」(process-compass #291 / ADR-0074)。
 // 一覧は判定の材料で、合否を出さない。未確定事項は 1 件でも残れば判定を開始しない(spec-lint --gate が失敗する)。
 
 import fs from 'node:fs';
@@ -66,6 +66,9 @@ check('AC-1・CR-2・「、」区切りを読む', JSON.stringify(criterionNumbe
 check('同じ機能の F-001/AC-4 を読み、別の機能の F-002/AC-9 を数えない', JSON.stringify(criterionNumbers('F-001/AC-4 F-002/AC-9', 'F-001')) === '[4]');
 check('範囲(1〜3)は読まず、両端も数えない(一覧に出て判定者が見る)', JSON.stringify(criterionNumbers('1〜3, 5')) === '[5]');
 check('「—」は対応なし', criterionNumbers('—').length === 0);
+check('ハイフンの範囲(1-3)は読まず、両端も数えない', criterionNumbers('1-3').length === 0 && criterionNumbers('1 - 3').length === 0, JSON.stringify(criterionNumbers('1-3')));
+check('タスクの ID や文中の数を含む升(Task-2 の後で 4)は1つも読まない', criterionNumbers('Task-2 の後で 4').length === 0, JSON.stringify(criterionNumbers('Task-2 の後で 4')));
+check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', JSON.stringify(criterionNumbers('F-001 / AC-2', 'F-001')) === '[2]');
 
 // 2. 全部の受入基準がいずれかのタスクに現れる
 {
@@ -155,7 +158,7 @@ check('「—」は対応なし', criterionNumbers('—').length === 0);
   let r = run('specs/F-001');
   check('--gate を付けない spec-lint(CI と同じ)は、未確定事項で落ちない', r.ok, r.out);
   r = run('--gate', 'G-2', 'specs/F-001');
-  check('spec-lint --gate G-2 は、未確定事項が残ると落ち、件数と G-2 基準6 を出す', !r.ok && /未確定事項が 1 件/.test(r.out) && /G-2 基準6/.test(r.out), r.out);
+  check('spec-lint --gate G-2 は、未確定事項が残ると落ち、件数と G-2 前提条件1 を出す', !r.ok && /未確定事項が 1 件/.test(r.out) && /G-2 前提条件1/.test(r.out), r.out);
   put('specs/F-001/spec.md', SPEC([1, 2, 3], '(なし)'));
   r = run('--gate', 'G-2', 'specs/F-001');
   check('未確定事項を閉じると spec-lint --gate G-2 が通る', r.ok && /未確定事項 0 件/.test(r.out), r.out);
@@ -171,9 +174,9 @@ check('「—」は対応なし', criterionNumbers('—').length === 0);
 {
   const spec = SPEC([1, 2], '- [NEEDS CLARIFICATION] 期限');
   const s2 = clarificationStep('F-001', spec, { gate: 'g2', waiting: true });
-  check('next.mjs: 未確定事項が残り G-2 を待つ機能は「未確定事項が残る」(G-2 基準6)で止まる', s2?.stage === '未確定事項が残る' && s2.kind === 'command' && /G-2 基準6/.test(s2.reason) && /\/spec-write F-001/.test(s2.command), JSON.stringify(s2));
+  check('next.mjs: 未確定事項が残り G-2 を待つ機能は「未確定事項が残る」(G-2 前提条件1)で止まる', s2?.stage === '未確定事項が残る' && s2.kind === 'command' && /G-2 前提条件1/.test(s2.reason) && /\/spec-write F-001/.test(s2.command), JSON.stringify(s2));
   const s4 = clarificationStep('F-001', spec, { gate: 'g4', waiting: true });
-  check('next.mjs: G-2 を通過した後の G-4 待ちでも止まる(G-4 基準7)', s4?.stage === '未確定事項が残る' && /G-4 基準7/.test(s4.reason), JSON.stringify(s4));
+  check('next.mjs: G-2 を通過した後の G-4 待ちでも止まる(G-4 前提条件1)', s4?.stage === '未確定事項が残る' && /G-4 前提条件1/.test(s4.reason), JSON.stringify(s4));
   check('next.mjs: 判定を待っていないゲートでは止めない', clarificationStep('F-001', spec, { gate: 'g4', waiting: false }) === null);
   check('next.mjs: 未確定事項が無ければ止めない', clarificationStep('F-001', SPEC([1, 2], '(なし)'), { gate: 'g2', waiting: true }) === null);
   const r = root({ 'specs/F-001/spec.md': SPEC([1, 2, 3]), 'specs/F-001/plan.md': PLAN([['Task-1', '1']]) });
