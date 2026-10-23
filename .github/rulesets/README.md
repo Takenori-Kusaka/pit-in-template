@@ -35,18 +35,62 @@
 
 - `pull_request` と `required_status_checks` は置きません。記録だけのコミットに、記名者以外の承認を課さないためです(標準 第4章「判定の成立」、第5章 CI/CD ゲート構成)。履歴は追記だけになり、既存の記録の書き換え(force push)と削除は止まります
 - **既定ブランチのルールセットは変えません。bypass actor を足しません。`exempt` を使いません**。写しを置くために既定ブランチの強制層を縮小する構成(Bot の bypass)は採りません。強制層の縮小(ADR-0038)であり、「App の名義の変更は人の承認を経ない」と開示してしか成立しないためです
-- 記録用ブランチへ書くのは、マージを契機に走るワークフロー `record-copy.yml`(承認レビューの写し。`GITHUB_TOKEN` の `contents: write` で足り、App の鍵を要しません)と、判定者本人(様式。段階 2 で `docs/gates/` から移します)です
-- `records-signed.json` を適用する構成では、`record-copy.yml` の `git push` のコミットは署名を持たないため止まります。GitHub が署名する API 経由のコミット(`createCommitOnBranch`)への置き換えは未確認で、段階 2 で扱います。それまでは、規制業・CL2 以上の構成で写しが届かないことを、出荷判定(G-7)で開示してください
-- 記録用ブランチの内容を基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。入れる操作に、記名者(出荷判定者)以外の承認を課しません
+- 記録用ブランチへ書くのは、マージを契機に走るワークフロー `record-copy.yml`(承認レビューの写し `records/reviews/pr-<番号>.json`。`GITHUB_TOKEN` の `contents: write` で足り、App の鍵を要しません)と、判定者本人(様式 `records/gates/<ゲート>-<対象>-<日付>.md`。直接 push する。PR も他者の承認も要らない。`.claude/skills/gate/reference/recording.md`「様式の届け方」)です
+- 記録用ブランチの内容を基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。`ship-evidence.yml` が出荷の PR(`ship/<日付>`)を 1 本開き、`records/reviews/` を `docs/records/reviews/` へ、`records/gates/` を `docs/gates/` へ複製します(下記「出荷の PR」)。入れる操作に、記名者(出荷判定者)以外の承認を課しません
+
+### 署名を必須にする構成(`records-signed.json`)と変数 `RECORDS_SIGNED`
+
+`records-signed.json` を適用する構成では、`git push` のコミットは署名を持たないため止まります。この構成では、`record-copy.yml` と `ship-evidence.yml` が GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書きます。経路の判定は次のとおりです。
+
+1. 構成 `process.config.json` に `records.signed`(真偽値)があればその値。2026-10-23 時点で `/process-init` はこの値を書きません(将来の `/process-change` の入力)
+2. 無ければ、リポジトリの変数 **`RECORDS_SIGNED`**(Settings > Secrets and variables > Actions > Variables)が `true` のとき API 経由、それ以外は `git push`
+
+```bash
+gh variable set RECORDS_SIGNED --body true     # records-signed.json を適用する構成で設定する
+```
+
+- `ship-evidence.yml` は、既定ブランチのルールセットが `safety.json` / `regulated.json`(署名を必須にする)の構成でも API 経由で書きます(出荷の PR のコミットが既定ブランチの署名の規則で止まらないため)
+- **`createCommitOnBranch` と `required_signatures` の組は、2026-10-23 時点で実機で確かめていません**(E0)。初回のマージと初回の出荷で、Actions の実行の記録を確かめてください
+- 判定者本人が様式を push するときは、`git commit -S`(署名の設定は各自の端末)で push します
+
+#### 記録用ブランチの初期化
+
+`records` ブランチは、最初のマージで `record-copy.yml` が履歴を持たない(orphan)ブランチとして作ります。`createCommitOnBranch` はブランチの現在の先頭(`expectedHeadOid`)を要するため、ブランチが無い状態では使えません。署名を必須にする構成では、初期コミット(`git push`。署名なし)が `required_signatures` で止まるため、`record-copy.yml` は理由を出して失敗します。次のいずれかで初期化します。
+
+- `records-signed.json` を適用する**前に**最初のマージを 1 回通す(初期コミットは署名なしで入る。その後にルールセットを適用する)
+- 人が署名コミットで作る
+
+```bash
+git checkout --orphan records && git rm -rf --quiet .
+printf '# 記録用ブランチ\n' > README.md && git add README.md
+git commit -S -m "chore: 記録用ブランチを初期化する" && git push origin records
+```
+
+初期化の後、失敗した `record-copy.yml` の実行を再実行すると、その PR の写しが置かれます。
+
+## 出荷の PR(記録を基底ブランチへ入れる)
+
+`ship-evidence.yml` は、タグの push(または手動実行)で証跡を集約した後、出荷の PR を 1 本開きます。
+
+| 項目 | 内容 |
+| --- | --- |
+| ブランチ | `ship/<日付>`(同じ日に 2 回目があれば `ship/<日付>-<実行番号>`) |
+| 中身 | `records/reviews/*.json` → `docs/records/reviews/`、`records/gates/*.md` → `docs/gates/`(追加だけ。基底ブランチに既にあるファイルは上書きしない)。品質レポート(保証の開示を含む)→ `docs/evidence/<日付>-<範囲>.md` |
+| 承認者 | **出荷判定者本人**(`CODEOWNERS` の `docs/gates/`・`docs/records/` の所有者)。記名者以外の承認が付く体制では、その承認は取り込みの事務 |
+| 検査 | PR の上で `ship-evidence` の verify ジョブが同じ集約を再実行し、複製が `records` ブランチと一致することを検査する。JSON は `pr`・`merge_commit_sha`・`head_sha` と `reviews[]` の `id`・`commit_id`・`submitted_at`・`user.id`・`body`、md は内容。不一致は失敗。記録の置き場の既存のファイルの変更・削除も失敗 |
+| 起動 | **`GITHUB_TOKEN` で開いた PR では、gate-g5 も verify も自動では起動しません**(GitHub の仕様)。出荷判定者が PR を閉じて開き直す(または空のコミットを push する)と起動します。再検査だけなら `ship-evidence` の手動実行(入力 `verify_pr` に PR の番号)で、結果は PR のコメントに出ます(ステータスチェックには付きません) |
+
+個人のトークン(PAT)で PR を開いてワークフローを起動させる形は採りません。人の名義の操作を機械が行う形になるためです。
 
 ## 記録だけの PR にも承認 1 件が残る(降りていない規定)
 
-GitHub のルールセットは、パス単位の免除を持ちません。`team.json`・`safety.json`・`regulated.json` を適用した既定ブランチでは、判定記録だけを足す PR(停止の解除・例外承認の台帳、段階 2 までの `docs/gates/` の様式)にも、承認 1 件(規制業は 2 件)が残ります。
+GitHub のルールセットは、パス単位の免除を持ちません。`team.json`・`safety.json`・`regulated.json` を適用した既定ブランチでは、記録だけを足す PR(出荷の PR、停止の解除・例外承認の台帳)にも、承認 1 件(規制業は 2 件)が残ります。
 
 - 標準は「判定記録だけのコミットを基底ブランチへ入れる操作に、記名者以外の承認を課さない」と定めています(第4章「判定の成立」。実装マーク IMPL-0124、`state=undelivered`)。この規定は、GitHub の強制層へ降りていません。**降りていない規定として、消さずに表示し続けます**(未達のゲートと同じ扱い)
-- 残る承認の承認者は、**記名者本人**です。手順は `.claude/skills/gate/reference/recording.md`「記録だけの PR の届け方」にあります。草案の文脈(AI の担い手)が push と PR を担い、記名者は push せず承認だけを行います。`require_last_push_approval` の下では、記名者が push すると自分では承認できなくなるためです
+- 記録用ブランチへの様式の push(判定者本人の直接 push)には承認が残りません。残るのは基底ブランチへ入れる PR だけです
+- 残る承認の承認者は、**記名者本人**です(出荷の PR は出荷判定者。例外承認の台帳・停止の解除は記名者)。手順は `.claude/skills/gate/reference/recording.md`「記録だけの PR の届け方」にあります。草案の文脈(AI の担い手)が push と PR を担い、記名者は push せず承認だけを行います。`require_last_push_approval` の下では、記名者が push すると自分では承認できなくなるためです
 - 記名者と同じアカウントで AI の担い手が push する体制(認証情報を共有する体制)や、承認者 2 名の構成では、記名者以外の承認が付きます。**その承認は、ファイルの取り込みの事務であり、判定ではありません**。承認者は記録の中身を判定していません。記録は記名者の記名で成立しています(標準 第4章)
-- 記録の置き場(`docs/gates/**`・`records/**`)の所有者は `CODEOWNERS` で記名者の席へ割り当てます。これは誘導層です。所有者の誰か 1 人で足り、bypass actor を素通りさせるため、**遮断に数えません**
+- 記録の置き場(`docs/gates/**`・`docs/records/**`・`records/**`)の所有者は `CODEOWNERS` で記名者の席へ割り当てます。これは誘導層です。所有者の誰か 1 人で足り、bypass actor を素通りさせるため、**遮断に数えません**
 
 ## 適用のしかた
 
@@ -54,11 +98,13 @@ GitHub のルールセットは、パス単位の免除を持ちません。`tea
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team.json
 ```
 
-記録用ブランチのルールセットも、同じ形で適用します(規制業・CL2 以上は `records-signed.json`)。ブランチ `records` 自体は、最初のマージで `record-copy.yml` が作ります。ルールセットはブランチが無くても適用できます。
+記録用ブランチのルールセットも、同じ形で適用します(規制業・CL2 以上は `records-signed.json`。あわせて変数 `RECORDS_SIGNED` を `true` にする)。ブランチ `records` 自体は、最初のマージで `record-copy.yml` が作ります。ルールセットはブランチが無くても適用できますが、`records-signed.json` は初期化の後に適用します(前掲「記録用ブランチの初期化」)。
 
 ```bash
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json
 ```
+
+適用の後は、`node scripts/gate/adoption-trial.mjs env-check --by <氏名>` の所見(`findings`)で、記録用ブランチの保護(`non_fast_forward`・`deletion`、bypass actor なし)、`record-copy.yml` の直近の実行、写しの到着、既定ブランチの bypass actor を確かめられます。
 
 適用済みのルールセットを確認します。
 
@@ -66,7 +112,7 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json
 gh api repos/{owner}/{repo}/rulesets --jq '.[] | "\(.id) \(.name) \(.enforcement)"'
 ```
 
-私有リポジトリでルールセットを使えないプランでは、記録用ブランチも保護できません。その構成では、写しと判定記録の書き換えを止められず、記録の日時は自己申告になります(テンプレートの README「ブランチ保護を適用する」)。
+私有リポジトリでルールセットを使えないプラン(2026-10 時点の無料のプラン)では、記録用ブランチも保護できません。その構成では、写しと判定記録の書き換えを止められず、記録の日時は自己申告になります。出荷の PR の verify ジョブは `records` ブランチと複製の一致を検査しますが、`records` ブランチ自体の書き換えは検出できません(テンプレートの README「ブランチ保護を適用する」)。
 
 ## なぜここに置くか
 

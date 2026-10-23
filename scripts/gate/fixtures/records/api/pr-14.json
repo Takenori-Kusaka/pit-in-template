@@ -1,0 +1,23 @@
+[
+  {
+    "id": "PRR_kwDOExample001",
+    "author": { "login": "suzuki", "is_bot": false },
+    "state": "DISMISSED",
+    "submittedAt": "2026-10-24T01:00:00Z",
+    "body": "挙動要約: 設定画面の保存ボタンを二重送信できないようにする変更。保存中は無効化する。\n問題なし"
+  },
+  {
+    "id": "PRR_kwDOExample002",
+    "author": { "login": "ghost", "is_bot": false },
+    "state": "COMMENTED",
+    "submittedAt": "2026-10-24T01:05:00Z",
+    "body": "G-4: 通過(判定者の申告を転記)\n確認した項目: 基準1"
+  },
+  {
+    "id": "PRR_kwDOExample003",
+    "author": { "login": "sato", "is_bot": false },
+    "state": "APPROVED",
+    "submittedAt": "2026-10-24T05:00:00Z",
+    "body": "挙動要約: 写しの後に提出した承認。二重送信の抑止を確かめた。"
+  }
+]

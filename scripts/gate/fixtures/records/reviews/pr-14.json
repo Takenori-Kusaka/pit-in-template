@@ -1,0 +1,27 @@
+{
+  "repository": "example/app",
+  "pr": 14,
+  "merge_commit_sha": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+  "head_sha_at_merge": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+  "copied_at": "2026-10-24T03:00:00Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [
+    {
+      "id": 5627550001,
+      "state": "APPROVED",
+      "commit_id": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+      "submitted_at": "2026-10-24T01:00:00Z",
+      "user": { "id": 30000001, "login": "suzuki" },
+      "body": "挙動要約: 設定画面の保存ボタンを二重送信できないようにする変更。\n問題なし"
+    },
+    {
+      "id": 5627550002,
+      "state": "COMMENTED",
+      "commit_id": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+      "submitted_at": "2026-10-24T01:05:00Z",
+      "user": { "id": 22556919, "login": "yamada" },
+      "body": "G-4: 通過(判定者の申告を転記)\n確認した項目: 基準1"
+    }
+  ],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}

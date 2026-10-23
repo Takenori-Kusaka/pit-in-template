@@ -351,6 +351,15 @@ scenario('承認者の数: 空白と記号だけが違う挙動要約も同一�
 scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
 scenario('承認者の数: 承認の後の変更要求は承認を取り下げる。bot の承認は数えない', { reviews: [rv('suzuki'), rv('suzuki', '', 'CHANGES_REQUESTED'), { author: { login: 'ai-review[bot]', is_bot: true }, state: 'APPROVED', body: '要約' }, rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
 
+// ---------------------------------------------------------------- 変更要求の本文の形(第4章 G-6「承認レビューを判定記録とする条件」の条件1。#321)
+// 項目番号と期限を欠く変更要求を「理由の無い差し戻し」として出す。合否にしない(通知だけ)
+const notNoticed = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [`${re} の通知が出ている: ${JSON.stringify(r.notices)}`] : []);
+const CR = (login, body) => rv(login, body, 'CHANGES_REQUESTED');
+scenario('変更要求: 項目番号と期限の両方がある(宣言行の形)→ 通知なし', { reviews: [CR('suzuki', 'G-6: 差し戻し / 基準 3 / 期限 2026-11-05\n\n失効の分岐の試験が無い')] }, () => write('src/a.js', lines(24)), passes(notNoticed(/review:changes-requested-without-reason/), (r) => (r.changesRequested?.checked?.includes('suzuki') ? [] : ['変更要求を検査の対象にしていない'])));
+scenario('変更要求: 項目番号だけ(期限が無い)→ 理由の無い差し戻しとして出す', { reviews: [CR('suzuki', '基準3 を満たさない。試験を足して再提出する')] }, () => write('src/a.js', lines(24)), passes(noticed(/review:changes-requested-without-reason: @suzuki\(期限なし\)/)));
+scenario('変更要求: 期限だけ(項目番号が無い)→ 理由の無い差し戻しとして出す', { reviews: [CR('suzuki', '直して再提出。期限: 2026-11-05')] }, () => write('src/a.js', lines(24)), passes(noticed(/review:changes-requested-without-reason: @suzuki\(項目番号なし\)/)));
+scenario('変更要求: 理由の無い変更要求のあと承認し直した(最後の状態が承認)→ 対象外', { reviews: [CR('suzuki', '直してください'), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(notNoticed(/review:changes-requested-without-reason/)));
+
 // ---------------------------------------------------------------- マージ済みの変更の規模(出荷の集約が使う。measureCommitSize)
 {
   git('switch', '-q', '-C', 'pr-merged', 'main');

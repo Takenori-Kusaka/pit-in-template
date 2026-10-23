@@ -24,9 +24,14 @@
 # /.claude/settings.json  @tech-lead
 # /.github/rulesets/      @tech-lead
 
-# 判定記録の置き場(process-compass #321)。記録だけの PR の承認者を、記名者の席へ誘導する。
+# 判定記録の置き場(process-compass #321 / ADR-0070)。記録だけの PR の承認者を、記名者の席へ誘導する。
 # これは誘導層であり、遮断に数えない(所有者の誰か 1 人で足り、bypass actor は素通りする)。
 # require_code_owner_review が偽の構成(team.json)では、承認者の候補として表示されるだけ。
-# 席ごとに分けるなら、ゲートごとの判定者の席(価値責任者・出荷判定者・事業決裁者)をここへ書く
-# /docs/gates/            @gate-judges
-# /records/               @gate-judges
+# 出荷の PR(ship-evidence.yml が開く ship/<日付>)は、records ブランチの様式を docs/gates/ へ、承認レビューの写しを
+# docs/records/reviews/ へ複製する。その承認者は出荷判定者本人なので、この 2 つの所有者は出荷判定者の席にする。
+# docs/gates/ には停止の解除・例外承認(台帳は docs/debt-ledger.md)・SG の記録も先に入るため、席ごとに分けるなら
+# ゲートごとの判定者の席(価値責任者・出荷判定者・事業決裁者)をここへ書く。
+# records ブランチ自体(records/gates/・records/reviews/)は PR を経ないため、CODEOWNERS は効かない(ルールセットで保護する)
+# /docs/gates/            @ship-judge
+# /docs/records/          @ship-judge
+# /docs/evidence/         @ship-judge

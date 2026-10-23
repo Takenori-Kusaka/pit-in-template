@@ -1,0 +1,43 @@
+{
+  "repository": "example/app",
+  "pr": 16,
+  "merge_commit_sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+  "head_sha_at_merge": "f1e2d3c4b5a6978877665544332211009988aabb",
+  "copied_at": "2026-10-25T02:00:00Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [
+    {
+      "id": 5627560001,
+      "state": "COMMENTED",
+      "commit_id": "0000000000000000000000000000000000000001",
+      "submitted_at": "2026-10-24T09:00:00Z",
+      "user": { "id": 22556919, "login": "yamada" },
+      "body": "G-4: 通過\n確認した項目: 基準1、基準2、基準3、基準4、基準5"
+    },
+    {
+      "id": 5627560002,
+      "state": "APPROVED",
+      "commit_id": "f1e2d3c4b5a6978877665544332211009988aabb",
+      "submitted_at": "2026-10-24T10:00:00Z",
+      "user": { "id": 30000001, "login": "suzuki" },
+      "body": "G-2: 通過\n確認した項目: 基準1(受入基準の形式)、基準2(曖昧語)、基準3(前提の登録)、基準4(やらないこと)、基準5(スコープの層)"
+    },
+    {
+      "id": 5627560003,
+      "state": "APPROVED",
+      "commit_id": "f1e2d3c4b5a6978877665544332211009988aabb",
+      "submitted_at": "2026-10-24T10:30:00Z",
+      "user": { "id": 49699333, "login": "dependabot[bot]", "type": "Bot" },
+      "body": "挙動要約: 受入基準の表に AC-1〜AC-6 を足し、Task-1〜Task-3 を対応づける変更。"
+    },
+    {
+      "id": 5627560004,
+      "state": "APPROVED",
+      "commit_id": "0000000000000000000000000000000000000002",
+      "submitted_at": "2026-10-24T11:00:00Z",
+      "user": { "id": 40000002, "login": "sato" },
+      "body": "挙動要約: 受入基準の表に AC-1〜AC-6 を足し、Task-1〜Task-3 を対応づける変更。境界値の基準を含む。"
+    }
+  ],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}

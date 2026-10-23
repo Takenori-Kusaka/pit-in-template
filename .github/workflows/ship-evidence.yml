@@ -1,4 +1,4 @@
-# G-7 出荷判定の証跡を集約する
+# G-7 出荷判定の証跡を集約し、判定記録と承認レビューの写しを基底ブランチへ運ぶ出荷の PR を開く
 #
 # 出荷判定者に数値の十分性を判定させません。閾値の充足は G-5 が機械で判定済みです。
 # ここで行うのは記録と基準の突合だけです。
@@ -16,8 +16,37 @@
 #
 # 知財潔白性の検査記録(license-scan)は、gate-g5 の ip-clearance ジョブが別の実行で作る成果物です。
 # 出荷の対象のコミットに対する gate-g5 の成功した実行から、gh run download で取り込みます(#286)。
-# **このワークフローは、2026-10-01 時点で、実際の GitHub 上で実行して確かめていません**。確かめたのは、
-# 構文と、gh を模擬した呼び出しの形までです。初回の出荷では、Actions の実行の記録で、取り込みの行を確かめてください。
+#
+# ---- 段階 2(process-compass #321 D5〜D7 / ADR-0070): 記録用ブランチと出荷の PR ----
+#
+# 判定記録(様式)と承認レビューの写しは、記録用ブランチ `records` にあります(`records/gates/*.md`、`records/reviews/pr-<n>.json`)。
+# 集約(aggregate-evidence.mjs)は、この実行が fetch した `records` ブランチを自分で読みます(scripts/gate/records.mjs)。
+# 基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。このワークフローが次の形で運びます。
+#
+#   (a) `records` ブランチを fetch し、集約を実行する(CLI の引数は従来どおり --from / --to)
+#   (b) 写し(records/reviews/*.json)を docs/records/reviews/ へ、様式(records/gates/*.md)を docs/gates/ へ複製し、
+#       集約の出力(保証の開示を含む品質レポート)を docs/evidence/<日付>-<範囲>.md へ置いた出荷の PR を 1 本開く
+#       (ブランチ ship/<日付>。基底ブランチに既にあるファイルは上書きしない。追加だけ)
+#   (c) その PR 上で、同じ集約を再実行し、PR の中の複製が `records` ブランチと一致することを検査する(verify ジョブ)。
+#       JSON は id・commit_id・submitted_at・user.id・body(と pr・merge_commit_sha・head_sha)の一致、md は内容の一致。不一致は失敗
+#
+# 出荷の PR の承認者は、出荷判定者本人です(CODEOWNERS の docs/gates/・docs/records/ の所有者)。記録だけの PR に残る承認 1 件は
+# 記名者本人の操作であり、記名者以外の承認が付く場合はその承認は取り込みの事務です(標準 第4章「判定記録を基底ブランチへ入れる操作」)。
+# 既定ブランチのルールセットは緩めません。bypass actor を足さず、`exempt` を使いません(D7)。
+#
+# **GITHUB_TOKEN で開いた PR では、他のワークフロー(gate-g5 など)も、このワークフローの pull_request のジョブも起動しません**
+# (GitHub の仕様。GITHUB_TOKEN の操作は、ワークフローの再帰的な起動を防ぐため、イベントを発火させない)。
+# 必須チェック gate-g5 を満たすには、出荷判定者が PR を閉じて開き直す(または空のコミットを push する)と、人の操作として
+# イベントが発火し、gate-g5 とこの verify ジョブが走ります。再検査だけなら workflow_dispatch(入力 verify_pr に PR の番号)でも
+# 起動でき、結果は PR のコメントに出します(ステータスチェックには付きません)。
+# 個人のトークン(PAT)で PR を開く形は採りません(人の名義の操作を機械が行う形になるため)。
+#
+# 署名を必須にする構成(records-signed.json、または既定ブランチが safety.json / regulated.json)では、ship ブランチのコミットを
+# GraphQL createCommitOnBranch で作ります(GitHub が署名する)。それ以外は git push です。判定は record-copy.yml と同じ
+# (構成 process.config.json の records.signed、無ければリポジトリの変数 RECORDS_SIGNED)。
+#
+# **このワークフローは、2026-10-23 時点で、実際の GitHub 上で通しで実行して確かめていません**。確かめたのは、構文と、
+# gh を模擬した呼び出しの形までです。初回の出荷では、Actions の実行の記録で、取り込みの行と出荷の PR の差分を確かめてください。
 
 name: ship-evidence
 
@@ -32,20 +61,43 @@ on:
       to:
         description: 終点のタグ
         required: false
+      verify_pr:
+        description: 再検査だけを行う出荷の PR の番号(空なら集約して出荷の PR を開く)
+        required: false
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'docs/records/**'
+      - 'docs/gates/**'
+      - 'docs/evidence/**'
 
 permissions:
-  contents: read
-  pull-requests: read
+  contents: write
+  pull-requests: write
   actions: read
+
+env:
+  RECORDS_BRANCH: records
 
 jobs:
   evidence:
     name: ship-evidence
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.verify_pr == '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # (a) 記録用ブランチを fetch する。ローカルの参照 refs/heads/records と refs/remotes/origin/records の両方ができる。
+      # 無い場合(初回のマージより前)は続行し、集約が「写しなし」を欠落として出す
+      - name: 記録用ブランチを取り込む
+        run: |
+          if git fetch origin "$RECORDS_BRANCH:$RECORDS_BRANCH" 2>/dev/null; then
+            echo "::notice::記録用ブランチ $RECORDS_BRANCH を取り込みました($(git rev-parse --short "$RECORDS_BRANCH"))"
+          else
+            echo "::warning::記録用ブランチ $RECORDS_BRANCH がありません。写しと様式は無いものとして集約します"
+          fi
 
       # download-artifact は、この実行の成果物しか取れない(gate-g5 は別のワークフローの実行)。
       # 出荷の対象のコミット(--to、無ければ checkout したコミット)に対する gate-g5 の成功した実行を探し、
@@ -102,3 +154,235 @@ jobs:
             evidence/quality-report.md
             evidence/assurance-disclosure.external.md
           if-no-files-found: error
+
+      # (b) 出荷の PR を開く。基底ブランチ(既定ブランチ)から ship/<日付> を切り、records の写しと様式を複製し、品質レポートを置く。
+      # 既存のファイルは上書きしない(基底にあるファイルと中身が違えば、集約が「成立済みの記録の書き換え」として所見に出す対象)
+      - name: 出荷の PR を開く
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RECORDS_SIGNED_VAR: ${{ vars.RECORDS_SIGNED }}
+        run: |
+          set -euo pipefail
+          # 範囲。タグの push では終点がそのタグ。手動実行では入力(無ければ HEAD)
+          to="${TO:-}"
+          if [ -z "$to" ] && [ "${{ github.ref_type }}" = "tag" ]; then to="${{ github.ref_name }}"; fi
+          from="${FROM:-}"
+          range="${from:-start}..${to:-HEAD}"
+          safe=$(printf '%s' "$range" | tr -c 'A-Za-z0-9._-' '-')
+          day=$(date -u +%Y-%m-%d)
+          branch="ship/$day"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="ship/$day-$RUN_NUMBER"; fi
+          # 複製の作業は基底ブランチの先頭から行う(タグの checkout のまま docs/ を足さない)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch" "origin/$BASE"
+          added=0; skipped=0
+          copy_new() {
+            if [ -e "$2" ]; then
+              if cmp -s "$1" "$2"; then echo "::notice::$2 は基底ブランチに同じ内容で既にあります"; else echo "::warning::$2 は基底ブランチに別の内容で既にあります。上書きしません(集約の所見の対象)"; fi
+              skipped=$((skipped+1))
+            else
+              mkdir -p "$(dirname "$2")"; cp "$1" "$2"; git add "$2"; added=$((added+1))
+            fi
+          }
+          if git rev-parse --verify --quiet "$RECORDS_BRANCH" >/dev/null; then
+            rm -rf /tmp/records && mkdir -p /tmp/records
+            git archive "$RECORDS_BRANCH" | tar -x -C /tmp/records
+            for f in /tmp/records/records/reviews/*.json; do [ -e "$f" ] || continue; copy_new "$f" "docs/records/reviews/$(basename "$f")"; done
+            for f in /tmp/records/records/gates/*.md; do [ -e "$f" ] || continue; copy_new "$f" "docs/gates/$(basename "$f")"; done
+          else
+            echo "::warning::記録用ブランチが無いため、写しと様式の複製はありません"
+          fi
+          out="docs/evidence/$day-$safe.md"
+          [ -e "$out" ] && out="docs/evidence/$day-$safe-$RUN_NUMBER.md"
+          mkdir -p docs/evidence && cp evidence/quality-report.md "$out" && git add "$out"
+          added=$((added+1))
+          echo "::notice::複製 $added 件(上書きしなかったもの $skipped 件)。保証の開示は $out"
+          # 署名の要否(record-copy.yml と同じ判定)。既定ブランチが署名を課す構成(safety / regulated)でも GitHub が署名する経路を使う
+          signed=$(jq -r 'if (.records.signed|type)=="boolean" then .records.signed else empty end' process.config.json 2>/dev/null || true)
+          ruleset=$(jq -r '.ruleset // empty' process.config.json 2>/dev/null || true)
+          if [ -z "$signed" ]; then
+            if [ "${RECORDS_SIGNED_VAR:-}" = "true" ] || [ "$ruleset" = "safety" ] || [ "$ruleset" = "regulated" ]; then signed=true; else signed=false; fi
+          fi
+          headline="docs: 出荷の証跡 $range の判定記録・写し・保証の開示を基底ブランチへ入れる"
+          if [ "$signed" = "true" ]; then
+            # GraphQL createCommitOnBranch(GitHub が署名する)。ブランチを createRef で基底の先頭から作り、追加のファイルを 1 コミットで置く
+            owner="${REPO%%/*}"; name="${REPO#*/}"
+            repo_id=$(gh api graphql -f query='query($o:String!,$n:String!){repository(owner:$o,name:$n){id}}' -f o="$owner" -f n="$name" --jq '.data.repository.id')
+            head=$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq '.object.sha')
+            gh api graphql -f query='mutation($r:ID!,$n:String!,$o:GitObjectID!){createRef(input:{repositoryId:$r,name:$n,oid:$o}){ref{name}}}' \
+              -f r="$repo_id" -f n="refs/heads/$branch" -f o="$head" --jq '.data.createRef.ref.name'
+            git diff --cached --name-only --diff-filter=A | while IFS= read -r p; do
+              jq -n --arg path "$p" --arg contents "$(base64 -w0 "$p")" '{path:$path,contents:$contents}'
+            done | jq -s . > /tmp/additions.json
+            jq -n --arg repo "$REPO" --arg branch "$branch" --arg head "$head" --arg headline "$headline" --slurpfile add /tmp/additions.json \
+              '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}",
+                variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:$branch},message:{headline:$headline},expectedHeadOid:$head,fileChanges:{additions:$add[0]}}}}' > /tmp/body.json
+            oid=$(gh api graphql --input /tmp/body.json --jq '.data.createCommitOnBranch.commit.oid')
+            echo "::notice::署名つきのコミット $oid を $branch に作りました(createCommitOnBranch)"
+          else
+            git commit -m "$headline"
+            git push origin "$branch"
+          fi
+          # PR の本文。pr-rules が変更の種類に依らず検査する「リスク区分」の節(R3 を 1 つ)を持つ。製品のコードを含まないため
+          # Spec のトレーラは読まれず、書かない(Spec: setup は基盤の PR の意味で、記録の PR には当たらない)。
+          # 機械の印 <!-- ship-evidence from= to= --> を verify ジョブが読み、同じ範囲で集約を再実行する
+          {
+            printf '## 変更の概要\n\n'
+            printf '出荷の範囲 `%s` の判定記録(様式)と承認レビューの写しを記録用ブランチ `%s` から複製し、保証の開示を置く(ship-evidence の実行 %s)。追加だけで、既存のファイルは上書きしていない。\n\n' "$range" "$RECORDS_BRANCH" "${{ github.run_id }}"
+            printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件)\n\n' "$out" "$added" "$skipped"
+            printf '承認者は出荷判定者本人(CODEOWNERS の docs/gates/・docs/records/ の所有者)。記名者以外の承認が付く場合、その承認は取り込みの事務であり判定ではない(標準 第4章「判定記録を基底ブランチへ入れる操作」)。\n\n'
+            printf '**GITHUB_TOKEN で開いた PR のため、gate-g5 とこのワークフローの検査は自動では起動しない**。出荷判定者がこの PR を閉じて開き直す(または空のコミットを push する)と起動する。再検査だけなら ship-evidence の手動実行(verify_pr にこの PR の番号)でも行える。\n\n'
+            printf '## 検証方法と結果\n\n- verify ジョブが同じ集約を再実行し、複製が `%s` と一致することを検査する(人は結果を読む)\n\n' "$RECORDS_BRANCH"
+            printf '## AI 関与範囲\n\n- 生成: なし(ワークフローの機械の複製)\n- 人の確認: 出荷判定者\n\n'
+            printf '## 作成を指示した者\n\n@%s(ship-evidence を起動した人。機械の複製であり、出荷判定者が承認する)\n\n' "${{ github.actor }}"
+            printf '## リスク区分\n\nR3\n\n'
+            printf '<!-- ship-evidence from=%s to=%s out=%s -->\n' "${from}" "${to}" "$out"
+          } > /tmp/pr-body.md
+          url=$(gh pr create --repo "$REPO" --base "$BASE" --head "$branch" --title "docs: 出荷の証跡 $range(判定記録・写し・保証の開示)" --body-file /tmp/pr-body.md)
+          echo "::notice::出荷の PR を開きました: $url"
+          echo "$url" > evidence/ship-pr-url.txt
+
+  # (c) 出荷の PR の上で、同じ集約を再実行し、PR の中の複製が records ブランチと一致することを検査する。
+  # スクリプトは基底ブランチのものを実行し、PR の側のコードは実行しない(delegation.yml と同じ)。
+  # pull_request では自動で、workflow_dispatch(verify_pr)では手動で起動し、結果を PR のコメントにも出す
+  verify:
+    name: ship-evidence-verify
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.verify_pr != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: 対象の PR を取り込む
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.verify_pr }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" --repo "$REPO" --json headRefName,headRefOid,baseRefName,body > /tmp/pr.json
+          base=$(jq -r .baseRefName /tmp/pr.json); head_ref=$(jq -r .headRefName /tmp/pr.json)
+          git fetch origin "pull/$PR/head:pr-head" "$base"
+          body=$(jq -r .body /tmp/pr.json)
+          from=$(printf '%s' "$body" | sed -n 's/.*<!-- ship-evidence from=\([^ ]*\) to=.*/\1/p' | head -1)
+          to=$(printf '%s' "$body" | sed -n 's/.*<!-- ship-evidence from=[^ ]* to=\([^ ]*\) .*/\1/p' | head -1)
+          case "$head_ref" in ship/*) ship=true ;; *) ship=false ;; esac
+          { echo "pr=$PR"; echo "base=$base"; echo "head_ref=$head_ref"; echo "ship=$ship"; echo "from=$from"; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          echo "::notice::PR #$PR($head_ref → $base。出荷の PR: $ship。範囲 ${from:-start}..${to:-HEAD})"
+
+      - name: 記録用ブランチを取り込む
+        run: |
+          if git fetch origin "$RECORDS_BRANCH:$RECORDS_BRANCH" 2>/dev/null; then
+            echo "::notice::記録用ブランチ $RECORDS_BRANCH を取り込みました($(git rev-parse --short "$RECORDS_BRANCH"))"
+          else
+            echo "::warning::記録用ブランチ $RECORDS_BRANCH がありません"
+          fi
+
+      # 集約の再実行に要る成果物(欠落として出させないため)。取れなければ集約が欠落を出す。出荷の PR 以外では省く
+      - name: 知財潔白性の検査記録を gate-g5 の実行から取り込む
+        if: steps.pr.outputs.ship == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TO: ${{ steps.pr.outputs.to }}
+        run: |
+          target=$(git rev-parse "${TO:-HEAD}^{commit}")
+          run=$(gh run list --repo "${{ github.repository }}" --workflow gate-g5 --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$run" ]; then
+            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
+            gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence || echo "::warning::gate-g5 の実行 $run に test-results がありません"
+          else
+            echo "::warning::$target に対する gate-g5 の成功した実行がありません"
+          fi
+
+      # 同じ集約を再実行する。出荷の PR では同じ範囲(本文の印)で実行し、失敗(欠落)はこのジョブの失敗になる
+      - name: 証跡を集約し直す
+        if: steps.pr.outputs.ship == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FROM: ${{ steps.pr.outputs.from }}
+          TO: ${{ steps.pr.outputs.to }}
+        run: |
+          node scripts/gate/aggregate-evidence.mjs ${FROM:+--from "$FROM"} ${TO:+--to "$TO"}
+
+      - name: 複製が記録用ブランチと一致することを検査する
+        id: compare
+        env:
+          BASE: ${{ steps.pr.outputs.base }}
+          SHIP: ${{ steps.pr.outputs.ship }}
+        run: |
+          set -uo pipefail
+          fails=0; notes=()
+          fail() { echo "::error::$1"; notes+=("- 失敗: $1"); fails=$((fails+1)); }
+          note() { echo "::notice::$1"; notes+=("- $1"); }
+          git diff --name-status "origin/$BASE" pr-head -- docs/records docs/gates docs/evidence > /tmp/changes.txt || true
+          # 記録の置き場は追記だけ。既存のファイルの変更・削除・改名は、成立済みの記録の書き換えとして失敗
+          while IFS=$'\t' read -r st p rest; do
+            [ -n "$st" ] || continue
+            [ "$st" = "A" ] || fail "$p: 追加以外の変更($st)。記録の置き場のファイルは書き換えない"
+          done < /tmp/changes.txt
+          have_records=false
+          if git rev-parse --verify --quiet "$RECORDS_BRANCH" >/dev/null; then
+            have_records=true; rm -rf /tmp/records && mkdir -p /tmp/records && git archive "$RECORDS_BRANCH" | tar -x -C /tmp/records
+          fi
+          rm -rf /tmp/pr && mkdir -p /tmp/pr && git archive pr-head docs | tar -x -C /tmp/pr
+          # 写し(JSON): 最小の組(pr・merge_commit_sha・head_sha、reviews[] の id・commit_id・submitted_at・user.id・body)を正規化して比べる
+          shape='{pr, merge_commit_sha, head_sha, reviews: [(.reviews // [])[] | {id, commit_id, submitted_at, user: {id: .user.id}, body}]}'
+          while IFS=$'\t' read -r st p rest; do
+            [ "$st" = "A" ] || continue
+            case "$p" in
+              docs/records/reviews/*.json)
+                [ "$SHIP" = "true" ] || { fail "$p: 写しを運ぶのは出荷の PR(ship/<日付>)だけ"; continue; }
+                src="/tmp/records/records/reviews/$(basename "$p")"
+                if [ "$have_records" != "true" ] || [ ! -e "$src" ]; then fail "$p: 記録用ブランチに同じ名前の写しが無い"; continue; fi
+                if jq -S "$shape" "$src" > /tmp/a.json && jq -S "$shape" "/tmp/pr/$p" > /tmp/b.json && cmp -s /tmp/a.json /tmp/b.json; then
+                  note "$p: 記録用ブランチの写しと一致"
+                else
+                  fail "$p: 記録用ブランチの写しと一致しない(人が書き換えた写しとして欠落に数える)"
+                fi ;;
+              docs/gates/*.md)
+                src="/tmp/records/records/gates/$(basename "$p")"
+                if [ "$have_records" = "true" ] && [ -e "$src" ]; then
+                  if cmp -s "$src" "/tmp/pr/$p"; then note "$p: 記録用ブランチの様式と一致"; else fail "$p: 記録用ブランチの様式と内容が一致しない"; fi
+                elif [ "$SHIP" = "true" ]; then
+                  fail "$p: 記録用ブランチに無い判定記録を出荷の PR で足している"
+                else
+                  note "$p: 記録用ブランチに無い判定記録(停止の解除・例外承認・SG のように基底ブランチへ先に入れる記録。承認者は記名者本人)"
+                fi ;;
+              docs/evidence/*.md)
+                # 集約の出力は実行の時刻を含むため、内容の一致は検査しない。出荷の PR では上の再実行が通ることを検査している
+                note "$p: 保証の開示(内容の一致は検査しない。再実行の成否で確かめる)" ;;
+              *) note "$p: 検査の対象外" ;;
+            esac
+          done < /tmp/changes.txt
+          printf '%s\n' "${notes[@]:-}" > /tmp/compare.md
+          echo "fails=$fails" >> "$GITHUB_OUTPUT"
+          [ "$fails" -eq 0 ] || { echo "::error::複製の検査に $fails 件の不一致があります"; exit 1; }
+
+      # 手動実行(verify_pr)ではステータスチェックに付かないため、結果を PR のコメントに出す(pull_request でも出す)
+      - name: 結果を PR へ書く
+        if: always() && steps.pr.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          OUTCOME: ${{ steps.compare.outcome }}
+        run: |
+          {
+            echo "### ship-evidence の再検査(実行 ${{ github.run_id }}。結果: ${OUTCOME:-skipped})"
+            echo
+            cat /tmp/compare.md 2>/dev/null || echo "- 検査の記録なし(前の手順で失敗)"
+            echo
+            echo "実行: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > /tmp/comment.md
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/comment.md || echo "::warning::PR へコメントできませんでした"

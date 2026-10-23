@@ -1,6 +1,6 @@
 ---
 name: gate
-description: ゲート判定の記録を残す入口(受け皿は判定者本人の承認レビューの本文、または docs/gates/ の様式)。`/gate <ゲート>`(G-1〜G-8・SG)で、そのゲートの補助ファイル1枚(判定基準の所在、材料の集め方、判定記録の書き方、機械の検査)だけを読む。判定は人が行い、このスキルは材料と記録の様式・レビュー本文の雛形を整える。全ゲートで作成し、出荷判定(G-7)で完備を確かめる。旧名 /gate-record。
+description: ゲート判定の記録を残す入口(受け皿は判定者本人の承認レビューの本文、または記録用ブランチ records の records/gates/ の様式)。`/gate <ゲート>`(G-1〜G-8・SG)で、そのゲートの補助ファイル1枚(判定基準の所在、材料の集め方、判定記録の書き方、機械の検査)だけを読む。判定は人が行い、このスキルは材料と記録の様式・レビュー本文の雛形を整える。全ゲートで作成し、出荷判定(G-7)で完備を確かめる。旧名 /gate-record。
 ---
 
 # ゲート判定を記録する
@@ -9,7 +9,7 @@ description: ゲート判定の記録を残す入口(受け皿は判定者本人
 
 ## 判定の原則(全ゲート共通)
 
-1. **記録をもって判定が成立する**。判定は、判定記録の作成をもって成立する(標準 第4章)。記録とは欄が埋まった記録であり、媒体は 2 つに限る。対象が PR として存在する判定(G-6、仕様・ADR が PR として存在する G-2・G-3・G-4)は**判定者本人のレビューの本文**、それ以外は**様式**(`docs/gates/`)。置き方はテンプレート独自。Issue・PR・ラベルの操作は事務であり、記録の無い期間は未判定
+1. **記録をもって判定が成立する**。判定は、判定記録の作成をもって成立する(標準 第4章)。記録とは欄が埋まった記録であり、媒体は 2 つに限る。対象が PR として存在する判定(G-6、仕様・ADR が PR として存在する G-2・G-3・G-4)は**判定者本人のレビューの本文**、それ以外は**様式**(記録用ブランチ `records` の `records/gates/`。基底ブランチの `docs/gates/` へは出荷判定(G-7)の PR が複製する)。置き方はテンプレート独自。Issue・PR・ラベルの操作は事務であり、記録の無い期間は未判定
 2. **判定は人が行う。このスキルが行うのは、材料と記録の様式を整えることだけ**。判定者・判定日時・対象・参照した D-0 の版は機械が出してよい欄(PR の記録から。出所を併記)。**結果の欄と判断の中身を先に埋めない**。確定の形態・異議・受容の記名を AI が書かない(`reference/recording.md`「機械が出す欄と、人が書く欄」)
 3. **判定に持ち込むのは、当該ゲートの判定基準と全ゲート共通の通過条件だけ**。次工程の材料の未完成、基準に無い懸念、投資を続けるか(SG で扱う)、判定者の所属組織の内規(テーラリングで扱う)を持ち込まない
 4. 全ゲート共通の通過条件: 当該の工程に関係する前提の充足状態が前提の台帳(`docs/assumptions.md`)に記録され、AC-1 以上に受容の決裁があること。前提の定義と観測の手がかりの要約は `.claude/skills/artifact/artifacts/10-assumption-ledger.md`(外部のサイトを読まずに記入できる)。台帳が無ければ、判定の材料を揃える前に作る
@@ -50,13 +50,16 @@ node -e "const c=require('./process.config.json');for(const[k,g]of Object.entrie
 | 判定 | 受け皿 | 起こし方 |
 | --- | --- | --- |
 | 対象が PR として存在する判定(G-6。仕様・ADR が PR として存在する G-2・G-3・G-4) | 判定者本人のレビューの本文 | 補助ファイルの雛形(宣言行 + 確認した項目。G-6 は挙動要約)を判定者へ示す。判定者が PR の上で自分で書く |
-| それ以外(G-1・G-7・G-8・SG、例外承認、停止の解除、対象が PR でない場合) | 様式 | 下のコマンドで起こす |
+| それ以外(G-1・G-7・G-8・SG、例外承認、停止の解除、対象が PR でない場合) | 様式 | 記録用ブランチ `records` の上で、下のコマンドで起こす |
+
+様式の置き場は、記録用ブランチ `records` の `records/gates/<ゲート>-<対象>-<日付>.md` です(例: `records/gates/g7-v1.4.0-2026-10-30.md`)。`records` ブランチは履歴を持たない(orphan)ブランチで、様式のファイルは基底ブランチから `git show` で写します。
 
 ```bash
-cp templates/04-gate-record.md docs/gates/<ゲート>-<対象>-<日付>.md   # 例: docs/gates/g4-F-012-2026-08-08.md
+git fetch origin records && git checkout records          # 無ければ: git checkout --orphan records && git rm -rf --quiet .
+git show origin/main:templates/04-gate-record.md > records/gates/<ゲート>-<対象>-<日付>.md
 ```
 
-段階 1 では、レビューで判定したゲートでも、`next.mjs` と集約が読む様式を `docs/gates/` に置きます(機械が出す欄を埋め、人が書く欄はレビューの所在を指す。`reference/recording.md`「段階 1 の制約」)。
+レビューで判定したゲート(G-2・G-3・G-4・G-6)では、様式を置きません。`next.mjs` と出荷の証跡の集約は、記録用ブランチの写し(`records/reviews/pr-<番号>.json`)と様式(`records/gates/`)を `scripts/gate/records.mjs` で読みます。
 
 ### 4. 材料を集めて、突合の表を起こす
 
@@ -74,7 +77,9 @@ cp templates/04-gate-record.md docs/gates/<ゲート>-<対象>-<日付>.md   # �
 
 順序は「判定基準との突合 → **記録の作成** → `state:*` ラベルの遷移 → Issue・PR の事務」です。逆にしません。記録の無いまま次工程へ渡っている状態を見つけたら、着手せず判定者へ差し戻します。
 
-様式を基底ブランチへ入れる PR(記録だけの PR)では、**記名者は push しません**。草案の文脈(AI の担い手)が push と PR を担い、記名者は承認だけを行います。記名者以外の承認が付く体制では、その承認は取り込みの事務であり、判定ではありません(`reference/recording.md`「記録だけの PR の届け方」)。承認レビューの写しは、マージを契機にワークフロー `record-copy.yml` が記録用ブランチ `records` へ置きます。人は何もしません。
+様式は、**判定者本人が記録用ブランチ `records` へ直接 push します**(`reference/recording.md`「様式の届け方」)。PR も、他者の承認も要りません。`records-signed.json` を適用する構成では署名コミット(`git commit -S`)で push します。基底ブランチへは、出荷判定(G-7)の PR(`ship-evidence.yml` が開く `ship/<日付>`)が `records/gates/` を `docs/gates/` へ複製して運びます。承認レビューの写しは、マージを契機にワークフロー `record-copy.yml` が `records` へ置きます。人は何もしません。
+
+例外承認の台帳(`docs/debt-ledger.md`)と停止の申し立ての解除の記録は、現行どおり**基底ブランチへ先に**入れます(記録だけの PR が 1 本残る。承認者は記名者本人。`reference/recording.md`「記録だけの PR の届け方」)。
 
 ### 7. 次の一手を示す
 
@@ -94,8 +99,8 @@ node scripts/gate/next.mjs
 
 ## 参照
 
-- 共通の欄の書き方、機械が出す欄と人が書く欄、受け皿、記録だけの PR の届け方: `reference/recording.md`
-- 記録用ブランチと記録だけの PR に残る承認: `.github/rulesets/README.md`
+- 共通の欄の書き方、機械が出す欄と人が書く欄、受け皿、様式の届け方、記録だけの PR の届け方: `reference/recording.md`
+- 記録用ブランチ、出荷の PR、記録だけの PR に残る承認: `.github/rulesets/README.md`
 - 基準を満たさないまま進めるときの経路: `reference/exception-paths.md`
 - 様式: `templates/04-gate-record.md`(補助ファイル: `.claude/skills/artifact/artifacts/04-gate-record.md`)
 - [第4章 ゲートと判定基準](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/)

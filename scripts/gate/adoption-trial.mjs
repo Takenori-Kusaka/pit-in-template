@@ -5,7 +5,9 @@
 //   node scripts/gate/adoption-trial.mjs tally --manifest <path> [--human <json>] [--ai <json>] [--tolerance 3]
 //                                                                    封じた要約値を照合し、見つける者の記録と突き合わせて集計する
 //   node scripts/gate/adoption-trial.mjs env-check --by <氏名>       実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の
-//                                                                    成果物)を採用者の実環境の gh で読み、docs/adoption-trial/env-check.json へ書く
+//                                                                    成果物)を採用者の実環境の gh で読み、docs/adoption-trial/env-check.json へ書く。
+//                                                                    記録用ブランチ(records)の保護・record-copy の実行・写しの到着・既定ブランチの
+//                                                                    bypass actor は「所見」(findings)として同じ記録へ書く(#321 段階 2)
 //   node scripts/gate/adoption-trial.mjs run [--keep]               基準の確認 → 場面集 → 実環境の統制の記録 → 演習の記録 → 成立判定 → 記録の出力
 //   node scripts/gate/adoption-trial.mjs verify <記録>              記録の末尾の要約値(入力と本文)を再計算し、一致を確かめる
 //
@@ -1229,13 +1231,125 @@ function run() {
 //
 // ブランチ保護(ルールセット)の GitHub 上の適用、gate-g5 が PR_REVIEWS に渡すレビューの取得、ship-evidence が取り込む
 // gate-g5 の成果物の取得を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json(記録の置き場)へ書く。
+// 記録用ブランチ(records)の所見(保護・record-copy の実行・写しの到着・既定ブランチの bypass actor)は同じ記録の findings へ書く(下記)。
 // 第5巡の判定で、採用者が実環境で確かめていないことが「条件付き採用」の理由になった。採用の後の条件ではなく、採用の前の
 // 検証の手順にする。gh が無い・未認証・模擬の gh(出力を JSON として読めない、空の一覧)では、各項目を「読めない」として
 // 未確認に倒す。黙って通さない。本物の GitHub へ書き込む呼び出しは無い(読むだけ)。
 // 第7巡(V): 確認した者の記名だけでは、固定の応答で作った記録と実環境の記録を区別できない。各項目に API の応答の識別
 // (ルールセットの id、PR のレビューの id、gate-g5 の実行の id と URL、応答の取得時刻)を evidence として書き、識別の無い応答は
 // 確認済みにしない(readEnvCheck も、識別の無い確認済みを未確認に倒す)。査察は識別を GitHub の画面と突合する
+//
+// 段階 2(process-compass #321 D5〜D7): 記録用ブランチ(records)に関わる確認を「所見」(findings)として同じ記録へ書く。
+// 所見は、項目(items)と違って確認済みの判定(allOk・readEnvCheck の confirmed)に入れない。理由は 2 つ。(1) 記録用ブランチは
+// 最初のマージで record-copy.yml が作るため、初期化の直後は無いのが正常で、「未確認」に倒すと採用の前に確かめられない。
+// (2) 既定ブランチの bypass actor と、GITHUB_TOKEN/App の承認が required approving review に数えられるかは、強制層の縮小の
+// 有無を示す事実であり、構成との一致・不一致で判定する項目ではない。所見は記録へ残し、人(採用者・内部監査)が読む。
+// 所見を項目へ昇格させる(ENV_CHECK_ITEMS・ENV_EVIDENCE_KEYS へ登録して /pit と集約に出す)かは、初回の出荷の後に決める
 const ENV_ITEM_LABEL = Object.fromEntries(ENV_CHECK_ITEMS);
+const RECORDS_FINDING_LABEL = {
+  recordsBranch: '記録用ブランチ(records)の存在と保護(non_fast_forward・deletion。bypass actor なし)',
+  recordCopy: 'record-copy.yml の存在と直近の実行の成否',
+  recordsCopy: '最新のマージ済み PR の写し(records/reviews/pr-<n>.json)の到着',
+  defaultBypass: '既定ブランチのルールセットの bypass actor(Integration など)',
+  approvalCounting: 'GITHUB_TOKEN/App の承認が required approving review に数えられる組織設定',
+};
+
+/**
+ * 記録用ブランチの所見(段階 2)。確認済みの判定に入れない(上の注記)。各所見は { status, detail, evidence }。
+ * status は items と同じ語(confirmed / mismatch / unconfirmed)に、API で取れない事実を表す unknown を足す
+ */
+function recordsFindings({ repo, branch, latestPr }) {
+  const f = {};
+  const unconfirmed = (why) => ({ status: 'unconfirmed', detail: why });
+  if (!repo) {
+    for (const id of Object.keys(RECORDS_FINDING_LABEL)) f[id] = unconfirmed('対象のリポジトリを特定できない');
+    f.approvalCounting = { status: 'unknown', detail: 'API で取れない' };
+    return f;
+  }
+  /** ブランチに効いている規則と、それらが属するルールセットの bypass actor を読む */
+  const rulesOf = (name) => {
+    const api = `repos/${repo}/rules/branches/${name}`;
+    const fetchedAt = localIso();
+    const r = ghJson(['api', api]);
+    if (!Array.isArray(r.value)) return { rules: null, why: r.why ?? '規則を読めない', api, fetchedAt };
+    const rulesetIds = [...new Set(r.value.map((x) => x?.ruleset_id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number))];
+    const bypass = [];
+    for (const id of rulesetIds) {
+      const rs = ghJson(['api', `repos/${repo}/rulesets/${id}`]);
+      for (const a of Array.isArray(rs.value?.bypass_actors) ? rs.value.bypass_actors : []) bypass.push(`ルールセット ${id}: ${a?.actor_type ?? '?'}${a?.actor_id != null ? ` #${a.actor_id}` : ''}(${a?.bypass_mode ?? '?'})`);
+    }
+    return { rules: r.value, types: r.value.map((x) => x?.type).filter(Boolean), rulesetIds, bypass, api, fetchedAt };
+  };
+
+  // 1. 記録用ブランチの存在と保護。無いのは初回のマージより前なら正常(record-copy.yml が作る)
+  {
+    const fetchedAt = localIso();
+    const b = ghJson(['api', `repos/${repo}/branches/records`]);
+    const sha = typeof b.value?.commit?.sha === 'string' ? b.value.commit.sha : null;
+    if (!sha) f.recordsBranch = unconfirmed(b.why ? `ブランチ records を読めない(${b.why})` : 'ブランチ records が無い(最初のマージで record-copy.yml が作る。署名を必須にする構成では人が署名コミットで作る)');
+    else {
+      const p = rulesOf('records');
+      if (!p.rules) f.recordsBranch = unconfirmed(`ブランチ records はある(${sha.slice(0, 7)})が、効いている規則を読めない(${p.why})`);
+      else {
+        const bad = [];
+        if (!p.types.includes('non_fast_forward')) bad.push('non_fast_forward の規則が無い(force push を止めない)');
+        if (!p.types.includes('deletion')) bad.push('deletion の規則が無い(削除を止めない)');
+        if (p.types.includes('pull_request')) bad.push('pull_request の規則がある(記録だけのコミットに承認を課している)');
+        if (p.bypass.length) bad.push(`bypass actor がある: ${p.bypass.join('、')}`);
+        const evidence = { sha, rulesetIds: p.rulesetIds, ruleTypes: p.types, bypassActors: p.bypass, api: p.api, fetchedAt };
+        f.recordsBranch = !p.rules.length
+          ? { status: 'mismatch', detail: `ブランチ records(${sha.slice(0, 7)})に効いているルールセットが無い(.github/rulesets/records.json または records-signed.json を人が適用する)`, evidence }
+          : bad.length
+            ? { status: 'mismatch', detail: `ブランチ records(${sha.slice(0, 7)})の保護が記録用ブランチの形と一致しない: ${bad.join('。')}`, evidence }
+            : { status: 'confirmed', detail: `ブランチ records(${sha.slice(0, 7)})に ${p.types.join('/')} が効き、bypass actor は無い${p.types.includes('required_signatures') ? '(署名を必須にする構成。record-copy.yml は変数 RECORDS_SIGNED=true で GraphQL 経路を使う)' : ''}`, evidence };
+      }
+    }
+  }
+
+  // 2. record-copy.yml の存在と直近の実行の成否
+  {
+    const fetchedAt = localIso();
+    const w = ghJson(['api', `repos/${repo}/actions/workflows/record-copy.yml`]);
+    if (!w.value?.id) f.recordCopy = unconfirmed(w.why ? `ワークフロー record-copy.yml を読めない(${w.why})` : 'ワークフロー record-copy.yml が GitHub に登録されていない(既定ブランチに置く)');
+    else {
+      const runs = ghJson(['run', 'list', '--repo', repo, '--workflow', 'record-copy.yml', '--limit', '1', '--json', 'databaseId,conclusion,status,url,createdAt']);
+      const last = Array.isArray(runs.value) && runs.value[0] && typeof runs.value[0] === 'object' ? runs.value[0] : null;
+      const evidence = { workflowId: Number(w.value.id), state: w.value.state ?? null, runId: last?.databaseId ? Number(last.databaseId) : null, runUrl: typeof last?.url === 'string' ? last.url : null, runCreatedAt: typeof last?.createdAt === 'string' ? last.createdAt : null, conclusion: last?.conclusion ?? null, fetchedAt };
+      if (w.value.state !== 'active') f.recordCopy = { status: 'mismatch', detail: `record-copy.yml の状態が ${w.value.state}(active でない)`, evidence };
+      else if (!last) f.recordCopy = unconfirmed(runs.why ? `record-copy.yml の実行の一覧を読めない(${runs.why})` : 'record-copy.yml の実行がまだ無い(最初のマージの後に確かめる)');
+      else if (last.conclusion === 'success') f.recordCopy = { status: 'confirmed', detail: `record-copy.yml は active。直近の実行 ${last.databaseId} は成功(${last.createdAt ?? '時刻なし'})`, evidence };
+      else f.recordCopy = { status: 'mismatch', detail: `record-copy.yml の直近の実行 ${last.databaseId} が ${last.conclusion ?? last.status ?? '不明'}(${last.url ?? 'URL なし'}。署名を必須にする構成で変数 RECORDS_SIGNED が無い、または records ブランチの初期化が止まった、など)`, evidence };
+    }
+  }
+
+  // 3. 最新のマージ済み PR の写しの到着
+  {
+    const fetchedAt = localIso();
+    if (!latestPr) f.recordsCopy = unconfirmed('マージ済みの PR が無い(最初の PR の後に確かめる。--pr N で指定できる)');
+    else {
+      const api = `repos/${repo}/contents/records/reviews/pr-${latestPr}.json?ref=records`;
+      const c = ghJson(['api', api]);
+      if (typeof c.value?.sha === 'string') f.recordsCopy = { status: 'confirmed', detail: `PR #${latestPr} の写し records/reviews/pr-${latestPr}.json が records ブランチにある`, evidence: { pr: Number(latestPr), blobSha: c.value.sha, api, fetchedAt } };
+      else f.recordsCopy = unconfirmed(`PR #${latestPr} の写しが records ブランチに無い(${c.why ?? '読めない'}。record-copy.yml の実行の記録を見る)`);
+    }
+  }
+
+  // 4. 既定ブランチの bypass actor(強制層の縮小の有無。D7: 写しのために bypass actor を足さない)
+  {
+    const p = rulesOf(branch);
+    if (!p.rules) f.defaultBypass = unconfirmed(`既定ブランチ ${branch} の規則を読めない(${p.why})`);
+    else {
+      const evidence = { rulesetIds: p.rulesetIds, bypassActors: p.bypass, api: p.api, fetchedAt: p.fetchedAt };
+      f.defaultBypass = p.bypass.length
+        ? { status: 'mismatch', detail: `既定ブランチ ${branch} のルールセットに bypass actor がある: ${p.bypass.join('、')}(App の名義の変更は人の承認を経ないことを保証の開示へ出す。state:needs-platform の経路で記録する)`, evidence }
+        : { status: 'confirmed', detail: `既定ブランチ ${branch} のルールセット(${p.rulesetIds.join('・') || 'なし'})に bypass actor は無い`, evidence };
+    }
+  }
+
+  // 5. API で取れない事実。組織の設定の画面で人が確かめる
+  f.approvalCounting = { status: 'unknown', detail: 'GITHUB_TOKEN と GitHub App の承認レビューが required approving review に数えられるかは、組織の設定(Actions の権限「Allow GitHub Actions to approve pull requests」)で決まり、リポジトリの API では取れない。組織の設定の画面で人が確かめ、記録の節9 へ書く。数えられる設定では、機械の承認が承認の数に入るため、独立した人の確認の数え方(出荷の集約)と食い違う' };
+  return f;
+}
 
 /** gh を呼び、JSON として読む。読めなければ { value: null, why } */
 function ghJson(args) {
@@ -1332,6 +1446,7 @@ function envCheck() {
   }
 
   // 2. PR のレビューの取得(gate-g5 のワークフローと同じ API)
+  let latestPr = null;
   if (!repo) items.prReviews = unconfirmed('対象のリポジトリを特定できない');
   else {
     let pr = arg('--pr', null);
@@ -1340,6 +1455,7 @@ function envCheck() {
       pr = Array.isArray(l.value) && l.value[0]?.number ? String(l.value[0].number) : null;
       if (!pr) items.prReviews = unconfirmed(l.why ? `PR の一覧を読めない(${l.why})` : 'マージ済みの PR が無い(最初の PR の後に確かめる。--pr N で指定できる)');
     }
+    latestPr = pr;
     if (pr) {
       const api = `repos/${repo}/pulls/${pr}/reviews`;
       const fetchedAt = localIso();
@@ -1383,6 +1499,8 @@ function envCheck() {
       }
     }
   }
+  // 4. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
+  const findings = recordsFindings({ repo, branch, latestPr });
   const allOk = Object.values(items).every((i) => i.status === 'confirmed');
   const record = {
     checkedAt: localIso(),
@@ -1393,11 +1511,18 @@ function envCheck() {
     commit: git(['rev-parse', 'HEAD']),
     config: { reviewerCount: want, ruleset, g6: config.gates?.g6?.state ?? null },
     items,
-    note: '実環境の gh で読んだ結果。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる',
+    findings,
+    note: '実環境の gh で読んだ結果。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる。findings は記録用ブランチ(records)の所見で、確認済みの判定に入れない(人が読む。mismatch は強制層の縮小または保護の欠落)',
   };
   writeText(ENV_CHECK_FILE, JSON.stringify(record, null, 2) + '\n');
   for (const [id, it] of Object.entries(items)) {
     const line = `${ENV_ITEM_LABEL[id]}: ${it.status === 'confirmed' ? '確認済み' : it.status === 'mismatch' ? '構成と一致しない' : '未確認(読めない)'}(${it.detail})`;
+    if (it.status === 'confirmed') notice(line);
+    else warn(line);
+  }
+  for (const [id, it] of Object.entries(findings)) {
+    const word = it.status === 'confirmed' ? '確認済み' : it.status === 'mismatch' ? '一致しない' : it.status === 'unknown' ? 'API で取れない' : '未確認(読めない)';
+    const line = `所見 ${RECORDS_FINDING_LABEL[id]}: ${word}(${it.detail})`;
     if (it.status === 'confirmed') notice(line);
     else warn(line);
   }

@@ -1,4 +1,4 @@
-# マージを契機に、その PR の承認レビューの写しを記録用ブランチ(records)へ置く(process-compass #321 D5〜D7)
+# マージを契機に、その PR の承認レビューの写しを記録用ブランチ(records)へ置く(process-compass #321 D5〜D7 / ADR-0070)
 #
 # 写しは、人の判断を含まない機械の複製です。要約と評価を足しません。
 # 承認レビューの本文は編集でき、監査ログは 180 日で消え、承認者が退会すると user が ghost になります。
@@ -11,14 +11,23 @@
 # (2026-10-23 の実機確認: orphan ブランチの初期化と push。committer は github-actions[bot])。
 #
 # 書き込みは追記だけです。既存のファイルを書き換えません(同じ PR の写しが既にあれば、何もせずに終えます)。
-# `required_signatures` を課す構成(records-signed.json)では、git push のコミットは署名を持たないため止まります。
-# GitHub が署名する API 経由のコミット(GraphQL createCommitOnBranch)への置き換えは段階 2 で扱います(未確認)。
 #
-# 写しに含めるのは最小の組だけです: レビューの識別子・状態・commit_id・submitted_at・user.id・login・本文・PR 番号・merge_commit_sha。
+# 署名を必須にする構成(records-signed.json。`required_signatures`)では、git push のコミットは署名を持たないため止まります。
+# その構成では GraphQL `createCommitOnBranch` で書きます(GitHub が署名する。`gh api graphql`)。経路の判定:
+#   1. 構成 process.config.json に `records.signed`(真偽値)があればその値(段階 2 の時点で /process-init はこの値を書かない。将来の /process-change 用)
+#   2. 無ければ、リポジトリの変数 RECORDS_SIGNED(Settings > Variables)が `true` のとき GraphQL 経路、それ以外は git push
+# `createCommitOnBranch` は `expectedHeadOid`(ブランチの現在の先頭)を要するため、ブランチが無いときは先に作ります。
+# 初期化は git 経路(空の README を持つ orphan コミットの push)で行います。署名が要る構成では、この初期化の push が止まるため、
+# 理由を出して失敗します。その場合は人が署名コミットで `records` ブランチを作ります(`.github/rulesets/README.md`「記録用ブランチの初期化」)。
+# **GraphQL 経路と `required_signatures` の組は、2026-10-23 時点で実機で確かめていません**(E0)。初回のマージで Actions の記録を確かめてください。
+#
+# 写しに含めるのは最小の組だけです: pr・merge_commit_sha・head_sha・copied_at、PR の作成者 author{id,login}(作成を指示した者との別と
+# G-6 の独立の判定に要る)、reviews[] の id・state・commit_id・submitted_at・user{id,login,type}(User / Bot は API の値。`[bot]` の接尾で推定しない)・body、
+# および任意の欄として merged_at・merged_by.login・base.ref・title・body・head_ref(next.mjs が機能 ID を Spec: トレーラから引く)。
 # 同じ期間の bypass・保護の変更の記録(監査ログ)は、無料のプランでは API で取れません。取れないことを写しに書きます。
 #
-# 出荷の証跡の集約(aggregate-evidence.mjs)と next.mjs がこの写しを読むのは段階 2 です。
-# それまで、写しは G-7 の突合の材料として records ブランチに置かれるだけです。
+# 出荷の証跡の集約(aggregate-evidence.mjs)と next.mjs は、この写しを scripts/gate/records.mjs で読みます(段階 2)。
+# 基底ブランチへは、出荷判定(G-7)の PR(ship-evidence.yml)が docs/records/reviews/ へ複製して運びます。
 
 name: record-copy
 
@@ -54,36 +63,84 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # 題名・本文・head のブランチ名は任意の欄。next.mjs が機能 ID(Spec: トレーラ・F-NNN)を写しから引く。
+          # 本文は API の値をそのまま(推定・要約しない)。環境変数で渡し、シェルへ展開しない
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           mkdir -p /tmp/record-copy
-          # レビューはページを跨いで全件取る。推定を含まない写しにするため、欄を選ぶ以外の加工をしない
+          # レビューはページを跨いで全件取る。推定を含まない写しにするため、欄を選ぶ以外の加工をしない(user.type は API の値をそのまま写す)
           gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-            --jq '[.[] | {id, state, commit_id, submitted_at, user: {id: .user.id, login: .user.login}, body}]' \
+            --jq '[.[] | {id, state, commit_id, submitted_at, user: {id: .user.id, login: .user.login, type: .user.type}, body}]' \
             | jq -s 'add // []' > /tmp/record-copy/reviews.json
           jq -n \
             --arg repo "$REPO" \
             --argjson pr "$PR" \
             --arg merge "$MERGE_SHA" \
             --arg head "$HEAD_SHA" \
+            --argjson author_id "${AUTHOR_ID:-null}" \
+            --arg author_login "$AUTHOR_LOGIN" \
+            --arg merged_at "$MERGED_AT" \
+            --arg merged_by "$MERGED_BY" \
+            --arg base_ref "$BASE_REF" \
+            --arg head_ref "$HEAD_REF" \
+            --arg title "$PR_TITLE" \
+            --arg body "$PR_BODY" \
             --arg copied "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --slurpfile reviews /tmp/record-copy/reviews.json \
             '{
               repository: $repo,
               pr: $pr,
+              title: $title,
+              body: $body,
+              head_ref: $head_ref,
               merge_commit_sha: $merge,
-              head_sha_at_merge: $head,
+              head_sha: $head,
+              author: {id: $author_id, login: $author_login},
+              merged_at: $merged_at,
+              merged_by: {login: $merged_by},
+              base: {ref: $base_ref},
               copied_at: $copied,
               copied_by: "record-copy workflow (GITHUB_TOKEN)",
               reviews: $reviews[0],
               audit_log: "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
             }' > /tmp/record-copy/pr.json
+          # 写しの最小の組が揃っていることを確かめる(欠ければ失敗。推定で埋めない)
+          jq -e '
+            (.pr|type)=="number" and (.merge_commit_sha|type)=="string" and (.head_sha|type)=="string" and (.copied_at|type)=="string"
+            and (.author|has("id") and has("login"))
+            and ((.reviews // []) | all(has("id") and has("state") and has("commit_id") and has("submitted_at") and has("body") and (.user|has("id") and has("login") and has("type"))))
+          ' /tmp/record-copy/pr.json > /dev/null || { echo "::error::写しの最小の組(pr・merge_commit_sha・head_sha・copied_at・author{id,login}・reviews[].{id,state,commit_id,submitted_at,user{id,login,type},body})が揃っていません"; exit 1; }
           echo "::notice::PR #$PR のレビュー $(jq '.reviews | length' /tmp/record-copy/pr.json) 件を写しました"
 
-      - name: 記録用ブランチへ追記する
+      - name: 署名の要否を決める
+        id: signed
+        env:
+          RECORDS_SIGNED_VAR: ${{ vars.RECORDS_SIGNED }}
+        run: |
+          signed=$(jq -r 'if (.records.signed|type)=="boolean" then .records.signed else empty end' process.config.json 2>/dev/null || true)
+          if [ -z "$signed" ]; then
+            if [ "${RECORDS_SIGNED_VAR:-}" = "true" ]; then signed=true; else signed=false; fi
+            echo "::notice::構成に records.signed が無いため、変数 RECORDS_SIGNED(${RECORDS_SIGNED_VAR:-未設定})で判定: 署名 $signed"
+          else
+            echo "::notice::構成 records.signed: 署名 $signed"
+          fi
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+
+      - name: 記録用ブランチへ追記する(git push)
+        if: steps.signed.outputs.signed != 'true'
         env:
           PR: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # 記録用ブランチが無ければ、履歴を持たない(orphan)ブランチとして初期化する
@@ -92,7 +149,7 @@ jobs:
           else
             git checkout --orphan "$RECORDS_BRANCH"
             git rm -rf --quiet . || true
-            printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
+            printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録の様式(records/gates/)を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
             git add README.md
             git commit -m "chore: 記録用ブランチを初期化する"
           fi
@@ -107,3 +164,43 @@ jobs:
           git add "$dest"
           git commit -m "records: PR #$PR の承認レビューの写しを置く"
           git push origin "$RECORDS_BRANCH"
+
+      # 署名を必須にする構成。GitHub が署名する createCommitOnBranch で 1 ファイルを追記する。
+      # ブランチが無いときは、初期化の push(署名なし)が required_signatures で止まるため、理由を出して失敗する
+      - name: 記録用ブランチへ追記する(GraphQL createCommitOnBranch。署名つき)
+        if: steps.signed.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          dest="records/reviews/pr-$PR.json"
+          if ! head=$(gh api "repos/$REPO/git/ref/heads/$RECORDS_BRANCH" --jq '.object.sha' 2>/dev/null); then
+            # 初期化を試みる(ルールセットをまだ適用していない構成では通る)。止まれば人が署名コミットで作る
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout --orphan "$RECORDS_BRANCH"
+            git rm -rf --quiet . || true
+            printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録の様式(records/gates/)を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
+            git add README.md
+            git commit -m "chore: 記録用ブランチを初期化する"
+            if git push origin "$RECORDS_BRANCH"; then
+              echo "::notice::記録用ブランチを初期化しました(署名なしの初期コミット。ルールセット records-signed.json はこの後に適用する)"
+              head=$(git rev-parse HEAD)
+            else
+              echo "::error::記録用ブランチ $RECORDS_BRANCH が無く、署名を必須にする構成では GITHUB_TOKEN で初期化できません(初期コミットは署名を持たない)。人が署名コミットで作ります: .github/rulesets/README.md「記録用ブランチの初期化」。この PR #$PR の写しは、初期化の後に workflow の再実行で置きます"
+              exit 1
+            fi
+          fi
+          # 既にあれば書き換えない(追記だけ)
+          if gh api "repos/$REPO/contents/$dest?ref=$RECORDS_BRANCH" --jq '.sha' >/dev/null 2>&1; then
+            echo "::warning::$dest は既にあります。書き換えません"
+            exit 0
+          fi
+          jq -n --arg repo "$REPO" --arg branch "$RECORDS_BRANCH" --arg head "$head" --arg path "$dest" \
+            --arg contents "$(base64 -w0 /tmp/record-copy/pr.json)" --arg headline "records: PR #$PR の承認レビューの写しを置く" \
+            '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}",
+              variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:$branch},message:{headline:$headline},expectedHeadOid:$head,fileChanges:{additions:[{path:$path,contents:$contents}]}}}}' > /tmp/record-copy/body.json
+          oid=$(gh api graphql --input /tmp/record-copy/body.json --jq '.data.createCommitOnBranch.commit.oid')
+          echo "::notice::署名つきのコミット $oid で $dest を置きました(createCommitOnBranch)"

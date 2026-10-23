@@ -112,14 +112,29 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/checks-only.json
 gh api -X PATCH repos/{owner}/{repo} -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=PR_BODY
 ```
 
-記録用ブランチ(`records`)にも、別のルールセットを適用します。このブランチには、マージを契機にワークフロー `record-copy.yml` が承認レビューの写しを置きます。既定ブランチのルールセットは緩めず、bypass actor も足しません(`.github/rulesets/README.md`「記録用ブランチ」)。
+記録用ブランチ(`records`)にも、別のルールセットを適用します。このブランチには、マージを契機にワークフロー `record-copy.yml` が承認レビューの写し(`records/reviews/pr-<番号>.json`)を置き、判定者本人が判定記録の様式(`records/gates/`)を直接 push します。既定ブランチのルールセットは緩めず、bypass actor も足しません(`.github/rulesets/README.md`「記録用ブランチ」)。
 
 ```bash
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json          # 既定
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records-signed.json   # 規制業・CL2 以上(署名を必須にする)
+gh variable set RECORDS_SIGNED --body true                                           # records-signed.json の構成で。ワークフローが GitHub の署名する API 経由で書く
 ```
 
-**ルールセットを使えない場合**: 私有リポジトリでルールセット(ブランチ保護)を使えるかは、GitHub のプランに依ります(2026-10 時点で、無料のプランでは公開リポジトリに限られます)。使えない場合、G-5 が落ちた PR も、G-5 を経ない直接の push もマージを止められません。このテンプレートが代わりに行えるのは**事後の検出だけ**です。出荷判定(G-7)の証跡の集約が、gate-g5 の成功を持たない PR(結果の記録が無い PR を含む)と、トレーラ `Risk`・`Verification` を持たない PR を経ないコミットを、欠落として失敗させます。止めることはできず、出荷の時点まで気づかない点を受け入れて運用してください。記録用ブランチも同じく保護できません。写しと判定記録の書き換えを止められず、判定記録の日時は判定者の自己申告になります。この点は保証の開示に出します。
+`records-signed.json` の構成では、変数 `RECORDS_SIGNED` を `true` にします。`record-copy.yml` と `ship-evidence.yml` が、`git push` の代わりに GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書くようになります。ブランチ `records` が無い状態ではこの経路で初期化できないため、`records-signed.json` は最初のマージの後に適用するか、人が署名コミットで `records` を作ります(`.github/rulesets/README.md`「記録用ブランチの初期化」)。API 経由の書き込みと `required_signatures` の組は、2026-10-23 時点で実機で確かめていません。
+
+**ルールセットを使えない場合**: 私有リポジトリでルールセット(ブランチ保護)を使えるかは、GitHub のプランに依ります(2026-10 時点で、無料のプランでは公開リポジトリに限られます)。使えない場合、G-5 が落ちた PR も、G-5 を経ない直接の push もマージを止められません。このテンプレートが代わりに行えるのは**事後の検出だけ**です。出荷判定(G-7)の証跡の集約が、gate-g5 の成功を持たない PR(結果の記録が無い PR を含む)と、トレーラ `Risk`・`Verification` を持たない PR を経ないコミットを、欠落として失敗させます。止めることはできず、出荷の時点まで気づかない点を受け入れて運用してください。記録用ブランチも同じく保護できません。写しと判定記録の書き換え(force push・削除)を止められず、判定記録の日時は判定者の自己申告になります。出荷の PR の検査は、複製と `records` ブランチの一致までしか確かめられません。この点は保証の開示に出します。
+
+### 判定記録を基底ブランチへ入れる(出荷の PR)
+
+判定記録の様式と承認レビューの写しは、記録用ブランチ `records` にあります。基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。タグ(`v*`)の push、または `ship-evidence` の手動実行で、ワークフローが証跡を集約し、出荷の PR を 1 本開きます。
+
+1. `ship-evidence` が `records` ブランチを取り込み、証跡を集約する(`evidence/`。Actions の成果物にも残る)
+2. ブランチ `ship/<日付>` に、`records/reviews/*.json` を `docs/records/reviews/` へ、`records/gates/*.md` を `docs/gates/` へ複製し(追加だけ。既存のファイルは上書きしない)、品質レポート(保証の開示を含む)を `docs/evidence/<日付>-<範囲>.md` へ置いた PR を開く
+3. **`GITHUB_TOKEN` で開いた PR では、gate-g5 とこのワークフローの検査が自動では起動しません**(GitHub の仕様)。出荷判定者が PR を閉じて開き直す(または空のコミットを push する)と起動します。再検査だけなら、`ship-evidence` の手動実行で `verify_pr` に PR の番号を渡します(結果は PR のコメントに出る)
+4. PR の上で同じ集約が再実行され、複製が `records` ブランチと一致することが検査されます(写しは id・commit_id・submitted_at・user.id・body、様式は内容。不一致は失敗)
+5. **出荷判定者本人が承認してマージします**(`.github/CODEOWNERS` の `docs/gates/`・`docs/records/` の所有者)。この承認は取り込みの操作であり、判定は `records/gates/` の様式で成立しています。記名者以外の承認が付く体制では、その承認は取り込みの事務です(標準 第4章「判定記録を基底ブランチへ入れる操作」)
+
+例外承認の台帳(`docs/debt-ledger.md`)と停止の申し立ての解除の記録は、この経路に乗せず、現行どおり基底ブランチへ先に入れます(記録だけの PR が 1 本残る。承認者は記名者本人。`.github/rulesets/README.md`「記録だけの PR にも承認 1 件が残る」)。
 
 ### 4. 体制が変わったら
 
@@ -136,7 +151,7 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records-signed.jso
 | 統制を緩める | 決定した人の記名と理由が無ければ適用されない。決定できるのは、対象の席の責任者、または D-0 表1「体制と運用形態」の決定者(既定は事業決裁者の席の責任者) |
 | 統制を厳しくする | 即時に適用される。委任の範囲を狭める変更を含む |
 | 未達・逸脱の発生 | 即時に反映される。人の離脱で統制が成立しなくなった変化は、決定ではなく事実であり、記名を要求しない。**人が実際に減った場合に限る**。誰も離脱していないのに、回答や席の入力で独立レビューや承認数を下げる変更は、緩める向きの決定として扱う |
-| 事業ステージを前へ戻す | ステージ移行ゲート(SG)の判定による。D-0 表1「体制と運用形態」の決定者の記名と、`docs/gates/` 配下の実在する判定記録の所在を要する |
+| 事業ステージを前へ戻す | ステージ移行ゲート(SG)の判定による。D-0 表1「体制と運用形態」の決定者の記名と、基底ブランチの `docs/gates/` 配下の実在する判定記録の所在を要する(記録用ブランチの様式は出荷の PR が複製する。それより前に戻すなら、記録だけの PR で先に入れる) |
 | 席の責任者の任免 | 統制の向きにかかわらず決定。任命・交代・空いた席への後任の配置は、D-0 表1「体制と運用形態」の決定者の記名と理由を要する。決定者その人を替える変更は、前任の決定者の記名を要する(前任者が体制から外れていれば、名簿へ `external: true` と `appointer: true` で記載した組織上の任命権者の記名)。人が体制から外れて席が空くことは発生であり、記名を要求しない。離脱と後任の任命は、別の変化点として出す |
 
 全席が未記入の状態(初期化の直後)からの記入も任免です。初期化の直後(どの席にも責任者が記入されたことがない状態)の初回の記入は、体制の人数に依らず、名簿と全席を1回の変化点で出し、その変化点で D-0 表1「体制と運用形態」の決定者の席(既定は事業決裁者)に記入する人の記名と理由で受け付けます。組織上の任命権者を先に名簿へ置き、その記名で席を埋めることもできます。人が全員離脱して全席が空いた状態は、初回の記入に当たりません。
@@ -254,7 +269,7 @@ node scripts/gate/aggregate-evidence.mjs --period-from 2026-09-01 --period-to 20
 
 #### 出荷判定の証跡の集約が確かめる範囲
 
-`scripts/gate/aggregate-evidence.mjs`(ワークフロー `ship-evidence`)は、記録と基準を突合します。品質レポートの冒頭の「G-7 の基準ごとの確認範囲」に、基準1〜9 のそれぞれについて、機械が確かめた結果か、「機械では確かめていない。出荷判定者が次の記録と突合する」かを出します。
+`scripts/gate/aggregate-evidence.mjs`(ワークフロー `ship-evidence`)は、記録と基準を突合します。判定記録の様式と承認レビューの写しは記録用ブランチ `records` から読みます(手元では先に `git fetch origin records:records`)。品質レポートの冒頭の「G-7 の基準ごとの確認範囲」に、基準1〜9 のそれぞれについて、機械が確かめた結果か、「機械では確かめていない。出荷判定者が次の記録と突合する」かを出します。
 
 | G-7 の基準 | 機械が確かめること | 機械では確かめないこと(出荷判定者が突合する) |
 | --- | --- | --- |
@@ -288,13 +303,13 @@ node scripts/gate/aggregate-evidence.mjs --period-from 2026-09-01 --period-to 20
 node scripts/gate/adoption-trial.mjs init      # 合否の基準の様式を docs/adoption-trial/criteria.md へ写す。採用者が書いてコミットする
 node scripts/gate/adoption-trial.mjs seal --manifest <リポジトリの外の注入の記録>    # 目隠しの欠陥注入を封じる
 node scripts/gate/adoption-trial.mjs tally --manifest <同>                           # 見つける者の記録(コミット済み)と突き合わせ、docs/adoption-trial/seeded-errors.json へ(コミットする)
-node scripts/gate/adoption-trial.mjs env-check --by <氏名>   # 実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物)を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json へ(コミットする)
+node scripts/gate/adoption-trial.mjs env-check --by <氏名>   # 実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物)を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json へ(コミットする)。記録用ブランチの保護・record-copy の実行・写しの到着・既定ブランチの bypass actor は所見(findings)として同じ記録へ
 node scripts/gate/adoption-trial.mjs run       # 場面集11件(一時の複製)・実環境の統制の記録・演習の記録・成立判定 → docs/adoption-trial/record-<日時(秒まで)>.md
 node scripts/gate/adoption-trial.mjs verify <記録>   # 記録の末尾の要約値を再計算し、人が書く欄の外が書き換えられていないことを確かめる
 ```
 
 - 合否の基準がコミットされていない、記入日時がコミットより後、コミットの後に書き換えた場合は、run は実行しない
-- **実環境の統制の確認(要件⑦)は、場面集とは別の事実**。場面集は一時の複製と模擬の gh で止まることを確かめる。実環境でマージを止めるブランチ保護が効いているか、gate-g5 が PR のレビューを読めるか、ship-evidence が成果物を取れるかは、`env-check` を採用者が実環境の gh で実行して確かめる(読むだけ。GitHub へ書き込まない)。模擬の gh・未認証では各項目が「読めない」と出て、記録の節3・出荷の集約の項目4・`/pit` に「未確認」が残る(未達のゲートと同じ扱い。消えない)。確認済みの記録も、構成の承認者の数やルールセットが変われば未確認へ戻る。記録には API の応答の識別(ルールセットの id、レビューの id、gate-g5 の実行の id と URL、取得時刻)が入り、識別の無い確認済みは「実環境の証拠を欠く」として未確認に倒れる(査察が GitHub の画面と突合する鍵)
+- **実環境の統制の確認(要件⑦)は、場面集とは別の事実**。場面集は一時の複製と模擬の gh で止まることを確かめる。実環境でマージを止めるブランチ保護が効いているか、gate-g5 が PR のレビューを読めるか、ship-evidence が成果物を取れるかは、`env-check` を採用者が実環境の gh で実行して確かめる(読むだけ。GitHub へ書き込まない)。模擬の gh・未認証では各項目が「読めない」と出て、記録の節3・出荷の集約の項目4・`/pit` に「未確認」が残る(未達のゲートと同じ扱い。消えない)。確認済みの記録も、構成の承認者の数やルールセットが変われば未確認へ戻る。記録には API の応答の識別(ルールセットの id、レビューの id、gate-g5 の実行の id と URL、取得時刻)が入り、識別の無い確認済みは「実環境の証拠を欠く」として未確認に倒れる(査察が GitHub の画面と突合する鍵)。記録用ブランチ `records` の存在と保護(`non_fast_forward`・`deletion`、bypass actor なし)、`record-copy.yml` の直近の実行の成否、最新のマージ済み PR の写しの到着、既定ブランチのルールセットの bypass actor は、**所見(`findings`)**として同じ記録に入る(確認済みの判定には入れない。初期化の直後は `records` が無いのが正常なため)。`GITHUB_TOKEN`・App の承認が required approving review に数えられる組織の設定は API で取れず、人が組織の設定の画面で確かめる旨を所見に出す
 - 場面集は、リポジトリの一時の複製で、実際のゲートの検査(check-pr・aggregate-evidence・generate-profile)に通す。本物の gh は呼ばない
 - 製品のコードが無いリポジトリ(このテンプレートそのもの)での記録には「採用者の環境の証拠ではない」と出る。記録は1件の測定(E2)
 - 見つける者の誰かが注入した者と同じ層、見つける者の記録がコミットされていない層は、`docs/adoption-trial/seeded-errors.json` に `blind: false` と理由だけを書く(出荷の集約は未測定として扱う)。測定の記録は記録の置き場に出るのでコミットする。出荷の集約は `docs/adoption-trial/seeded-errors.json` を読み、記録の置き場に記録があるとき `evidence/seeded-errors.json` を読まない(測定時点が新しくても採らない。`evidence/` は `.gitignore` の下にあり、clone した CI の集約に届かない)。`method` と `blind: true` の印の無い記録、コミットされていない記録、測定時点が判定の日より後の記録は「出所を検証できない」として数えない。実施日が今日より後の演習は数えない。同じ名前の記録があれば上書きせずに止まる
@@ -326,8 +341,12 @@ node scripts/gate/adoption-trial.mjs verify <記録>   # 記録の末尾の要�
 ├── templates/              成果物テンプレート12種
 ├── context/                恒久層コンテキスト(用語集・判断記録・設計標準)
 ├── specs/                  機能仕様(F-NNN)
-└── docs/gates/             ゲート判定記録
+├── docs/gates/             ゲート判定記録(出荷の PR が records ブランチの records/gates/ から複製。停止の解除・例外承認は先に入る)
+├── docs/records/reviews/   承認レビューの写し(出荷の PR が records/reviews/ から複製)
+└── docs/evidence/          出荷ごとの品質レポート(保証の開示)
 ```
+
+記録用ブランチ `records`(履歴を持たないブランチ。`records/gates/` に判定記録の様式、`records/reviews/` に承認レビューの写し)は、ディレクトリではなくブランチとして持ちます。
 
 ### コードの探索は graft を通す
 

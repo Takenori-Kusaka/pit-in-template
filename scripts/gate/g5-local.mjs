@@ -57,6 +57,9 @@ const configured = config.configured !== false;
 run('contract', 'verify-gate-contract', node('verify-gate-contract.mjs', ...(base ? ['--base', base] : [])));
 run('contract', 'test-check-delegation', node('test-check-delegation.mjs'));
 run('contract', 'test-check-pr', node('test-check-pr.mjs'));
+run('contract', 'test-records', node('test-records.mjs'));
+run('contract', 'test-next-records', node('test-next-records.mjs'));
+run('contract', 'test-aggregate-records', node('test-aggregate-records.mjs'));
 run('contract', 'test-init-g5', node('test-init-g5.mjs'));
 
 // --- spec-lint ---

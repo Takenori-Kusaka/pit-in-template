@@ -47,6 +47,14 @@
 //      **合否にはしない**。pr-rules はレビューの前(push・本文の編集)に走り、承認はその後に付くため、失敗にすると
 //      すべての PR が承認まで赤になる。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を
 //      経ていない」に数えて止める。レビューを読めないときは、その旨を出す(黙って通さない)
+//   9. 変更要求の本文の形(標準 第4章 G-6「承認レビューを判定記録とする条件」の条件1。#321): レビュアごとの最後の状態が
+//      CHANGES_REQUESTED のレビューの本文に、満たさない基準の項目番号(`基準 3`・`基準 2, 5`・`項目 3`)と再提出の期限
+//      (`期限 YYYY-MM-DD`)の両方があることを確かめる。宣言行 `G-6: 差し戻し / 基準 3 / 期限 2026-11-05` の形は通る。
+//      欠く変更要求を「理由の無い差し戻し」として、レビュアのログイン名と欠けている要素(項目番号 / 期限)を出す。
+//      **合否にはしない**。機械が見るのは形だけであり、差し戻し理由の要求は判定者への要求であって PR の合否ではない。
+//      承認し直されたレビュア(最後の状態が APPROVED)の変更要求は対象外。AI・bot のアカウントの変更要求は数えない。
+//      名簿の人でないログイン名の変更要求も、形だけは検査して出す(独立した人の確認の数には元から入らない)。
+//      基準が当該ゲートに実在するか、期限が妥当かは確かめない(内部監査の抜き取り)
 //
 // 限界(機械で閉じないもの):
 //   - 規模はパスで分類する。テスト・fixture・snapshot のパスへ移した製品のコードは、別集計に入る(別集計の側にも、基準行数の
@@ -496,6 +504,50 @@ export function approverFindings(config, pr, files = null) {
   return { applies: true, readable: true, required, core, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
 }
 
+/** 変更要求の本文の、満たさない基準の項目番号(`基準 3`・`基準 2, 5`・`項目 3`)。全角の数字・空白は NFKC で寄せてから読む */
+const CRITERION_REF = /(?:基準|項目)\s*\d+/;
+/** 変更要求の本文の、再提出の期限(`期限 2026-11-05`・`期限: 2026-11-05`)。日付の妥当性は見ない */
+const RESUBMIT_DUE = /期限\s*[::]?\s*\d{4}-\d{1,2}-\d{1,2}/;
+
+/**
+ * 変更要求の本文の形(検査9)。PR のレビューから、レビュアごとの最後の状態が CHANGES_REQUESTED のものを選び、本文に
+ * 項目番号と期限の両方があるかを確かめる。欠くものを missing に `@login(項目番号なし、期限なし)` の形で返す。
+ * 承認し直されたレビュア(最後の状態が APPROVED)は対象外。AI・bot のアカウントは数えない(検出の層)。
+ * 名簿の人でないログイン名も形だけは検査し、その旨を添える。検査8 と同じく G-6 が有効な構成でだけ適用する。
+ * reviews が無い(読めない)ときは readable: false を返す
+ */
+export function changesRequestedFindings(config, pr) {
+  if (!['required', 'simplified'].includes(config.gates?.g6?.state)) return { applies: false };
+  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false };
+  const last = new Map();
+  for (const r of pr.reviews) {
+    const login = r?.author?.login;
+    const state = String(r?.state ?? '').toUpperCase();
+    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+    last.set(login, { state, body: r.body, bot: Boolean(r.author?.is_bot) });
+  }
+  const checked = [];
+  const missing = [];
+  const skipped = [];
+  for (const [login, v] of last) {
+    if (v.state !== 'CHANGES_REQUESTED') continue;
+    if (v.bot || aiNameBlocked(config, login)) {
+      skipped.push(`@${login}(AI・bot のアカウント。検出の層)`);
+      continue;
+    }
+    // HTML コメントの中の記載は読まない(承認の挙動要約と同じ)
+    const text = String(v.body ?? '').replace(/<!--[\s\S]*?-->/g, '').normalize('NFKC');
+    const lacks = [];
+    if (!CRITERION_REF.test(text)) lacks.push('項目番号なし');
+    if (!RESUBMIT_DUE.test(text)) lacks.push('期限なし');
+    const person = findPersonByAccount(config, login);
+    const outside = !person || person.appointer === true ? '、名簿の人へ対応づかない' : '';
+    checked.push(login);
+    if (lacks.length) missing.push(`@${login}(${lacks.join('、')}${outside})`);
+  }
+  return { applies: true, readable: true, checked, missing, skipped };
+}
+
 /**
  * 「規模の確認」の節(#295 / ADR-0058)。規模の基準値を超えた PR が、同じ PR の中で人の確認を記録する欄。
  * 実施者・読み切れたか(はい / いいえ)・分割しなかった理由・保証の所在。節が無ければ present: false
@@ -942,6 +994,18 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
     } else {
       result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}`);
     }
+  }
+
+  // --- 9. 変更要求の本文の形(標準 第4章 G-6「承認レビューを判定記録とする条件」の条件1。合否にしない。理由は冒頭) ---
+  // レビューを読めないときの注記は 8 が出している。読めるときだけ、項目番号と期限を欠く変更要求を「理由の無い差し戻し」として出す
+  result.changesRequested = changesRequestedFindings(baseConfigured ? baseConfig : headConfig, pr);
+  if (result.changesRequested.readable && result.changesRequested.missing.length) {
+    const c = result.changesRequested;
+    result.notices.push(
+      `review:changes-requested-without-reason: ${c.missing.join('、')}。理由の無い差し戻し(標準 第4章 G-6「承認レビューを判定記録とする条件」の条件1)。` +
+        '変更要求の本文に、満たさない基準の項目番号(`基準 N`)と再提出の期限(`期限 YYYY-MM-DD`)を書く(例: `G-6: 差し戻し / 基準 3 / 期限 2026-11-05`)。' +
+        '機械が見るのは形だけで、基準の実在と期限の妥当性は確かめない。この検査は合否にしない(記載の欠落は内部監査の抜き取りで数える)'
+    );
   }
 
   // --- 4. 既存のテストの変更 ---

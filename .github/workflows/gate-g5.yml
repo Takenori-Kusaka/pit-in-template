@@ -75,6 +75,10 @@ jobs:
       - run: node scripts/gate/test-check-delegation.mjs
       # PR 単位の検査(check-pr)を、一時のリポジトリのフィクスチャで試験する
       - run: node scripts/gate/test-check-pr.mjs
+      # 記録用ブランチの写しと様式の読み取り(records.mjs)、/pit と出荷の証跡の集約がそれを読む経路(process-compass #321 段階2)
+      - run: node scripts/gate/test-records.mjs
+      - run: node scripts/gate/test-next-records.mjs
+      - run: node scripts/gate/test-aggregate-records.mjs
       # 能力依存の定数の再評価待ち(契機は performer の変化点と暦だけ。#295)
       - run: node scripts/gate/test-recalibration.mjs
       # 独立と席の規則(確認者の有無を名簿と席から導く、出荷判定者が兼ねない席、強制する承認の数。process-compass #302・#304・#305・#307)
@@ -235,7 +239,8 @@ jobs:
           { echo 'events<<PIT_IN_EVENTS'; echo "${ev}"; echo 'PIT_IN_EVENTS'; } >> "$GITHUB_OUTPUT"
       # G-6 の承認者の数(構成 review.reviewerCount。規制業・CL3 は 2 名)。レビューの一覧を渡し、check-pr が
       # 「G-6 の承認者 N 名 / 要求 M 名」を出す(合否にはしない。理由は check-pr.mjs の冒頭)。取得に失敗した場合は
-      # 空にする(check-pr は「読めない」とその旨を出す)
+      # 空にする(check-pr は「読めない」とその旨を出す)。同じ一覧から、項目番号と期限を欠く変更要求(CHANGES_REQUESTED)を
+      # 「理由の無い差し戻し」として出す(標準 第4章 G-6「承認レビューを判定記録とする条件」の条件1。合否にはしない。#321)
       - name: PR のレビュー
         id: reviews
         env:

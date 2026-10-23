@@ -1296,9 +1296,13 @@ export function readGateRecords() {
   const dir = path.join(ROOT, 'docs/gates');
   if (!fs.existsSync(dir)) return [];
   const raw = (text, key) => text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
+  // 「対象」だけは ` / ` を許す。推奨の書き方(`F-012 / PR #34`、`F-012 / 1a2b3c4`)が区切りに使うため。
+  // ほかの欄の ` / ` は様式の選択肢(`通過 / 差し戻し` など)が残ったものとして未記入に数える(#321 段階2)
   const cell = (text, key) => {
     const v = raw(text, key) ?? '';
-    return v && !v.includes(' / ') && !v.startsWith('<') ? v : null;
+    if (!v || v.startsWith('<')) return null;
+    if (key !== '対象' && v.includes(' / ')) return null;
+    return v;
   };
   return fs
     .readdirSync(dir)

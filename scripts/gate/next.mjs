@@ -5,11 +5,24 @@
 //   node scripts/gate/next.mjs --json     機械可読
 //   node scripts/gate/next.mjs --role <ロール>   ロールの詳細(判定するゲート・受信箱など)と、そのロールの次の一手
 //   node scripts/gate/next.mjs --scopes   標準の条項の適用範囲と判定の単位
+//   node scripts/gate/next.mjs --offline  記録用ブランチの fetch と gh api を行わない(手元の参照だけで読む)
 //
 // 読むもの: process.config.json、docs/D-0-governance.md(check-d0 と、節3 の手で書く行の空欄)、docs/project-brief.md、
 // docs/assumptions.md(前提の台帳の有無だけ)、
-// docs/gates/(判定記録)、specs/F-NNN/(spec.md・plan.md)、ローカルの git(既定ブランチのトレーラ
+// 判定記録(下記の 3 つの出所)、specs/F-NNN/(spec.md・plan.md)、ローカルの git(既定ブランチのトレーラ
 // `Spec: F-NNN / Task-N` と、ブランチ feature/F-NNN-task-N)、自己修正のロック(self-heal.mjs)。
+//
+// 判定記録の出所は 3 つである(process-compass #321 / ADR-0070。読み方は records.mjs)。どれも「記録が無い = 未判定」。
+//   (a) 基底ブランチの docs/gates/*.md(様式。従来どおり)
+//   (b) 記録用ブランチ records の records/gates/*.md(様式。対象が PR でない判定の受け皿)
+//   (c) 記録用ブランチ records の records/reviews/pr-<番号>.json(承認レビューの写し。record-copy.yml がマージを契機に置く)。
+//       宣言行(1 行目 `G-4: 通過` / `G-4: 差し戻し / 基準 N / 期限 YYYY-MM-DD`)つきの判定者本人のレビューを G-2・G-3・G-4 の
+//       記録として読む。通過は、レビューの commit_id が取り込んだ版(head)と一致するものだけを成立と見る。ずれたものは
+//       「確定していない版を取り込んだ」として未判定に戻す。G-6 は、承認者本人の挙動要約つきの承認(承認者ごとの最後の状態。
+//       bot を除く。commit_id が head と一致)を記録として読む。G-2・G-4 の宣言行つきの承認は G-6 に数えない
+//   写しを機能へ対応づける手がかりは、PR 本文の `Spec:` トレーラ(check-pr.mjs と同じ形)、または PR のタイトル・ブランチ名の
+//   F-NNN。写しに PR 本文が無ければ、取り込んだコミット(merge_commit_sha)のメッセージ、次に gh api で補う。どれでも引けなければ
+//   「対応づけ不能」として注記に出す(推測で機能へ割り当てない)
 //
 // 出す一手は3種類である。
 //   command      AI の担い手が実行してよいコマンド
@@ -17,13 +30,15 @@
 //                AI の担い手が実行するコマンドを出さない。待つ席と受信箱のラベルを出す
 //   undetermined 判定できない。理由を出し、推測で次のコマンドを出さない
 //
-// 限界: PR・ラベル・CI の状態は見ない(ネットワークを使わない)。ローカルの git にある情報だけで判定する。
+// 限界: PR・ラベル・CI の状態は見ない。ネットワークを使うのは、記録用ブランチが手元に無いときの fetch 1 回と、写しを機能へ
+// 対応づける PR 本文の補完(gh api)だけである(--brief と --offline では行わない)。それ以外はローカルの git にある情報だけで判定する。
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount } from './config.mjs';
+import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
@@ -96,8 +111,11 @@ const READ = {
   change: (kind) => `${SKILL}/process-change/kinds/${kind}.md`,
 };
 
-/** ゲートの判定待ち(人の判断待ち)を組み立てる */
-function gateWait(config, key, target, extra = {}) {
+/**
+ * ゲートの判定待ち(人の判断待ち)を組み立てる。records を渡すと、記録の受け皿(判定者本人のレビュー / 様式)を
+ * 対象に合わせて「その後」に出す(recordRoute)
+ */
+function gateWait(config, key, target, extra = {}, records = null) {
   const role = gateRole(config, key);
   if (!role) {
     return { kind: 'undetermined', reason: `${gateLabel(config, key)} を判定する席が構成にありません(未達の可能性)。PROCESS-PROFILE.md の「未達のゲート」を人が確かめる` };
@@ -107,10 +125,10 @@ function gateWait(config, key, target, extra = {}) {
     kind: 'human-wait',
     what: `${gateLabel(config, key)} の判定${target ? `(対象 ${target})` : ''}`,
     seat,
-    after: `判定した人が \`/gate ${gateArg(key)}\` で記録する(記録の作成で判定が成立する)`,
+    after: `記録の作成で判定が成立する。${recordRoute(key, target, records ?? [])}`,
     read: READ.gate(key),
     roles: [
-      { role: role.id, action: `${gateLabel(config, key)} を判定し、\`/gate ${gateArg(key)}\` で記録する(人が判定する)` },
+      { role: role.id, action: `${gateLabel(config, key)} を判定し、記録する(人が判定する。受け皿は \`/gate ${gateArg(key)}\`)` },
       { role: 'ai-agent', action: '実行するコマンドはありません。判定を待つか、別の機能を進める' },
     ],
     ...extra,
@@ -119,29 +137,268 @@ function gateWait(config, key, target, extra = {}) {
 
 const forTarget = (r, target) => target === null || (r.target ?? '').split(/[\s,、/]+/).includes(target);
 
-// TODO(段階 2, process-compass #321): 判定記録の媒体は様式に限らない(ADR-0070)。対象が PR として存在する判定
-// (G-6、仕様が PR の G-2・G-4)は判定者本人のレビューの本文が記録であり、その写しは record-copy.yml が
-// 記録用ブランチ records の records/reviews/pr-<番号>.json へ置く。ここは docs/gates/ の様式しか読まないため、
-// 段階 2 で写し(宣言行 `G-4: 通過` / `G-4: 差し戻し / 基準 N / 期限 YYYY-MM-DD` と commit_id)も読む。
-// 「記録が無い = 未判定」の表示は保つ(写しが読めない間は、様式の無い判定を通過に数えない)
-function passed(records, gateKey, target = null) {
+/** 記録の「対象」が当該の PR を指すか(写しの PR 番号、または様式の対象の `PR #12`) */
+const refersPr = (r, n) => r.prNumber === n || new RegExp(`PR\\s*#?${n}(?!\\d)`).test(r.target ?? '');
+
+// ---------------------------------------------------------------- 判定記録の 3 つの出所(process-compass #321 / ADR-0070)
+//
+// 3 つの出所の記録を同じ形に揃える。{ file, source, gate, target, result, resultRaw, judgedAt, ... }。
+// 写しから起こした記録は prNumber・reviewId・commitId・login を持つ。通過に数えない記録は issue に理由を持つ
+// (結果欄が 2 値でない、確定していない版を取り込んだ、挙動要約が無い、など)。passed は issue の無い「通過」だけを数える。
+// 判定者が席の責任者本人かは、ここでは照合しない(docs/gates/ の様式と同じ。出荷の証跡の集約と内部監査が確かめる)
+
+/** 対象が PR として存在し得るゲート(判定者本人のレビューの本文が受け皿になるもの。標準 第4章「判定の成立」) */
+const PR_RECORD_GATES = new Set(['g2', 'g3', 'g4', 'g6']);
+
+/**
+ * 様式の本文から記録を起こす(config.mjs の readGateRecords と同じ読み方。記録用ブランチの様式に使う)。
+ * 対象の欄だけは、様式の文言のまま(`<...>`)でなければ ` / ` を含んでも読む。G-2・G-4 の対象は「機能の ID / 確定した版」の形
+ * (`F-012 / 1a2b3c4`。標準 第4章 G-2)であり、` / ` を様式の選択肢の印と読むと、書き方どおりの記録が対象なしになるため
+ */
+export function gateRecordFromText(text, file, source = 'records-branch') {
+  const raw = (key) => text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
+  const cell = (key, { allowSlash = false } = {}) => {
+    const v = raw(key) ?? '';
+    return v && (allowSlash || !v.includes(' / ')) && !v.startsWith('<') ? v : null;
+  };
+  return {
+    file,
+    source,
+    gate: cell('ゲート'),
+    target: cell('対象', { allowSlash: true }),
+    result: cell('結果'),
+    resultRaw: raw('結果'),
+    mode: cell('確定の形態'),
+    riskConfirmedBy: cell('リスク区分を確定した者'),
+    d0Version: cell('参照した D-0 の版'),
+    judgedAt: cell('判定日時'),
+  };
+}
+
+/** check-pr.mjs が読むトレーラ `Spec: F-NNN / Task-N` と同じ形 */
+const SPEC_LINE = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/m;
+
+/**
+ * PR の記録(本文・タイトル・ブランチ名)から機能 ID を引く。手がかりは、本文の `Spec:` トレーラ、タイトル・ブランチ名の F-NNN
+ * (ブランチ名 feature/F-NNN-task-N からはタスクも)。引けなければ null(推測で割り当てない)
+ */
+export function featureOfPr(info) {
+  if (!info) return null;
+  const m = String(info.body ?? '').match(SPEC_LINE);
+  if (m) return { feature: m[1], task: m[2], from: 'Spec トレーラ' };
+  for (const [from, text] of [['タイトル', info.title], ['ブランチ名', info.headRef]]) {
+    const f = String(text ?? '').match(/(?<![A-Za-z0-9])F-(\d+)/i);
+    if (!f) continue;
+    const t = String(text ?? '').match(/(?<![A-Za-z0-9])task-(\d+)/i);
+    return { feature: `F-${f[1]}`, task: t ? `Task-${t[1]}` : null, from };
+  }
+  return null;
+}
+
+/** ISO の日時を、様式の判定日時と同じ形(ローカルの YYYY-MM-DD HH:MM)にする。読めなければ null */
+function localStamp(iso) {
+  const d = new Date(iso ?? '');
+  if (Number.isNaN(d.getTime())) return null;
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+const short = (sha) => (sha ? String(sha).slice(0, 7) : '(無し)');
+
+/** 写しの user が bot か。写しに user.type があれば使い、無ければ login の形(aiNameReason)で見る */
+const isBotUser = (user) => String(user?.type ?? '').toLowerCase() === 'bot' || Boolean(aiNameReason(user?.login ?? '', { account: true }));
+
+/**
+ * 承認レビューの写し 1 件から記録を起こす。prInfo は PR の記録({ body, title, headRef })。config を渡すと、G-6 の承認者を
+ * 名簿(people の accounts)と対応づける(名簿が無い構成では対応づけを行わない)。
+ *   - 宣言行つきのレビュー(判定者本人の判定。G-2・G-3・G-4 と、G-6 の差し戻し): 結果は宣言行の 2 値。通過は commit_id が
+ *     取り込んだ版(head)と一致するものだけを成立と見る。ずれは issue「確定していない版を取り込んだ」
+ *   - G-6 の通過: 承認者ごとの最後の状態が APPROVED で、挙動要約の形を満たし、commit_id が head と一致するもの。bot を除く。
+ *     別のゲートの宣言行(G-2・G-4 など)を持つ承認は、取り込みの事務であり G-6 に数えない(ADR-0070 D4)
+ */
+export function recordsFromCopy(copy, prInfo, { config = null, file = null } = {}) {
+  const n = copy?.pr ?? null;
+  const where = file ?? `${REVIEWS_DIR}/pr-${n}.json`;
+  const fid = featureOfPr(prInfo);
+  const target = [fid?.feature, fid?.task, n !== null ? `PR #${n}` : null].filter(Boolean).join(' / ');
+  const { head } = headMatches(copy, {});
+  const reviews = Array.isArray(copy?.reviews) ? copy.reviews : [];
+  const base = (r, extra) => ({
+    file: `${where}#${r.id ?? '?'}`,
+    source: 'copy',
+    prNumber: n,
+    feature: fid?.feature ?? null,
+    task: fid?.task ?? null,
+    target,
+    mode: null,
+    riskConfirmedBy: null,
+    d0Version: null,
+    judgedAt: localStamp(r.submitted_at),
+    submittedAt: r.submitted_at ?? null,
+    reviewId: r.id ?? null,
+    login: r.user?.login ?? null,
+    userId: r.user?.id ?? null,
+    commitId: r.commit_id ?? null,
+    state: r.state ?? null,
+    issue: null,
+    ...extra,
+  });
+  const out = [];
+  const whoAt = (r) => `レビュー ${r.id ?? '?'}(@${r.user?.login ?? '?'})`;
+
+  // 宣言行つきの判定(同じ (ゲート, login) は提出の最後の 1 件)
+  for (const j of judgementsFromCopy(copy)) {
+    const r = reviews.find((x) => x.id === j.reviewId) ?? {};
+    if (isBotUser(r.user)) continue;
+    const firstLine = String(r.body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>]+/, '').trim()).find((l) => l) ?? '';
+    const rec = base(r, { gate: j.gate, result: j.result, resultRaw: firstLine, criteria: j.criteria, deadline: j.deadline });
+    if (j.gate === 'G-6' && j.result === PASS) {
+      // G-6 の通過は承認レビュー(APPROVED)で記録する。承認でない宣言は数えず、下の承認の読み方に任せる
+      if (String(r.state ?? '').toUpperCase() !== 'APPROVED') {
+        rec.result = null;
+        rec.issue = `写し ${where} の ${whoAt(r)} は宣言行 \`G-6: 通過\` を持つが承認(APPROVED)でない(${r.state ?? '状態なし'})ため、G-6 に数えていない。G-6 の通過は、承認者本人の挙動要約つきの承認レビューで記録する`;
+        out.push(rec);
+      }
+      continue;
+    }
+    if (j.result === PASS) {
+      if (head === null) {
+        rec.issue = `写し ${where} の ${whoAt(r)}(${j.gate}: 通過)は、写しに取り込んだ版(head_sha_at_merge)が無く、レビューの commit_id ${short(j.commitId)} が確定した版かを確かめられないため、通過に数えていない`;
+      } else if (!headMatches(copy, j).match) {
+        rec.issue =
+          `写し ${where} の ${whoAt(r)}(${j.gate}: 通過)は、確定していない版を取り込んだ(レビューの commit_id ${short(j.commitId)} が取り込んだ版 ${short(head)} と異なる)ため、通過に数えていない(未判定)。` +
+          '判定者本人が版を特定し直して宣言し直す(PR のレビューで宣言し直せなければ、対象の版(コミットの識別子)を書いた様式を records/gates/ へ置いて records ブランチへ push する)';
+      }
+    }
+    out.push(rec);
+  }
+
+  // G-6 の承認(承認者ごとの最後の状態。check-pr.mjs の approverFindings・出荷の証跡の集約と同じ読み方)
+  const last = new Map();
+  for (const r of reviews) {
+    const login = r?.user?.login;
+    const state = String(r?.state ?? '').toUpperCase();
+    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+    const before = last.get(login);
+    const body = hasBehaviorSummary(r.body);
+    if (state === 'APPROVED') last.set(login, { r, approved: true, summary: body || Boolean(before?.approved && before.summary), summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
+    else last.set(login, { r, approved: false });
+  }
+  for (const [login, v] of last) {
+    const r = v.r;
+    if (isBotUser(r.user)) continue;
+    const d = parseDeclaration(r.body);
+    if (!v.approved) {
+      // 変更要求は、宣言行つきなら上で G-6 の差し戻しとして読んでいる。宣言行の無い変更要求は、理由の無い差し戻し
+      if (!d) {
+        out.push(base(r, { gate: 'G-6', result: null, resultRaw: '変更要求(宣言行なし)', issue: `写し ${where} の ${whoAt(r)} の変更要求に宣言行(\`G-6: 差し戻し / 基準 N / 期限 YYYY-MM-DD\`)が無い。理由の無い差し戻しであり、満たさない基準の項目番号と再提出の期限を本文に書く` }));
+      }
+      continue;
+    }
+    if (d && d.gate !== 'G-6') continue; // G-2・G-4 などの確定の承認は、独立した人の確認(G-6)ではない
+    const rec = base(r, { gate: 'G-6', result: PASS, resultRaw: '承認(挙動要約つき)' });
+    if (head !== null && r.commit_id !== head) {
+      rec.result = null;
+      rec.resultRaw = '承認(失効)';
+      rec.issue = `写し ${where} の承認 ${whoAt(r)} は、承認の後に push があり失効した(commit_id ${short(r.commit_id)} が取り込んだ版 ${short(head)} と異なる)ため、G-6 に数えていない。失効の後の承認で記録し直す`;
+    } else if (head === null) {
+      rec.result = null;
+      rec.issue = `写し ${where} の承認 ${whoAt(r)} は、写しに取り込んだ版(head_sha_at_merge)が無く、失効していないかを確かめられないため、G-6 に数えていない`;
+    } else if (!v.summary) {
+      rec.result = null;
+      rec.resultRaw = '承認(挙動要約なし)';
+      rec.issue = `写し ${where} の承認 ${whoAt(r)} は挙動要約が無い(${v.summaryWhy ?? '形を満たさない'})ため、G-6 に数えていない。承認者本人が自分の挙動要約(1〜2文)を付けて承認し直す`;
+    } else if (Array.isArray(config?.people) && config.people.length && !findPersonByAccount(config, login)) {
+      rec.result = null;
+      rec.issue = `写し ${where} の承認 ${whoAt(r)} は、承認者を名簿(D-0 表5)と対応づけられないため、G-6 に数えていない。名簿に accounts を書くか、名簿の人が承認する`;
+    }
+    out.push(rec);
+  }
+  return out;
+}
+
+/**
+ * 3 つの出所の記録を 1 つの配列に揃える。gateRecords は docs/gates/ の記録(readGateRecords)、branch は readRecordsBranch の
+ * 結果(null なら読んでいない)、prInfoOf(copy) は写しの PR の記録 { info, from, failed } を返す関数。
+ * 戻り値: records(揃えた記録)、prs(写しの PR と機能の対応。対応づけ不能は feature=null)、notes(読めない写し・対応づけ不能)、summary
+ */
+export function collectRecords({ gateRecords = [], branch = null, prInfoOf = () => ({ info: null, from: null, failed: 'PR の記録を読んでいない' }), config = null } = {}) {
+  const records = gateRecords.map((r) => ({ ...r, source: 'base', issue: null }));
+  const prs = [];
+  const notes = [];
+  const summary = { base: gateRecords.length, branch: { available: false, reason: branch?.reason ?? `記録用ブランチ ${RECORDS_REF} を読んでいない` } };
+  if (!branch?.available) return { records, prs, notes, summary };
+  for (const g of branch.gates) records.push(gateRecordFromText(g.text, g.file));
+  let judgements = 0;
+  for (const [n, copy] of branch.reviews) {
+    const file = `${REVIEWS_DIR}/pr-${n}.json`;
+    const { info = null, from = null, failed = null } = prInfoOf(copy) ?? {};
+    const fid = featureOfPr(info);
+    const recs = recordsFromCopy(copy, info, { config, file });
+    judgements += recs.length;
+    prs.push({ pr: n, file, feature: fid?.feature ?? null, task: fid?.task ?? null, from: fid?.from ?? null, records: recs.length });
+    records.push(...recs);
+    if (!fid) {
+      const why = info ? `PR 本文の Spec: トレーラ・タイトル・ブランチ名に F-NNN が無い(読んだ出所: ${from ?? '写し'})` : `PR 本文を取れない(${failed ?? '理由不明'})`;
+      const gates = [...new Set(recs.map((r) => r.gate))].join(' / ');
+      notes.push(`写し ${file} を機能へ対応づけられない(${why})。${recs.length ? `この PR の判定 ${recs.length} 件(${gates})は機能の段階に数えていない。` : ''}PR 本文のトレーラ \`Spec: F-NNN / Task-N\`、またはタイトル・ブランチ名の F-NNN で対応づける。オフラインなら --offline を外して gh api で補う`);
+    }
+  }
+  for (const s of branch.skipped ?? []) notes.push(`記録用ブランチ ${RECORDS_REF} の ${s.file} を読めない(${s.reason})。黙って落とさず、置いた者が直す`);
+  summary.branch = { available: true, head: branch.head, gates: branch.gates.length, copies: branch.reviews.size, judgements };
+  return { records, prs, notes, summary };
+}
+
+/** 写しの PR の記録を、写し → 取り込んだコミットのメッセージ(ローカルの git)→ gh api の順に引く。network=false なら gh を使わない */
+export function prInfoLookup(copy, { network = true } = {}) {
+  if (copy?.body != null || copy?.title != null || copy?.head_ref != null) {
+    return { info: { body: copy.body ?? null, title: copy.title ?? null, headRef: copy.head_ref ?? null }, from: '写し', failed: null };
+  }
+  const sha = copy?.merge_commit_sha ?? null;
+  if (sha) {
+    const msg = git(['log', '-1', '--format=%s%x00%B', sha]);
+    if (msg !== null) {
+      const [title, ...rest] = msg.split('\0');
+      const info = { body: rest.join('\0'), title, headRef: null };
+      if (featureOfPr(info)) return { info, from: `取り込んだコミット ${short(sha)} のメッセージ`, failed: null };
+    }
+  }
+  if (!network) return { info: null, from: null, failed: `取り込んだコミット ${short(sha)} のメッセージに F-NNN が無く、オフライン(gh api を使わない)` };
+  const repo = copy?.repository ?? null;
+  if (!repo || copy?.pr == null) return { info: null, from: null, failed: '写しに repository・pr が無く、gh api で引けない' };
+  try {
+    const out = execFileSync('gh', ['api', `repos/${repo}/pulls/${copy.pr}`, '--jq', '{title: .title, body: .body, head_ref: .head.ref}'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
+    const j = JSON.parse(out);
+    return { info: { body: j.body ?? null, title: j.title ?? null, headRef: j.head_ref ?? null }, from: 'gh api', failed: null };
+  } catch (e) {
+    return { info: null, from: null, failed: `gh api で PR #${copy.pr} を読めない(${String(e.message).split('\n')[0].slice(0, 80)})` };
+  }
+}
+
+/** 判定が成立しているか。結果の語の完全一致(通過)で、通過に数えない理由(issue)の無い記録だけを数える */
+export function passed(records, gateKey, target = null) {
   const prefix = gateArg(gateKey);
-  return records.some((r) => r.gate?.startsWith(prefix) && r.result === PASS && forTarget(r, target));
+  return records.some((r) => r.gate?.startsWith(prefix) && r.result === PASS && !r.issue && forTarget(r, target));
 }
 
 /**
  * 通過に数えなかった判定記録の所在と理由(#286)。結果欄は「通過」「差し戻し」の語だけを完全一致で読む。
  * 注記を足した値・様式の文言のままの値は通過に数えない(安全側)。数えなかったことを黙って「待ち」と出さず、
- * 記録の所在と理由を出す。直すのは判定者本人であり、AI の担い手は結果欄を書き換えない
+ * 記録の所在と理由を出す。直すのは判定者本人であり、AI の担い手は結果欄を書き換えない。
+ * 写しから起こした記録は、通過に数えない理由を issue に持つ(確定していない版、失効、挙動要約なし など)
  */
-function recordIssues(records, gateKey, target = null, since = null) {
+export function recordIssues(records, gateKey, target = null, since = null) {
   const prefix = gateArg(gateKey);
   const own = records.filter((r) => r.gate?.startsWith(prefix) && forTarget(r, target) && (since === null || !r.judgedAt || r.judgedAt >= since));
   const out = [];
   for (const r of own) {
+    if (r.issue) {
+      out.push(r.issue);
+      continue;
+    }
     if (r.result === PASS) continue;
     if (r.result === REJECT) {
-      out.push(`差し戻しの記録 ${r.file} がある。差し戻し理由(判定基準の項目番号)を直した後に、判定者が新しい記録で判定する(成立した記録は書き換えない)`);
+      out.push(`差し戻しの記録 ${r.file} がある${r.criteria?.length ? `(基準 ${r.criteria.join(', ')}${r.deadline ? `。期限 ${r.deadline}` : ''})` : ''}。差し戻し理由(判定基準の項目番号)を直した後に、判定者が新しい記録で判定する(成立した記録は書き換えない)`);
       continue;
     }
     const v = r.resultRaw;
@@ -150,6 +407,38 @@ function recordIssues(records, gateKey, target = null, since = null) {
       `記録 ${r.file} の結果欄が「通過」「差し戻し」のどちらでもない(${shown})ため、通過に数えていない。` +
         '結果欄には2値の語だけを書き、転記の注記などは本文へ書く。直すのは判定者本人(AI の担い手は結果欄を書き換えない)'
     );
+  }
+  return out;
+}
+
+/**
+ * 記録の受け皿(標準 第4章「判定の成立」。人が書く欄の受け皿は 2 つ)。対象の写しがあるゲートでは、その PR への判定者本人の
+ * レビュー。対象が PR になり得るゲートでは両方の経路。それ以外は様式を records/gates/ へ置いて records ブランチへ push する
+ */
+export function recordRoute(gateKey, target, records = []) {
+  const arg = gateArg(gateKey);
+  const prs = [...new Set(records.filter((r) => r.source === 'copy' && r.gate?.startsWith(arg) && forTarget(r, target) && r.prNumber !== null).map((r) => r.prNumber))];
+  const line = gateKey === 'g6' ? '承認者本人の挙動要約つきの承認レビュー(変更要求は 1 行目 `G-6: 差し戻し / 基準 N / 期限 YYYY-MM-DD`)' : `1 行目 \`${arg}: 通過\`(差し戻しは \`${arg}: 差し戻し / 基準 N / 期限 YYYY-MM-DD\`)、続けて確認した項目`;
+  const form = `様式を ${GATES_DIR}/ へ置いて ${RECORDS_REF} ブランチへ push する(\`/gate ${arg}\`。記名者本人の操作で置く)`;
+  if (prs.length) {
+    return `PR ${prs.map((n) => `#${n}`).join(' / ')} に判定者本人のレビューを出す(${line})。写しはマージの時点のものであり、マージ後に出したレビューは写しに入らない。その場合は、対象の版(コミットの識別子)を書いた${form}`;
+  }
+  if (PR_RECORD_GATES.has(gateKey)) {
+    return `対象が PR として存在するなら、その PR に判定者本人のレビューを出す(${line}。写しはマージの時点で ${RECORDS_REF} ブランチへ置かれる)。PR でなければ、${form}`;
+  }
+  return form;
+}
+
+/**
+ * 実装済みの機能について、写しのある PR ごとに G-6 の記録の有無を出す(記録が無い = 未判定)。
+ * 記録は、写しの承認(挙動要約つき)、または対象がその PR を指す様式(docs/gates/・records/gates/)のどちらでもよい
+ */
+export function g6Status(records, prs) {
+  const out = [];
+  for (const p of prs) {
+    const own = records.filter((r) => r.gate?.startsWith('G-6') && refersPr(r, p.pr));
+    const ok = own.some((r) => r.result === PASS && !r.issue);
+    out.push({ pr: p.pr, task: p.task, passed: ok, issues: ok ? [] : own.map((r) => r.issue).filter(Boolean) });
   }
   return out;
 }
@@ -237,8 +526,12 @@ function cmd(command, reason, extra = {}) {
 
 // ---------------------------------------------------------------- 状態の導出
 
-export function computeNext() {
-  const result = { generatedAt: new Date().toISOString(), configured: null, summary: null, project: [], features: [], ship: [], notes: [], notSeen: [] };
+/**
+ * fetch: 記録用ブランチが手元に無いときに origin から 1 回 fetch するか。network: 写しの PR 本文を gh api で補うか。
+ * --brief(セッションの開始時)と --offline では、どちらも行わない
+ */
+export function computeNext({ fetch = true, network = true } = {}) {
+  const result = { generatedAt: new Date().toISOString(), configured: null, summary: null, records: null, project: [], features: [], ship: [], notes: [], notSeen: [] };
   const cfgPath = path.join(ROOT, 'process.config.json');
   let config;
   try {
@@ -263,7 +556,18 @@ export function computeNext() {
     modes: Object.fromEntries((config.seats ?? []).map((s) => [s.role, MODE_LABEL[s.mode] ?? s.mode])),
   };
   const decider = structureDeciderSeat(config);
-  const records = readGateRecords();
+  // 判定記録の 3 つの出所(冒頭の説明)。記録用ブランチが無い構成では、その旨を出して docs/gates/ だけで従来どおり動く
+  let recBranch;
+  try {
+    recBranch = readRecordsBranch({ cwd: ROOT, fetch });
+  } catch (e) {
+    recBranch = { available: false, reason: `記録用ブランチ ${RECORDS_REF} を読めない(${String(e.message).split('\n')[0]})` };
+  }
+  const collected = collectRecords({ gateRecords: readGateRecords(), branch: recBranch, prInfoOf: (copy) => prInfoLookup(copy, { network }), config });
+  const records = collected.records;
+  const copiedPrs = collected.prs;
+  result.records = { ...collected.summary, offline: !fetch && !network };
+  for (const n of collected.notes) result.notes.push(n);
   const lock = readLock();
 
   // --- 案件の段階: D-0 → 任免 → D-0 の承認 → G-1 ---
@@ -360,7 +664,7 @@ export function computeNext() {
       if (ledgerStep) result.project.push(ledgerStep);
     } else {
       if (ledgerStep) result.project.push(ledgerStep);
-      result.project.push({ stage: '企画承認(G-1)待ち', ...withIssues(gateWait(config, 'g1', null), recordIssues(records, 'g1')) });
+      result.project.push({ stage: '企画承認(G-1)待ち', ...withIssues(gateWait(config, 'g1', null, {}, records), recordIssues(records, 'g1')) });
     }
     if (policyStep) result.project.push(policyStep);
     projectBlocked = true;
@@ -478,7 +782,7 @@ export function computeNext() {
       continue;
     }
     if (isGateActive(config, 'g2') && !passed(records, 'g2', f)) {
-      F({ stage: '要件合意(G-2)待ち', ...withIssues(gateWait(config, 'g2', f), recordIssues(records, 'g2', f)) });
+      F({ stage: '要件合意(G-2)待ち', ...withIssues(gateWait(config, 'g2', f, {}, records), recordIssues(records, 'g2', f)) });
       continue;
     }
     if (!fs.existsSync(planP)) {
@@ -491,7 +795,7 @@ export function computeNext() {
       continue;
     }
     if (isGateActive(config, 'g4') && !passed(records, 'g4', f)) {
-      F({ stage: '機能仕様承認(G-4)待ち', ...withIssues(gateWait(config, 'g4', f), recordIssues(records, 'g4', f)) });
+      F({ stage: '機能仕様承認(G-4)待ち', ...withIssues(gateWait(config, 'g4', f, {}, records), recordIssues(records, 'g4', f)) });
       continue;
     }
     if (done === null || branches === null) {
@@ -501,7 +805,19 @@ export function computeNext() {
     const remaining = tasks.filter((t) => !done.has(`${f}/${t.id}`));
     if (!remaining.length) {
       complete++;
-      F({ stage: '実装済み(既定ブランチへ取り込み済み)', kind: 'done', reason: `${tasks.length} タスクすべてにトレーラ Spec: ${f} / Task-N のコミットがある` });
+      const step = { stage: '実装済み(既定ブランチへ取り込み済み)', kind: 'done', reason: `${tasks.length} タスクすべてにトレーラ Spec: ${f} / Task-N のコミットがある` };
+      // 写しのある PR ごとの G-6 の記録の有無(記録が無い = 未判定)。段階は止めない(出荷の証跡の集約が欠落にする)
+      if (isGateActive(config, 'g6')) {
+        const missing = g6Status(records, copiedPrs.filter((p) => p.feature === f)).filter((s) => !s.passed);
+        if (missing.length) {
+          step.detail =
+            `G-6 の記録が無い(未判定): ${missing.map((s) => `PR #${s.pr}${s.task ? `(${s.task})` : ''}`).join(' / ')}。` +
+            `${missing.flatMap((s) => s.issues).join(' / ')}${missing.some((s) => s.issues.length) ? '。' : ''}` +
+            `写しに承認者本人の挙動要約つきの承認が無い。マージ後のレビューは写しに入らないため、独立した人が G-6 を判定し、対象に \`PR #<番号>\` を書いた様式を ${GATES_DIR}/ へ置いて ${RECORDS_REF} ブランチへ push する(\`/gate G-6\`)`;
+          step.recordIssues = missing.flatMap((s) => s.issues);
+        }
+      }
+      F(step);
       continue;
     }
     if (lock && lock.state !== 'held' && lock.spec === f) {
@@ -556,7 +872,7 @@ export function computeNext() {
       const changes = shipChanges(lastTag, branch);
       if (lastTag && changes !== null && !changes.length) {
         result.ship.push({ stage: `出荷済み(${lastTag})`, kind: 'done', reason: `タグ ${lastTag} より後に、判定記録と証跡のほかの変更がない。次の出荷は、変更を取り込んだ後に出る` });
-        result.notSeen.push('PR・ラベル・CI の状態(ローカルの git だけを見ています)');
+        result.notSeen.push(NOT_SEEN);
         return result;
       }
       const head = (changes?.[0]?.at ?? git(['log', '-1', '--format=%cI', branch]) ?? '').slice(0, 16).replace('T', ' ');
@@ -573,11 +889,11 @@ export function computeNext() {
         result.ship.push({
           stage: '出荷前(証跡の集約)',
           ...cmd(`node scripts/gate/aggregate-evidence.mjs --from ${from} --to ${branch}`, `実装済みの機能が ${complete} 件。出荷の範囲の最後の変更(${head})より後の G-7 の判定記録がない。欠落があれば先に埋める`),
-          then: withIssues(gateWait(config, 'g7', null), recordIssues(records, 'g7', null, head)),
+          then: withIssues(gateWait(config, 'g7', null, {}, records), recordIssues(records, 'g7', null, head)),
           read: READ.gate('g7'),
         });
       } else if (isGateActive(config, 'g8') && !judgedAfter('G-8')) {
-        result.ship.push({ stage: 'リリース決裁(G-8)待ち', ...withIssues(gateWait(config, 'g8', null), recordIssues(records, 'g8', null, head)) });
+        result.ship.push({ stage: 'リリース決裁(G-8)待ち', ...withIssues(gateWait(config, 'g8', null, {}, records), recordIssues(records, 'g8', null, head)) });
       } else {
         result.ship.push({
           stage: '出荷の実行',
@@ -590,8 +906,19 @@ export function computeNext() {
       }
     }
   }
-  result.notSeen.push('PR・ラベル・CI の状態(ローカルの git だけを見ています)');
+  result.notSeen.push(NOT_SEEN);
   return result;
+}
+
+/** 見ていないものの定型の文。記録用ブランチの写しはマージの時点のものであり、開いている PR の状態は見ない */
+const NOT_SEEN = 'PR・ラベル・CI の状態(ローカルの git と、記録用ブランチにあるマージ時点の写しだけを見ています)';
+
+/** 記録の出所の 1 行(全文と --json の records)。記録用ブランチが無い構成では、その旨を出して従来どおり動く */
+function recordsLine(rec) {
+  if (!rec) return null;
+  const b = rec.branch;
+  if (!b?.available) return `判定記録: docs/gates/ ${rec.base} 件。${b?.reason ?? `記録用ブランチ ${RECORDS_REF} を読んでいない`}(様式は docs/gates/ だけを読む)`;
+  return `判定記録: docs/gates/ ${rec.base} 件 / 記録用ブランチ ${RECORDS_REF}(${String(b.head ?? '').slice(0, 7)}): 様式 ${b.gates} 件・写し ${b.copies} 件(写しから読んだ記録 ${b.judgements} 件)${rec.offline ? '。手元の参照だけ(fetch・gh api なし)' : ''}`;
 }
 
 // ---------------------------------------------------------------- 変化点の後の注記(#288 第6巡 N・O・R・Q・⑦)
@@ -771,6 +1098,8 @@ function renderFull(r, roleFilter = null) {
   const L = ['# 次の一手(scripts/gate/next.mjs。状態から機械が導出)', ''];
   if (r.summary) {
     L.push(`構成: ${r.summary.team ?? '—'} / ${r.summary.phase ?? '—'}。出荷できない状態: ${r.summary.shipBlocked ?? 'なし'}。未達: ${r.summary.unmet.join(' / ') || 'なし'}`);
+    const rl = recordsLine(r.records);
+    if (rl) L.push(rl);
     L.push('');
   }
   const block = (title, steps, label) => {
@@ -817,7 +1146,8 @@ const TERMS = [
   [/D-0/, 'D-0 体制図: 誰がどの席の責任者で、何を誰が決めるかの記録(docs/D-0-governance.md)。規模によらず必須'],
   [/運用形態|人確定|協働|委任/, '運用形態: 席ごとに AI の担い手へ任せる度合い。人確定(人が行う)/ 協働(AI が起案し、人が変更ごとに確かめて確定する)/ 委任(定めた範囲の変更の検証を AI に任せ、人は事後に抜き取る)'],
   [/受信箱|state:/, '受信箱: 席ごとに見る Issue・PR のラベル(state:*)。人の判断待ちは、このラベルを付けて渡す'],
-  [/判定記録|\/gate /, '判定記録: ゲートの判定を docs/gates/ へ残したもの。記録を作った時点で判定が成立する'],
+  [/判定記録|\/gate /, '判定記録: ゲートの判定を残したもの。記録を作った時点で判定が成立する。受け皿は、対象が PR なら判定者本人のレビューの本文(写しが記録用ブランチ records へ置かれる)、それ以外は様式(records/gates/。従来の docs/gates/ も読む)'],
+  [/写し/, '写し: 承認レビューを、マージの時点で機械が記録用ブランチ records へ複製したもの(records/reviews/pr-<番号>.json)。要約と評価を含まない'],
   [/未達/, '未達: 体制などの都合で、目的を達成する構成を示せていないゲート。隠さずに構成書と出荷の証跡へ出る'],
   [/受入基準/, '受入基準: 機能が完成したと言える条件。「条件 + 期待動作」で書き、テストで確かめる'],
   [/自己修正/, '自己修正: テストが通るまで AI が実装を直す反復。上限に達すると止まり、人が受入基準へ戻るかを決める'],
@@ -844,13 +1174,15 @@ function renderBrief(r) {
   if (r.summary) {
     const flags = [r.summary.shipBlocked ? '出荷できない状態あり' : null, r.summary.unmet.length ? `未達 ${r.summary.unmet.length} 件` : null].filter(Boolean);
     L.push(`構成: ${r.summary.team ?? '—'} / ${r.summary.phase ?? '—'}${flags.length ? `。${flags.join('。')}` : ''}`);
+    // 記録用ブランチが無い構成では、その旨を 1 行出す(読めている場合の件数は全文)
+    if (r.records && !r.records.branch?.available) L.push(recordsLine(r.records));
   }
   const all = [...r.project, ...r.features, ...r.ship];
   for (const s of all.slice(0, BRIEF_MAX)) {
     L.push(`- ${s.feature ? `${s.feature} ` : ''}${s.stage}: ${stepLine(s)}`);
     // 通過に数えなかった判定記録は、所在だけを添える(理由は /pit の全文)
     const issues = s.recordIssues ?? s.then?.recordIssues ?? [];
-    if (issues.length) L.push(`  - 通過に数えなかった記録: ${issues.map((x) => x.match(/docs\/gates\/\S+?\.md/)?.[0]).filter(Boolean).join(' / ')}(理由は node scripts/gate/next.mjs)`);
+    if (issues.length) L.push(`  - 通過に数えなかった記録: ${[...new Set(issues.map((x) => x.match(/(?:docs\/gates|records\/gates)\/\S+?\.md|records\/reviews\/pr-\d+\.json/)?.[0]).filter(Boolean))].join(' / ')}(理由は node scripts/gate/next.mjs)`);
   }
   if (all.length > BRIEF_MAX) L.push(`- ほか ${all.length - BRIEF_MAX} 件(node scripts/gate/next.mjs)`);
   if (r.notes?.length) L.push(`- 注記 ${r.notes.length} 件(段階を止めない。node scripts/gate/next.mjs)`);
@@ -866,7 +1198,9 @@ function main() {
     console.log(renderClauseScopes());
     process.exit(0);
   }
-  const r = computeNext();
+  // --brief(セッションの開始時)と --offline では、記録用ブランチの fetch と gh api を行わず、手元の参照だけで読む
+  const local = argv.includes('--offline') || argv.includes('--brief');
+  const r = computeNext({ fetch: !local, network: !local });
   const ri = argv.indexOf('--role');
   if (ri >= 0) {
     const roleId = argv[ri + 1];

@@ -1,0 +1,19 @@
+{
+  "repository": "example/app",
+  "pr": 13,
+  "merge_commit_sha": "7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b",
+  "head_sha_at_merge": "daad05c1b2c3d4e5f60718293a4b5c6d7e8f9a0b",
+  "copied_at": "2026-10-24T02:00:00Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [
+    {
+      "id": 5627540001,
+      "state": "CHANGES_REQUESTED",
+      "commit_id": "1111111111111111111111111111111111111111",
+      "submitted_at": "2026-10-23T15:00:00Z",
+      "user": { "id": 30000001, "login": "suzuki" },
+      "body": "> G-6: 差し戻し / 基準 3, 5 / 期限 2026-10-30\n挙動要約: 招待の一覧に失効の表示を足す変更。取り消し API は失効時に 409 を返す。\n差し戻し理由: 基準3。失効の境界のテストが無い。基準5。公開インタフェースの変更が仕様に無い"
+    }
+  ],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}

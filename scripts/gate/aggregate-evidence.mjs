@@ -45,6 +45,8 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord } from './records.mjs';
 import {
   loadConfig,
   loadAdapter,
@@ -66,6 +68,7 @@ import {
   personName,
   findPerson,
   findPersonByAccount,
+  accountKey,
   pendingNotices,
   outagePeriods,
   aiNameBlocked,
@@ -113,6 +116,332 @@ import {
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
 
+// --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
+//
+// 判定記録の読み取り元は 2 つある。
+//   1. 基底ブランチ(手元の作業木)。docs/gates/*.md(様式)と、docs/records/reviews/pr-<番号>.json(写しの複製)。
+//      出荷の PR(ship-evidence.yml)が、記録用ブランチから複製して運ぶ
+//   2. 記録用ブランチ records。records/gates/*.md と records/reviews/pr-<番号>.json(scripts/gate/records.mjs が読む)
+// 同じ PR 番号・同じファイル名が両方にあれば内容の一致を確かめ、不一致は「写しの不一致」として欠落に数える(第4章 G-7 基準5。
+// 出荷の PR の上で同じ集約を再実行し、人の書き換えを検出する経路)。記録用ブランチが無い構成では、理由を保証の開示の
+// 項目1 に出して、従来どおり基底ブランチの記録だけで動く。
+//
+// 写しから機械が出す欄(第4章「機械が出す欄と人が書く欄」)は、推定を含まない写しに限り、欄ごとに出所を併記する。
+// 人が書く欄(挙動要約・確認した項目・確認していない事項・差し戻し理由・決断の記録)は、写しの本文の所在だけを示し、
+// 要約も評価もしない。
+//
+// この節の関数は、構成・写し・PR の記録を引数に取り、git と gh を呼ばない。試験(test-aggregate-records.mjs)が
+// 本体を動かさずに import し、関数単位で確かめる。
+
+/** 基底ブランチに複製された写しの置き場(ship-evidence.yml が records/reviews/ から複製する) */
+export const BASE_COPIES_DIR = 'docs/records/reviews';
+
+/**
+ * 写しの JSON を読む(記録用ブランチの readRecordsBranch と同じ検査)。読めなければ copy=null と理由。
+ * 写しの最小の組の欠け(reviews の配列が無い、ファイル名と pr が違う)は、推定で補わずに落とす
+ */
+export function parseCopy(file, text) {
+  const m = path.posix.basename(String(file).replace(/\\/g, '/')).match(/^pr-(\d+)\.json$/);
+  if (!m) return { copy: null, prNumber: null, reason: '写しの名前の形(pr-<番号>.json)でない' };
+  const prNumber = Number(m[1]);
+  let copy;
+  try {
+    copy = JSON.parse(text);
+  } catch (e) {
+    return { copy: null, prNumber, reason: `JSON として読めない: ${e.message}` };
+  }
+  if (!copy || typeof copy !== 'object' || !Array.isArray(copy.reviews)) return { copy: null, prNumber, reason: '写しの形でない(reviews の配列が無い)' };
+  if (copy.pr !== undefined && Number(copy.pr) !== prNumber) return { copy: null, prNumber, reason: `ファイル名の PR 番号 ${prNumber} と写しの pr ${copy.pr} が一致しない` };
+  return { copy, prNumber, reason: null };
+}
+
+/** 基底ブランチの写しの複製(docs/records/reviews/)を読む。置き場が無ければ present=false で空 */
+export function readBaseCopies(root) {
+  const dir = path.join(root, BASE_COPIES_DIR);
+  const result = { present: fs.existsSync(dir), reviews: new Map(), skipped: [] };
+  if (!result.present) return result;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json')).sort()) {
+    const file = `${BASE_COPIES_DIR}/${f}`;
+    const { copy, prNumber, reason } = parseCopy(file, fs.readFileSync(path.join(dir, f), 'utf8'));
+    if (!copy) result.skipped.push({ file, reason });
+    else result.reviews.set(prNumber, copy);
+  }
+  return result;
+}
+
+/** 写しの head(record-copy.yml は head_sha。旧い写しの head_sha_at_merge も読む) */
+const copyHead = (copy) => copy?.head_sha ?? copy?.head_sha_at_merge ?? null;
+/** 様式の本文の比較の形。改行の形式と行末の空白に依らない */
+const normText = (t) => String(t ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+
+/**
+ * 2 つの読み取り元を突き合わせる。写しは PR 番号、様式はファイル名(basename。ship-evidence.yml は basename のまま複製する)で
+ * 対応づける。返す copies は PR 番号 → { copy, sources[] }(sources の先頭が、欄の出所に併記する所在。記録用ブランチを優先する)。
+ * 内容の違いは mismatches に出し、呼び出し側が欠落に数える。judge しないのは、どちらが正しいかである(人が確かめる)
+ */
+export function mergeRecordSources({ branch, base, baseGates = [] }) {
+  const copies = new Map();
+  const mismatches = [];
+  for (const [n, copy] of base?.reviews ?? []) copies.set(n, { copy, sources: [`${BASE_COPIES_DIR}/pr-${n}.json`] });
+  if (branch?.available) {
+    for (const [n, copy] of branch.reviews) {
+      const file = `${REVIEWS_DIR}/pr-${n}.json`;
+      const have = copies.get(n);
+      if (!have) {
+        copies.set(n, { copy, sources: [file] });
+        continue;
+      }
+      if (canonicalJson(have.copy) === canonicalJson(copy)) {
+        have.sources.unshift(file);
+        continue;
+      }
+      mismatches.push({
+        kind: 'review',
+        pr: n,
+        files: [have.sources[0], file],
+        text: `写しの不一致: PR #${n} の承認レビューの写しが、基底ブランチ(${have.sources[0]})と記録用ブランチ(${file})で一致しません。人が書き換えた記録として扱います(第4章 G-7 基準5)。記録用ブランチの写しを複製し直してください`,
+      });
+      // 突合の先は記録用ブランチの写し(記名者と判定される側が書き換えられない置き場)。基底の複製は欠落として残す
+      copies.set(n, { copy, sources: [file], mismatch: have.sources[0] });
+    }
+  }
+  const gates = [];
+  for (const g of branch?.available ? branch.gates : []) {
+    const name = path.posix.basename(g.file);
+    const twin = baseGates.find((b) => path.posix.basename(String(b.file).replace(/\\/g, '/')) === name) ?? null;
+    const same = twin ? normText(twin.text) === normText(g.text) : null;
+    if (twin && !same) {
+      mismatches.push({
+        kind: 'gate',
+        file: g.file,
+        files: [twin.file, g.file],
+        text: `写しの不一致: 判定記録 ${name} が、基底ブランチ(${twin.file})と記録用ブランチ(${g.file})で一致しません。人が書き換えた記録として扱います(第4章 G-7 基準5)`,
+      });
+    }
+    gates.push({ ...g, name, baseFile: twin?.file ?? null, sameAsBase: same });
+  }
+  return { copies, mismatches, gates };
+}
+
+/**
+ * 写しのレビューを、PR の記録(gh pr view --json reviews)と同じ形へ直す。G-6 の承認の数え方(人のアカウント・名簿の人・
+ * 作成を指示した者でない・挙動要約の形)を、現行の条件のまま写しに適用するため。
+ *   - bot か: 写しに user.type があればそれ(Bot)。無ければ PR の記録の同じログインの author.is_bot。どちらも無ければ偽
+ *     (ログイン名の [bot] の表記は、呼び出し側の isAiLogin が別に見る)
+ *   - 対象の固定(G-6 の条件3): 承認の commit_id がマージ時の head と違う承認は失効した承認であり、数えない(state を STALE にする)
+ */
+export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
+  const head = copyHead(copy);
+  const stale = [];
+  const reviews = [];
+  for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
+    const login = r?.user?.login ?? null;
+    const api = Array.isArray(apiReviews) ? apiReviews.find((a) => a?.author?.login === login) : null;
+    const isBot = r?.user?.type !== undefined ? String(r.user.type) === 'Bot' : Boolean(api?.author?.is_bot);
+    let state = String(r?.state ?? '').toUpperCase();
+    if (state === 'APPROVED' && head && r?.commit_id && r.commit_id !== head) {
+      stale.push({ login, reviewId: r.id ?? null, commitId: r.commit_id });
+      state = 'STALE';
+    }
+    reviews.push({ id: r?.id ?? null, author: { login, id: r?.user?.id ?? null, is_bot: isBot }, state, body: r?.body ?? '', submittedAt: r?.submitted_at ?? null, commitId: r?.commit_id ?? null });
+  }
+  return { reviews, stale, head };
+}
+
+/** 承認の数。承認者ごとの最後の状態(APPROVED / CHANGES_REQUESTED / DISMISSED)が承認である人の数。写しの状態をそのまま数える */
+export function approvalCountOfCopy(copy) {
+  const last = new Map();
+  for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
+    const login = r?.user?.login;
+    const state = String(r?.state ?? '').toUpperCase();
+    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+    last.set(login, state);
+  }
+  return [...last.values()].filter((s) => s === 'APPROVED').length;
+}
+
+const sameInstant = (a, b) => {
+  const x = Date.parse(a ?? '');
+  const y = Date.parse(b ?? '');
+  return Number.isFinite(x) && Number.isFinite(y) && x === y;
+};
+
+/**
+ * 写しと PR の記録(API)の突合。写しを取った時点の文が記録であり、以後の編集・dismiss・ログイン名の変化(退会による ghost 化、
+ * 改名)・写しに無いレビューを所見に出す。レビューの対応づけは提出日時による(gh の reviews の id は数値でないため)。
+ * 所見は検出であり、どちらが正しいかは判定しない
+ */
+export function reconcileCopy(copy, apiReviews, { pr = copy?.pr ?? null } = {}) {
+  const findings = [];
+  if (!Array.isArray(apiReviews)) return findings;
+  const used = new Set();
+  for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
+    const at = r?.submitted_at ?? null;
+    const idx = apiReviews.findIndex((a, i) => !used.has(i) && sameInstant(a?.submittedAt, at));
+    const label = `PR #${pr} のレビュー ${r?.id ?? '(id なし)'}(${r?.user?.login ?? '?'}、${at ?? '提出日時なし'})`;
+    if (idx < 0) {
+      findings.push(`${label}: 写しにあるが、PR の記録(API)に無い(削除された、または取得の範囲の外)`);
+      continue;
+    }
+    used.add(idx);
+    const a = apiReviews[idx];
+    const apiLogin = a?.author?.login ?? null;
+    if (apiLogin !== (r?.user?.login ?? null)) findings.push(`${label}: ログイン名が写しと違う(写し ${r?.user?.login ?? '?'} / 記録 ${apiLogin ?? '(無い。退会による ghost 化の可能性)'})`);
+    const apiState = String(a?.state ?? '').toUpperCase();
+    const copyState = String(r?.state ?? '').toUpperCase();
+    if (apiState && copyState && apiState !== copyState) findings.push(`${label}: 状態が写しと違う(写し ${copyState} / 記録 ${apiState}${apiState === 'DISMISSED' ? '。写しの後に dismiss された' : ''})`);
+    if (normText(a?.body) !== normText(r?.body)) findings.push(`${label}: 本文が写しと違う(写しの後に編集された。記録は写しを取った時点の文)`);
+  }
+  apiReviews.forEach((a, i) => {
+    if (used.has(i)) return;
+    const state = String(a?.state ?? '').toUpperCase();
+    if (!['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED'].includes(state)) return;
+    findings.push(`PR #${pr} のレビュー(${a?.author?.login ?? '?'}、${a?.submittedAt ?? '提出日時なし'}、${state}): PR の記録にあるが写しに無い(写しの後に提出された。写しの対象外)`);
+  });
+  return findings;
+}
+
+/**
+ * ゲートを判定する席の責任者のアカウント(ログイン名の Set)。構成 roles[].gatesOwned → seats[].accountable → people[].accounts。
+ * 席が無ければ null、席はあるが責任者のアカウントが名簿に無ければ空の Set(本人かを確かめられない)
+ */
+export function judgeLoginsOf(config, gate) {
+  const key = String(gate).toLowerCase().replace('-', '');
+  const role = (config?.roles ?? []).find((r) => (r.gatesOwned ?? []).includes(key)) ?? null;
+  if (!role) return { role: null, person: null, logins: null };
+  const seat = (config?.seats ?? []).find((s) => s.role === role.id) ?? null;
+  const person = seat?.accountable ? findPerson(config, seat.accountable) : null;
+  const logins = new Set((Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a)));
+  return { role: role.id, seat: seat ?? null, person, logins };
+}
+
+/**
+ * 写しから、宣言行のある判定(G-2・G-3・G-4・G-6 など)を読む(第4章 G-2「判定者本人のレビュー」)。
+ *   judgeOk   true: 判定する席の責任者本人のレビュー / false: 別の人のレビュー(判定に数えない) /
+ *             null: 席が無い、または責任者のアカウントが名簿に無く、本人かを確かめられない(数えたうえで注記する)
+ *   headMatch レビューの commit_id == マージ時の head。偽なら「確定していない版を取り込んだ」(欠落。IMPL-0129)
+ * 宣言行の無いレビューは judgementsFromCopy が落とす(取り込みの事務)
+ */
+export function gateJudgementsOfCopy(copy, config) {
+  const out = [];
+  for (const j of judgementsFromCopy(copy)) {
+    const who = judgeLoginsOf(config, j.gate);
+    const person = j.login ? findPersonByAccount(config, j.login) : null;
+    let judgeOk = null;
+    let judgeNote = null;
+    if (who.logins === null) judgeNote = `${j.gate} を判定する席が構成に無い。判定者本人のレビューかを確かめられない`;
+    else if (!who.person) judgeNote = `${j.gate} を判定する席の責任者が未記入。判定者本人のレビューかを確かめられない`;
+    else if (!who.logins.size) judgeNote = `${j.gate} を判定する席の責任者(${who.person.name})のアカウントが名簿(people[].accounts)に無い。判定者本人のレビューかを確かめられない`;
+    else {
+      judgeOk = who.logins.has(accountKey(j.login ?? ''));
+      if (!judgeOk) judgeNote = `宣言行のあるレビューの書き手(@${j.login ?? '?'})が、${j.gate} を判定する席の責任者(${who.person.name})でない。判定に数えない`;
+    }
+    const h = headMatches(copy, j);
+    out.push({ ...j, person, seatRole: who.role, judgeOk, judgeNote, headMatch: h.match, head: h.head, mergeCommit: copy?.merge_commit_sha ?? null });
+  }
+  return out;
+}
+
+/**
+ * 判定の機械が出す欄(IMPL-0125)。写し・PR の記録・基底ブランチの構成からの、推定を含まない写しに限り、欄ごとに出所を併記する。
+ *   j: gateJudgementsOfCopy の 1 件 / source: 写しの所在(records/reviews/pr-12.json) / pr: { createdAt, authorLogin }(PR の記録。無ければ null)
+ *   instructors: { known: Map<id, name>, unresolved: [], byDefault } / d0: { version, source }(基底ブランチの構成から。無ければ null)
+ * 人が書く欄は本文の所在だけを示す(写しに本文はあるが、集約は要約も評価もしない)
+ */
+export function machineFields(j, copy, { source, pr = null, instructors = null, d0 = null, seatName = null } = {}) {
+  const reviews = Array.isArray(copy?.reviews) ? copy.reviews : [];
+  const i = reviews.findIndex((r) => r?.id === j.reviewId);
+  const at = `${source}#reviews[${i >= 0 ? i : '?'}]`;
+  const person = j.person ?? null;
+  const judgeValue = `user.id ${j.userId ?? '(無い)'} / @${j.login ?? '(無い)'}` + (person ? ` → ${person.name}${seatName ? `(席: ${seatName})` : ''}` : ' → 名簿に無い');
+  const judgeSource = `${at}.user` + (person ? ` / process.config.json#people[${person.id}]${seatName ? '・seats[]' : ''}` : '');
+  // 作成を指示した者との別。判定者(名簿の人)と、PR 本文の欄(または既定値)の指示者を、人として比べる
+  let relation;
+  let relationSource;
+  if (!instructors) {
+    relation = '判定できない(PR の記録を取得できない)';
+    relationSource = '(PR の記録なし)';
+  } else {
+    relationSource = instructors.byDefault
+      ? `既定値(PR 本文の欄「作成を指示した者」が未記入。PR の作成者${pr?.authorLogin ? ` @${pr.authorLogin}` : ''}と開発者の席の責任者)`
+      : `PR #${copy?.pr ?? j.prNumber} 本文「作成を指示した者」`;
+    if (!person) relation = '判定できない(判定者を名簿と対応づけられない)';
+    else if (instructors.known?.has(person.id)) relation = '作成を指示した者本人';
+    else if ((instructors.unresolved ?? []).length) relation = `判定できない(指示した者 ${instructors.unresolved.join(' / ')} を名簿と対応づけられない)`;
+    else relation = '作成を指示した者でない';
+    if (pr?.authorLogin && j.login && accountKey(pr.authorLogin) === accountKey(j.login)) relation += '(PR の作成者本人のレビュー)';
+  }
+  const fields = [
+    { field: '判定者', value: judgeValue, source: judgeSource },
+    { field: '提出日時', value: pr?.createdAt ?? '取れない(PR の記録なし)', source: pr?.createdAt ? `gh pr view ${copy?.pr ?? j.prNumber} --json createdAt(PR の作成。review_requested の時刻は読んでいない)` : '(PR の記録なし)' },
+    { field: '判定日時', value: j.submittedAt ?? '(無い)', source: `${at}.submitted_at` },
+    {
+      field: '対象',
+      value: `PR #${copy?.pr ?? j.prNumber} / commit_id ${j.commitId ?? '(無い)'} / レビュー ${j.reviewId ?? '(無い)'} / マージ後 ${j.mergeCommit ?? '(無い)'}`,
+      source: `${source}#pr / ${at}.commit_id / ${at}.id / ${source}#merge_commit_sha`,
+    },
+    { field: '結果', value: `${j.gate}: ${j.result}${j.criteria?.length ? ` / 基準 ${j.criteria.join(', ')}` : ''}${j.deadline ? ` / 期限 ${j.deadline}` : ''}`, source: `${at}.body の 1 行目(宣言行)` },
+    { field: '参照した D-0 の版', value: d0?.version ?? '構成に無い', source: d0?.source ?? '(基底ブランチの構成に d0Version が無い)' },
+    { field: '承認の数', value: String(approvalCountOfCopy(copy)), source: `${source}#reviews[](state=APPROVED。承認者ごとの最後の状態)` },
+    { field: '作成を指示した者との別', value: relation, source: relationSource },
+  ];
+  return {
+    gate: j.gate,
+    result: j.result,
+    pr: copy?.pr ?? j.prNumber,
+    reviewId: j.reviewId,
+    headMatch: j.headMatch ?? null,
+    fields,
+    humanFields: { location: `${at}.body`, note: '挙動要約・確認した項目・確認していない事項・差し戻し理由は、写しの本文にある。集約は写さず、要約も評価もしない' },
+  };
+}
+
+/** 出荷の範囲のマージと写しの件数の一致(第4章 G-7 基準5「写しの件数は、出荷の範囲の変更の件数と一致する」) */
+export function copyCoverage(prNumbers, copies) {
+  const nums = [...new Set(prNumbers)].sort((a, b) => a - b);
+  const missing = nums.filter((n) => !copies?.has(n));
+  return { merged: nums.length, copied: nums.length - missing.length, missing };
+}
+
+/**
+ * 様式の帰属の裏づけ(IMPL-0128 / 第4章「判定記録を基底ブランチへ入れる操作」)。
+ *   approvers: 様式を基底へ運んだ PR の承認者(人のアカウント。最後の状態が承認)。PR を経ていなければ null
+ *   記名者本人の承認レビュー > 署名コミット > author の login・email(弱い裏づけ) > 名前だけ(自己申告)
+ * 記名者以外の承認者は、取り込みの事務として clerical に出す(判定ではない。欠落にも数えない)
+ */
+export function formAttribution(gateRecord, { judgeName = null, person = null, approvers = null } = {}) {
+  const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a));
+  const approved = Array.isArray(approvers) ? approvers.map((a) => accountKey(a)) : [];
+  const own = approved.filter((a) => accounts.includes(a));
+  const clerical = approved.filter((a) => !accounts.includes(a));
+  if (!judgeName) return { backed: false, how: null, note: '判定者の記名が無い。帰属を裏づけられない', clerical, selfAttested: true };
+  if (own.length) return { backed: true, how: 'approval-review', note: `記名者本人(@${own[0]})の承認レビュー`, clerical, selfAttested: false };
+  // 名簿のアカウントごとに試し、最も強い裏づけを採る
+  const rank = { 'signed-commit': 3, 'author-login': 2, 'author-email': 1 };
+  let best = null;
+  for (const login of accounts.length ? accounts : [null]) {
+    const a = recordAttribution(gateRecord, { judgeName, judgeLogin: login });
+    if (!best || (rank[a.how] ?? 0) > (rank[best.how] ?? 0) || (!best.backed && a.backed)) best = a;
+  }
+  best ??= recordAttribution(gateRecord, { judgeName });
+  return { ...best, clerical, selfAttested: !best.backed };
+}
+
+/** 様式の「対象」の欄(判定記録の冒頭の表)。機械が出す欄の併記や注記(。以降)は読まない */
+export const targetOfForm = (text) => String(text ?? '').match(/^\|\s*対象\s*\|\s*(.*?)\s*\|\s*$/m)?.[1]?.trim() ?? null;
+/** 様式の「判定者」の欄。様式の説明(<氏名>…)を残したままの欄は未記入 */
+export const judgeOfForm = (text) => {
+  const v = String(text ?? '').match(/^\|\s*判定者\s*\|\s*(.*?)\s*\|\s*$/m)?.[1]?.trim() ?? null;
+  return v && !v.startsWith('<') ? v.replace(/。.*$/, '').trim() : null;
+};
+
+// --- 集約の本体 ----------------------------------------------------------------
+//
+// ここから末尾までが、コマンドとして実行したときの本体である。上の関数は、試験が本体を動かさずに import する。
+// 本体の字下げは変えていない(履歴の差分を、本体の変更に限るため)
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
 const config = loadConfig();
 /**
  * 変化点の記録の日付(手元の時刻帯の日付)。時刻帯つきの時刻(at)があればその日付、無ければ date。
@@ -374,6 +703,17 @@ const recordsInRange =
     : null;
 const records = gateDetails.filter((r) => !recordsInRange || recordsInRange.has(r.file));
 
+// 記録の読み取り元の 2 つ目(#321 D5・D6 / #54 段階 2): 記録用ブランチ records(承認レビューの写しと様式)と、基底ブランチの
+// 写しの複製(docs/records/reviews/。出荷の PR が運ぶ)。同じ PR 番号・同じファイル名が両方にあれば内容の一致を確かめる。
+// 記録用ブランチを読めない理由は、黙って落とさずに保証の開示の項目1 へ出す
+const recordsBranch = readRecordsBranch({ cwd: ROOT });
+const baseCopies = readBaseCopies(ROOT);
+const recordSources = mergeRecordSources({
+  branch: recordsBranch,
+  base: baseCopies,
+  baseGates: gateDetails.map((g) => ({ file: g.file, text: fs.readFileSync(path.join(ROOT, g.file), 'utf8') })),
+});
+
 // --- コミットのトレーラ ------------------------------------------------------
 
 const trailerFormat =
@@ -486,6 +826,21 @@ for (const c of commits) {
   const list = gh(['api', `repos/${repo}/commits/${c.hash}/pulls`]);
   const hit = Array.isArray(list) ? list.find((p) => p?.merge_commit_sha === c.hash && p?.merged_at) : null;
   if (hit) mapPr(Number(hit.number), fetchPr(Number(hit.number)));
+}
+// PR の記録を取得できない(gh が無い・リポジトリを特定できない)ときは、写しの merge_commit_sha でマージコミットと PR を
+// 対応づける(写しは推定を含まない機械の複製)。PR の記録を取得できた PR は従来どおり PR の記録で対応づけ、写しが指す
+// コミットと食い違う場合は写しで対応づけない(安全側)
+const prFromCopy = new Set();
+for (const [n, { copy }] of recordSources.copies) {
+  const mc = copy?.merge_commit_sha ?? null;
+  if (!mc || !inRange.has(mc) || commitPr.has(mc)) continue;
+  const d = repo ? fetchPr(n) : null;
+  if (d?.mergeCommit?.oid) {
+    mapPr(n, d);
+    continue;
+  }
+  commitPr.set(mc, { number: n, role: 'merge', method: inRange.get(mc).parents.length > 1 ? 'merge-commit' : 'squash' });
+  prFromCopy.add(n);
 }
 /** 件名に PR の番号を持つが、PR の変更と認めないコミットの理由 */
 function claimedPrNote(c) {
@@ -802,7 +1157,79 @@ function developerApproved(reviews) {
   return [...last].some(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot) && findPersonByAccount(config, login)?.id === devKey);
 }
 
+/**
+ * 記録の置き場。ここだけを変えるコミット・PR は、製品の変更でない(PR を経ていないコミットの対象外の判定と、記録だけの PR の
+ * 識別に使う)。
+ *
+ * 無条件で対象外にするのは、判定記録、承認レビューの写しの複製(docs/records/。#321)、証跡、導入前の検証の記録
+ * (docs/adoption-trial/。合否の基準・封じた要約値・見つける者の記録・演習の記録・記録の様式。標準 附属書I I.11)、演習の報告
+ * (docs/drills/)、退出の予行の記録(docs/exit-rehearsal.json)、技術負債台帳、体制図、構成書(全体が生成物)である。評価用の
+ * 基準集合は評価の入力であり記録ではないため、PR で入れる(範囲を狭める変更は統制を緩める向きの変更。第3章 3.12.3 の要求事項10)。
+ * 体制図は、決定の理由と記名の記録である。生成区間と構成の一致は、D-0 の検査(check-d0)が確かめる
+ */
+// docs/safety/ は独立した安全性の評価の記録(附属書F。CL2 以上の監査対応書式の「安全性の評価の記録の所在」)の置き場。記録を
+// リポジトリに置く組織が、記録のコミットを製品の変更に数えられないようにする(#288 第8巡 W8)。文書管理システム(DHF など)を
+// 所在にする組織は、この置き場を使わず、判定記録の所在の欄に文書管理システムの識別子を書く
+const RECORD_PATHS = ['docs/gates/**', 'docs/records/**', 'evidence/**', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
+
+/**
+ * 内容を見て対象外にするファイル。パスだけで対象外にすると、構成の手での書き換えと、指示資産の
+ * 手書き部分(強制層)の変更が、リスク区分の記録も、独立した人の確認の件数も免れる。
+ * 対象外にできない場合は、その理由を返す。対象外にできる場合は null
+ */
+const GENERATED_BLOCK = /<!-- generated:process-rules start -->[\s\S]*?<!-- generated:process-rules end -->/;
+const CONDITIONAL_RECORD_PATHS = {
+  // /process-change が書くのは生成区間だけである。生成区間の外(手書き部分)が変わっていないこと
+  'CLAUDE.md': (before, after) => {
+    if (before === null || after === null) return 'CLAUDE.md の追加または削除である';
+    const outside = (text) => text.replace(/\r\n/g, '\n').replace(GENERATED_BLOCK, '').trim();
+    return outside(before) === outside(after) ? null : 'CLAUDE.md の生成区間の外(手書き部分)が変わっている';
+  },
+  // 構成を書き換えるのは /process-change だけである。変化点の記録(changeLog[])が追記されており、
+  // 既存の記録が先頭部分として保たれていること
+  'process.config.json': (before, after) => {
+    let b;
+    let h;
+    try {
+      b = JSON.parse(before ?? '');
+      h = JSON.parse(after ?? '');
+    } catch {
+      return 'process.config.json の前後を読めない(追加・削除、または JSON でない)';
+    }
+    const bl = Array.isArray(b.changeLog) ? b.changeLog : [];
+    const hl = Array.isArray(h.changeLog) ? h.changeLog : [];
+    if (hl.length <= bl.length) return 'process.config.json が、変化点の記録(changeLog)の追記なしに書き換えられている';
+    if (bl.some((e, i) => canonicalJson(e) !== canonicalJson(hl[i]))) return 'process.config.json の、既存の変化点の記録(changeLog)が書き換えられている';
+    return null;
+  },
+};
+const fileAt = (rev, file) => {
+  try {
+    return execFileSync('git', ['show', `${rev}:${file}`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+};
+/** 変更したファイルのうち、記録の置き場に収まらないものの理由。空なら、記録だけの変更である */
+function notRecordReasons(hash, files) {
+  const out = [];
+  for (const x of files) {
+    if (RECORD_PATHS.some((g) => matchGlob(g, x))) continue;
+    const judge = CONDITIONAL_RECORD_PATHS[x];
+    if (!judge) {
+      out.push(`記録の置き場の外のファイルを含む(${x})`);
+      continue;
+    }
+    const why = judge(fileAt(`${hash}^`, x), fileAt(hash, x));
+    if (why) out.push(why);
+  }
+  return out;
+}
+
 const prs = [];
+// 記録だけの PR(変更したファイルのすべてが記録の置き場)。製品の変更でないため変更の単位に数えず、記名者の裏づけ(IMPL-0128)と
+// G-5 の結果だけを見る(第4章「判定記録を基底ブランチへ入れる操作」: 基底へ入れる操作に記名者以外の承認を課さない)
+const recordPrs = [];
 /** 変更の規模を測る(マージ方式に依らず、PR の変更の起点から終点まで)。起点を決められない・差分を読めない場合は null */
 const gitRaw = (args) => {
   try {
@@ -836,26 +1263,44 @@ function approvalMinutes(d) {
 for (const [hash, m] of commitPr) {
   if (m.role !== 'merge') continue;
   const n = m.number;
-  const d = prData.get(n);
+  // PR の記録(gh)。写しで対応づけた PR では null(欄は取れない。その旨を出す)
+  const d = prData.get(n) ?? null;
   const g5 = (d?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5');
-  const ins = instructorsOf(d);
-  // 変更したファイル(コア機能の判定に使う)と、承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
-  const prFiles = git(['diff-tree', '--no-commit-id', '--name-only', '-r', hash]).split('\n').filter(Boolean);
-  const independent = independentConfirmation(ins, d.reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^` });
-  const { last } = lastReviewStates(d.reviews);
+  const ins = instructorsOf(d ?? {});
+  // G-6 の承認は、写しがあれば写しから読む(無ければ PR の記録)。写しと PR の記録の両方が読めるときは突合し、本文の編集・
+  // dismiss・ログイン名の変化を所見に出す。写しの承認のうち commit_id がマージ時の head と違うものは、失効した承認として数えない
+  const copyEntry = recordSources.copies.get(n) ?? null;
+  const fromCopy = copyEntry ? reviewsOfCopy(copyEntry.copy, { apiReviews: d?.reviews ?? null }) : null;
+  const reviews = fromCopy ? fromCopy.reviews : (d?.reviews ?? []);
+  const copyFindings = copyEntry && Array.isArray(d?.reviews) ? reconcileCopy(copyEntry.copy, d.reviews, { pr: n }) : [];
+  // 変更したファイル(コア機能の判定と、記録だけの PR の識別に使う。第1の親との差分。マージコミットの方式でも読める)と、
+  // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
+  const prFiles = git(['diff', '--name-only', `${hash}^1`, hash]).split('\n').filter(Boolean);
+  const recordOnly = prFiles.length > 0 && notRecordReasons(hash, prFiles).length === 0;
+  const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^` });
+  const { last } = lastReviewStates(reviews);
   const humanApprovers = [...last].filter(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot)).map(([login]) => login);
   // PR の変更に属するコミット(マージコミットと構成要素)
   const own = [...commitPr].filter(([, x]) => x.number === n).map(([h]) => h);
   // 規模の観測(#295 / ADR-0058)。マージコミットの差分を、PR の検査と同じ読み方で測る。測れなければ null(黙って 0 にしない)
   const sizeMeasured = measureMergedSize(hash, own, riskClassOf(d?.body));
   const sizeAtt = sizeAttestationOf(d?.body);
-  prs.push({
+  (recordOnly ? recordPrs : prs).push({
     size: sizeMeasured,
     sizeAttestation: sizeAtt.present ? { readAll: sizeAtt.readAll, performerPresent: filled(sizeAtt.performer), reasonPresent: filled(sizeAtt.reason), assurancePresent: filled(sizeAtt.assurance) } : null,
     reviewMinutes: approvalMinutes(d),
     number: n,
     title: d?.title ?? null,
-    recordFound: true,
+    // PR の記録を取得できたか。写しで対応づけた PR(記録なし)は、PR 本文の欄と G-5 の結果を読めない
+    recordFound: Boolean(d),
+    recordSource: d ? 'api' : 'copy',
+    // 記録だけの PR(変更の単位に数えない)
+    recordOnly,
+    files: prFiles.length,
+    // 承認レビューの写し(所在・失効した承認・PR の記録との所見)。無ければ null
+    copy: copyEntry ? { source: copyEntry.sources[0], sources: copyEntry.sources, head: fromCopy.head, stale: fromCopy.stale, findings: copyFindings } : null,
+    // 変更したファイルが指す仕様(specs/F-NNN/)。トレーラ Spec と合わせて、判定者本人のレビューによる G-4 の対応づけに使う
+    specsTouched: [...new Set(prFiles.map((x) => x.match(/^specs\/(F-\d+)\//)?.[1]).filter(Boolean))],
     mergeCommit: hash.slice(0, 8),
     // マージの方式。squash / merge-commit / rebase(構成要素の数え方だけが変わる)
     mergeMethod: m.method,
@@ -871,7 +1316,7 @@ for (const [hash, m] of commitPr) {
     instructedBy: [...independent.instructors, ...independent.unresolvedInstructors],
     instructedBySource: independent.instructorsByDefault ? 'default' : 'declared',
     specs: [...new Set(own.flatMap((h) => trailerOf.get(h)?.specs ?? []))],
-    developerApproved: developerApproved(d.reviews),
+    developerApproved: developerApproved(reviews),
     g6: {
       approver: humanApprovers[0] ?? null,
       approvers: humanApprovers,
@@ -891,6 +1336,59 @@ for (const [hash, m] of commitPr) {
 }
 prs.sort((a, b) => a.number - b.number);
 const prByNumber = new Map(prs.map((p) => [p.number, p]));
+const anyPrByNumber = new Map([...prs, ...recordPrs].map((p) => [p.number, p]));
+
+// --- 判定者本人のレビューによる G-2・G-3・G-4 の記録(第4章 G-2 / IMPL-0129)と、機械が出す欄(IMPL-0125) -----------
+//
+// 出荷の範囲の PR の写しから、宣言行のあるレビューを判定として読む。判定者本人(ゲートを判定する席の責任者のアカウント)の
+// レビューに限り、対象の版(commit_id)がマージ時の head と一致しない判定は「確定していない版を取り込んだ」として欠落に数える
+// (下の gaps)。宣言行の無いレビューは取り込みの事務であり、G-2・G-4 に数えない。
+// この承認は G-6 の独立した人の確認に数えない。G-6 の数え方は別に走り、判定者本人が作成を指示した者なら条件2 で、挙動要約が
+// 無ければ条件4 で数えない(確定は独立した確認ではない。ADR-0060)。
+// 機械が出す欄は、写し・PR の記録・マージ前の基底ブランチの構成から推定を含まずに写し、欄ごとに出所を併記する。人が書く欄は
+// 本文の所在だけを示す
+const reviewJudgements = [];
+for (const p of [...prs, ...recordPrs]) {
+  const entry = recordSources.copies.get(p.number);
+  if (!entry) continue;
+  const d0Rev = `${p.mergeCommit}^`;
+  const d0Version = configAt(d0Rev)?.d0Version ?? null;
+  const d = prData.get(p.number) ?? null;
+  const ins = p.g6.independent;
+  for (const j of gateJudgementsOfCopy(entry.copy, config)) {
+    const seatName = j.seatRole ? ((config.roles ?? []).find((r) => r.id === j.seatRole)?.name ?? j.seatRole) : null;
+    const fields = machineFields(j, entry.copy, {
+      source: entry.sources[0],
+      pr: d ? { createdAt: d.createdAt ?? null, authorLogin: d.author?.login ?? null } : null,
+      instructors: { known: new Map(ins.instructors.map((name) => [personKey(config, name), name])), unresolved: ins.unresolvedInstructors, byDefault: ins.instructorsByDefault },
+      d0: d0Version !== null ? { version: String(d0Version), source: `process.config.json#d0Version(マージ前の基底 ${p.mergeCommit}^ の構成)` } : null,
+      seatName,
+    });
+    reviewJudgements.push({
+      pr: p.number,
+      mergeCommit: p.mergeCommit,
+      gate: j.gate,
+      result: j.result,
+      criteria: j.criteria,
+      deadline: j.deadline,
+      reviewId: j.reviewId,
+      state: j.state,
+      login: j.login,
+      userId: j.userId,
+      person: j.person?.name ?? null,
+      judgeOk: j.judgeOk,
+      judgeNote: j.judgeNote,
+      commitId: j.commitId,
+      head: j.head,
+      headMatch: j.headMatch,
+      submittedAt: j.submittedAt,
+      specs: [...new Set([...(p.specs ?? []), ...(p.specsTouched ?? [])])],
+      source: entry.sources[0],
+      fields: fields.fields,
+      humanFields: fields.humanFields,
+    });
+  }
+}
 
 // --- 規模の観測(#295 / ADR-0058。保証の開示の観測。上限へは自動で反映しない) --------------
 //
@@ -957,52 +1455,8 @@ const sizeObservation = (() => {
 // 機械が見るのは有無だけである。内容は見ない(PR 本文の「検証方法と結果」と同じ水準)。
 // 変更したファイルがすべて記録の置き場に収まるコミットは、製品の変更でないため対象外とする。
 // 対象外にしたコミットは、変更の件数にも数えない。件数は表示する。
+// 記録の置き場(RECORD_PATHS・CONDITIONAL_RECORD_PATHS)は、PR の変更の一覧より前で定義している(記録だけの PR の識別と共用)
 
-/**
- * 記録の置き場。ここだけを変えるコミットは、製品の変更でない。
- *
- * 無条件で対象外にするのは、判定記録、証跡、導入前の検証の記録(docs/adoption-trial/。合否の基準・封じた要約値・
- * 見つける者の記録・演習の記録・記録の様式。標準 附属書I I.11)、演習の報告(docs/drills/)、退出の予行の記録
- * (docs/exit-rehearsal.json)、技術負債台帳、体制図、構成書(全体が生成物)である。評価用の基準集合は評価の入力であり
- * 記録ではないため、PR で入れる(範囲を狭める変更は統制を緩める向きの変更。第3章 3.12.3 の要求事項10)。
- * 体制図は、決定の理由と記名の記録である。生成区間と構成の一致は、D-0 の検査(check-d0)が確かめる
- */
-// docs/safety/ は独立した安全性の評価の記録(附属書F。CL2 以上の監査対応書式の「安全性の評価の記録の所在」)の置き場。記録を
-// リポジトリに置く組織が、記録のコミットを製品の変更に数えられないようにする(#288 第8巡 W8)。文書管理システム(DHF など)を
-// 所在にする組織は、この置き場を使わず、判定記録の所在の欄に文書管理システムの識別子を書く
-const RECORD_PATHS = ['docs/gates/**', 'evidence/**', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
-
-/**
- * 内容を見て対象外にするファイル。パスだけで対象外にすると、構成の手での書き換えと、指示資産の
- * 手書き部分(強制層)の変更が、リスク区分の記録も、独立した人の確認の件数も免れる。
- * 対象外にできない場合は、その理由を返す。対象外にできる場合は null
- */
-const GENERATED_BLOCK = /<!-- generated:process-rules start -->[\s\S]*?<!-- generated:process-rules end -->/;
-const CONDITIONAL_RECORD_PATHS = {
-  // /process-change が書くのは生成区間だけである。生成区間の外(手書き部分)が変わっていないこと
-  'CLAUDE.md': (before, after) => {
-    if (before === null || after === null) return 'CLAUDE.md の追加または削除である';
-    const outside = (text) => text.replace(/\r\n/g, '\n').replace(GENERATED_BLOCK, '').trim();
-    return outside(before) === outside(after) ? null : 'CLAUDE.md の生成区間の外(手書き部分)が変わっている';
-  },
-  // 構成を書き換えるのは /process-change だけである。変化点の記録(changeLog[])が追記されており、
-  // 既存の記録が先頭部分として保たれていること
-  'process.config.json': (before, after) => {
-    let b;
-    let h;
-    try {
-      b = JSON.parse(before ?? '');
-      h = JSON.parse(after ?? '');
-    } catch {
-      return 'process.config.json の前後を読めない(追加・削除、または JSON でない)';
-    }
-    const bl = Array.isArray(b.changeLog) ? b.changeLog : [];
-    const hl = Array.isArray(h.changeLog) ? h.changeLog : [];
-    if (hl.length <= bl.length) return 'process.config.json が、変化点の記録(changeLog)の追記なしに書き換えられている';
-    if (bl.some((e, i) => canonicalJson(e) !== canonicalJson(hl[i]))) return 'process.config.json の、既存の変化点の記録(changeLog)が書き換えられている';
-    return null;
-  },
-};
 // 構成の初期化より前のコミットのうち、製品のコード(記録の置き場の外)を変えたもの。欠落にはしないが、
 // 件数を保証の開示の項目1・5 に出し、品質レポートに一覧を出す(隠さない)。独立した人の確認・リスク区分・
 // 検証の記載は確かめていない。テンプレート由来の初期コミット(親を持たず、テンプレートのファイルだけを持つ
@@ -1030,30 +1484,13 @@ const preInitDetail = (() => {
   }
   return { total: preInitCommits.length, templateOrigin, recordOnly, product };
 })();
-const fileAt = (rev, file) => {
-  try {
-    return execFileSync('git', ['show', `${rev}:${file}`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {
-    return null;
-  }
-};
 const commitRefers = (hash) => (text) => (String(text ?? '').match(/\b[0-9a-f]{7,40}\b/gi) ?? []).some((t) => hash.toLowerCase().startsWith(t.toLowerCase()));
 const directChanges = trailers
   .filter((c) => !commitPr.has(c.hash))
   .map((c) => {
     const files = git(['show', '--name-only', '--format=', c.hash]).split('\n').filter(Boolean);
     // 対象外にできない理由。空なら、記録だけのコミットである
-    const notRecord = [];
-    for (const x of files) {
-      if (RECORD_PATHS.some((g) => matchGlob(g, x))) continue;
-      const judge = CONDITIONAL_RECORD_PATHS[x];
-      if (!judge) {
-        notRecord.push(`記録の置き場の外のファイルを含む(${x})`);
-        continue;
-      }
-      const why = judge(fileAt(`${c.hash}^`, x), fileAt(c.hash, x));
-      if (why) notRecord.push(why);
-    }
+    const notRecord = notRecordReasons(c.hash, files);
     // 対象外: 記録だけのコミット(record-only)と、ファイルの変更を持たないコミット(empty。マージなど)
     const exempt = !files.length ? 'empty' : notRecord.length ? null : 'record-only';
     const ins = commitInstructors(c);
@@ -1127,7 +1564,8 @@ for (const c of trailers) {
     // 開発者の席の規則。null なら、この変更について開発者の席は協働である
     developerRule: developer.rule,
     riskClass: pr ? (prByNumber.get(pr)?.riskClass ?? null) : (direct?.riskClass ?? null),
-    exempt: direct?.exempt ?? null,
+    // 記録だけのコミット・記録だけの PR は、製品の変更でないため対象外
+    exempt: direct?.exempt ?? (pr && anyPrByNumber.get(pr)?.recordOnly ? 'record-only' : null),
   });
 }
 for (const p of prs) {
@@ -1351,6 +1789,7 @@ for (const p of prs) {
   if (p.authorVerificationPresent) continue;
   gaps.push(
     `PR #${p.number}: 作成側の検証の記載(PR 本文「検証方法と結果」)がありません` +
+      (p.recordFound ? '' : '(PR の記録を取得できず、承認レビューの写しで対応づけた PR。PR 本文を読めていない。gh で集約し直す)') +
       (p.delegated ? '。開発者の席の委任の範囲の変更では、担い手が実行結果の証拠として書きます' : '')
   );
 }
@@ -1369,7 +1808,9 @@ for (const p of prs) {
 // 独立した人の確認の有無にはよらない。選択肢を残したままの欄も未記入である
 for (const p of prs) {
   if (p.riskClass) continue;
-  gaps.push(`PR #${p.number}: リスク区分が未記入です(選択肢を残したままの欄は未記入として扱います)。リスク区分は変更ごとに確定する記録です(第3章 3.8.1)`);
+  gaps.push(
+    `PR #${p.number}: リスク区分が未記入です(選択肢を残したままの欄は未記入として扱います${p.recordFound ? '' : '。PR の記録を取得できず、承認レビューの写しで対応づけた PR のため、PR 本文を読めていない。gh で集約し直す'})。リスク区分は変更ごとに確定する記録です(第3章 3.8.1)`
+  );
 }
 
 // 規模の基準値を超えてマージされた PR(#295 / ADR-0058)。超過した変更の区分の下限は R2 で、規模の確認(読み切れた旨、保証の所在)を要する。
@@ -1557,8 +1998,8 @@ for (const r of gateRecordList) {
 }
 // gate-g5 の成功を持たない PR は欠落である。結果の記録が無い PR(unknown)も含める。ブランチ保護(必須チェック)を
 // 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
-for (const p of prs) {
-  if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる)`);
+for (const p of [...prs, ...recordPrs]) {
+  if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる' : 'PR の記録を取得できず、写しで対応づけた PR。gh で集約し直す'})`);
   else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
 }
 
@@ -1568,28 +2009,104 @@ const specChanges = [
   ...prs.map((p) => ({ label: `PR #${p.number}`, specs: p.specs })),
   ...directProduct.map((d) => ({ label: `コミット ${d.commit}`, specs: d.specs })),
 ];
+// 判定者本人のレビュー(宣言行 G-4: 通過)で記録した仕様の PR。commit_id がマージ時の head と一致し、判定する席の責任者でない
+// 者の宣言行でないものに限る。仕様の対応づけは、その PR のトレーラ Spec と、変更したファイル(specs/F-NNN/)による
+const g4ByReview = (spec) => reviewJudgements.some((j) => j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(spec));
 const g4Approved = (spec) =>
   // 対応は判定記録の「対象」欄が仕様の ID を指していることで確かめる。ファイル名だけでは対応づけない
-  gateDetails.some((g) => /G-4/.test(g.gate ?? '') && passed(g) && new RegExp(`(?<![A-Za-z0-9])${spec}(?!\\d)`).test(String(g.target ?? '')));
+  gateDetails.some((g) => /G-4/.test(g.gate ?? '') && passed(g) && new RegExp(`(?<![A-Za-z0-9])${spec}(?!\\d)`).test(String(g.target ?? ''))) || g4ByReview(spec);
 const specsWithoutG4 = isActive('g4') ? [...new Set(specChanges.flatMap((c) => c.specs))].filter((s) => !g4Approved(s)) : [];
 for (const s of specsWithoutG4) {
   gaps.push(
     `仕様 ${s}: 変更(${specChanges.filter((c) => c.specs.includes(s)).map((c) => c.label).join(', ')})がトレーラ Spec で指す仕様に、` +
-      '機能仕様承認(G-4)の判定記録(結果が通過で、「対象」に仕様の識別子)がありません(第4章 G-7 基準5)'
+      '機能仕様承認(G-4)の判定記録(結果が通過で、「対象」に仕様の識別子。または仕様の PR への判定者本人のレビュー(宣言行 G-4: 通過)の写し)がありません(第4章 G-7 基準5)'
   );
+}
+
+// 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版(commit_id)がマージ時の head と一致しない判定。
+// 確定していない版を取り込んだ変更として欠落に数える(第4章 G-2 / IMPL-0129)。判定する席の責任者でない者の宣言行は判定でないため、ここでは見ない
+for (const j of reviewJudgements) {
+  if (!/^G-[234]$/.test(j.gate) || j.judgeOk === false || j.headMatch) continue;
+  gaps.push(
+    `PR #${j.pr}: ${j.gate} の判定(レビュー ${j.reviewId ?? '(id なし)'}、@${j.login ?? '?'})の対象の版(commit_id ${String(j.commitId ?? '(無い)').slice(0, 7)})が、マージ時の head(${j.head ? j.head.slice(0, 7) : '写しに無い'})と一致しません。` +
+      '確定していない版を取り込んだ変更です(第4章 G-2)。判定者がマージした版を判定し直し、宣言行のあるレビューで記録してください'
+  );
+}
+
+// --- 出荷の範囲の記録(第4章 G-7 基準5・9)と、写しの件数の一致 ---------------------------------------------------
+//
+// 範囲内に追加された基底の docs/gates の様式に、範囲内のマージの承認レビューの写し(宣言行のある判定と、G-6 の独立した人の
+// 確認に数えた承認)と、記録用ブランチの様式のうち対象が範囲内のもの(PR の番号・コミットの識別子・終点のタグ)を足す。
+// 基底へ複製済みの様式は基底の側で数え、記録用ブランチの側では数えない(二重に数えない)
+const inRangeTarget = (target) => {
+  const t = String(target ?? '');
+  if (!t) return false;
+  return [...anyPrByNumber.keys()].some((n) => refersToPr(t, n)) || (to !== 'HEAD' && t.includes(to)) || commits.some((c) => commitRefers(c.hash)(t));
+};
+const branchFormsInRange = recordSources.gates.filter((g) => !(g.baseFile && (!recordsInRange || recordsInRange.has(g.baseFile))) && inRangeTarget(targetOfForm(g.text)));
+const copyJudgementsInRange = reviewJudgements.filter((j) => j.judgeOk !== false);
+// 宣言行の無い承認レビューを G-6 の記録として数えた PR(宣言行のある G-6 の判定を持つ PR は、上の判定の側で数える)
+const copyG6InRange = prs.filter((p) => p.copy && p.g6.independentHuman && p.g6.reviewerSummarySource === 'review' && !reviewJudgements.some((j) => j.pr === p.number && j.gate === 'G-6'));
+const copyRange = copyCoverage([...anyPrByNumber.keys()], recordSources.copies);
+// 写しの不一致(基底ブランチの複製と記録用ブランチ)は、人が書き換えた記録として欠落に数える(第4章 G-7 基準5)
+for (const m of recordSources.mismatches) gaps.push(m.text);
+// 写しの無い承認レビューは、記録として引けない(第4章 G-6 条件5)。記録用ブランチを読めるときだけ欠落に数える(読めない構成は
+// 項目1 に理由を出す)。G-6 を適用する体制の、事後へ移していない変更で、様式の G-6 の判定記録も無いものが当たる
+if (recordsBranch.available) {
+  for (const p of prs) {
+    if (p.copy || p.g6PostHoc || !g6Applied) continue;
+    if (g6RecordsFor((text) => refersToPr(text, p.number)).length) continue;
+    gaps.push(
+      `PR #${p.number}: 承認レビューの写し(${REVIEWS_DIR}/pr-${p.number}.json)が記録用ブランチ ${recordsBranch.ref} に無く、G-6 の判定記録(様式)もありません。` +
+        '写しの無い承認レビューは記録として引けません(第4章 G-6 条件5)。record-copy の実行を確かめ、写しを置けなければ独立レビュアが G-6 の判定記録(様式)を残してください'
+    );
+  }
 }
 
 if (!period && config.gates.g7?.state !== 'omitted') {
   if (!exists(handoverFile)) gaps.push('運用引き継ぎ文書(docs/handover.md)がありません');
   if (!exists(debtFile)) gaps.push('技術負債台帳(docs/debt-ledger.md)がありません');
-  // 判定記録の有無は、当該出荷の範囲のものだけを見る。過去の出荷の1件で通さない
-  if (!records.length) {
+  // 判定記録の有無は、当該出荷の範囲のものだけを見る。過去の出荷の1件で通さない。承認レビューの写しによる判定と、
+  // 記録用ブランチの様式も記録である
+  if (!records.length && !copyJudgementsInRange.length && !copyG6InRange.length && !branchFormsInRange.length) {
     gaps.push(
       from
-        ? `当該出荷の範囲(${range})で追加されたゲート判定記録(docs/gates/)が1件もありません。過去の出荷の記録は、今回の出荷の記録に数えません`
-        : 'ゲート判定記録(docs/gates/)が1件もありません'
+        ? `当該出荷の範囲(${range})で追加されたゲート判定記録(docs/gates/、承認レビューの写し、記録用ブランチの様式)が1件もありません。過去の出荷の記録は、今回の出荷の記録に数えません`
+        : 'ゲート判定記録(docs/gates/、承認レビューの写し、記録用ブランチの様式)が1件もありません'
     );
   }
+}
+
+// --- 記録の帰属(IMPL-0128 / 第4章「判定記録を基底ブランチへ入れる操作」) --------------------------------------------
+//
+// 記名者本人の裏づけ(記名者本人の承認レビュー、署名コミット、author の login・email)の無い様式は、記名が自己申告である。
+// 件数で保証の開示の項目1 に出し、欠落には数えない。記録だけの PR に記名者以外の承認が付いていれば、取り込みの事務として開示する
+/** 様式のファイルを最後に触ったコミット(author と署名の検証結果)。records.mjs の lastCommitOf と同じ形(読めなければ null) */
+function fileCommit(file) {
+  const out = git(['log', '-1', '--format=%H%x00%an%x00%ae%x00%aI%x00%G?', 'HEAD', '--', file]);
+  if (!out) return null;
+  const [hash, authorName, authorEmail, date, sig] = out.split('\0');
+  const signed = sig === 'G' || sig === 'U' ? true : sig === 'N' ? false : null;
+  const m = String(authorEmail ?? '').match(/^(?:\d+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)@users\.noreply\.github\.com$/i);
+  return { hash, authorName, authorEmail, authorLogin: m ? m[1] : null, date, signed, signature: sig ?? null };
+}
+const attribution = { backed: [], selfAttested: [], clerical: [] };
+const attributeForm = (gateRecord, approvers, prNumber) => {
+  const judgeName = judgeOfForm(gateRecord.text);
+  const person = judgeName ? resolveSigner(config, judgeName) : null;
+  const a = formAttribution(gateRecord, { judgeName, person, approvers });
+  const item = { file: gateRecord.file, judge: judgeName, how: a.how, note: a.note, pr: prNumber };
+  (a.backed ? attribution.backed : attribution.selfAttested).push(item);
+  if (a.clerical.length) attribution.clerical.push({ file: gateRecord.file, pr: prNumber, judge: judgeName, approvers: a.clerical });
+};
+// 記録用ブランチの様式(記名者本人が置く。PR を経ない)
+for (const g of branchFormsInRange) attributeForm(g, null, null);
+// 基底の docs/gates のうち、当該の範囲で追加された様式。PR で入ったものは、その PR の承認者(人のアカウント。最後の状態が承認)と記名者を照合する
+for (const r of records) {
+  const added = recordCommitOf(r.file);
+  const m = added ? commitPr.get(added) : null;
+  const pr = m?.role === 'merge' ? (anyPrByNumber.get(m.number) ?? null) : null;
+  attributeForm({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), commit: fileCommit(r.file) }, pr ? pr.g6.approvers : null, pr?.number ?? null);
 }
 
 // リリース決裁(G-8)の決断の記録の「出荷判定者の異議」欄。空欄は記載の欠落である(標準 第4章 G-8)。
@@ -2595,8 +3112,38 @@ if (undeclared.length) {
   );
 }
 
+// 承認レビューの写しと記録用ブランチの開示(項目1)。読めた・読めない、範囲との一致、不一致、所見、判定者本人のレビューの判定、
+// 記録の帰属。値であり、評価を足さない
+const recordsDisclosure = {
+  branch: {
+    available: recordsBranch.available,
+    ref: recordsBranch.ref,
+    reason: recordsBranch.reason,
+    head: recordsBranch.head ? recordsBranch.head.slice(0, 8) : null,
+    copies: recordsBranch.reviews.size,
+    forms: recordsBranch.gates.length,
+    skipped: recordsBranch.skipped,
+  },
+  base: { present: baseCopies.present, copies: baseCopies.reviews.size, skipped: baseCopies.skipped },
+  range: copyRange,
+  mismatches: recordSources.mismatches.map((m) => m.text),
+  copyFindings: [...prs, ...recordPrs].flatMap((p) => p.copy?.findings ?? []),
+  staleApprovals: [...prs, ...recordPrs].filter((p) => (p.copy?.stale ?? []).length).map((p) => `#${p.number}(${p.copy.stale.map((s) => `@${s.login ?? '?'}`).join('・')})`),
+  judgements: reviewJudgements,
+  g24: {
+    recorded: reviewJudgements.filter((j) => /^G-[234]$/.test(j.gate) && j.judgeOk !== false).map((j) => `#${j.pr} ${j.gate}`),
+    headMismatch: reviewJudgements.filter((j) => /^G-[234]$/.test(j.gate) && j.judgeOk !== false && !j.headMatch).map((j) => `#${j.pr} ${j.gate}`),
+    notJudge: reviewJudgements.filter((j) => j.judgeOk === false).map((j) => `#${j.pr} ${j.gate}(@${j.login ?? '?'})`),
+    judgeUnverified: reviewJudgements.filter((j) => j.judgeOk === null).map((j) => `#${j.pr} ${j.gate}`),
+  },
+  inRange: { forms: records.length, branchForms: branchFormsInRange.map((g) => g.file), judgements: copyJudgementsInRange.length, g6Approvals: copyG6InRange.map((p) => p.number) },
+  attribution: { backed: attribution.backed.length, selfAttested: attribution.selfAttested, clerical: attribution.clerical },
+  recordPrs: recordPrs.map((p) => ({ number: p.number, approvers: p.g6.approvers, files: p.files, g5: p.g5 })),
+};
+
 const assurance = {
   independence,
+  records: recordsDisclosure,
   tailoring,
   changes: changeCounts,
   machineChecks,
@@ -2937,7 +3484,16 @@ if (claimNotEstablished) {
 const gateLabelRe = (key) => new RegExp(`^G-${key.slice(1)}(?!\\d)`);
 const gatesInRange = Object.entries(config.gates ?? {})
   .filter(([k]) => isActive(k))
-  .map(([k, g]) => ({ gate: k, label: g.label ?? k, records: count(records, (r) => gateLabelRe(k).test(r.gate ?? '')) }));
+  .map(([k, g]) => ({
+    gate: k,
+    label: g.label ?? k,
+    // 基底の様式 + 承認レビューの写しの判定(宣言行) + 写しの G-6 の承認(宣言行なし) + 記録用ブランチの様式(対象が範囲内)
+    records:
+      count(records, (r) => gateLabelRe(k).test(r.gate ?? '')) +
+      count(copyJudgementsInRange, (j) => gateLabelRe(k).test(j.gate)) +
+      (k === 'g6' ? copyG6InRange.length : 0) +
+      count(branchFormsInRange, (f) => gateLabelRe(k).test(gateOfRecord(f.text) ?? '')),
+  }));
 const g6Summary = `独立した人の確認あり ${confirmedUnits.length} 件 / G-6 を事後へ移した ${g6PostHoc} 件 / 例外承認の記録が対応づいた ${exceptedChanges.length} 件 / 独立した人の確認を経ていない ${withoutIndependentHuman} 件` +
   (reviewersRequired >= 2 ? `(承認者 ${reviewersRequired} 名を要する体制。満たない変更 ${insufficientApproverChanges.length} 件${insufficientApproverChanges.length ? `: ${insufficientApproverChanges.join(', ')}` : ''})` : '') +
   (auditFormat ? `(監査対応書式。判定記録の欠落・未記入 ${auditRecordGaps.length} 件)` : '') +
@@ -3053,8 +3609,10 @@ const evidence = {
   debt: { ledgerPresent: exists(debtFile) },
   handover: { updated: exists(handoverFile) },
   gateRecords,
-  // 当該出荷の範囲で追加された判定記録。完備の判定は、こちらだけを見る
+  // 当該出荷の範囲で追加された判定記録(基底の様式)。完備の判定は、これと承認レビューの写し・記録用ブランチの様式(assurance.records)を見る
   gateRecordsInRange: records.map((r) => r.file),
+  // 記録だけの PR(変更の単位に数えない。承認者と記名者の照合は assurance.records.attribution)
+  recordPrs: recordsDisclosure.recordPrs,
   adrs,
   ipClearance: licenseScan,
   shipBlocked: config.shipBlocked ?? null,
@@ -3399,6 +3957,41 @@ function renderAssurance(external) {
   );
   if (ch.withdrawnApprovals) {
     R.push(`| 承認の後に同じ人が変更要求を出した(取り下げた承認は数えていない) | ${ch.withdrawnApprovals} 件 | ${prev((p) => p.independence.changes.withdrawnApprovals ?? '値なし')} |`);
+  }
+  {
+    // 承認レビューの写しと記録用ブランチ(#321 D5・D6 / IMPL-0125・0126・0128・0129)。読めない理由も値として出す
+    const rc = A.records;
+    const prevRc = (pick) => prev((p) => (p.records ? pick(p.records) : null));
+    const listOf = (xs, n = 5) => (xs.length ? `: ${xs.slice(0, n).join(' / ')}${xs.length > n ? ' ほか' : ''}` : '');
+    R.push(
+      `| 承認レビューの写しと様式の読み取り元(記録用ブランチ ${rc.branch.ref}) | ${
+        rc.branch.available
+          ? `読めた(先頭 ${rc.branch.head}。写し ${rc.branch.copies} 件 / 様式 ${rc.branch.forms} 件${rc.branch.skipped.length ? ` / 読めないファイル ${rc.branch.skipped.length} 件(${rc.branch.skipped.map((s) => s.file).join(', ')})` : ''})`
+          : `**読めない**(${rc.branch.reason})。基底ブランチの記録(docs/gates/${rc.base.present ? `、${BASE_COPIES_DIR}` : ''})だけで集約した`
+      }${rc.base.present ? `。基底ブランチに複製された写し ${rc.base.copies} 件` : ''} | ${prevRc((r) => (r.branch.available ? `写し ${r.branch.copies} 件 / 様式 ${r.branch.forms} 件` : '読めない'))} |`
+    );
+    R.push(
+      `| 出荷の範囲のマージと写しの一致(第4章 G-7 基準5) | 範囲内のマージ ${rc.range.merged} 件 / 写し ${rc.range.copied} 件 / 欠け ${rc.range.missing.length} 件${rc.range.missing.length ? `(${rc.range.missing.map((n) => `#${n}`).join(', ')})` : ''} | ${prevRc((r) => `マージ ${r.range.merged} 件 / 写し ${r.range.copied} 件 / 欠け ${r.range.missing.length} 件`)} |`
+    );
+    R.push(`| 写しの不一致(基底ブランチの複製と記録用ブランチ。欠落に数えた) | ${rc.mismatches.length} 件 | ${prevRc((r) => `${r.mismatches.length} 件`)} |`);
+    R.push(`| 写しと PR の記録(API)の所見(本文の編集・dismiss・ログイン名の変化。所見であり欠落にしない) | ${rc.copyFindings.length} 件${listOf(rc.copyFindings, 3)} | ${prevRc((r) => `${r.copyFindings.length} 件`)} |`);
+    if (rc.staleApprovals.length) {
+      R.push(`| 承認の後の push で失効した承認(写しの commit_id がマージ時の head と違う。数えていない) | ${rc.staleApprovals.length} 件${listOf(rc.staleApprovals)} | ${prevRc((r) => `${(r.staleApprovals ?? []).length} 件`)} |`);
+    }
+    R.push(
+      `| G-2・G-3・G-4 を判定者本人のレビュー(宣言行)で記録した変更 | ${rc.g24.recorded.length} 件${listOf(rc.g24.recorded)} / うち確定していない版を取り込んだ ${rc.g24.headMismatch.length} 件${listOf(rc.g24.headMismatch)}${
+        rc.g24.notJudge.length ? ` / 判定する席の責任者でない者の宣言行(判定に数えない) ${rc.g24.notJudge.length} 件${listOf(rc.g24.notJudge)}` : ''
+      }${rc.g24.judgeUnverified.length ? ` / 判定者本人かを確かめられない ${rc.g24.judgeUnverified.length} 件${listOf(rc.g24.judgeUnverified)}` : ''}。この承認は G-6 の独立した人の確認に数えていない | ${prevRc((r) => `${r.g24.recorded.length} 件`)} |`
+    );
+    R.push(
+      `| 記名が自己申告の記録(記名者本人の承認レビュー・署名コミット・author の裏づけが無い様式。欠落にしない) | ${rc.attribution.selfAttested.length} 件${listOf(rc.attribution.selfAttested.map((x) => `${x.file}(${x.note})`), 3)} / 裏づけあり ${rc.attribution.backed} 件 | ${prevRc((r) => `${r.attribution.selfAttested.length} 件`)} |`
+    );
+    R.push(
+      `| 記名者以外の承認が付いた記録の PR(取り込みの事務。判定ではない) | ${rc.attribution.clerical.length} 件${listOf(rc.attribution.clerical.map((x) => `${x.file}(PR #${x.pr}。承認者 ${x.approvers.map((a) => `@${a}`).join('・')}、記名者 ${x.judge ?? '未記入'})`), 3)} | ${prevRc((r) => `${r.attribution.clerical.length} 件`)} |`
+    );
+    if (rc.recordPrs.length) {
+      R.push(`| 記録だけの PR(変更したファイルのすべてが記録の置き場。変更の件数に数えていない) | ${rc.recordPrs.length} 件(${rc.recordPrs.map((p) => `#${p.number}`).join(', ')}) | ${prevRc((r) => `${(r.recordPrs ?? []).length} 件`)} |`);
+    }
   }
   if (preInitDetail.total) {
     R.push(
@@ -3803,7 +4396,10 @@ R.push(
   `- 記録の置き場として扱うパス: ${RECORD_PATHS.join(' / ')}。` +
     'CLAUDE.md は、生成区間の外が変わっていないコミットに限る。process.config.json は、変化点の記録(changeLog)が追記され、既存の記録が保たれているコミットに限る'
 );
-R.push(`- PR: ${prs.length} 件(PR のマージコミットと一致するコミットだけを、PR の変更として数えている)`);
+R.push(`- PR: ${prs.length} 件(PR のマージコミットと一致するコミットだけを、PR の変更として数えている${prFromCopy.size ? `。うち、PR の記録を取得できず承認レビューの写しの merge_commit_sha で対応づけた PR ${prFromCopy.size} 件` : ''})`);
+if (recordPrs.length) {
+  R.push(`- 記録だけの PR: ${recordPrs.length} 件(${recordPrs.map((p) => `#${p.number}`).join(', ')}。変更したファイルのすべてが記録の置き場。変更の件数に数えず、承認者と記名者の照合を保証の開示の項目1 に出す)`);
+}
 const claimed = directChanges.filter((d) => d.claimedPr);
 if (claimed.length) {
   R.push(`- 件名は PR の番号を持つが、PR の変更と認めなかったコミット: ${claimed.length} 件(${claimed.map((d) => `${d.commit} → ${d.claimedPr.why}`).join(' / ')})`);
@@ -3864,10 +4460,46 @@ if (prs.some((p) => p.g6PostHoc) || period) {
   R.push('');
 }
 
+R.push('## 承認レビューの写しから機械が出した欄');
+R.push('');
+R.push(
+  `写し(記録用ブランチ ${recordsBranch.ref}、または基底ブランチの複製 ${BASE_COPIES_DIR})にある宣言行つきのレビューを判定として読み、機械が出す欄を推定を含まずに写したものです(第4章「機械が出す欄と人が書く欄」)。` +
+    '欄ごとに出所を併記します。人が書く欄(挙動要約・確認した項目・確認していない事項・差し戻し理由)は本文の所在だけを示し、写さず、要約も評価もしません。'
+);
+R.push('');
+if (!recordsBranch.available) {
+  R.push(`記録用ブランチを読めませんでした(${recordsBranch.reason})。`);
+  R.push('');
+}
+if (reviewJudgements.length) {
+  for (const j of reviewJudgements) {
+    R.push(
+      `### PR #${j.pr} ${j.gate}: ${j.result}(レビュー ${j.reviewId ?? '(id なし)'})` +
+        (j.judgeOk === false ? ' — 判定する席の責任者でない者の宣言行。判定に数えない' : '') +
+        (j.judgeOk !== false && /^G-[234]$/.test(j.gate) && !j.headMatch ? ' — **確定していない版を取り込んだ(欠落)**' : '')
+    );
+    R.push('');
+    R.push('| 欄 | 値 | 出所 |');
+    R.push('| --- | --- | --- |');
+    for (const f of j.fields) R.push(`| ${f.field} | ${String(f.value).replace(/[|]/g, '/')} | ${String(f.source).replace(/[|]/g, '/')} |`);
+    R.push(`| 人が書く欄 | (写さない) | ${j.humanFields.location}。${j.humanFields.note} |`);
+    if (j.judgeNote) {
+      R.push('');
+      R.push(`注記: ${j.judgeNote}`);
+    }
+    R.push('');
+  }
+} else {
+  R.push('宣言行のあるレビューの写しはありません。');
+  R.push('');
+}
+
 R.push('## 記録');
 R.push('');
 R.push(`- カバレッジ: ${coverage.measured ? `${coverage.pct}%(下限 ${coverage.threshold}%)` : `未測定(${coverage.reason})`}`);
-R.push(`- ゲート判定記録: 当該出荷の範囲で追加 ${records.length} 件(リポジトリの全体 ${gateRecords.length} 件)`);
+R.push(
+  `- ゲート判定記録: 当該出荷の範囲で追加 ${records.length} 件(リポジトリの全体 ${gateRecords.length} 件)。承認レビューの写しによる判定 ${copyJudgementsInRange.length} 件、写しの G-6 の承認 ${copyG6InRange.length} 件、記録用ブランチの様式 ${branchFormsInRange.length} 件`
+);
 R.push(`- 判断記録(ADR): ${adrs.length} 件`);
 R.push(`- 技術負債台帳: ${exists(debtFile) ? 'あり' : '**なし**'}`);
 R.push(`- 運用引き継ぎ文書: ${exists(handoverFile) ? 'あり' : '**なし**'}`);
@@ -3929,3 +4561,4 @@ if (gaps.length) {
   process.exit(1);
 }
 notice('記録は完備しています');
+}
