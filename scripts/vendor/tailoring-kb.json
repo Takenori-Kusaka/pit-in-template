@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "713f3c652d980df0c1a682d479287c4b67084ee5"
+    "commit": "2368507ef922c68559f91f6761b7270b5a63fa17"
   },
   "questions": [
     {
@@ -1554,6 +1554,12 @@
       "range": "R1 の決定・例外承認",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#573-選択肢の比較適用-r1-の決定例外承認"
+    },
+    {
+      "title": "2.10.2 規模の合意",
+      "range": "事業ステージのスコープ3層の規模の合意",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/lifecycle/#2102-規模の合意適用-事業ステージのスコープ3層の規模の合意"
     },
     {
       "title": "委任を適用した変更",
