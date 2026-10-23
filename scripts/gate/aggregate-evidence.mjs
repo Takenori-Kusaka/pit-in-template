@@ -113,6 +113,7 @@ import {
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
+import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 
 const config = loadConfig();
 /**
@@ -2116,11 +2117,11 @@ try {
 } catch {
   adapter = null;
 }
-const phase = (name) => {
-  if (!adapter) return NO_RECORD;
-  if (!hasTarget(adapter)) return '未実施(検査対象が存在しない)';
-  return (adapter.commands?.[name] ?? '').trim() ? '実施(結果は gate-g5 に含む)' : '未実施(コマンドが未設定)';
-};
+// 「実施」は、集約 gate-g5 が合否に使ったジョブの検査に限る(標準 附属書H H.6 項目4、第4章 G-5「判定基準を実装する検査と集約」。#290)。
+// アダプタにコマンドが書かれていること(設計の有効性)だけで「実施」と出さない。集約の定義は出荷の時点のワークフローから読む
+const g5Aggregate = readAggregate(ROOT);
+const phase = (name, job) =>
+  machineCheckStatus({ adapter, hasTarget: adapter ? hasTarget(adapter) : false, aggregate: g5Aggregate, name, job, noRecord: NO_RECORD });
 const envCheck = readEnvCheck(config);
 const machineChecks = {
   gateG5: prs.length
@@ -2130,12 +2131,22 @@ const machineChecks = {
         notRecorded: count(prs, (p) => p.g5 === 'unknown'),
       }
     : NO_RECORD,
-  test: phase('test'),
-  coverage: coverage.measured ? `実施(${coverage.pct}% / 下限 ${coverage.threshold}%)` : `${UNMEASURED}(${coverage.reason})`,
-  staticAnalysis: phase('lint'),
-  dependencyAudit: phase('audit'),
-  licenses: licenseScan.scanRun ? `実施(${licenseScan.result ?? '結果の記録なし'})` : '未実施',
-  secretScan: phase('secretScan'),
+  test: phase('test', 'test'),
+  coverage: !coverage.measured
+    ? `${UNMEASURED}(${coverage.reason})`
+    : g5Aggregate?.effective.has('test')
+      ? `実施(${coverage.pct}% / 下限 ${coverage.threshold}%)`
+      : `未実施(測定 ${coverage.pct}% はあるが、ジョブ test を集約 gate-g5 が合否に使っていない)`,
+  staticAnalysis: phase('lint', 'static-analysis'),
+  dependencyAudit: phase('audit', 'static-analysis'),
+  licenses: !licenseScan.scanRun
+    ? '未実施'
+    : g5Aggregate?.effective.has('ip-clearance')
+      ? `実施(${licenseScan.result ?? '結果の記録なし'})`
+      : `未実施(記録はあるが、ジョブ ip-clearance を集約 gate-g5 が合否に使っていない)`,
+  secretScan: phase('secretScan', 'secret-scan'),
+  // 集約が合否に使う検査の不備(基準を実装するジョブが needs に無い等)。項目は増やさず、項目4 の値の出所として出す
+  aggregateProblems: g5Aggregate ? g5Aggregate.problems : ['集約 gate-g5 の定義(.github/workflows/gate-g5.yml)が無い'],
   dependencyDiff: depDiff ? '実施' : NO_RECORD,
   // 実環境の統制の確認(附属書I I.11 要件⑦。#288 第6巡)。ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物の取得を、
   // 採用者が実環境の gh で確かめた記録(docs/adoption-trial/env-check.json)。未確認は未達のゲートと同じく表示し続ける(欠落にはしない)
@@ -3524,6 +3535,9 @@ function renderAssurance(external) {
   R.push(`| 依存関係のライセンス | ${A.machineChecks.licenses} |`);
   R.push(`| 秘匿情報 | ${A.machineChecks.secretScan} |`);
   R.push(`| 依存の追加・更新の識別 | ${A.machineChecks.dependencyDiff} |`);
+  // 集約が合否に使う検査の不備。「実施」の出所は集約の needs であり、構成にコマンドが書かれていることではない(#290)
+  const aggP = A.machineChecks.aggregateProblems ?? [];
+  R.push(`| 集約 gate-g5 が合否に使う検査(G-5 の基準を実装するジョブ) | ${aggP.length ? `**不備 ${aggP.length} 件**: ${aggP.join(' / ')}` : '基準を実装するジョブはすべて集約の needs にある(基準6 はこのテンプレートの CI に無い)'} |`);
   // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
   // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
   R.push(`| 実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);

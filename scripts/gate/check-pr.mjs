@@ -26,10 +26,12 @@
 //   3. 閾値・除外設定と製品のコードの同時変更(禁止事項6): 基底に既にある閾値・除外設定のファイルと、製品の
 //      コードが、同じ PR でともに変わった場合だけ失敗させる。閾値だけの PR と、初回の設定(基底に無いファイル、
 //      基底の構成が未設定)は通す
-//   3b. 統制の設定の陰性の確認(標準 第4章 G-5 / ADR-0072): 閾値・除外設定(3 と同じ)、ルールセット・フック・権限・
-//      ワークフロー・コード所有者の設定(CONTROL_FILES)を変える PR は、本文の「## 統制の設定の陰性の確認」に
-//      通した違反の場面・結果(止まった / 止まらなかった)・確かめた者を要する。欠けている、結果が「止まらなかった」、
-//      確かめた者が AI の名義なら失敗させる。初回の設定と依存の更新の bot の PR は対象外。場面が実際に止まるかは確かめない
+//   3b. 統制の設定の陰性の確認(標準 第4章 G-5 / ADR-0072・ADR-0073): 閾値・除外設定(3 と同じ)、ルールセット・フック・権限・
+//      ワークフロー・コード所有者の設定と検査装置(検査のスクリプト・知識ベースの複製・アダプタ。CONTROL_FILES)を変える PR は、
+//      本文の「## 統制の設定の陰性の確認」に通した違反の場面・結果(止まった / 止まらなかった / 外した)・確かめた者を要する。
+//      欠けている、結果が「止まらなかった」、確かめた者が AI の名義なら失敗させる。結果が「外した」(検査を意図して外す)なら、
+//      外した検査・止めていた場面・外した後に止めるもの・受け入れた者(AI の名義でない。構成に AI維持管理者の席の責任者が
+//      あればその人)を要する。初回の設定と依存の更新の bot の PR は対象外。場面が実際に止まるかは確かめない
 //   4. 既存のテストの変更: 基底にあるテスト(.claude/guard.json の testPatterns)の削除・名前の変更・行の削除を
 //      一覧にする。独立レビュー(G-6)の材料であり、合否には使わない。--comment で PR へ出す
 //   5. リスク区分: PR の本文の「リスク区分」の節に R1 / R2 / R3 のいずれか1つだけが残っていること。変更の種類に
@@ -93,6 +95,8 @@ import {
   corePathsOf,
   DEFAULT_MAX_CHANGED_LINES,
   DEFAULT_MAX_CHANGED_FILES,
+  personKey,
+  RULE_APPROVER_SEAT,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -239,10 +243,16 @@ export const isExcludedFromSize = (f) => {
  * 統制の設定のファイル(標準 第4章 G-5「統制の設定の陰性の確認」。ADR-0072)。閾値・除外設定(thresholdGlobs と構成の ci・task・guard)に加え、
  * ルールセット・フック・権限・ワークフロー・コード所有者の設定。これを変える PR は、本文に陰性の確認の記録を要する
  */
-export const CONTROL_FILES = ['.claude/settings.json', '.claude/guard.json', '.claude/hooks/**', '.github/workflows/**', '.github/rulesets/**', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'];
+export const CONTROL_FILES = [
+  '.claude/settings.json', '.claude/guard.json', '.claude/hooks/**', '.github/workflows/**', '.github/rulesets/**', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS',
+  // 検査装置(標準 第1章 1.4): 検査のスクリプト、知識ベースの複製、スタック別の検査の定義。検査のスクリプトを `process.exit(0)` に
+  // 替える PR が、誤りも注意も出さずに通っていた(process-compass #290 / ADR-0073)
+  'scripts/gate/**', 'scripts/vendor/**', 'adapters/**',
+];
 /**
- * 「統制の設定の陰性の確認」の節。通した違反の場面・結果(止まった / 止まらなかった)・確かめた者。節が無ければ present: false。
- * HTML コメントの中の節・欄は読まない
+ * 「統制の設定の陰性の確認」の節。通した違反の場面・結果(止まった / 止まらなかった / 外した)・確かめた者。節が無ければ present: false。
+ * 結果が「外した」(検査を意図して外す変更。標準 第4章 G-5「検査を外す変更の記録」。#290 / ADR-0073)のときは、外した検査・
+ * 止めていた場面・外した後に止めるもの(または止めないと決めた理由)・受け入れた者を読む。HTML コメントの中の節・欄は読まない
  */
 export function negativeCheckOf(body) {
   const parts = String(body ?? '').replace(/\r\n/g, '\n').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*統制の設定の陰性の確認.*$/m);
@@ -256,19 +266,44 @@ export function negativeCheckOf(body) {
   return {
     present: true,
     scene: field('通した違反の場面'),
-    result: /^止まった$/.test(t) ? 'stopped' : /^止まらなかった$/.test(t) ? 'not-stopped' : null,
+    result: /^止まった$/.test(t) ? 'stopped' : /^止まらなかった$/.test(t) ? 'not-stopped' : /^外した$/.test(t) ? 'removed' : null,
     checker: field('確かめた者'),
+    removed: field('外した検査'),
+    removedScene: field('止めていた場面'),
+    afterRemoval: field('外した後に止めるもの'),
+    acceptedBy: field('受け入れた者'),
   };
 }
 /** 陰性の確認の不備を理由の配列で返す */
 export function negativeCheckProblems(nc, { config }) {
   if (!nc.present) return ['PR の本文に「## 統制の設定の陰性の確認」の節がありません(本文は .github/PULL_REQUEST_TEMPLATE.md から作る)'];
   const p = [];
+  if (nc.result === 'removed') return removalProblems(nc, { config });
   if (!isFilledValue(nc.scene)) p.push('通した違反の場面が未記入');
-  if (nc.result === 'not-stopped') p.push('結果が「止まらなかった」である(変更した統制の設定が、違反を止めていない。設定を直してから確かめ直す)');
-  else if (nc.result === null) p.push('結果が「止まった」「止まらなかった」のどちらでもない(1つだけ残す)');
+  if (nc.result === 'not-stopped') p.push('結果が「止まらなかった」である(変更した統制の設定が、違反を止めていない。設定を直してから確かめ直す。検査を意図して外す変更なら、結果を「外した」にして外した検査の欄を書く)');
+  else if (nc.result === null) p.push('結果が「止まった」「止まらなかった」「外した」のいずれでもない(1つだけ残す)');
   if (!isFilledValue(nc.checker)) p.push('確かめた者が未記入');
   else if (aiNameBlocked(config, nc.checker)) p.push(`確かめた者 "${nc.checker}" が AI の名義である(確かめるのは人)`);
+  return p;
+}
+/**
+ * 結果「外した」の記録の不備(標準 第4章 G-5「検査を外す変更の記録」、第3章 3.11.4 要求事項3)。4 欄の記入と、受け入れた者が
+ * AI の名義でないこと、構成に AI維持管理者の席の責任者があればその人であることを確かめる。G-5 の判定基準を実装する検査を
+ * 集約から外す変更は、この記録があっても契約検査が落とす(外せるのは第8章の調整だけ)
+ */
+export function removalProblems(nc, { config }) {
+  const p = [];
+  if (!isFilledValue(nc.removed)) p.push('外した検査が未記入');
+  if (!isFilledValue(nc.removedScene)) p.push('止めていた場面(外した検査が止めていた違反の場面)が未記入');
+  if (!isFilledValue(nc.afterRemoval)) p.push('外した後に止めるもの(止める検査、または止めないと決めた理由)が未記入');
+  if (!isFilledValue(nc.acceptedBy)) p.push('受け入れた者(AI維持管理者の席の責任者)が未記入');
+  else if (aiNameBlocked(config, nc.acceptedBy)) p.push(`受け入れた者 "${nc.acceptedBy}" が AI の名義である(外す判断を AI に行わせない。標準 第3章 3.11.4)`);
+  else {
+    const maintainer = (config?.seats ?? []).find((s) => s.role === RULE_APPROVER_SEAT)?.accountable;
+    if (maintainer && personKey(config, maintainer) !== personKey(config, nc.acceptedBy)) {
+      p.push(`受け入れた者 "${nc.acceptedBy}" は、AI維持管理者の席の責任者(${maintainer})ではない(強制層の検査の削除・統合は AI維持管理者が承認する。標準 第3章 3.11.2)`);
+    }
+  }
   return p;
 }
 export const isLock = (f) => LOCK_FILES.includes(basename(f));
@@ -871,7 +906,14 @@ export function analyzePr({ root = ROOT, base, pr = {} }) {
     if (problems.length) {
       result.errors.push(
         `統制の設定の陰性の確認: 統制の設定(${controlChanged.slice(0, 5).join(', ')}${controlChanged.length > 5 ? ` ほか ${controlChanged.length - 5} 件` : ''})を変える PR です。${problems.join('。')}。` +
-          '`## 統制の設定の陰性の確認` の節へ、通した違反の場面・結果(止まった / 止まらなかった)・確かめた者を書く(標準 第4章 G-5。人が確かめ、人が書く)'
+          (nc.result === 'removed'
+            ? '`## 統制の設定の陰性の確認` の節へ、外した検査・止めていた場面・外した後に止めるもの(または止めないと決めた理由)・受け入れた者(AI維持管理者)を書く(標準 第4章 G-5「検査を外す変更の記録」。人が書く)'
+            : '`## 統制の設定の陰性の確認` の節へ、通した違反の場面・結果(止まった / 止まらなかった / 外した)・確かめた者を書く(標準 第4章 G-5。人が確かめ、人が書く)')
+      );
+    } else if (nc.result === 'removed') {
+      result.notices.push(
+        `統制の設定の陰性の確認: 検査を外す記録あり(外した検査 ${nc.removed.slice(0, 60)}。外した後に止めるもの ${nc.afterRemoval.slice(0, 60)}。受け入れた者 ${nc.acceptedBy})。` +
+          '記名の済んだ縮小は、是正の起動の起点「統制の弱化の検知」に当たらない。外した後に止めると書いた検査が実際に止めるかは、この検査では確かめていない'
       );
     } else result.notices.push(`統制の設定の陰性の確認: 記録あり(${nc.scene.slice(0, 60)} → 止まった。確かめた者 ${nc.checker})。場面が実際に止まるかは、この検査では確かめていない`);
   }

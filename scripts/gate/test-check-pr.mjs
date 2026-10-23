@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges, measureCommitSize } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -57,6 +57,9 @@ write('specs/F-001/spec.md', '# 機能仕様: 招待\n');
 write('specs/F-001/plan.md', '| ID | 内容 |\n| --- | --- |\n| Task-1 | 招待 |\n| Task-2 | 一覧 |\n');
 write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7));
 write('src/a.js', lines(20));
+// 検査装置(統制の設定。#290): 基底にあるものの変更だけが陰性の確認の対象になる
+write('scripts/gate/spec-lint.mjs', "console.log('spec-lint');\n");
+write('scripts/vendor/tailoring-kb.json', '{ "ambiguousTerms": ["適切に"] }\n');
 write('src/fmt.js', lines(50, 'f'));
 write('src/gen/old.js', '// @generated\n' + lines(10, 'g'));
 write('test/a.test.js', "import { line1 } from '../src/a.js';\ntest('a', () => {\n  expect(line1).toBe(1);\n});\ntest('b', () => {\n  expect(2).toBe(2);\n});\n");
@@ -254,12 +257,36 @@ const NEG_BODY = (neg) => `## 変更の概要\n\n説明\n\n${RISK('R2\n\n確定�
 scenario('統制の設定: 強制層の設定(.claude/guard.json)を変える PR に陰性の確認の記録が無い', { body: NEG_BODY('') }, () => write('.claude/guard.json', read('.claude/guard.json').replace('{', '{\n  "note": "x",')), failsWith(/統制の設定の陰性の確認: .*\.claude\/guard\.json.*節がありません/));
 scenario('統制の設定: 記録があり、結果が止まった → 通る', { body: NEG_BODY(NEG()) }, () => write('.claude/guard.json', read('.claude/guard.json').replace('{', '{\n  "note": "x",')), passes((r) => (r.negativeCheck?.record?.ok ? [] : ['記録を読んでいない'])));
 scenario('統制の設定: 結果が「止まらなかった」→ 失敗', { body: NEG_BODY(NEG({ result: '止まらなかった' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/「止まらなかった」/));
-scenario('統制の設定: 結果が様式の選択肢のまま → 失敗', { body: NEG_BODY(NEG({ result: '止まった / 止まらなかった' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/どちらでもない/));
+scenario('統制の設定: 結果が様式の選択肢のまま → 失敗', { body: NEG_BODY(NEG({ result: '止まった / 止まらなかった / 外した' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/いずれでもない/));
 scenario('統制の設定: 確かめた者が AI の名義 → 失敗', { body: NEG_BODY(NEG({ checker: 'Claude' })) }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/確かめた者 "Claude" が AI の名義/));
 scenario('統制の設定: 記録がコメントの中だけにある → 無いものとして扱う', { body: NEG_BODY('<!--\n' + NEG() + '-->\n') }, () => write('.eslintrc.json', '{ "rules": { "no-unused-vars": "off" } }\n'), failsWith(/節がありません/));
 scenario('統制の設定: 構成の guard の変更も対象', { body: NEG_BODY('') }, () => write('process.config.json', { ...config, guard: { x: 1 } }), failsWith(/統制の設定の陰性の確認: .*process\.config\.json\(guard\)/));
 scenario('統制の設定: 初回の設定(基底に無いワークフローを足す)は対象外', { body: NEG_BODY('') }, () => write('.github/workflows/new.yml', 'on: push\n'), passes((r) => (r.negativeCheck?.record === null ? [] : ['対象にしている'])));
 scenario('統制の設定: 統制の設定を変えない PR は対象外', {}, () => write('src/a.js', lines(21)), passes((r) => (r.negativeCheck?.changed.length === 0 ? [] : ['対象にしている'])));
+// 検査装置(scripts/gate・scripts/vendor・adapters)も統制の設定(#290 / ADR-0073)。検査のスクリプトを骨抜きにする PR が黙って通らない
+scenario('統制の設定: 検査のスクリプト(scripts/gate)を process.exit(0) に替える PR に記録が無い → 失敗', { body: NEG_BODY('') }, () => write('scripts/gate/spec-lint.mjs', 'process.exit(0);\n'), failsWith(/統制の設定の陰性の確認: .*scripts\/gate\/spec-lint\.mjs.*節がありません/));
+scenario('統制の設定: 知識ベースの複製(scripts/vendor)の変更も対象', { body: NEG_BODY('') }, () => write('scripts/vendor/tailoring-kb.json', '{ "ambiguousTerms": [] }\n'), failsWith(/統制の設定の陰性の確認: .*scripts\/vendor\/tailoring-kb\.json/));
+scenario('統制の設定: アダプタ(adapters)の変更も対象', { body: NEG_BODY('') }, () => write('adapters/node.json', read('adapters/node.json').replace('{', '{\n  "note": "x",')), failsWith(/統制の設定の陰性の確認: .*adapters\/node\.json/));
+// 検査を意図して外す変更(標準 第4章 G-5「検査を外す変更の記録」)。正直に「止まらなかった」と書けば落ち、偽って「止まった」と書けば通る形を改める
+const REMOVED = (f = {}) => `## 統制の設定の陰性の確認\n\n結果: 外した\n外した検査: ${f.removed ?? 'spec-lint(scripts/gate/spec-lint.mjs)'}\n止めていた場面: ${f.scene ?? '受入基準の節に「適切に」を書いた機能仕様'}\n外した後に止めるもの: ${f.after ?? '止めない。是正の記録 C-003 で、偽陽性が続き修正できないと決めた'}\n受け入れた者: ${f.by ?? '鈴木 一郎'}\n\n`;
+scenario('統制の設定: 検査を外す変更で、結果「外した」と4欄がそろう → 通る', { body: NEG_BODY(REMOVED()) }, () => write('scripts/gate/spec-lint.mjs', 'process.exit(0);\n'), passes((r) => (r.negativeCheck?.record?.result === 'removed' && r.negativeCheck.record.ok && r.notices.some((x) => /検査を外す記録あり/.test(x)) ? [] : ['外した記録を読んでいない'])));
+scenario('統制の設定: 結果「外した」で外した後に止めるものが未記入 → 失敗', { body: NEG_BODY(REMOVED({ after: '<止める検査、または止めないと決めた理由>' })) }, () => write('scripts/gate/spec-lint.mjs', 'process.exit(0);\n'), failsWith(/外した後に止めるもの.*未記入/));
+scenario('統制の設定: 結果「外した」で止めていた場面が未記入 → 失敗', { body: NEG_BODY(REMOVED({ scene: '' })) }, () => write('scripts/gate/spec-lint.mjs', 'process.exit(0);\n'), failsWith(/止めていた場面.*未記入/));
+scenario('統制の設定: 結果「外した」で受け入れた者が AI の名義 → 失敗', { body: NEG_BODY(REMOVED({ by: 'Claude' })) }, () => write('scripts/gate/spec-lint.mjs', 'process.exit(0);\n'), failsWith(/受け入れた者 "Claude" が AI の名義/));
+// 受け入れた者と AI維持管理者の席の責任者の照合(構成の seats。基底の構成から読むため、関数で確かめる)
+{
+  const unit = (name, ok, detail = '') => {
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}${ok ? '' : `\n       ${detail}`}`);
+  };
+  const seatsCfg = { ...config, seats: [{ role: 'ai-maintainer', accountable: '佐藤 花子' }] };
+  const nc = negativeCheckOf(REMOVED());
+  const p1 = removalProblems(nc, { config: seatsCfg });
+  unit('統制の設定: 受け入れた者が AI維持管理者の席の責任者でなければ不備', p1.some((x) => /AI維持管理者の席の責任者\(佐藤 花子\)ではない/.test(x)), JSON.stringify(p1));
+  const p2 = removalProblems(negativeCheckOf(REMOVED({ by: '佐藤 花子' })), { config: seatsCfg });
+  unit('統制の設定: 受け入れた者が AI維持管理者の席の責任者なら不備なし', p2.length === 0, JSON.stringify(p2));
+  unit('統制の設定: 結果「外した」は negativeCheckOf が removed と読む', nc.result === 'removed' && nc.removed && nc.acceptedBy === '鈴木 一郎', JSON.stringify(nc));
+}
 scenario('規模の確認: HTML コメントの中の節は無いものとして扱う', { body: OVER_BODY('<!--\n' + ATT() + '-->\n') }, () => write('src/big.js', lines(450, 'x')), failsWith(/「## 規模の確認」の節がありません/));
 scenario('規模の確認: 「はい、ただし…」は答えとして数えない', { body: OVER_BODY(ATT({ read: 'はい、ただし一部は読んでいない' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「はい」「いいえ」のどちらでもない/));
 scenario('規模の確認: 実施者が名簿の外(名簿に指示した者以外がいる体制)は失敗', { body: OVER_BODY(ATT({ performer: '見知らぬ 太郎' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/人の名簿\(people\[\]\)の人へ対応づかない/));
