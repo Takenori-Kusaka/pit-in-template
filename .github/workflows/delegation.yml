@@ -9,7 +9,11 @@
 #
 # **マージの実行は、既定で無効です**。次の2つを組織が用意したときだけ動きます。
 #   - リポジトリの変数 DELEGATED_MERGE_ENABLED = true
-#   - シークレット DELEGATED_MERGE_TOKEN(必須承認を回避できる権限を持つ、専用のトークン)
+#   - Environment delegated-merge の秘密情報 DELEGATED_MERGE_TOKEN(必須承認を回避できる権限を持つ、専用のトークン)
+# トークンをリポジトリの秘密情報に置いてはなりません。リポジトリの秘密情報は、任意のブランチのワークフローから
+# 読めます(手動の起動は、選んだブランチのワークフローの定義で動きます)。Environment delegated-merge は、
+# このワークフローが参照する前に作り、配備のブランチを既定ブランチに限ります。参照した Environment が無ければ、
+# 保護の無い Environment が自動で作られます(標準 フェーズ5「CI/CD ゲート構成」デプロイゲート)。
 # 無効のあいだ、委任の範囲の変更も協働として扱い、人の承認を待ちます。
 #
 # 機械は承認のレビューを付けません。先へ進めた変更には「人の事前確認を経ていない変更(G-6 の判定を
@@ -32,7 +36,10 @@ on:
   workflow_run:
     workflows: [gate-g5]
     types: [completed]
-  # 開発者の席の責任者が承認した後などに、判定し直す。定義は既定ブランチから読む。
+  # 開発者の席の責任者が承認した後などに、判定し直す。
+  # workflow_dispatch は、起動するときに選んだブランチ(ref)のワークフローの定義で動く。既定ブランチの定義とは限らない。
+  # このため、マージのトークンは、配備のブランチを既定ブランチに限った Environment delegated-merge の秘密情報にだけ置く。
+  # 既定ブランチ以外から起動すると、Environment がジョブを拒み、トークンに届かない。
   # pull_request_review は PR の側の定義で動くため、使ってはならない(マージのトークンに届く定義を PR が書き換えられる)
   workflow_dispatch:
     inputs:
@@ -55,6 +62,9 @@ jobs:
     name: delegation-check
     if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
+    # マージのトークンの置き場。配備のブランチを既定ブランチに限る(README「委任した変更のマージの経路」)。
+    # pull_request_target と workflow_run の ref は既定ブランチであり、この限定を通る
+    environment: delegated-merge
     steps:
       # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
       - uses: actions/checkout@v4

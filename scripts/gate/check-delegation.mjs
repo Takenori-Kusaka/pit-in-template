@@ -269,7 +269,7 @@ if (!result.eligible) {
   mergeNote = '実行しない(判定だけを行った)';
 } else if (!enabled || !token) {
   mergeNote =
-    '無効(組織がリポジトリの変数 DELEGATED_MERGE_ENABLED と、専用のトークンのシークレット DELEGATED_MERGE_TOKEN で有効化していない)。協働として人の承認を待つ';
+    '無効(組織がリポジトリの変数 DELEGATED_MERGE_ENABLED と、専用のトークン(Environment delegated-merge の秘密情報 DELEGATED_MERGE_TOKEN)で有効化していない)。協働として人の承認を待つ';
 } else {
   const record =
     `${recordText(result.rule)}\n\n` +

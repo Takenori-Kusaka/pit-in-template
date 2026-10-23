@@ -186,6 +186,7 @@ check('ワークフロー: checkout の ref が既定ブランチである', /re
 check('ワークフロー: 承認のレビューを付けない', !/--approve|pulls\/[^\s]*\/reviews/.test(body));
 check('ワークフロー: PR の題名・本文・ブランチ名をシェルへ展開していない', !/pull_request\.(title|body)|head_branch/.test(body));
 check('ワークフロー: マージの実行は、変数とシークレットが揃った場合に限る', /vars\.DELEGATED_MERGE_ENABLED/.test(body) && /secrets\.DELEGATED_MERGE_TOKEN/.test(body));
+check('ワークフロー: マージのトークンを、既定ブランチに限った Environment の秘密情報から読む(ジョブに environment がある)', /^\s{4}environment:\s*delegated-merge\s*$/m.test(body));
 check('ワークフロー: pull_request_review で動かない(PR の側の定義で動くため)', !/^\s{2}pull_request_review:/m.test(body));
 check('ワークフロー: pull_request ではなく pull_request_target で動く(定義を基底ブランチから読む)', /^\s{2}pull_request_target:/m.test(body) && !/^\s{2}pull_request:/m.test(body));
 
