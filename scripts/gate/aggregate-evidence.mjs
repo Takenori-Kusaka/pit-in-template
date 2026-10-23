@@ -97,6 +97,7 @@ import {
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
+import { discouragedText } from './org-assurance.mjs';
 import {
   readPolicy,
   readBriefScope,
@@ -2285,6 +2286,13 @@ if (continuity.d0Present && continuity.emergencyMissing.length) {
     `D-0 節7 の有事の決定者に空欄が ${continuity.emergencyMissing.length} 欄あります(${continuity.emergencyMissing.join(' / ')})。記載の欠落です。` +
       '4つの事象 × 3つの決定(停止・切替・顧客説明)の12欄を役割名で埋めます。該当しない事象は「層1 の項目4 による」と書き、層1 の該当行の受容者を埋めます'
   );
+}
+
+// 記録の無い非推奨の兼務は記載の欠落(標準 第3章 3.5、第6章 テンプレ0 表5。#312)。理由の妥当性は確かめない
+if (continuity.d0Present) {
+  for (const p of continuity.discouragedUnrecorded ?? []) {
+    gaps.push(`${discouragedText(p, { recorded: false })}。記載の欠落です`);
+  }
 }
 
 // 壊してはならない品質条件の突合(第4章 G-7「壊してはならない品質条件の突合」)と、G-7 基準1 の件数(「基準1・2 の記録」)。

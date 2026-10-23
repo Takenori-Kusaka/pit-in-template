@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
-import { readPolicy } from '../gate/org-assurance.mjs';
+import { readPolicy, discouragedPairings, discouragedText } from '../gate/org-assurance.mjs';
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import {
@@ -62,6 +62,7 @@ import {
   belowMinimumStaffing,
   nameOverrides,
   nameConfirmationState,
+  confirmedNames,
   insiderCount,
   delegationRuleProblems,
   ruleChangeDirection,
@@ -936,7 +937,7 @@ export function sizeSeparations(result) {
       id: `sep-size-${r.id}-${other}`,
       roles: [r.id, other],
       scope: 'team-size',
-      reason: '10名以上の体制では、価値と技術の相互チェックを保つため、分離を必須とする',
+      reason: '10名以上の体制では、価値判断と技術判断の相互の牽制を保つため、兼務を禁止する(第3章 3.5。根拠の水準は EV-0145。E0)',
       exception: 'none',
       gate: null,
       source: 'https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/',
@@ -974,6 +975,8 @@ export function seatPairingNotes(config) {
         (small ? '1〜2名の体制では別の人を置けないため、承認なしの表示を層1 の権限者が期限つきで受容する' : '3名以上の体制では、AI運用担当者を品質管理側(出荷判定者と同じ側)の人に置くと解ける(例: 開発者・技術判断者 A、独立レビュア・事業決裁者 B、出荷判定者・AI運用担当者 C)。/process-change の種別 accountable で席を移す')
     );
   }
+  // 非推奨の兼務(3〜9名の価値責任者 × 技術判断者、3名以上の事業決裁者 × 価値責任者。標準 第3章 3.5。#312)。拒否しない
+  for (const p of discouragedPairings(config)) out.push(discouragedText(p));
   return out;
 }
 /** 変化点の記録1件。記録する内容は標準 第3章 3.13.4 の5点による */
@@ -2122,7 +2125,7 @@ export function renderAutonomyTable(config, blank = false) {
   return L;
 }
 
-export function renderD0Section(key, config) {
+export function renderD0Section(key, config, { legacy = false } = {}) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
   const blank = config.configured === false;
@@ -2143,12 +2146,24 @@ export function renderD0Section(key, config) {
     const roster = config.people ?? [];
     // 所属(team)の欄は、名簿の誰かに記入があるときだけ列を出す(旧い D-0 の生成区間を変えない。#288 第6巡 Q)
     const withTeam = roster.some((p) => typeof p.team === 'string' && p.team.trim());
-    L.push(`| id | 氏名 | 区分 | リポジトリ上のアカウント |${withTeam ? ' 所属 |' : ''}`);
-    L.push(`| --- | --- | --- | --- |${withTeam ? ' --- |' : ''}`);
+    // 氏名の確認(標準 第6章 テンプレ0 表5-2。#312)。名簿の誰かに nameConfirmed があるときだけ列を出す。
+    // 列の無い旧い生成区間は、比べるとき(d0SectionProblems)に legacy の描画とも照らし、失敗させない
+    const withConfirm = !legacy && roster.some((p) => p?.nameConfirmed === true);
+    const confirmText = (p) => {
+      if (p?.nameConfirmed !== true) return '—';
+      const st = nameConfirmationState(config, p);
+      const rec = confirmedNames(config).get(p.id);
+      if (st === 'other') return `確認: ${rec?.decidedBy ?? '—'}(${rec?.date ?? '日付なし'})`;
+      if (st === 'self') return `自己申告(本人の記名。${rec?.date ?? '日付なし'})`;
+      if (st === 'unrecorded') return '確認の記録なし(1名の体制のため効かせている)';
+      return '**効かない**(本人以外の記名の記録が無い)';
+    };
+    L.push(`| id | 氏名 | 区分 | リポジトリ上のアカウント |${withTeam ? ' 所属 |' : ''}${withConfirm ? ' 氏名の確認 |' : ''}`);
+    L.push(`| --- | --- | --- | --- |${withTeam ? ' --- |' : ''}${withConfirm ? ' --- |' : ''}`);
     for (const p of roster) {
       const accounts = (Array.isArray(p.accounts) ? p.accounts : []).join(', ') || '**未記入**';
       const kind = p.appointer === true ? '組織上の任命権者(体制の外。第3章 3.13.3)' : p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内';
-      L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kind} | ${cell(accounts)} |${withTeam ? ` ${cell(p.team ?? '—')} |` : ''}`);
+      L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kind} | ${cell(accounts)} |${withTeam ? ` ${cell(p.team ?? '—')} |` : ''}${withConfirm ? ` ${cell(confirmText(p))} |` : ''}`);
     }
     if (!roster.length) L.push(`| | | | |${withTeam ? ' |' : ''}`);
   } else if (key === 'competence') {
@@ -2327,7 +2342,11 @@ export function d0SectionProblems(text, config) {
         `D-0 の${NAMES[key]}に、生成区間の目印(${begin} / ${end})がありません。templates/00-d0-governance.md から目印の行を写し、` +
           '`node scripts/init/generate-profile.mjs --answers process.config.json` で区間を書き込んでください'
       );
-    } else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config))) {
+    } else if (
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config)) &&
+      // 氏名の確認の列(#312)を足す前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない)
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true }))
+    ) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
           '体制を変えるときは /process-change、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
@@ -2943,8 +2962,11 @@ export const MAILBOX = {
   'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner', STOP_REQUEST_LABEL] },
   'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner', STOP_REQUEST_LABEL] },
   'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform', STOP_REQUEST_LABEL] },
+  // state:dev-done の受け手は独立レビュアだけ(標準 第5章 Label Mailbox 4.3・4.3.1。#312)。ready-to-merge は、
+  // 独立レビュアが G-6 の判定記録を作成した後に付け、出荷判定者のレーンへ渡す。出荷判定者は dev-done を受け取らず、
+  // ready-to-merge を付けない。G-7 は出荷の範囲ごとの判定で、このラベルでは起動しない(next.mjs の出荷の段が出す)
   'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge', STOP_REQUEST_LABEL] },
-  'qa-gatekeeper': { inbox: ['state:dev-done', 'state:ready-to-merge'], hands: ['state:qm-blocked', 'state:ready-to-merge', STOP_REQUEST_LABEL] },
+  'qa-gatekeeper': { inbox: ['state:ready-to-merge'], hands: ['state:qm-blocked', STOP_REQUEST_LABEL] },
   'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done', STOP_REQUEST_LABEL] },
   // 停止の申し立ての解除は、層1 の項目4 の権限者が行う。層1 が無い組織の既定は事業決裁者(第7章 7.11)
   'biz-approver': { inbox: ['state:needs-owner', STOP_REQUEST_LABEL], hands: ['state:needs-po', 'state:needs-dev', STOP_REQUEST_LABEL] },
@@ -4177,7 +4199,7 @@ if (isMain) {
     for (const v of sep.violations) console.log(`- 抵触: ${v}`);
     for (const v of sep.deviated) console.log(`- 逸脱として記録(1〜2名の体制): ${v.pair}`);
     for (const v of sep.notIndependent) console.log(`- 独立が成立しない: ${v}`);
-    for (const n of seatPairingNotes(config)) console.log(`- 注記(兼務禁止ではないが、規定を構造的に満たせない組): ${n}`);
+    for (const n of seatPairingNotes(config)) console.log(`- 注記(兼務禁止ではない組。規定を構造的に満たせない組と、非推奨の兼務): ${n}`);
     console.log('');
 
     const refused = [];
