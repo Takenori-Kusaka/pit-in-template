@@ -930,6 +930,9 @@ export const NEVER_DELEGATED = [
   'scripts/vendor/**',
   'docs/gates/**',
   'docs/D-0-governance.md',
+  // 第5章 5.4.6 の停止を導く元の記録。委任された変更が自らの停止を解けないようにする(process-compass #311 X-1)
+  'docs/defect-ledger.md',
+  'docs/handover.md',
 ];
 
 /**

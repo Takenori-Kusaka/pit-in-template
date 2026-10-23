@@ -191,9 +191,13 @@
         {
           "name": "招待",
           "holders": 2,
-          "changeTypes": null
+          "changeTypes": null,
+          "lowUntil": null
         }
-      ]
+      ],
+      "history": {
+        "available": true
+      }
     },
     "history": {
       "available": true,

@@ -46,7 +46,7 @@ import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText, STOP_KIND } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
 import { retiredDetectionTypes } from './config.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
@@ -976,22 +976,7 @@ function seatText(config, roleId) {
 function autonomyNotes(config) {
   const out = [];
   try {
-    const state = autonomyState(config, readAutonomyRecords({ config, root: ROOT }));
-    for (const t of state.types) {
-      const head = `AI自律レベル: 登録した変更種別「${t.id}」は ${t.level}`;
-      if (!t.stops.length) {
-        out.push(`${head}(停止なし)。差し戻し率: ${rejectionText(t)}。${state.rework}`);
-        continue;
-      }
-      const kinds = [...new Set(t.stops.map((x) => STOP_KIND[x.kind] ?? x.kind))].join('・');
-      const back = t.stops.some((x) => x.kind === 'downgrade')
-        ? '引き下げは、事象・評価の日より後の変更種別の登録の判定(/process-change)で戻る。理解保持者数による停止は、保持者が2名以上へ戻ると解ける'
-        : '適用の条件が戻れば(記録が揃う・判定可能な窓が得られる・原因を特定する)、判定を待たずに戻る';
-      out.push(`${head}(委任を止めている。この種別の変更は協働で扱う。${kinds})。原因: ${stopsText(t)}。差し戻し率: ${rejectionText(t)}。${back}。${state.rework}`);
-    }
-    if (state.unattributedRejections.length) {
-      out.push(`AI自律レベル: 判定基準の番号を引いた G-6 の差し戻しのうち ${state.unattributedRejections.length} 件は、対象(PR・コミット)を既定ブランチの履歴へ対応づけられず、どの変更種別の差し戻し率にも数えていない(${state.unattributedRejections.slice(0, 3).map((r) => r.file).join(', ')})`);
-    }
+    out.push(...autonomyNoteLines(autonomyState(config, readAutonomyRecords({ config, root: ROOT }))));
   } catch (e) {
     out.push(`AI自律レベル: 検知の記録を読めない(${String(e.message).split('\n')[0]})。委任の判定は、判定できないものとして登録した変更種別を止める`);
   }
