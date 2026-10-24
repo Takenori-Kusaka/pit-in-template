@@ -832,12 +832,13 @@ export const RULE_APPROVER_SEAT = 'ai-maintainer';
 export function enforcedApprovalFindings(config, ruleset) {
   const pr = (ruleset?.rules ?? []).find((r) => r.type === 'pull_request');
   const enforced = pr ? Number(pr.parameters?.required_approving_review_count ?? 0) || 0 : null;
-  const required = Math.max(1, config?.review?.requiredApprovals ?? 1);
-  const counted = config?.review?.reviewerCount ?? required;
+  // 下回るかは、承認の要求と承認者の数の大きいほうと比べる(手で書いた構成で requiredApprovals < reviewerCount の穴を塞ぐ。#318 突合 X-6)
+  const counted = config?.review?.reviewerCount ?? Math.max(1, config?.review?.requiredApprovals ?? 1);
+  const required = Math.max(1, config?.review?.requiredApprovals ?? 1, config?.review?.reviewerCount ?? 0);
   const problems = [];
   const notes = [];
   if (enforced === null) return { enforced, required, counted, problems, notes };
-  if (enforced < required) problems.push(`G-6 は承認 ${config?.review?.requiredApprovals} 件を要求しますが、ルールセットは ${enforced} 件です`);
+  if (enforced < required) problems.push(`G-6 は承認 ${required} 件を要求しますが(構成 review.requiredApprovals・review.reviewerCount の大きいほう)、ルールセットは ${enforced} 件です`);
   else if (enforced > counted) {
     notes.push(
       `ルールセット ${ruleset?.name ?? config?.ruleset} は承認 ${enforced} 件を強制しますが、構成の承認者は ${counted} 名です。上回る構成は不適合ではありません。` +

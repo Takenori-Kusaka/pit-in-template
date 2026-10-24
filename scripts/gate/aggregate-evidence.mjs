@@ -103,7 +103,7 @@ import {
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
-import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings } from '../init/generate-profile.mjs';
 import { discouragedText, deviationTagHits } from './org-assurance.mjs';
 import {
   readPolicy,
@@ -1237,6 +1237,10 @@ const g6Applied = isActive('g6') && !g6Unmet && !reviewerIsDeveloper;
 // 構成の整合(契約検査のうち、構成だけから確かめられる部分)。PR を経ない体制では、契約検査が走らないまま
 // 出荷へ進む場合があるため、集約の時点でも確かめる(要約値の連鎖、回答と名簿の食い違いなど)
 for (const p of configIntegrityProblems(config)) gaps.push(`構成の整合: ${p}`);
+// 未適用の厳格化(#318 突合 X-4)。安全重要度 CL1 以上で G-6・G-7 が規則より緩いまま残る構成は欠落として数える
+// (CL1 以上は未達のまま出荷しない)。ほかの差は保証の開示に出す
+const tightenings = pendingTightenings(config);
+for (const t of tightenings.filter((x) => x.blocking)) gaps.push(t.text);
 // 適用の開始のコミットが、構成の初期化の記録(changeLog[0] の init)を持つか(標準 第1章 1.10.1。ADR-0082)。
 // 持たなければ記録の欠落とする。境(configured が true になった最初のコミット)は動かさない。
 // 欠落の範囲は適用の開始のコミットなので、そのコミットを集約の範囲に含む場合に限って出す
@@ -1959,6 +1963,8 @@ const independence = {
     insufficient: insufficientApproverChanges,
     // ルールセットが強制する承認の数。構成の承認者の数を上回る分は保証の主張に数えない(#318)
     enforced: enforcedApprovals,
+    // 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート。#318 突合 X-4)
+    pendingTightenings: tightenings.map(({ gate, from, to, blocking, text }) => ({ gate, from, to, blocking, text })),
     // コア機能の変更に要する承認者の数(第8章 軸C 高 coreReviewerCount。#288 第8巡 Z7)。構成に値が無ければ null。
     // パス(確約範囲・コア指定 + 区分の下限の規則)が未宣言なら、コア機能の変更を判定できない(undeclared)
     core: REVIEWERS_OF_CONFIG.coreDeclared
@@ -3423,6 +3429,9 @@ function renderAssurance(external) {
             : `要求 ${core.required} 名(パス: ${core.paths.map((g) => `\`${g}\``).join(' ')})。コア機能に触れる変更 ${core.coreChanges.length} 件${core.coreChanges.length ? `(${core.coreChanges.join(', ')})` : ''} / うち承認者が要求に満たない ${core.insufficient.length} 件${core.insufficient.length ? `(${core.insufficient.join(', ')}。独立した人の確認を経ていない変更に数えた)` : ''}`;
         const unmatchedNote = (core.unmatchedPaths ?? []).length ? `。追跡中のファイルに1件も当たらない宣言のパス(効いていない。当たるパスが無ければ未宣言として扱う): ${core.unmatchedPaths.map((g) => `\`${g}\``).join(' ')}` : '';
         R.push(`| コア機能の変更に要する独立した人の承認者の数(構成 gates.g6.params.coreReviewerCount。第8章 軸C「高」。全変更の要求より大きいほうが掛かる) | ${value}${unmatchedNote} | ${prev((p) => (p.independence.reviewers?.core ? `${p.independence.reviewers.core.required} 名` : '値なし'))} |`);
+      }
+      if ((rv.pendingTightenings ?? []).length) {
+        R.push(`| 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート) | ${rv.pendingTightenings.length} 件: ${rv.pendingTightenings.map((t) => `${t.gate} ${t.from} → ${t.to}${t.blocking ? '(CL1 以上。欠落に数えた)' : ''}`).join(' / ')} | ${prev((p) => `${(p.independence.reviewers?.pendingTightenings ?? []).length} 件`)} |`);
       }
       if (rv.enforced?.exceeds) {
         R.push(`| ブランチ保護が強制する承認の数(ルールセット ${config.ruleset}) | ${rv.enforced.enforced} 件。構成の承認者 ${rv.enforced.counted} 名を上回る。上回る構成は不適合ではない。**上回る承認は保証の主張に数えない**(独立した人の確認に数えるのは ${rv.enforced.counted} 名まで。第8章 軸E) | ${prev((p) => (p.independence.reviewers?.enforced ? `${p.independence.reviewers.enforced.enforced} 件` : '値なし'))} |`);
