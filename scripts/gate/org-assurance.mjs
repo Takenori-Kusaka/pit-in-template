@@ -590,7 +590,8 @@ export function discouragedUnrecorded(config, d0) {
 export function discouragedText(p, { recorded = null } = {}) {
   return (
     `${p.names.join('と')}の責任者が同じ人(${p.person})。非推奨の兼務です(標準 第3章 3.5。拒否しません)。` +
-    'D-0 節2「非推奨の兼務の記録」に、兼務する組・責任者・兼務を選んだ理由を書きます。記録が無いと、出荷判定の証跡の集約が記載の欠落として扱います' +
+    'D-0 節2「非推奨の兼務の記録」に、兼務する組・責任者・兼務を選んだ理由を書きます。記録が無いと、出荷判定の証跡の集約が記載の欠落として扱います。' +
+    '既存の D-0 に「### 非推奨の兼務の記録」の表が無ければ、templates/00-d0-governance.md の節2 から見出しと表を写します' +
     (recorded === true ? '(記録あり)' : recorded === false ? '(**記録なし**)' : '') +
     '。標準は代替の統制を課しません'
   );

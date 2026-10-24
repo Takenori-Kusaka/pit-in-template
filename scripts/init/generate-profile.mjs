@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
-import { readPolicy, discouragedPairings, discouragedText } from '../gate/org-assurance.mjs';
+import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import {
@@ -961,7 +961,7 @@ export function separationSummary(config) {
  * 要求事項10「基準集合の十分性を一人で判断させない」)。同じ人なら別の自然人の承認を作れず、出荷の証跡の集約は承認に数えない。
  * 3名以上の体制では、AI運用担当者を品質管理側(出荷判定者と同じ側)の人に置く割り当てで解ける
  */
-export function seatPairingNotes(config) {
+export function seatPairingNotes(config, { d0 } = {}) {
   const seats = config.seats ?? [];
   const seatOf = (id) => seats.find((s) => s.role === id);
   const tech = seatOf('tech-lead');
@@ -975,8 +975,16 @@ export function seatPairingNotes(config) {
         (small ? '1〜2名の体制では別の人を置けないため、承認なしの表示を層1 の権限者が期限つきで受容する' : '3名以上の体制では、AI運用担当者を品質管理側(出荷判定者と同じ側)の人に置くと解ける(例: 開発者・技術判断者 A、独立レビュア・事業決裁者 B、出荷判定者・AI運用担当者 C)。/process-change の種別 accountable で席を移す')
     );
   }
-  // 非推奨の兼務(3〜9名の価値責任者 × 技術判断者、3名以上の事業決裁者 × 価値責任者。標準 第3章 3.5。#312)。拒否しない
-  for (const p of discouragedPairings(config)) out.push(discouragedText(p));
+  // 非推奨の兼務(3〜9名の価値責任者 × 技術判断者、3名以上の事業決裁者 × 価値責任者。標準 第3章 3.5。#312)。拒否しない。
+  // D-0 の本文(d0)を渡されたときは記録の有無で出し分ける(突合 X-6)。記録のある兼務は出さない(記録が無い間だけ出し続ける)。
+  // D-0 が無い・渡されないときは、記録の有無を判定せずに出す
+  const pairs = discouragedPairings(config);
+  if (typeof d0 === 'string') {
+    const unrecorded = new Set(discouragedUnrecorded(config, d0).map((p) => p.roles.join('|')));
+    for (const p of pairs) if (unrecorded.has(p.roles.join('|'))) out.push(discouragedText(p, { recorded: false }));
+  } else {
+    for (const p of pairs) out.push(discouragedText(p));
+  }
   return out;
 }
 /** 変化点の記録1件。記録する内容は標準 第3章 3.13.4 の5点による */
@@ -2125,6 +2133,16 @@ export function renderAutonomyTable(config, blank = false) {
   return L;
 }
 
+/** D-0 節1 の人の名簿の列(標準 第6章 テンプレ0 表5-2 の欄。process-compass の template-fields.yaml が列見出しを照らす) */
+export const D0_ROSTER_COLUMNS = [
+  '識別子(`id`)',
+  '氏名',
+  '区分(体制の内 / 外部の確認者 / 組織上の任命権者)',
+  'リポジトリ上のアカウント',
+  '所属(`team`。10名以上の体制で必須)',
+  '氏名の確認(確認した者と日付)',
+];
+
 export function renderD0Section(key, config, { legacy = false } = {}) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
@@ -2144,28 +2162,37 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
     L.push('人の名簿(`people[]`):');
     L.push('');
     const roster = config.people ?? [];
-    // 所属(team)の欄は、名簿の誰かに記入があるときだけ列を出す(旧い D-0 の生成区間を変えない。#288 第6巡 Q)
-    const withTeam = roster.some((p) => typeof p.team === 'string' && p.team.trim());
-    // 氏名の確認(標準 第6章 テンプレ0 表5-2。#312)。名簿の誰かに nameConfirmed があるときだけ列を出す。
-    // 列の無い旧い生成区間は、比べるとき(d0SectionProblems)に legacy の描画とも照らし、失敗させない
-    const withConfirm = !legacy && roster.some((p) => p?.nameConfirmed === true);
-    const confirmText = (p) => {
-      if (p?.nameConfirmed !== true) return '—';
-      const st = nameConfirmationState(config, p);
-      const rec = confirmedNames(config).get(p.id);
-      if (st === 'other') return `確認: ${rec?.decidedBy ?? '—'}(${rec?.date ?? '日付なし'})`;
-      if (st === 'self') return `自己申告(本人の記名。${rec?.date ?? '日付なし'})`;
-      if (st === 'unrecorded') return '確認の記録なし(1名の体制のため効かせている)';
-      return '**効かない**(本人以外の記名の記録が無い)';
-    };
-    L.push(`| id | 氏名 | 区分 | リポジトリ上のアカウント |${withTeam ? ' 所属 |' : ''}${withConfirm ? ' 氏名の確認 |' : ''}`);
-    L.push(`| --- | --- | --- | --- |${withTeam ? ' --- |' : ''}${withConfirm ? ' --- |' : ''}`);
-    for (const p of roster) {
-      const accounts = (Array.isArray(p.accounts) ? p.accounts : []).join(', ') || '**未記入**';
-      const kind = p.appointer === true ? '組織上の任命権者(体制の外。第3章 3.13.3)' : p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内';
-      L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kind} | ${cell(accounts)} |${withTeam ? ` ${cell(p.team ?? '—')} |` : ''}${withConfirm ? ` ${cell(confirmText(p))} |` : ''}`);
+    const kindOf = (p) => (p.appointer === true ? '組織上の任命権者(体制の外。第3章 3.13.3)' : p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内');
+    const accountsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).join(', ') || '**未記入**';
+    if (legacy) {
+      // #312 より前の生成区間(所属は記入があるときだけ列を出し、氏名の確認の列を持たない)。d0SectionProblems が
+      // 一致として受け付け、/pit が再生成を勧める(突合 X-8)。新しく描くときには使わない
+      const withTeam = roster.some((p) => typeof p.team === 'string' && p.team.trim());
+      L.push(`| id | 氏名 | 区分 | リポジトリ上のアカウント |${withTeam ? ' 所属 |' : ''}`);
+      L.push(`| --- | --- | --- | --- |${withTeam ? ' --- |' : ''}`);
+      for (const p of roster) {
+        L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kindOf(p)} | ${cell(accountsOf(p))} |${withTeam ? ` ${cell(p.team ?? '—')} |` : ''}`);
+      }
+      if (!roster.length) L.push(`| | | | |${withTeam ? ' |' : ''}`);
+    } else {
+      // 標準 第6章 テンプレ0 表5-2 の欄を、記入の有無に依らず列として置く(#312 の突合 X-9)。所属は10名以上の体制で必須
+      const confirmText = (p) => {
+        if (p?.nameConfirmed !== true) return '—';
+        const st = nameConfirmationState(config, p);
+        const rec = confirmedNames(config).get(p.id);
+        if (st === 'other') return `確認: ${rec?.decidedBy ?? '—'}(${rec?.date ?? '日付なし'})`;
+        if (st === 'self') return `自己申告(本人の記名。${rec?.date ?? '日付なし'})`;
+        if (st === 'unrecorded') return '確認の記録なし(1名の体制のため効かせている)';
+        return '**効かない**(本人以外の記名の記録が無い)';
+      };
+      L.push(`| ${D0_ROSTER_COLUMNS.join(' | ')} |`);
+      L.push(`|${' --- |'.repeat(D0_ROSTER_COLUMNS.length)}`);
+      for (const p of roster) {
+        const team = typeof p.team === 'string' && p.team.trim() ? p.team : '—';
+        L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kindOf(p)} | ${cell(accountsOf(p))} | ${cell(team)} | ${cell(confirmText(p))} |`);
+      }
+      if (!roster.length) L.push(`|${' |'.repeat(D0_ROSTER_COLUMNS.length)}`);
     }
-    if (!roster.length) L.push(`| | | | |${withTeam ? ' |' : ''}`);
   } else if (key === 'competence') {
     // 席の責任者本人の、AI を使わずに判断できる力量の確認(第3章 3.4.3 要求事項1。#288 第6巡 R)。記録は構成の seats[].competence。
     // 次回の期限は層1 の周期から出荷の集約と next.mjs が導く(ここでは記録の値だけを出す。層1 を読まない)
@@ -2344,7 +2371,7 @@ export function d0SectionProblems(text, config) {
       );
     } else if (
       norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config)) &&
-      // 氏名の確認の列(#312)を足す前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない)
+      // 表5-2 の列(#312)を置く前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない。/pit が再生成を勧める)
       norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true }))
     ) {
       out.push(
@@ -2352,6 +2379,25 @@ export function d0SectionProblems(text, config) {
           '体制を変えるときは /process-change、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
       );
     }
+  }
+  return out;
+}
+
+/**
+ * 生成区間が旧い生成(氏名の確認の列を足す前。#312)とだけ一致する節の名前の一覧。d0SectionProblems は旧い区間を一致として
+ * 受け付けるので、/pit が再生成を勧める注記に使う(突合 X-8)。受け付けの期限は置かない(期限を置く根拠が無い)
+ */
+export function d0LegacyOnlySections(text, config) {
+  const NAMES = { seats: '節1 役割の割り当て', performers: '節12 担い手と運用形態', history: '節13 改訂履歴' };
+  const norm = (s) => s.replace(/\r\n/g, '\n').trim();
+  const out = [];
+  for (const key of D0_SECTIONS) {
+    const [begin, end] = d0Marks(key);
+    const b = text.indexOf(begin);
+    const e = text.indexOf(end);
+    if (b < 0 || e < 0 || e < b) continue;
+    const body = norm(text.slice(b + begin.length, e));
+    if (body !== norm(renderD0Section(key, config)) && body === norm(renderD0Section(key, config, { legacy: true }))) out.push(NAMES[key]);
   }
   return out;
 }
@@ -3017,12 +3063,39 @@ export const MAILBOX = {
   // state:dev-done の受け手は独立レビュアだけ(標準 第5章 Label Mailbox 4.3・4.3.1。#312)。ready-to-merge は、
   // 独立レビュアが G-6 の判定記録を作成した後に付け、出荷判定者のレーンへ渡す。出荷判定者は dev-done を受け取らず、
   // ready-to-merge を付けない。G-7 は出荷の範囲ごとの判定で、このラベルでは起動しない(next.mjs の出荷の段が出す)
-  'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge', STOP_REQUEST_LABEL] },
-  'qa-gatekeeper': { inbox: ['state:ready-to-merge'], hands: ['state:qm-blocked', STOP_REQUEST_LABEL] },
+  // needs-platform は、レビューや記録の突合で強制層の変更の要否・統制の弱化に気付いた席が付ける(4.3 の付与者・4.7.3)
+  'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge', 'state:needs-platform', STOP_REQUEST_LABEL] },
+  'qa-gatekeeper': { inbox: ['state:ready-to-merge'], hands: ['state:qm-blocked', 'state:needs-platform', STOP_REQUEST_LABEL] },
   'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done', STOP_REQUEST_LABEL] },
   // 停止の申し立ての解除は、層1 の項目4 の権限者が行う。層1 が無い組織の既定は事業決裁者(第7章 7.11)
   'biz-approver': { inbox: ['state:needs-owner', STOP_REQUEST_LABEL], hands: ['state:needs-po', 'state:needs-dev', STOP_REQUEST_LABEL] },
 };
+
+/** G-6 が有効か。構成にゲートの状態が無いときは既定(required)とみなす(config.mjs の gateState と同じ既定) */
+function g6Active(config) {
+  const s = config?.gates?.g6?.state ?? 'required';
+  return s === 'required' || s === 'simplified';
+}
+
+/**
+ * 構成に応じた受信箱(第5章 Label Mailbox 4.3.1。#312 の突合 X-1)。
+ * G-6 が有効なら MAILBOX のまま(state:dev-done の受け手は独立レビュア)。G-6 が省略・未達の構成では独立レビュアの席に
+ * 担い手がいないため、state:dev-done の受け手を出荷判定者にする。出荷判定者は G-6 の省略・未達を開示したうえで扱い、
+ * state:ready-to-merge は使わない。開発者が自ら ready-to-merge を付ける形は採らない(確認の段を作成者が飛ばす形になる)
+ */
+export function mailboxFor(config) {
+  if (g6Active(config)) return MAILBOX;
+  return {
+    ...MAILBOX,
+    'independent-reviewer': { inbox: [], hands: [] },
+    'qa-gatekeeper': { inbox: ['state:dev-done'], hands: MAILBOX['qa-gatekeeper'].hands, withoutG6: true },
+  };
+}
+
+/** state:dev-done を受けるロール(構成ごと)。受信箱の注記と試験が使う */
+export function devDoneReceiver(config) {
+  return Object.entries(mailboxFor(config)).filter(([, m]) => m.inbox.includes('state:dev-done')).map(([r]) => r);
+}
 
 /**
  * エスカレーションの段階とラベルの対応(第7章 7.6 / 第5章 4.5.2)。
@@ -3139,7 +3212,7 @@ export function renderProcessRules(config) {
   L.push('| ロールの判定するゲート・判定してはならないゲート・運用形態・受信箱・引き渡しのラベル・兼ねてはならない役割 | `node scripts/gate/next.mjs --role <ロール>` |');
   L.push('| 標準の条項の適用範囲と判定の単位 | `node scripts/gate/next.mjs --scopes` |');
   L.push('');
-  const ids = (config.roles ?? []).filter((r) => MAILBOX[r.id] || r.gatesOwned.length || r.gatesUnmet.length).map((r) => `\`${r.id}\` ${r.name}`);
+  const ids = (config.roles ?? []).filter((r) => mailboxFor(config)[r.id] || r.gatesOwned.length || r.gatesUnmet.length).map((r) => `\`${r.id}\` ${r.name}`);
   L.push(`ロール: ${ids.join(' / ')}`);
   L.push('');
   return L.join('\n');
@@ -3152,7 +3225,7 @@ export function renderProcessRules(config) {
 export function renderRoleCard(config, roleId) {
   const r = (config.roles ?? []).find((x) => x.id === roleId);
   if (!r) return null;
-  const mb = MAILBOX[r.id];
+  const mb = mailboxFor(config)[r.id];
   const seat = (config.seats ?? []).find((s) => s.role === r.id);
   const label = (k) => GATE_BY_KEY[k]?.label ?? k;
   const L = [];
@@ -3179,8 +3252,11 @@ export function renderRoleCard(config, roleId) {
     L.push(`- **${r.name}** が兼ねてはならない役割: ${names.join(' / ')}`);
   }
   if (mb) {
-    L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ')}`);
-    L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ')}`);
+    L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ') || '—'}`);
+    L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ') || '—'}`);
+    if (mb.withoutG6) {
+      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第5章 Label Mailbox 4.3.1)');
+    }
     L.push('');
     if (r.gatesUnmet.length && !r.gatesOwned.length) {
       L.push('この構成では未達です。担い手がいないため、受信箱を置きません。');

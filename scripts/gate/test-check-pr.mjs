@@ -571,6 +571,7 @@ const defs = [
   ['ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-check-pr\.mjs/.test(wf)],
   ['ワークフロー: contract で、再評価待ちの試験を実行する', /node scripts\/gate\/test-recalibration\.mjs/.test(wf)],
   ['ワークフロー: contract で、独立と席の規則の試験を実行する', /node scripts\/gate\/test-roster-rules\.mjs/.test(wf)],
+  ['ワークフロー: contract で、非推奨の兼務の欠落の通しの試験を実行する', /node scripts\/gate\/test-discouraged-evidence\.mjs/.test(wf)],
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
   ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
   ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],
