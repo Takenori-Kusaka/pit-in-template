@@ -824,6 +824,30 @@ export function ruleDeciderProblems(config, rule) {
 export const RULE_APPROVER_SEAT = 'ai-maintainer';
 
 /**
+ * ブランチ保護が強制する承認の数と、構成の承認者の数(review.reviewerCount)の比較(標準 第8章 軸E の読み方。process-compass #318 /
+ * ADR-0087 決定6)。強制が下回れば問題、上回れば注記。上回る構成は不適合ではないが、外から見える承認の数と、記録が保証する
+ * 人数(第4章 G-6 の4条件を満たす承認者を、構成の人数まで数える)の食い違いを隠さない
+ * @returns {{ enforced: number|null, required: number, problems: string[], notes: string[] }}
+ */
+export function enforcedApprovalFindings(config, ruleset) {
+  const pr = (ruleset?.rules ?? []).find((r) => r.type === 'pull_request');
+  const enforced = pr ? Number(pr.parameters?.required_approving_review_count ?? 0) || 0 : null;
+  const required = Math.max(1, config?.review?.requiredApprovals ?? 1);
+  const counted = config?.review?.reviewerCount ?? required;
+  const problems = [];
+  const notes = [];
+  if (enforced === null) return { enforced, required, counted, problems, notes };
+  if (enforced < required) problems.push(`G-6 は承認 ${config?.review?.requiredApprovals} 件を要求しますが、ルールセットは ${enforced} 件です`);
+  else if (enforced > counted) {
+    notes.push(
+      `ルールセット ${ruleset?.name ?? config?.ruleset} は承認 ${enforced} 件を強制しますが、構成の承認者は ${counted} 名です。上回る構成は不適合ではありません。` +
+        `上回る承認は保証の主張に数えません(独立した人の確認として数えるのは、第4章 G-6 の4条件を満たす承認者で ${counted} 名まで)。保証の開示の項目1 に並べて出します(標準 第8章 軸E。ADR-0067 決定5・ADR-0087 決定6)`
+    );
+  }
+  return { enforced, required, counted, problems, notes };
+}
+
+/**
  * 委任の規則に、AI維持管理者の承認があるかを確かめる(標準 第5章 5.5.7 / ADR-0038)。
  *
  * 委任の該当を判定する機械の規則は強制層である。規則の追加と範囲の拡大は、事前の承認という

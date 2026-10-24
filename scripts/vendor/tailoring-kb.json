@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "b3829f9b8594d63c79308210589d6545ee0d2b06",
+    "commit": "89fdec2492e2a052b1dfd18cbae888eb98320021",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -218,7 +218,7 @@
             "id": "g-ship"
           },
           "action": "omit",
-          "note": "出荷判定は省略する"
+          "note": "出荷判定は省略する。安全重要度 CL1 以上では省略しない"
         },
         {
           "target": {
@@ -269,7 +269,7 @@
           "action": "set",
           "param": "scope",
           "value": "core-only",
-          "note": "独立レビューはコア機能のみ実施する"
+          "note": "独立レビューはコア機能のみ実施する。安全重要度 CL1 以上では全変更に適用する"
         },
         {
           "target": {
@@ -277,7 +277,7 @@
             "id": "g-ship"
           },
           "action": "simplify",
-          "note": "出荷判定は簡略化する(記録は残す)"
+          "note": "出荷判定は簡略化する(記録は残す)。安全重要度 CL1 以上では簡略にしない"
         },
         {
           "target": {
@@ -414,9 +414,27 @@
           "param": "appliesInAllStages",
           "value": true,
           "note": "独立レビューは、事業ステージによる省略の対象にしない(S0 でも適用する)。危害の深刻度は、ステージの都合で下がらない"
+        },
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-indep-review"
+          },
+          "action": "set",
+          "param": "scope",
+          "value": "all",
+          "note": "独立レビューを、コア機能に限らず全変更に適用する(事業ステージ S1 のコア機能への限定を適用しない)"
+        },
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-ship"
+          },
+          "action": "restore",
+          "note": "出荷判定は、事業ステージによる省略(S0)・簡略(S1)の対象にしない。G-6 の記録の欠落を読んで差し戻す席を残す"
         }
       ],
-      "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある。独立した人の確認を、事業ステージを理由に外さない",
+      "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある。独立した人の確認と、その欠落を差し戻す出荷判定を、事業ステージを理由に外さない。危害の深刻度は、体制の都合でも事業ステージの都合でも下がらない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
@@ -458,7 +476,7 @@
           "action": "set",
           "param": "independentSafetyAssessment",
           "value": true,
-          "note": "独立レビューとは別に、実装の責任者から組織的に独立した安全性の評価を重ねる"
+          "note": "独立レビューとは別に、独立した安全性の評価を重ねる。評価者は、実装の責任者・作成を指示した者・当該の判定者から組織上の距離の段2 以上(CL3 は段3 以上)の者とする(第1章 1.4)。届かない段は未達であり、AI の確認はどの段にも数えない"
         },
         {
           "target": {
@@ -468,6 +486,14 @@
           "param": "maxAutonomyLevel",
           "value": "L2",
           "note": "安全関連部のAI自律レベルはL2を上限とする"
+        },
+        {
+          "target": {
+            "type": "practice",
+            "id": "ai-usage"
+          },
+          "action": "note",
+          "note": "安全関連ソフトウェアのテスト生成の分離の段階は最強を適用する。検証の担当者は、実装の責任者から組織上の距離の段2 以上(CL3 は段3 以上)の者とする(第5章 5.8.4)"
         }
       ],
       "reason": "適合性評価または第三者認証の対象になる場合、危険源の同定から検証記録までの追跡が要求される",
@@ -524,7 +550,7 @@
             "id": "ai-usage"
           },
           "action": "note",
-          "note": "実装とテストを同一のAIに同一の文脈で書かせない。テスト生成の分離の段階は最強(組織的な独立)を適用する"
+          "note": "実装とテストを同一のAIに同一の文脈で書かせない。テスト生成の分離の段階は最強を適用し、検証の担当者と独立した安全性の評価者は、組織上の距離の段3 以上の者とする(第1章 1.4)"
         }
       ],
       "reason": "死亡または重篤な傷害が起こりうる場合、自律レベルを固定し、機械の検証と出荷判定の記録を厚くする。独立レビューを2名とするのは、1名の承認者の確認だけでは変更を取り込めない状態を作り、その記録を残すためである(第4章 G-6)。機能安全の規格が確認者の人数を求めるという主張ではない",

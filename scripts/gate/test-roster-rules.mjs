@@ -16,12 +16,18 @@
 //     出荷判定者が dev-done を受け、ready-to-merge は誰も付けない(process-compass #312。突合 X-1)
 //   - 非推奨の兼務の /pit の注記は、D-0 節2 に記録のある組を出さない(突合 X-6)。D-0 節1 の名簿は表5-2 の列を常に置き、旧い生成区間は受け付けて再生成を勧める(X-8・X-9)
 //   - 回答と名簿・席の人数の食い違いを 3名・10名の境界で出す(process-compass #312 で IMPL-0294 として固定)
+//   - カバレッジの下限は由来(導出・代償措置・較正)と基準値を持つ。未達の代償措置の 90 は未達の記録に属し、未達が解けると
+//     同じ差分に緩める向きの行(AI維持管理者の席)として出る。較正の値は動かない。由来の記録の無い旧い構成は黙って下げない
+//     (process-compass #318 / ADR-0087 決定5。IMPL-0340・IMPL-0342)
+//   - 強制する承認が構成の承認者の数を上回るのは注記(不適合ではない)、下回るのは失敗(ADR-0087 決定6。IMPL-0341)
+//   - 安全重要度 CL1 以上は、どの事業ステージでも G-6 を全変更に、G-7 を適用する(ADR-0087 決定4)
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
-import { headcountProblems, deviationCategory, deviationCategoryProblems } from './config.mjs';
+import { headcountProblems, deviationCategory, deviationCategoryProblems, enforcedApprovalFindings, RULE_APPROVER_SEAT } from './config.mjs';
+import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices } from '../init/generate-profile.mjs';
 import { discouragedPairings, discouragedUnrecorded, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
@@ -353,6 +359,104 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の�
   const plainCur = renderD0Section('seats', plain);
   check('名簿の列: 所属・氏名の確認の記入が無くても、表5-2 の欄をすべて列として置く(突合 X-9)', D0_ROSTER_COLUMNS.every((c) => plainCur.includes(`| ${c} |`) || plainCur.includes(` ${c} |`)) && D0_ROSTER_COLUMNS.length === 6, plainCur);
   check('名簿の列: 最終更新日の列を置かない(表5-2 の欄に無い)', !/最終更新日/.test(plainCur));
+}
+
+// ---------------------------------------------------------------- カバレッジの下限の由来(#318 / ADR-0087 決定5)
+{
+  const a = { 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes' };
+  const solo = build(a, { people: [A], seats: seatsOf({ 'dev-verifier': 'a' }) });
+  // 試験1: 未達の間は 90。由来は代償措置、基準値は導出値 80、未達の記録が下限を持つ
+  check(
+    '下限: 未達の間は代償措置の 90(由来 compensation、基準値 80、未達の記録に coverageFloor 90)',
+    solo.ci.coverageThreshold === 90 && solo.ci.coverageOrigin === 'compensation' && solo.ci.coverageBaseline === 80 && solo.unmet.find((u) => u.gate === 'g6')?.coverageFloor === 90,
+    JSON.stringify([solo.ci, solo.unmet])
+  );
+  // 試験2: 未達が解けると、同じ差分に代償措置の終了の行が緩める向きとして出る。決定者は AI維持管理者の席
+  const resolvedCfg = build(a, {
+    people: [A, B],
+    seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }),
+    coverageThreshold: solo.ci.coverageThreshold,
+    coverageOrigin: solo.ci.coverageOrigin,
+    coverageBaseline: solo.ci.coverageBaseline,
+    recordCoverageOrigin: true,
+  });
+  const rep = diffConfigOf(solo, resolvedCfg);
+  const endLine = rep.loosenItems.find((i) => /未達の代償措置の終了/.test(i.line));
+  // IMPL-0340:ok(違反と適合の対。標準の実装マーク。process-compass #318)
+  check(
+    '下限: 未達が解けると基準値 80 へ戻り、差分に代償措置の終了の行が緩める向き(AI維持管理者の席)で出る',
+    resolvedCfg.ci.coverageThreshold === 80 && resolvedCfg.ci.coverageOrigin === 'derived' && endLine?.seat === RULE_APPROVER_SEAT && RULE_APPROVER_SEAT === 'ai-maintainer',
+    JSON.stringify([resolvedCfg.ci, rep.loosenItems])
+  );
+  // IMPL-0340:ng(違反と適合の対。標準の実装マーク。process-compass #318)
+  const silent = { ...resolvedCfg, ci: { ...resolvedCfg.ci } };
+  const silentRep = diffConfigOf({ ...solo, ci: { ...solo.ci, coverageThreshold: 80 } }, silent);
+  check('下限: 差分に終了の行が無い戻し(前後とも 80)は、緩める向きの行を出さない(黙って戻した構成は差分で見える形にならない)', !silentRep.loosenItems.some((i) => /カバレッジの下限/.test(i.line)), JSON.stringify(silentRep.loosenItems));
+  // 試験3: 較正した値は、未達が解けても動かない
+  const calibrated = build(a, {
+    people: [A, B],
+    seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }),
+    coverageThreshold: 85,
+    coverageOrigin: 'calibrated',
+    coverageBaseline: 85,
+    recordCoverageOrigin: true,
+  });
+  check('下限: 較正した値(85)は、未達が解けても動かない', calibrated.ci.coverageThreshold === 85 && calibrated.ci.coverageOrigin === 'calibrated', JSON.stringify(calibrated.ci));
+  // 試験4: 「較正により変更」の表示は、由来が較正の場合だけ
+  check(
+    '下限の表示: 「較正により変更」は由来が較正の場合だけに出す',
+    /較正により変更/.test(coverageOriginNote(calibrated.ci)) && !/較正/.test(coverageOriginNote(solo.ci)) && /代償措置/.test(coverageOriginNote(solo.ci)) &&
+      !/較正により変更/.test(coverageOriginNote({ coverageThreshold: 90, derivedCoverageThreshold: 80 })),
+    JSON.stringify([coverageOriginNote(calibrated.ci), coverageOriginNote(solo.ci), coverageOriginNote({ coverageThreshold: 90, derivedCoverageThreshold: 80 })])
+  );
+  // 試験5: 由来の記録の無い旧い構成の 90 は、黙って下げない。取り込みで由来が不明である旨と戻す候補を出す
+  const legacy = build(a, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }), coverageThreshold: 90 });
+  const legacyOld = { ...legacy, ci: { ...legacy.ci, coverageOrigin: undefined, coverageBaseline: undefined }, answers: { ...COMMON, ...a } };
+  // IMPL-0342:ok(違反と適合の対。標準の実装マーク。process-compass #318)
+  check(
+    '旧い構成: 由来の記録の無い 90 は下げず、由来の欄も足さない(変化点を経ない再生成は構成を変えない)',
+    legacy.ci.coverageThreshold === 90 && legacy.ci.coverageOrigin === undefined && legacy.ci.coverageBaseline === undefined,
+    JSON.stringify(legacy.ci)
+  );
+  check(
+    '旧い構成: 取り込みの案内に、由来が不明である旨と戻す候補 80 を出す(値は変えない)',
+    relaxationNotices(legacyOld).some((t) => /由来/.test(t) && /80%/.test(t)) && legacyOld.ci.coverageThreshold === 90,
+    JSON.stringify(relaxationNotices(legacyOld))
+  );
+  const legacyRecorded = build(a, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }), coverageThreshold: 90, recordCoverageOrigin: true });
+  const legacyRep = diffConfigOf({ ...legacyOld }, legacyRecorded);
+  check(
+    '旧い構成: 変化点では由来を unknown と記録し、残作業に戻す候補を出す(緩める行は出さない)',
+    legacyRecorded.ci.coverageThreshold === 90 && legacyRecorded.ci.coverageOrigin === 'unknown' && legacyRep.remaining.some((t) => /由来/.test(t)) && !legacyRep.loosenItems.some((i) => /カバレッジ/.test(i.line)),
+    JSON.stringify([legacyRecorded.ci, legacyRep.remaining, legacyRep.loosenItems])
+  );
+  // IMPL-0342:ng(違反と適合の対。標準の実装マーク。process-compass #318)
+  const lowered = { ...legacyOld, ci: { ...legacyOld.ci, coverageThreshold: 80 } };
+  check('旧い構成: 黙って 80 へ下げた構成は、差分に緩める向きの行として出る(記名なしには通らない)', diffConfigOf(legacyOld, lowered).loosenItems.some((i) => /カバレッジの下限: 90% → 80%/.test(i.line)), JSON.stringify(diffConfigOf(legacyOld, lowered).loosenItems));
+  const oldCl2 = { ...legacyOld, ci: { ...legacyOld.ci, coverageThreshold: 80 }, ruleset: 'regulated', review: { ...legacyOld.review, reviewerCount: 1 } };
+  check('旧い CL2 の構成(regulated・承認者1名): 取り込みの案内に、不適合ではないこと・2件目を数えないこと・記名で safety へ移ることを出す', relaxationNotices(oldCl2).some((t) => /不適合ではない/.test(t) && /保証の主張に数えない/.test(t) && /safety/.test(t)), JSON.stringify(relaxationNotices(oldCl2)));
+}
+
+// ---------------------------------------------------------------- 強制する承認の数(#318 / ADR-0087 決定6)
+{
+  const cfg = { ruleset: 'regulated', review: { requiredApprovals: 1, reviewerCount: 1 } };
+  const rs = (count) => ({ name: 'regulated', rules: [{ type: 'pull_request', parameters: { required_approving_review_count: count } }] });
+  // IMPL-0341:ng(違反と適合の対。標準の実装マーク。process-compass #318)
+  const under = enforcedApprovalFindings({ ...cfg, review: { requiredApprovals: 2, reviewerCount: 2 } }, rs(1));
+  check('承認の数: 強制する承認が要求を下回れば失敗', under.problems.length === 1 && under.notes.length === 0, JSON.stringify(under));
+  // IMPL-0341:ok(違反と適合の対。標準の実装マーク。process-compass #318)
+  const over = enforcedApprovalFindings(cfg, rs(2));
+  check('承認の数: 強制する承認が構成の承認者を上回れば、失敗ではなく注記(保証の主張に数えない)', over.problems.length === 0 && over.notes.length === 1 && /保証の主張に数えません/.test(over.notes[0]), JSON.stringify(over));
+  const equal = enforcedApprovalFindings(cfg, rs(1));
+  check('承認の数: 一致すれば失敗も注記も出さない', equal.problems.length === 0 && equal.notes.length === 0, JSON.stringify(equal));
+}
+
+// ---------------------------------------------------------------- CL1 以上は事業ステージで G-6・G-7 を緩めない(#318 / ADR-0087 決定4)
+for (const cl of ['cl1', 'cl2', 'cl3']) {
+  for (const stage of ['poc', 'mvp']) {
+    const c = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': stage, 'q-external-reviewer': 'reviewer-yes', 'q-criticality': cl }, { people: [A, B, C], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'c' }) });
+    check(`${cl}・${stage}: G-6 は全変更に適用し、G-7 は適用(省略・簡略にしない)`, c.gates.g6.state === 'required' && (c.gates.g6.params?.scope ?? 'all') === 'all' && c.gates.g7.state === 'required', JSON.stringify([c.gates.g6, c.gates.g7.state]));
+  }
 }
 
 console.log('');

@@ -213,6 +213,59 @@ const deviationTerm = (d) => (deviationCategory(d) === 'listed' ? '逸脱' : '�
 
 const ROLES_URL = 'https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/';
 
+/**
+ * カバレッジの下限の由来の表示(標準 第4章 G-5。process-compass #318 / ADR-0087 決定5)。
+ * 「較正により変更」は、由来が較正の場合だけに出す。代償措置の値と由来の分からない値を、較正と表示しない
+ */
+export function coverageOriginNote(ci) {
+  const value = ci?.coverageThreshold;
+  const derived = ci?.derivedCoverageThreshold;
+  const origin = ci?.coverageOrigin;
+  if (origin === 'compensation') {
+    return `(未達の代償措置。基準値は ${ci.coverageBaseline}%。未達を解く変化点の差分に、基準値へ戻す行が出る)`;
+  }
+  if (origin === 'calibrated') {
+    return derived != null && derived !== value ? `(標準の導出値は ${derived}%。較正により変更)` : '(較正した値)';
+  }
+  if (derived == null || derived === value) return '';
+  if (origin === 'derived') return `(標準の導出値は ${derived}%。導出値が下がった後も下げていない。下げるのは記名の決定)`;
+  // 由来の欄の無い旧い構成(unknown を含む)
+  return `(由来の記録が無い。標準の導出値は ${derived}%。戻すかは記名で決める)`;
+}
+
+/**
+ * 取り込み(種別 intake)で出す、再導出すると緩める向きの差分になる値の案内(標準 community/standard-editions.md
+ * 「再導出すると緩める向きの差分になる変更を出すとき」。process-compass #318 / ADR-0087 決定5・7)。
+ * 値は変えない。緩める向きの適用は、採用者の記名を伴う構成の変更だけで行う
+ */
+export function relaxationNotices(config) {
+  const out = [];
+  const ci = config?.ci ?? {};
+  if (typeof ci.coverageThreshold === 'number' && (ci.coverageOrigin === undefined || ci.coverageOrigin === 'unknown')) {
+    let ruleDerived = 80;
+    try {
+      ruleDerived = evaluate(KB, config.answers ?? {}).profile['gate:g-ci']?.state === 'strengthen' ? 90 : 80;
+    } catch {
+      // 回答を評価できない構成は、既定の 80 を候補にする
+    }
+    const unmetComp = (config.unmet ?? []).some((u) => (u.compensation ?? []).includes('ci-strict'));
+    const candidate = unmetComp ? Math.max(ruleDerived, 90) : ruleDerived;
+    if (ci.coverageThreshold > candidate) {
+      out.push(
+        `カバレッジの下限 ${ci.coverageThreshold}% は、由来(導出・代償措置・較正)の記録が無い。戻す候補は ${candidate}%(${unmetComp ? '未達の代償措置の間の値' : '標準の導出値'})である。` +
+          '未達の代償措置で上がった値なら、未達が解けた後は戻せる。戻すかは採用者が記名で決める(/process-change の種別 settings で ci.coverageThreshold に "derived"、または較正した値として数値を書く)。黙って下げない'
+      );
+    }
+  }
+  if (config?.ruleset === 'regulated' && (config.review?.reviewerCount ?? 0) < 2) {
+    out.push(
+      `ブランチ保護 regulated(承認 2)は、構成の承認者 ${config.review?.reviewerCount ?? 0} 名を上回る。CL2 の承認者は1名であり、現行のテンプレートは承認 1 のルールセット safety を導く(ADR-0067 決定5)。` +
+        'このままでも不適合ではない。2件目の承認は、保証の主張に数えない。safety へ移るなら、/process-change の種別 settings の空の入力で再導出し、緩める向きの差分(ブランチ保護 regulated → safety)を決定者が記名する'
+    );
+  }
+  return out;
+}
+
 /** engine の state → 構成ファイルのゲート状態 */
 function toGateState(state) {
   if (!state || state === 'standard' || state === 'strengthen') return 'required';
@@ -714,12 +767,43 @@ export function buildConfig(answers, opts = {}) {
   const ruleset = gates.g6.state === 'required' ? (strict ? (reviewerCount >= 2 ? 'regulated' : 'safety') : 'team') : null;
 
   const derivedCoverage = ciStrengthened ? 90 : 80;
-  // 較正していない下限(導出値のまま引き継いだ値)は、導出値が上がれば追随する。厳しくする向きであり、
-  // 即時に適用する。導出値が下がっても、自動では下げない(下げるのは緩める向きの決定。種別 settings)
+  // 下限の由来(標準 第4章 G-5「カバレッジの測る範囲と規模」。process-compass #318 / ADR-0087 決定5)。
+  //   基準値(coverageBaseline): 導出値(規則が G-5 を強める構成は 90、ほかは 80)、または組織が較正した値
+  //   代償措置の下限: 未達の代償措置 ci-strict の 90。未達の記録(unmet[].coverageFloor)に属し、基準値と分ける
+  //   由来(coverageOrigin): derived(導出)・compensation(代償措置)・calibrated(較正)・unknown(由来の記録の無い旧い構成)
+  const ruleDerivedCoverage = result.profile['gate:g-ci']?.state === 'strengthen' ? 90 : 80;
+  const compensationFloor = unmet.some((u) => (u.compensation ?? []).includes('ci-strict')) ? 90 : null;
+  // 由来の欄の無い旧い構成(または unknown)。値を黙って下げない(ADR-0084)。変化点の記録を伴う生成でだけ由来の欄を書く
+  const legacyCoverage = opts.coverageThreshold !== undefined && (opts.coverageOrigin === undefined || opts.coverageOrigin === 'unknown');
+  const writeCoverageOrigin = !legacyCoverage || opts.recordCoverageOrigin === true;
+  let coverageBaseline;
+  let baselineOrigin;
+  if (opts.coverageThreshold === undefined) {
+    // 初期化、または種別 settings で導出値へ戻した(ci.coverageThreshold: "derived")
+    coverageBaseline = ruleDerivedCoverage;
+    baselineOrigin = 'derived';
+  } else if (opts.coverageOrigin === 'calibrated') {
+    coverageBaseline = opts.coverageBaseline ?? opts.coverageThreshold;
+    baselineOrigin = 'calibrated';
+  } else if (legacyCoverage) {
+    // 較正していない下限(導出値のまま引き継いだ値)は、導出値が上がれば追随する(厳しくする向き。即時)。下げない
+    coverageBaseline = opts.coverageUncalibrated && opts.coverageThreshold < derivedCoverage ? derivedCoverage : opts.coverageThreshold;
+    baselineOrigin = 'unknown';
+  } else {
+    // 導出の基準値は、導出値が上がれば追随する(厳しくする向き。即時)。導出値が下がっても、自動では下げない
+    // (下げるのは緩める向きの決定。種別 settings)。代償措置の下限は基準値に含めない
+    coverageBaseline = Math.max(opts.coverageBaseline ?? ruleDerivedCoverage, ruleDerivedCoverage);
+    baselineOrigin = 'derived';
+  }
+  // 効く下限。較正した値と由来の分からない値は、そのまま効かせる(較正が代償措置を下回る場合は理由へ出す)。
+  // 導出の基準値には、未達の間だけ代償措置の下限が重なる。未達が解けると外れ、差分に終了の行が出る(diffConfig)
   const coverageThreshold =
-    opts.coverageThreshold === undefined || (opts.coverageUncalibrated && opts.coverageThreshold < derivedCoverage)
-      ? derivedCoverage
-      : opts.coverageThreshold;
+    baselineOrigin === 'derived' ? Math.max(coverageBaseline, compensationFloor ?? 0) : coverageBaseline;
+  const coverageOrigin =
+    baselineOrigin === 'derived' && compensationFloor != null && compensationFloor > coverageBaseline ? 'compensation' : baselineOrigin;
+  if (writeCoverageOrigin) {
+    for (const u of unmet) if ((u.compensation ?? []).includes('ci-strict')) u.coverageFloor = 90;
+  }
   // 代償措置(ci-strict)の表示と、実際の下限を食い違わせない。較正で導出値を下回る場合は、その旨を理由へ出す
   if (coverageThreshold < derivedCoverage) {
     for (const u of unmet) {
@@ -729,7 +813,13 @@ export function buildConfig(answers, opts = {}) {
     }
   }
   if (opts.coverageThreshold !== undefined && coverageThreshold !== derivedCoverage) {
-    console.log(`[較正引き継ぎ] 既存の較正設定（ci.coverageThreshold: ${opts.coverageThreshold}%）を検出し、引き継ぎました（標準の導出初期値: ${derivedCoverage}%）`);
+    if (coverageOrigin === 'calibrated') {
+      console.log(`[較正引き継ぎ] 既存の較正設定（ci.coverageThreshold: ${opts.coverageThreshold}%）を検出し、引き継ぎました（標準の導出初期値: ${derivedCoverage}%）`);
+    } else if (coverageOrigin === 'unknown') {
+      console.log(`[由来の記録なし] カバレッジの下限 ${coverageThreshold}% は由来(導出・代償措置・較正)の記録が無いため、値を保ちました。戻す候補は導出値 ${derivedCoverage}% です。戻すかは記名で決めます(種別 settings で ci.coverageThreshold に "derived" か数値)`);
+    } else {
+      console.log(`[導出値の低下] カバレッジの下限 ${coverageThreshold}% を保ちました(標準の導出値は ${derivedCoverage}%)。導出値が下がっても自動では下げません。下げるのは記名の決定です(種別 settings)`);
+    }
   }
   // カバレッジの測る範囲(標準 第4章 G-5 基準3。process-compass #296)。既定は変更で加えた・変えたコード(changed)。
   // アダプタが行単位の被覆(coverageDetail)を持たず変更の範囲を測れない場合だけ、全体(whole)を既定にする。
@@ -823,6 +913,8 @@ export function buildConfig(answers, opts = {}) {
     ci: {
       coverageThreshold,
       derivedCoverageThreshold: derivedCoverage,
+      // 下限の由来と基準値(#318)。由来の欄の無い旧い構成は、変化点を経ない再生成では欄を足さない(要約値を保つ)
+      ...(writeCoverageOrigin ? { coverageOrigin, coverageBaseline } : {}),
       coverageScope,
       failOnSeverity,
       allowedLicenses,
@@ -1666,7 +1758,26 @@ export function diffConfig(before, after) {
     }
     const bc = num(before.ci?.coverageThreshold);
     const ac = num(after.ci?.coverageThreshold);
-    if (bc !== null && ac !== null && bc !== ac) push(`カバレッジの下限: ${bc}% → ${ac}%`, bc, ac, M);
+    // 未達の代償措置の終了(標準 第8章「再実行の時点と向き」、第4章 G-5。#318 / ADR-0087 決定5)。未達を解く変更の差分に、
+    // 緩める向きの行として出し、その変化点の記名(AI維持管理者の席の責任者、または D-0 表1 の決定者)で決める。黙って戻さない
+    const compensationEnds = before.ci?.coverageOrigin === 'compensation' && after.ci?.coverageOrigin !== 'compensation';
+    if (bc !== null && ac !== null && bc !== ac) {
+      push(
+        compensationEnds && ac < bc
+          ? `カバレッジの下限: ${bc}% → ${ac}%(未達の代償措置の終了。基準値 ${ac}% へ戻す。戻さないなら、この変化点の後に種別 settings で較正した値として ${bc}% を記録する)`
+          : `カバレッジの下限: ${bc}% → ${ac}%`,
+        bc,
+        ac,
+        M
+      );
+    }
+    // 由来の記録の無い下限は、黙って下げない(ADR-0084)。戻す候補を示し、採用者が記名で決める
+    if (after.ci?.coverageOrigin === 'unknown' && num(after.ci?.derivedCoverageThreshold) !== null && ac !== null && ac > after.ci.derivedCoverageThreshold) {
+      remaining.push(
+        `カバレッジの下限 ${ac}% は、由来(導出・代償措置・較正)の記録が無い旧い構成の値であり、下げずに保った。戻す候補は標準の導出値 ${after.ci.derivedCoverageThreshold}% である。` +
+          '未達の代償措置で上がった値なら、未達が解けた後は戻せる。戻すかは記名で決める(種別 settings で ci.coverageThreshold に "derived"、または較正した値として数値を書く。緩める向きの決定)'
+      );
+    }
     // 測る範囲を変更の範囲から全体へ移すのは緩める向き(変更の未被覆が全体の被覆で薄まる。#296)
     // 値の無い構成は、実効の範囲(whole。coverage-check.mjs の coverageScopeOf)を前・後の値として比べる(突合 X-4)
     const bs = before.ci?.coverageScope ?? 'whole';
@@ -2956,11 +3067,7 @@ export function renderProfileMd(config, result) {
   L.push('| 項目 | 値 |');
   L.push('| --- | --- |');
   L.push(
-    `| カバレッジの下限 | ${config.ci.coverageThreshold}%${
-      config.ci.derivedCoverageThreshold != null && config.ci.derivedCoverageThreshold !== config.ci.coverageThreshold
-        ? `(標準の導出値は ${config.ci.derivedCoverageThreshold}%。較正により変更)`
-        : ''
-    } |`
+    `| カバレッジの下限 | ${config.ci.coverageThreshold}%${coverageOriginNote(config.ci)} |`
   );
   L.push(
     `| カバレッジの測る範囲 | ${config.ci.coverageScope === 'whole' ? 'コードの全体(変更の未被覆は全体の被覆で薄まる。保証の開示に出る)' : config.ci.coverageScope === 'changed' ? '変更で加えた・変えたコード' : '未記入(アダプタの既定で測る)'}。企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃える |`
@@ -3216,7 +3323,7 @@ export function renderProcessRules(config) {
     L.push(
       `- **独立レビュー(G-6)の承認者: ${n} 名**(名簿の別人。各自が自分の挙動要約を書く${n >= 2 ? '。1名の承認でマージした変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える' : ''})` +
         (audit ? '。**判定記録は監査対応書式**(変更ごとに G-6 の判定記録を残し、「監査対応書式」の表を埋める。PR の承認だけでは記録にならない)' : '') +
-        (safety ? '。**独立した安全性の評価者**(実装の責任者から組織的に独立。附属書F)の記名を判定記録に要する' : '')
+        (safety ? '。**独立した安全性の評価者**(実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上。標準 第1章 1.4・附属書F)の記名を判定記録に要する' : '')
     );
   }
   // 10名以上の規則(第8章 軸A。#288 第6巡 Q)。構成の値(review.mode・approverMode)が何を要し、機械が何を確かめるかを常駐させる
@@ -3887,11 +3994,15 @@ if (isMain) {
       // 記録の時点の緩みは、以後の乖離には出ないため(process-compass #317 突合 X-5)。合否には使わない
       const firstRecord = enforcementBaselineNotes(prior, before?.digests ?? null);
       for (const f of firstRecord) console.log(`[注記] ${f.path} を初めて記録する。${f.matchesTemplate ? 'テンプレートの既定と一致する' : `テンプレートの既定との差: ${f.notes.join(' / ')}`}`);
+      // 再導出すると緩める向きの差分になる値の案内。値は変えない。適用は採用者の記名だけ(process-compass #318 / ADR-0087 決定7)
+      const relax = relaxationNotices(prior);
+      for (const r of relax) console.log(`[案内] ${r}`);
       const diff = [
         `取り込んだ準拠テンプレート: ${before?.commit ?? '記録なし'} → ${next.template.commit ?? '不明'}`,
         ...firstRecord.map((f) => `${f.path} を初めて記録した: ${f.matchesTemplate ? 'テンプレートの既定と一致' : `テンプレートの既定との差(${f.notes.join(' / ')})`}`),
         nDrift === null ? '強制層の要約値: 記録なし → 記録した' : `強制層の要約値の乖離(取り直す直前): 変わった ${driftPaths.changed.length} / 無くなった ${driftPaths.missing.length} / 増えた ${driftPaths.added.length}`,
         ...(kbSwitched ? [`知識ベースの生成元: ${kbBefore ?? '記録なし'} → ${kbAfter ?? '不明'}(${standardEdition(prior) ? `従う版 ${standardEdition(prior)} は変えない` : '従う作業中の版の切り替え'})`] : []),
+        ...relax.map((r) => `案内(値は変えていない): ${r}`),
       ];
       next.changeLog = [
         ...(prior.changeLog ?? []),
@@ -4008,8 +4119,8 @@ if (isMain) {
       }
     }
     if (S.ci !== undefined && !isObject(S.ci)) bad.push('settings.ci はオブジェクトで書きます');
-    if (S.ci?.coverageThreshold !== undefined && !(typeof S.ci.coverageThreshold === 'number' && S.ci.coverageThreshold >= 0 && S.ci.coverageThreshold <= 100)) {
-      bad.push('settings.ci.coverageThreshold は 0〜100 の数値で書きます');
+    if (S.ci?.coverageThreshold !== undefined && S.ci.coverageThreshold !== 'derived' && !(typeof S.ci.coverageThreshold === 'number' && S.ci.coverageThreshold >= 0 && S.ci.coverageThreshold <= 100)) {
+      bad.push('settings.ci.coverageThreshold は 0〜100 の数値(較正した値)か、"derived"(標準の導出値へ戻す)で書きます');
     }
     for (const k of ['failOnSeverity', 'allowedLicenses']) if (S.ci?.[k] !== undefined && !strList(S.ci[k])) bad.push(`settings.ci.${k} は文字列の配列で書きます`);
     if (S.ci?.coverageScope !== undefined && !['changed', 'whole'].includes(S.ci.coverageScope)) bad.push('settings.ci.coverageScope は "changed"(変更で加えた・変えたコード)か "whole"(全体)で書きます');
@@ -4285,9 +4396,16 @@ if (isMain) {
       reviewSourcing: { ...Object.fromEntries((prior?.unmet ?? []).map((u) => [u.gate, u.reviewSourcing])), ...(S.reviewSourcing ?? {}) },
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
-      coverageThreshold: ciNow.coverageThreshold,
+      // 下限の由来(#318 / ADR-0087 決定5)。種別 settings の数値は較正、"derived" は導出値へ戻す(緩める向きなら差分に出て記名を要する)
+      coverageThreshold: S.ci?.coverageThreshold === 'derived' ? undefined : ciNow.coverageThreshold,
+      coverageOrigin:
+        S.ci?.coverageThreshold === 'derived' ? 'derived' : typeof S.ci?.coverageThreshold === 'number' ? 'calibrated' : kept.ci?.coverageOrigin,
+      coverageBaseline:
+        S.ci?.coverageThreshold === 'derived' ? undefined : typeof S.ci?.coverageThreshold === 'number' ? S.ci.coverageThreshold : kept.ci?.coverageBaseline,
+      // 由来の欄の無い旧い構成へ欄を足すのは、変化点の記録を伴う生成に限る(変化点を経ない再生成は構成を変えない)
+      recordCoverageOrigin: Boolean(change) || !prior,
       coverageScope: ciNow.coverageScope,
-      // 変化点では、較正していない下限(導出値のまま)を、導出値の引き上げへ追随させる
+      // 変化点では、較正していない下限(導出値のまま)を、導出値の引き上げへ追随させる(由来の欄の無い旧い構成)
       coverageUncalibrated:
         Boolean(change) && S.ci?.coverageThreshold === undefined && kept.ci?.derivedCoverageThreshold != null && kept.ci.coverageThreshold === kept.ci.derivedCoverageThreshold,
       failOnSeverity: ciNow.failOnSeverity,

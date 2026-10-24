@@ -76,6 +76,7 @@ import {
   hookRegistrationProblems,
   codeownersState,
   deviationCategoryProblems,
+  enforcedApprovalFindings,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
@@ -773,12 +774,10 @@ if (config.gates?.g6?.state === 'required') {
     problems.push(`config.ruleset "${config.ruleset}" に一致するルールセットが .github/rulesets にありません`);
   } else {
     const pr = (activeRuleset.rules ?? []).find((r) => r.type === 'pull_request');
-    const count = pr?.parameters?.required_approving_review_count ?? 0;
-    if (count < Math.max(1, config.review?.requiredApprovals ?? 1)) {
-      problems.push(
-        `G-6 は承認 ${config.review?.requiredApprovals} 件を要求しますが、ルールセットは ${count} 件です`
-      );
-    }
+    // 強制する承認の数。下回れば失敗、上回れば注記(標準 第8章 軸E の読み方。process-compass #318 / ADR-0087 決定6)
+    const approvals = enforcedApprovalFindings(config, pr ? activeRuleset : { rules: [{ type: 'pull_request', parameters: {} }] });
+    problems.push(...approvals.problems);
+    notes.push(...approvals.notes);
     if (pr?.parameters?.require_last_push_approval !== true) {
       problems.push(
         'ルールセットの require_last_push_approval が true ではありません。最後に push した本人の承認を無効化する設定です'

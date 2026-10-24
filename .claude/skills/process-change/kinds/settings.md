@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `stack` | アダプタ(`adapters/<stack>.json` があるもの) | 技術判断者の判断。判断記録(ADR)を残す(`/adr-write`) |
 | `projectId` / `profileName` | 案件 ID、プロファイル名 | — |
-| `ci.coverageThreshold` | カバレッジの下限(0〜100) | **下げるのは緩める向き** |
+| `ci.coverageThreshold` | カバレッジの下限(0〜100)。数値は較正した値として記録する(由来 `calibrated`)。`"derived"` は導出の基準値へ戻す(未達の間は代償措置の 90 が重なる)。由来の記録の無い旧い構成の値を戻すかは、ここで決める | **下げるのは緩める向き**。未達を解く変更では、代償措置の終了の行が同じ差分に出る(その変更の記名で決まる) |
 | `ci.failOnSeverity` / `ci.allowedLicenses` | 失敗させる重大度、許可するライセンス | **重大度を外す、ライセンスを足すのは緩める向き** |
 | `task.maxChangedLines` / `maxChangedFiles` / `selfHealMaxIterations` | 規模の基準値(超過で規模の確認を要する。遮断ではない)と反復の上限。`maxChanged*` は `null`(基準なし)も取れる。`null` は `task.assurance` が L2 で根拠が実在し、確約範囲・コア指定のパス(`delegation.protectedPaths` か `riskFloor.rules` のパス)を宣言した構成でだけ書け、R1・R2・そのパスの変更には効かない | **上げる・`null` にするのは緩める向き** |
 | `task.nonProductPaths` | 規模の算定で別に数える置き場(glob の配列)。既定のテスト・fixture・snapshot に足す | **足すのは緩める向き**。閾値として扱い、製品のコードと同じ PR に入れない |
