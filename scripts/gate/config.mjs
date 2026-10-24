@@ -90,7 +90,7 @@ export const KIND_NOTE = {
 // ---------------------------------------------------------------- 本標準の版・適用の終了・主張の名(標準 第1章 1.10。process-compass #313 / ADR-0083)
 //
 // 版は、標準の保守者が発行したものだけを指す(「第N版」、要求事項を変えない改訂は「第N版 修正M」)。
-// 発行していない状態は作業中の版で、適用の表明と適合の主張に名指せない。構成の standard.edition が
+// 発行していない状態は作業中の版で、適用の表明に限りコミットとともに名指せる。2つの適合の主張は発行した版を要する。構成の standard.edition が
 // 無い旧い構成と null の構成は、作業中の版に従うものとして読む(後方互換。欄を足さない)
 
 /** 版の書式。第N版、または 第N版 修正M */
@@ -104,9 +104,19 @@ export function standardEdition(config) {
   return typeof e === 'string' && EDITION_PATTERN.test(e) ? e : null;
 }
 
-/** 版の表示。作業中の版は「作業中の版(未発行)」 */
-export function editionLabel(config) {
-  return standardEdition(config) ?? WORKING_DRAFT;
+/**
+ * 作業中の版の表示。複製した知識ベースの source(edition が null のとき)から、最後に発行した版(basedOn)と
+ * 生成元のコミットを添える。作業中の版は、適用の表明に限り、コミットとともに名指せる(標準 第1章 1.10.3。ADR-0083 X-4)
+ */
+export function workingDraftLabel(kbSource) {
+  const after = kbSource?.basedOn ? `${kbSource.basedOn}の後` : '未発行';
+  const commit = typeof kbSource?.commit === 'string' && /^[0-9a-f]{7,40}$/.test(kbSource.commit) ? `。標準のコミット ${kbSource.commit.slice(0, 12)}` : '';
+  return `作業中の版(${after}${commit})`;
+}
+
+/** 版の表示。作業中の版は「作業中の版(未発行。標準のコミット …)」 */
+export function editionLabel(config, kbSource = null) {
+  return standardEdition(config) ?? (kbSource ? workingDraftLabel(kbSource) : WORKING_DRAFT);
 }
 
 /** 適用の終了の理由の区分(標準 第1章 1.10.4) */
@@ -154,22 +164,23 @@ export function classifyDeviations(config) {
  * 記録の欠落は出荷の証跡の集約が数えるため、ここでは判定しない(「記録の欠落が無い範囲に限る」と添える)。
  * 表明・主張の文そのものは出力しない(IMPL-0120。降りていない)
  */
-export function claimStatus(config) {
+export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {}) {
   const edition = standardEdition(config);
   const ended = applicationEnd(config);
   const { listed, unlisted } = classifyDeviations(config);
   const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
   const blockers = [];
-  if (!edition) blockers.push(`従う版が${WORKING_DRAFT}です。作業中の版は、適用の表明と適合の主張に名指せません(第1章 1.10.3)`);
-  if (ended) blockers.push(`適用を終えています(${ended.date}。${ended.reasonLabel})。現在形の適用の表明をしません(第1章 1.10.4)`);
+  // 作業中の版は、適用の表明に限り、コミットとともに名指せる。2つの適合の主張は発行した版を要する(第1章 1.10.2・1.10.3)
+  if (!edition) blockers.push(`従う版が作業中の版です。適用の表明は作業中の版をコミットとともに名指せますが、適合の主張と逸脱を伴う適合の主張は発行した版を要します(第1章 1.10.3)`);
+  if (ended && !ignoreEnd) blockers.push(`適用を終えています(${ended.date}。${ended.reasonLabel})。現在形の適用の表明をしません(第1章 1.10.4)`);
   if (unmet.length) blockers.push(`未達のゲートがあります(${unmet.join(' / ')})。適合の主張を述べられません`);
   if (unlisted.length) blockers.push(`逸脱の閉じた列挙に無い離脱があります(${unlisted.map((d) => d.label).join(' / ')})。適合の主張を述べられません`);
   let name;
-  if (!edition || ended) name = null;
-  else if (unmet.length || unlisted.length) name = '適用の表明';
+  if (ended && !ignoreEnd) name = null;
+  else if (!edition || unmet.length || unlisted.length) name = '適用の表明';
   else if (listed.length) name = '逸脱を伴う適合の主張';
   else name = '適合の主張';
-  return { edition, editionLabel: edition ?? WORKING_DRAFT, ended, unmet, listed, unlisted, blockers, name };
+  return { edition, editionLabel: editionLabel(config, kbSource), ended, unmet, listed, unlisted, blockers, name };
 }
 
 /**

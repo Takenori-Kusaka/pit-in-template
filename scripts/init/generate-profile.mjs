@@ -2545,10 +2545,10 @@ export function renderProfileMd(config, result) {
 
   // --- 述べられる表明と主張(標準 第1章 1.10。process-compass #313 / ADR-0083) ---
   {
-    const cs = claimStatus(config);
+    const cs = claimStatus(config, { kbSource: KB.source ?? null });
     L.push('## 適用の表明と適合の主張');
     L.push('');
-    L.push(`- 従う本標準の版: **${cs.editionLabel}**${cs.edition ? '' : '。作業中の版は、適用の表明と適合の主張に名指せません。版の切り替えは `/process-change`(種別 `edition`)で行います'}`);
+    L.push(`- 従う本標準の版: **${cs.editionLabel}**${cs.edition ? '' : '。作業中の版は、適用の表明に限り、標準のコミットとともに名指せます。適合の主張と逸脱を伴う適合の主張には、発行した版が要ります。版の切り替えは `/process-change`(種別 `edition`)で行います'}`);
     if (cs.ended) L.push(`- 適用の終了: ${cs.ended.date}(${cs.ended.reasonLabel})。現在形の適用の表明をしません`);
     L.push(
       `- この構成で述べられる名: **${cs.name ?? '表明・主張を述べられない'}**` +
@@ -2641,7 +2641,7 @@ export function renderProfileMd(config, result) {
     }
   }
 
-  // --- 兼務の逸脱(1〜2名の体制で成立しない兼務禁止。代償措置は定められていない) ---
+  // --- 成立しない兼務禁止(列挙に無い離脱。1〜2名の体制。代償措置は定められていない) ---
   if (seatDevs.length) {
     L.push('## 成立しない兼務禁止(逸脱の閉じた列挙に無い離脱)');
     L.push('');
@@ -3186,8 +3186,13 @@ export function renderProcessRules(config) {
   }
   const gateDevs = (config.deviations ?? []).filter((d) => d.gate);
   const seatDevs = (config.deviations ?? []).filter((d) => !d.gate);
-  if (gateDevs.length) L.push('- **代償措置つきの逸脱**: ' + gateDevs.map((d) => `${d.label}(${d.rule})`).join(' / '));
-  if (seatDevs.length) L.push('- **兼務の逸脱**(1〜2名の体制。代償措置は定められていない): ' + seatDevs.map((d) => d.label).join(' / '));
+  if (gateDevs.length) L.push('- **代償措置つきの逸脱**(標準 第1章 1.10.2 の閉じた列挙): ' + gateDevs.map((d) => `${d.label}(${d.rule})`).join(' / '));
+  if (seatDevs.length) L.push('- **成立しない兼務禁止**(列挙に無い離脱。1〜2名の体制。代償措置は定められていない。逸脱ではない): ' + seatDevs.map((d) => d.label).join(' / '));
+  {
+    // 従う版と述べられる名(標準 第1章 1.10.2・1.10.3)。構成の要約値に関わらない出力
+    const cs = claimStatus(config, { kbSource: KB.source ?? null });
+    L.push(`- 従う本標準の版: ${cs.editionLabel} / この構成で述べられる名: ${cs.name ?? '表明・主張を述べられない'}。「逸脱を伴う適合の主張」を省略して「適合」と書かない`);
+  }
 
   // 運用形態の要約(第5章 5.5)。席ごとの詳細は next.mjs --role
   const seats = config.seats ?? [];

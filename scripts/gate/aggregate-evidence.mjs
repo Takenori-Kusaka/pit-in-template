@@ -101,6 +101,7 @@ import {
   findInitCommit,
   initRecordProblem,
   claimStatus,
+  standardEdition,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
@@ -3656,15 +3657,37 @@ if (isMain) {
     },
   ];
 
-  // 集約の範囲について述べられる表明・主張の名(標準 第1章 1.10.2。process-compass #313 / ADR-0083)。
-  // 構成から決まる条件(版・終了・未達・列挙に無い離脱・逸脱)に、範囲の記録の欠落を重ねる。文そのものは出さない(IMPL-0120)
-  const claimBase = claimStatus(config);
+  // 集約の範囲について述べられる表明・主張の名(標準 第1章 1.10.2。process-compass #313 / ADR-0083 X-7)。
+  // 名は範囲ごとに求める。範囲の終点のコミットの構成で導き、範囲の記録の欠落を重ねる。文そのものは出さない(IMPL-0120)
+  //   - 範囲の中で従う版が変わった(種別 edition)場合は、版の切り替えをまたぐ範囲なので名を出さない(範囲を分ける)
+  //   - 適用の終了の記録は、終了より前の範囲の名を消さない(過去の範囲の主張として述べる。現在形の表明はしない)
+  const kbSourceForClaim = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-kb.json'), 'utf8')).source ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  const claimEndRev = commits[0]?.hash ?? toCommit ?? null;
+  const claimConfig = (claimEndRev && configAt(claimEndRev)) || config;
+  const claimBase = claimStatus(claimConfig, { kbSource: kbSourceForClaim, ignoreEnd: true });
+  const editionsInRange = [...new Set(commits.map((c) => configAt(c.hash)).filter(Boolean).map((c) => standardEdition(c) ?? '作業中の版'))];
+  const straddles = editionsInRange.length > 1;
+  const endedForRange = claimBase.ended;
   const claimForRange = {
     edition: claimBase.editionLabel,
-    name: claimBase.name && gaps.length && claimBase.name !== '適用の表明' ? '適用の表明' : claimBase.name,
+    endRevision: claimEndRev ? claimEndRev.slice(0, 12) : null,
+    name: straddles ? null : claimBase.name && gaps.length && claimBase.name !== '適用の表明' ? '適用の表明' : claimBase.name,
+    editionsInRange,
+    ended: endedForRange ? { date: endedForRange.date, reason: endedForRange.reasonLabel } : null,
     listedDeviations: claimBase.listed.map((d) => `${d.closedListId} ${d.label}(${d.clause})`),
     unlistedDepartures: claimBase.unlisted.map((d) => d.label),
-    blockers: [...claimBase.blockers, ...(gaps.length ? [`この範囲に記録の欠落などの欠落が ${gaps.length} 件あります。適合の主張を述べられません`] : [])],
+    blockers: [
+      ...(straddles ? [`この範囲は版の切り替えをまたぎます(${editionsInRange.join(' → ')})。範囲を版ごとに分けて集約してください(第1章 1.10.2)`] : []),
+      ...claimBase.blockers,
+      ...(endedForRange ? [`適用を終えています(${endedForRange.date}。${endedForRange.reasonLabel})。この範囲についての表明と主張は、過去の範囲として述べます。現在形の表明をしません(第1章 1.10.4)`] : []),
+      ...(gaps.length ? [`この範囲に記録の欠落などの欠落が ${gaps.length} 件あります。適合の主張を述べられません`] : []),
+    ],
   };
 
   const evidence = {
