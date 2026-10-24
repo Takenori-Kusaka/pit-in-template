@@ -59,7 +59,7 @@ const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-
   const issued = { ...c, standard: { edition: '第1版' } };
   const s1 = claimStatus(issued);
   // IMPL-0299:ok IMPL-0302:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-  check('発行した版に従い、未達も逸脱も無い構成は「適合の主張」', s1.name === '適合の主張' && s1.blockers.length === 0, JSON.stringify(s1));
+  check('発行した版に従い、未達も逸脱も列挙に無い離脱も無い構成は「適合の主張」', s1.name === '適合の主張' && s1.blockers.length === 0, JSON.stringify(s1));
   const ended = { ...issued, changeLog: [...issued.changeLog, { kind: 'end', date: '2026-10-20', end: { reason: 'closed' }, decidedBy: '名簿 甲' }] };
   const s2 = claimStatus(ended);
   check('適用を終えた構成は、現在形の表明・主張の名を持たない', s2.name === null && s2.ended?.reason === 'closed', JSON.stringify(s2));

@@ -103,7 +103,7 @@ import {
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
-import { discouragedText } from './org-assurance.mjs';
+import { discouragedText, deviationTagHits } from './org-assurance.mjs';
 import {
   readPolicy,
   readBriefScope,
@@ -2867,19 +2867,17 @@ const conditionNotes = [];
 if (policy.delegationLock?.unclear) {
   conditionNotes.push(`項目4「AI の利用の拡大」の水準「${policy.delegationLock.level}」は語「認めない」を含むが、機械が読む形(欄の先頭が「認めない」)でないため、構成の錠(委任の登録の拒否)は掛からない。意図が「認めない」なら欄の先頭に「認めない」と書く(人が確かめる)`);
 }
+const deviationTags = deviationTagHits(policy.conditions, deviations);
+conditionNotes.push(...deviationTags.notes);
 for (const c of policy.conditions) {
   const hit = (fact, source) => nonAcceptableFacts.push({ condition: c.text, fact, source });
   if (c.kind === 'R1未確認') {
     if (r1Unconfirmed.length) hit(`独立した人の確認を経ていない R1 の変更 ${r1Unconfirmed.length} 件(${r1Unconfirmed.map((x) => x.label).join(', ')})`, '保証の開示 項目1');
   } else if (c.kind === '未達ゲート') {
     if (unmet.length) hit(`未達のゲート ${unmet.map((u) => u.label).join(' / ')}`, '保証の開示 項目1・5');
-  } else if (c.kind === '逸脱') {
-    // [逸脱] は閉じた列挙の逸脱に限る。列挙に無い離脱は [離脱] が当たる(process-compass #316 / ADR-0085)
-    const listed = deviations.filter((d) => d.category === 'listed');
-    if (listed.length) hit(`逸脱 ${listed.map((d) => d.label).join(' / ')}`, '保証の開示 項目5');
-  } else if (c.kind === '離脱') {
-    const unlisted = deviations.filter((d) => d.category === 'unlisted');
-    if (unlisted.length) hit(`列挙に無い離脱 ${unlisted.map((d) => d.label).join(' / ')}`, '保証の開示 項目1・5');
+  } else if (c.kind === '逸脱' || c.kind === '列挙に無い離脱') {
+    // 印の照合は deviationTagHits による(旧版の [逸脱] の意味を保つ移行。process-compass #316 / ADR-0085。IMPL-0328)
+    for (const h of deviationTags.hits.filter((x) => x.condition === c.text)) hit(h.fact, h.source);
   } else if (c.kind === '未回収の例外') {
     const ex = openLedger.filter((r) => r.kind === '例外');
     if (ex.length) hit(`未回収の例外 ${ex.map((r) => r.id).join(', ')}`, '技術負債台帳(保証の開示 項目5)');
