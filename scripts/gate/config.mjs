@@ -74,8 +74,11 @@ export const CHANGE_KINDS = {
   // どちらも適用の開始を動かさない(同 1.10.1)。process-compass #313 / ADR-0082
   edition: null,
   end: null,
-  // 構成の形式の移行と、取り込んだ準拠テンプレートの記録(process-compass #315 / ADR-0084)。体制の変化点に数えない。値を変えない
+  // 構成の形式の移行(process-compass #315 / ADR-0084)。体制の変化点に数えない。値を変えない。強制層の要約値を記録し直さない
   migrate: null,
+  // 準拠テンプレートの更新の取り込み(#315 突合 X-6・X-18)。強制層の要約値を記録し直す唯一の経路で、記名の自然人の決定を要する。
+  // 取り直す直前の乖離と、取り込みの前後の知識ベースの版(作業中の版の切り替え)を道具が書く。体制の変化点に数えない。値を変えない
+  intake: null,
 };
 
 /** 変化点に数えない種別の表示名 */
@@ -86,7 +89,8 @@ export const KIND_NOTE = {
   notice: '即時通知の記録(変化点に数えない)',
   edition: '従う本標準の版の切り替え(変化点に数えない。適用の開始を動かさない)',
   end: '適用の終了(変化点に数えない)',
-  migrate: '構成の形式の移行・取り込んだテンプレートの記録(変化点に数えない。値を変えない)',
+  migrate: '構成の形式の移行(変化点に数えない。値を変えない)',
+  intake: '準拠テンプレートの更新の取り込み(変化点に数えない。値を変えない)',
 };
 
 // ---------------------------------------------------------------- 本標準の版・適用の終了・主張の名(標準 第1章 1.10。process-compass #313 / ADR-0082)
@@ -195,6 +199,35 @@ export function initRecordProblem(configAtInit) {
   return first
     ? `適用の開始のコミットの構成の changeLog[0] が、構成の初期化の記録(種別 init)ではありません(種別 "${first.kind}")`
     : '適用の開始のコミットの構成に、構成の初期化の記録(changeLog[0] の種別 init)がありません';
+}
+
+/**
+ * 適用の開始のコミットの構成が、事前点検の結果の記録(changeLog[0].preflight)を持つか(#315 突合 X-2。1.10.1 の要求事項1〜3 は
+ * 適用の開始の記録の内容)。初期化を経ない経路(設定済みの構成の複製、--dry-run の出力の流用)で記録が欠けたものを見つける。
+ * 資産を1件以上検出したのに、適用の開始のコミットに一覧が無い場合も問題とする。記録の欠落であり、合否に使うかは呼び出す側が決める
+ * (契約検査は注記、出荷の証跡の集約は適用の開始のコミットを範囲に含む場合に記録の欠落。ADR-0082 決定3 と同じ扱い)。
+ * initHash を渡すと、一覧の有無をそのコミットで確かめる。問題が無ければ null
+ */
+export function preflightRecordProblem(configAtInit, { root = ROOT, initHash = null } = {}) {
+  const first = Array.isArray(configAtInit?.changeLog) ? configAtInit.changeLog[0] : undefined;
+  if (first?.kind !== 'init') return null; // 初期化の記録そのものの欠けは initRecordProblem が出す
+  const pf = first.preflight;
+  if (!pf || typeof pf !== 'object') {
+    return '適用の開始の記録(changeLog[0])に、事前点検の結果(preflight)がありません。初期化を経ずに構成を置いた(複製・--dry-run の出力の流用)か、#315 より前の初期化です';
+  }
+  if (Number(pf.stops) > 0) return `適用の開始の記録の事前点検に、止める項目が ${pf.stops} 件あります`;
+  if (Number(pf.assets) > 0) {
+    const rel = pf.inventory?.path ?? 'docs/adoption-inventory.md';
+    if (!pf.inventory) return `事前点検は既存の統制の資産を ${pf.assets} 件検出しましたが、記録に資産の一覧(${rel})がありません`;
+    if (initHash) {
+      try {
+        execFileSync('git', ['cat-file', '-e', `${initHash}:${rel}`], { cwd: root, stdio: ['ignore', 'ignore', 'ignore'] });
+      } catch {
+        return `事前点検は既存の統制の資産を ${pf.assets} 件検出しましたが、適用の開始のコミットに資産の一覧(${rel})がありません`;
+      }
+    }
+  }
+  return null;
 }
 
 /** AI が使えない期間の扱い(D-0 節12「AI が使えないときの扱い」と同じ語彙) */
@@ -1990,7 +2023,7 @@ export function versionProblems(config) {
  * 形式の版を上げる更新は、ここへ旧い版ごとの変換を足す(保守者の義務。community/standard-editions の「既存の採用者を落とす変更」)
  */
 export const MIGRATIONS = {
-  // 版 0 → 1: 形式の版の欄を足す。取り込んだテンプレートの記録(template)は、移行の入口が別に書く
+  // 版 0 → 1: 形式の版の欄を足す。取り込んだテンプレートの記録(template)は書かない(種別 intake が記名で書く。#315 突合 X-6)
   0: (c) => ({ ...c, formatVersion: FORMAT_VERSION }),
 };
 
@@ -2015,12 +2048,15 @@ export function migrationValueChanges(before, after) {
 // ---------------------------------------------------------------- 取り込んだ準拠テンプレートの記録(process-compass #315 / ADR-0084 決定6)
 //
 // 構成の template は、取り込んだ準拠テンプレートのコミット(commit)と、記録の時点の強制層のファイルの要約値(digests)を持つ。
-// 書くのは初期化と /process-change の種別 migrate だけで、手で書かない。記録は来歴の主張であって、配布したファイルと
+// 書くのは初期化と /process-change の種別 intake(記名の自然人の決定)だけで、手で書かない。種別 migrate は記録し直さない(#315 突合 X-6)。記録は来歴の主張であって、配布したファイルと
 // 一致することの証明ではない(要約値も同じリポジトリの中の値であり、改ざんを止めない)。要約値と現在のファイルの不一致は
 // 表示に使い、合否に使わない。採用者の正当な書き足し(常駐の規則の前後への追記など)があるため
 
-/** 要約値を記録する強制層のファイル。初期化と変化点が案件ごとに書き換えるファイル(.claude/settings.json・guard.json)は含めない */
-export const ENFORCEMENT_DIGEST_GLOBS = ['.claude/hooks/**', '.github/workflows/**', '.github/rulesets/**', 'scripts/gate/**', 'scripts/init/**', 'scripts/vendor/**', 'adapters/**'];
+/**
+ * 要約値を記録する強制層のファイル。初期化と変化点が案件ごとに書き換えるファイル(.claude/settings.json・guard.json)は含めない。
+ * スキル(手順と禁止の追記)は案件ごとに書き換えないため含める(#315 突合 X-16)
+ */
+export const ENFORCEMENT_DIGEST_GLOBS = ['.claude/hooks/**', '.claude/skills/**', '.github/workflows/**', '.github/rulesets/**', 'scripts/gate/**', 'scripts/init/**', 'scripts/vendor/**', 'adapters/**'];
 
 /** 強制層のファイルの要約値。{ 相対パス: SHA-256 }。キーは並べて返す */
 export function enforcementDigests(root = ROOT) {
@@ -2044,7 +2080,8 @@ export const TEMPLATE_COMMIT_PATTERN = /^[0-9a-f]{7,40}$/;
 
 /** 取り込みの記録を作る。commit は人が渡す識別(分からなければ null) */
 export function templateRecord(commit, root = ROOT, at = null) {
-  return { commit: commit ?? null, recordedAt: at, digests: enforcementDigests(root) };
+  // kbCommit: 記録の時点の知識ベースの生成元のコミット。従う作業中の版の識別に使う(#315 突合 X-18)
+  return { commit: commit ?? null, recordedAt: at, kbCommit: templateImplements(root).commit, digests: enforcementDigests(root) };
 }
 
 /**

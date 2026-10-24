@@ -10,12 +10,16 @@
 //
 // 点検は事実を読むだけで、設問の回答を検出の結果で埋めません(/process-init の「ファイルから技術スタックを推測しない」と両立する)。
 // 止める項目は、黙って統制が外れる状態です(目印の無い指示ファイル、フックの登録の欠け、CODEOWNERS の置き場の重なりと
-// 雛形の所有者、既定ブランチの名、共通の祖先の無い履歴の併合)。告げる項目は、既存の統制の資産の一覧(docs/adoption-inventory.md)
-// へ載せることを求めます。一覧に無い資産と、扱いを確定していない資産は止めます(一覧の網羅を人の申告だけに頼らない)。
-// カバレッジの測定の欠落は、一覧へ載せれば止めません。G-5 の基準が未達として表示されるため、黙っては外れません。
+// 雛形の所有者、既定ブランチの名、強制層のワークフロー gate-g5.yml の欠け)。告げる項目は、既存の統制の資産の一覧
+// (docs/adoption-inventory.md)へ載せることを求めます。一覧に無い資産と、扱いを確定していない資産は止めます(一覧の網羅を人の申告だけに頼らない)。
+// 共通の祖先の無い履歴の併合(根のコミットが2つ以上)は止めず、一覧へ載せることを求めます(#315 突合 X-4)。開始より前の履歴は
+// 出所を問わず主張の外で、古い併合は履歴を書き換えないと戻せないためです。準拠テンプレートの履歴を併合しない定め1 は保ちます。
+// カバレッジの測定の欠落は、一覧へ載せれば止めません。node では G-5 の test ジョブが失敗し、go では G-5 基準3 を「実施しない」と
+// 記録するため、黙っては外れません(#315 突合 X-12。ADR-0028 の「未達」ではない)。
 // 既存の違反の基準線(新しい違反だけを止める記録)は設けません。既存の違反は、未達・前提の受容・例外承認の3つの経路で扱います。
 
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +41,13 @@ export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'con
 export const TEMPLATE_TOP = ['.claude', '.github', '.gitignore', '.ignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
 /** .gitignore に含めるテンプレートの行(証跡・秘匿情報・カバレッジの出力・端末ごとの状態の除外) */
 export const TEMPLATE_GITIGNORE_LINES = ['coverage/', 'evidence/', '.env', '.env.*', '*.pem', '*.key', '.claude/.self-heal'];
+/**
+ * 準拠テンプレート自身が持つエージェントの指示ファイル(テンプレートの git ls-files から作る。test-adoption.mjs が一致を確かめる)。
+ * 入れ子の指示ファイルの点検は、これだけを除く(#315 突合 X-14。製品の scripts/CLAUDE.md などを見落とさない)
+ */
+export const TEMPLATE_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'];
+/** 準拠テンプレートの CODEOWNERS の、コメントでない行のパスの並び(test-adoption.mjs が .github/CODEOWNERS と一致を確かめる) */
+export const TEMPLATE_CODEOWNERS_PATTERNS = ['*'];
 /** エージェントの指示ファイルの名 */
 const INSTRUCTION_NAMES = new Set(['CLAUDE.md', 'AGENTS.md', 'CLAUDE.local.md']);
 /** テンプレートの AGENTS.md(CLAUDE.md を正本と指す入口)の目印 */
@@ -165,8 +176,7 @@ export function preflight(root = ROOT) {
   }
   const nested = files.filter((f) => {
     const base = f.split('/').pop();
-    if (f === 'CLAUDE.md' || f === 'AGENTS.md') return false;
-    if (f.startsWith('templates/') || f.startsWith('scripts/') || f.startsWith('profiles/')) return false;
+    if (TEMPLATE_INSTRUCTION_FILES.includes(f)) return false;
     return INSTRUCTION_NAMES.has(base) || f === '.claude/CLAUDE.md';
   });
   for (const f of nested) asset('nested-instructions', 'エージェントの指示ファイル', f, '入れ子の指示ファイル。近いファイルが優先される基盤があり、テンプレートの規則より優先されうる');
@@ -176,6 +186,14 @@ export function preflight(root = ROOT) {
   facts.codeowners = co;
   if (co.places.length > 1) {
     stop('codeowners-places', co.places.join(' / '), `CODEOWNERS が ${co.places.length} か所にある。GitHub は最初の1つ(${co.effective})だけを使い、ほかは黙って無効になる`, `1か所(${CODEOWNERS_PLACES[0]} を推奨)へまとめ、ほかを消す`);
+  }
+  // 既存の CODEOWNERS(テンプレートの置き場でない、またはパスの並びがテンプレートと違う)は、資産「コードオーナーの定め」として
+  // 一覧へ載せる(1.10.1 の要求事項1。#315 突合 X-14)。テンプレートの CODEOWNERS の所有者を置き換えただけのものは載せない
+  if (co.places.length === 1) {
+    const text = readText(root, co.effective) ?? '';
+    const patterns = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).map((l) => l.split(/\s+/)[0]);
+    const isTemplate = co.effective === CODEOWNERS_PLACES[0] && JSON.stringify(patterns) === JSON.stringify(TEMPLATE_CODEOWNERS_PATTERNS);
+    if (!isTemplate) asset('codeowners', 'コードオーナーの定め', co.effective, `既存の CODEOWNERS(パス ${patterns.length} 行)。テンプレートの CODEOWNERS と置き換えるか、残して並存させるか(効くのは1か所だけ)を決める`);
   }
   if (co.owner.length) {
     stop('codeowners-owner', co.effective, `${co.effective} に雛形の所有者 @OWNER が残っている(${co.owner.join('・')} 行目)。不正な所有者の行は黙って飛ばされ、コードオーナーが誰もいない`, '@OWNER を実在のアカウントかチームへ置き換える(人が決める)');
@@ -196,6 +214,11 @@ export function preflight(root = ROOT) {
     }
   } else stop('hooks', '.claude/settings.json', '.claude/settings.json が無い。フック(書き込みの遮断)が登録されない', 'テンプレートの .claude/settings.json を置く');
 
+  // --- 止める: 強制層のワークフロー(#315 突合 X-15)。契約検査を走らせるのは gate-g5.yml 自身のため、欠けは契約検査では見つからない ---
+  if (!fs.existsSync(path.join(root, '.github/workflows/gate-g5.yml'))) {
+    stop('gate-g5-workflow', '.github/workflows/gate-g5.yml', 'テンプレートのワークフロー gate-g5.yml が無い。G-5 の機械判定と契約検査が走らない(契約検査を走らせるのはこのワークフロー自身)', 'テンプレートの .github/workflows/ を複製する');
+  }
+
   // --- 止める: 既定ブランチ ---
   const br = defaultBranch(root);
   facts.defaultBranch = br;
@@ -203,14 +226,21 @@ export function preflight(root = ROOT) {
     stop('default-branch', br.name ?? '(不明)', `既定ブランチが main でない(${br.name ?? '読めない'}。${br.how})。gate-g5.yml の push の契機が main に固定のため、push の契約検査が黙って走らない`, '既定ブランチを main にしてから初期化する(push の契機を書き換える経路は、準拠テンプレートに置いていない)');
   }
 
-  // --- 止める: 共通の祖先の無い履歴の併合 ---
+  // --- 告げる(一覧へ載せることを求める) ---
+  // 共通の祖先の無い履歴の併合(#315 突合 X-4)。止めずに、主系列の根でない根のコミットごとに一覧へ載せる。
+  // テンプレートの履歴の併合を識別して免除する・止めることはしない(識別は出所の申告に依るため)。定め1 は告げる
   const roots = (git(root, ['rev-list', '--max-parents=0', 'HEAD']) ?? '').split('\n').filter(Boolean);
+  const mainRoot = (git(root, ['rev-list', '--first-parent', '--max-parents=0', 'HEAD']) ?? '').split('\n').filter(Boolean)[0] ?? null;
   facts.roots = roots.length;
-  if (roots.length > 1) {
-    stop('unrelated-histories', '履歴', `根のコミットが ${roots.length} 件ある(共通の祖先の無い履歴の併合)。開始より前の履歴は出所を問わず主張の外だが、併合は定め1(履歴を併合しない)に当たる`, '併合を戻し、ファイルの複製で持ち込む');
+  for (const r of roots.filter((x) => x !== mainRoot)) {
+    asset(
+      'unrelated-histories',
+      '併合した別の履歴',
+      `根のコミット ${r.slice(0, 12)}`,
+      `共通の祖先の無い履歴の併合(根のコミット ${roots.length} 件)。開始より前の履歴は出所を問わず主張の外。準拠テンプレートの履歴は併合しない(定め1)。テンプレートの履歴を併合したのなら、併合を戻してファイルの複製で持ち込む`
+    );
   }
 
-  // --- 告げる(一覧へ載せることを求める) ---
   const commits = Number(git(root, ['rev-list', '--count', 'HEAD']) ?? 0);
   facts.commits = commits;
   const product = files.filter((f) => !TEMPLATE_TOP.includes(f.split('/')[0]));
@@ -239,7 +269,7 @@ export function preflight(root = ROOT) {
   for (const f of stacks.get('node') ?? []) {
     try {
       const pkg = JSON.parse(readText(root, f));
-      if (!pkg?.scripts?.coverage) coverageGaps.push(`${f} に coverage のスクリプトが無い(G-5 基準3 が集計ファイル無しで通らない)`);
+      if (!pkg?.scripts?.coverage) coverageGaps.push(`${f} に coverage のスクリプトが無い(G-5 の test ジョブが失敗し、PR が通らない)`);
     } catch {
       coverageGaps.push(`${f} を JSON として読めない`);
     }
@@ -248,7 +278,7 @@ export function preflight(root = ROOT) {
     if (!/pytest-cov/.test(readText(root, f) ?? '')) coverageGaps.push(`${f} に pytest-cov が無い(アダプタは pytest --cov で測る)`);
   }
   if ((stacks.get('go') ?? []).length) coverageGaps.push('go のアダプタはカバレッジの要約を持たず、判定は「実施しない」として記録される');
-  if (coverageGaps.length) asset('coverage', 'カバレッジの測定', 'カバレッジの測定', `${coverageGaps.join('。')}。止めない(G-5 の該当の基準が未達として表示される)`);
+  if (coverageGaps.length) asset('coverage', 'カバレッジの測定', 'カバレッジの測定', `${coverageGaps.join('。')}。止めない(node では G-5 の test ジョブが失敗し、go では G-5 基準3 を「実施しない」と記録するため、黙っては外れない)`);
   const gi = readText(root, '.gitignore');
   const giLines = new Set((gi ?? '').split(/\r?\n/).map((l) => l.trim()));
   const giMissing = TEMPLATE_GITIGNORE_LINES.filter((l) => !giLines.has(l));
@@ -288,7 +318,26 @@ export function draftInventory(result) {
   if (!result.assets.length) L.push('| (検出した資産なし) | — | — | — | — |');
   L.push('');
   L.push('点検が検出しない資産(ブランチ保護とルールセット、必須チェックの設定など、リポジトリの外の設定)も、行を足して扱いを書きます。実環境の設定は `node scripts/gate/adoption-trial.mjs env-check --by <氏名>` が読みます。');
+  L.push('既存の `CODEOWNERS` は点検が行を出します。旧来のブランチ保護だけで必須チェックを効かせている構成は、テンプレートの統制の手段(ルールセット)へ「置き換える」ことを勧めます。');
   return L.join('\n') + '\n';
+}
+
+/**
+ * 初期化の記録(changeLog[0]、種別 init)へ書く事前点検の結果(#315 突合 X-2)。道具が書き、人は書かない。
+ * 止める項目 0 件で初期化したこと、資産の件数、一覧の所在と要約値・記名を残す。開始の後に、複製した構成や
+ * --dry-run の出力の流用など初期化を経ない経路を、契約検査と出荷の証跡の集約が「記録の欠落」として見つける
+ */
+export function preflightRecord(result, root = ROOT, at = null) {
+  const inv = readText(root, INVENTORY_FILE);
+  return {
+    ranAt: at,
+    stops: result.stops.length,
+    assets: result.assets.length,
+    assetIds: [...new Set(result.assets.map((a) => a.id))],
+    inventory: inv === null ? null : { path: INVENTORY_FILE, sha256: crypto.createHash('sha256').update(inv).digest('hex'), decidedBy: result.inventory.decidedBy, decidedAt: result.inventory.decidedAt },
+    defaultBranch: result.facts.defaultBranch?.name ?? null,
+    roots: result.facts.roots ?? null,
+  };
 }
 
 /** 結果を人が読む行で出す */
