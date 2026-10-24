@@ -22,7 +22,7 @@ import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
 import { headcountProblems, deviationCategory, deviationCategoryProblems } from './config.mjs';
-import { discouragedPairings, discouragedUnrecorded } from './org-assurance.mjs';
+import { discouragedPairings, discouragedUnrecorded, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
 let n = 0;
@@ -129,6 +129,21 @@ for (const size of ['size-3-9', 'size-10plus']) {
   const promoted = { ...twoBiz, deviations: twoBiz.deviations.map((d) => (d.gate ? d : { ...d, category: 'listed' })) };
   check('区分を listed と書いた席の兼務は、閉じた列挙と食い違うとして検出する', deviationCategoryProblems(promoted).some((p) => /閉じた列挙/.test(p)), JSON.stringify(deviationCategoryProblems(promoted)));
   check('区分の無い旧い記録は問わず、閉じた列挙で読む', deviationCategoryProblems({ deviations: [{ gate: null, separationId: 'x' }] }).length === 0 && deviationCategory({ gate: 'g7' }) === 'listed' && deviationCategory({ gate: null, separationId: 'x' }) === 'unlisted');
+  // 層1 の印 [逸脱]・[列挙に無い離脱] の照合(旧版の意味を保つ移行。process-compass #316 突合 X-1・X-2)
+  const devs = [{ label: 'G-7 の兼務', category: 'listed' }, { label: '1〜2名の席の兼務', category: 'unlisted' }];
+  const onlyUnlisted = [devs[1]];
+  const onlyListed = [devs[0]];
+  const tagDev = { kind: '逸脱', text: '逸脱がある' };
+  const tagUnl = { kind: '列挙に無い離脱', text: '列挙に無い離脱がある' };
+  // IMPL-0334:ng(違反の入力: 記名済みの旧い層1([逸脱] だけ)で列挙に無い離脱がある。旧版の意味で当たり、出荷の条件6 を緩めない)
+  const legacy = deviationTagHits([tagDev], onlyUnlisted);
+  check('[逸脱] だけの層1 は旧版の意味で読み、列挙に無い離脱に当たる。読み替えの注記を出す', legacy.hits.length === 1 && /列挙に無い離脱/.test(legacy.hits[0].fact) && legacy.notes.length === 1 && /旧版の意味/.test(legacy.notes[0]), JSON.stringify(legacy));
+  // IMPL-0334:ok(適合の入力: [列挙に無い離脱] を足して記名し直した層1 は新しい意味で読む)
+  const both = deviationTagHits([tagDev, tagUnl], onlyListed);
+  check('[逸脱] と [列挙に無い離脱] を持つ層1 で逸脱だけがあれば、[逸脱] だけが当たり、注記は出ない', both.hits.length === 1 && both.hits[0].condition === tagDev.text && both.notes.length === 0, JSON.stringify(both));
+  const bothUnl = deviationTagHits([tagDev, tagUnl], onlyUnlisted);
+  check('[逸脱] と [列挙に無い離脱] を持つ層1 で列挙に無い離脱だけがあれば、[列挙に無い離脱] だけが当たる', bothUnl.hits.length === 1 && bothUnl.hits[0].condition === tagUnl.text, JSON.stringify(bothUnl));
+  check('[逸脱] だけの層1 で何も無ければ当たらない(注記は出る)', deviationTagHits([tagDev], []).hits.length === 0 && deviationTagHits([tagDev], []).notes.length === 1);
 }
 
 // ---------------------------------------------------------------- 強制する承認の数(ルールセット)

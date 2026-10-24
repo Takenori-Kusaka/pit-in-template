@@ -189,7 +189,39 @@ export function samePerson(config, a, b) {
 // ---------------------------------------------------------------- 層1(テンプレ11)
 
 /** 機械で照合できる「受容しない条件」の印(テンプレ11 の項目2) */
-export const CONDITION_TAGS = ['R1未確認', '未達ゲート', '逸脱', '離脱', '未回収の例外', '未測定'];
+export const CONDITION_TAGS = ['R1未確認', '未達ゲート', '逸脱', '列挙に無い離脱', '未回収の例外', '未測定'];
+
+/**
+ * 印 [逸脱] と [列挙に無い離脱] を、構成の逸脱と列挙に無い離脱へ当てる(process-compass #316 / ADR-0086。突合 X-1・X-2)。
+ * 旧版の [逸脱] は列挙に無い離脱を含んでいた。記名済みの層1 を記名者の決定なしに緩めないため、層1 に印 [列挙に無い離脱] が
+ * 1つも無いときは、[逸脱] を旧版の意味(逸脱と列挙に無い離脱の両方)で読み、その旨を注記に出す(出荷は止めない)。
+ * 印 [列挙に無い離脱] を足して記名し直した層1 だけを、新しい意味([逸脱] は閉じた列挙の逸脱だけ)で読む。
+ * deviations: [{ label, category: 'listed' | 'unlisted' }]。返り値: { hits: [{ condition, fact, source }], notes: [文] }
+ */
+export function deviationTagHits(conditions, deviations) {
+  const conds = conditions ?? [];
+  const devs = deviations ?? [];
+  const hasUnlistedTag = conds.some((c) => c.kind === '列挙に無い離脱');
+  const listed = devs.filter((d) => d.category === 'listed');
+  const unlisted = devs.filter((d) => d.category !== 'listed');
+  const labels = (xs) => xs.map((d) => d.label).join(' / ');
+  const hits = [];
+  const notes = [];
+  for (const c of conds) {
+    if (c.kind === '逸脱') {
+      if (hasUnlistedTag) {
+        if (listed.length) hits.push({ condition: c.text, fact: `逸脱 ${labels(listed)}`, source: '保証の開示 項目5' });
+      } else {
+        const facts = [listed.length ? `逸脱 ${labels(listed)}` : null, unlisted.length ? `列挙に無い離脱 ${labels(unlisted)}` : null].filter(Boolean);
+        if (facts.length) hits.push({ condition: c.text, fact: facts.join(' / '), source: '保証の開示 項目1・5' });
+        notes.push(`層1 に印 [列挙に無い離脱] が無いため、印 [逸脱] の条件「${c.text}」を旧版の意味(逸脱と列挙に無い離脱の両方)で読んだ。印 [列挙に無い離脱] を足して層1 を記名し直すと、[逸脱] は閉じた列挙の逸脱だけに当たる(標準 第1章 1.10.2。記名者が決める。出荷は止めない)`);
+      }
+    } else if (c.kind === '列挙に無い離脱') {
+      if (unlisted.length) hits.push({ condition: c.text, fact: `列挙に無い離脱 ${labels(unlisted)}`, source: '保証の開示 項目1・5' });
+    }
+  }
+  return { hits, notes };
+}
 
 /**
  * [未測定] の条件の文に、量を伴う期間の表現(「出荷 2 回」「90 日」「3 か月を超えて」)があれば返す。印は層1 項目1 の
