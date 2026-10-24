@@ -328,11 +328,24 @@ function workspace({ keepOwner = false } = {}) {
   const noSign = change({ kind: 'intake', summary: '取り込み', templateCommit: 'abcdef1' });
   const aiSign = change({ kind: 'intake', summary: '取り込み', templateCommit: 'abcdef1', decidedBy: 'Claude', reason: '更新' });
   check('取り込みは、記名(decidedBy)と理由が無ければ、または AI の名義なら受け付けない', !noSign.ok && !aiSign.ok && w.readJson('process.config.json').template === undefined, `${noSign.out}\n${aiSign.out}`);
+  // #317 突合 X-5: 権限設定を初めて記録する取り込みは、テンプレートの既定との差(許可の追加など)を記録に出す
+  {
+    const sp = path.join(w.dir, '.claude/settings.json');
+    const st = JSON.parse(fs.readFileSync(sp, 'utf8'));
+    st.permissions = { ...(st.permissions ?? {}), allow: [...(st.permissions?.allow ?? []), 'Bash(rm -rf:*)'] };
+    fs.writeFileSync(sp, JSON.stringify(st, null, 2) + '\n');
+  }
   const intake = change({ kind: 'intake', summary: 'テンプレートの取り込み', templateCommit: 'abcdef1', decidedBy: '名簿 己', reason: '#315 の更新を取り込む' });
   const taken = w.readJson('process.config.json');
   const e1 = taken.changeLog.at(-1);
   check('取り込みは、取り込んだテンプレートのコミットと強制層の要約値を道具が書く', intake.ok && taken.template?.commit === 'abcdef1' && Object.keys(taken.template?.digests ?? {}).length > 10 && e1.kind === 'intake' && e1.decidedBy === '名簿 己', intake.out);
   check('取り込みの要約値は、権限設定と遮断の定義を含む', ['.claude/settings.json', '.claude/guard.json'].every((k) => k in (taken.template?.digests ?? {})), Object.keys(taken.template?.digests ?? {}).join(','));
+  {
+    const fr = e1.intake?.firstRecord ?? [];
+    const sf = fr.find((f) => f.path === '.claude/settings.json');
+    check('権限設定を初めて記録する取り込みは、テンプレートの既定との差(許可)を記録と出力に出す', sf && !sf.matchesTemplate && sf.notes.some((n) => n.includes('Bash(rm -rf:*)')) && /初めて記録する/.test(intake.out), JSON.stringify(fr));
+    check('取り込みの差の注記は合否に使わない(取り込みは通る)', intake.ok, intake.out);
+  }
   check('要約値の範囲は、スキル(.claude/skills/**)を含む', Object.keys(taken.template?.digests ?? {}).some((k) => k.startsWith('.claude/skills/')), Object.keys(taken.template?.digests ?? {}).slice(0, 5).join(','));
   check('取り込みは、知識ベースの生成元の前後(従う作業中の版の切り替え)を記録に書く', 'kbCommitBefore' in (e1.intake ?? {}) && e1.intake.kbCommitAfter === taken.template.kbCommit, JSON.stringify(e1.intake));
   check('取り込みの値は変えない', strip(taken) === strip(before), intake.out);

@@ -3205,9 +3205,8 @@ export const OUTSOURCING_DEV_FORMS = ['outsourcer', 'vendor'];
 export function outsourcingPointer(config) {
   if (!OUTSOURCING_DEV_FORMS.includes(config?.answers?.['q-dev-form'])) return null;
   return (
-    '**委託・受託の構成**: 判定の結果を受け取る者は `docs/ai-sla.md` 第9節にある(構成へ写さない)。' +
-    '相手の組織へ判定の結果を渡すときも、`state:*` のラベルと判定記録で渡す。コメントや `@mention` だけで済ませない(`CLAUDE.md`「行ってはならない作業」の7)。' +
-    '渡したら、判定記録の「結果の受け渡し」へ渡した先と日時を書く'
+    '**委託・受託の構成**: 判定の結果を受け取る者は、`docs/ai-sla.md` の「判定の置き先と結果の受け渡し」の節(現行の様式では第9節)にある(構成へ写さない)。' +
+    '相手の組織への判定の結果の引き渡しは、AI-SLA 合意確認書で合意した経路による。渡したら、判定記録の「結果の受け渡し」へ渡した先と日時を書く'
   );
 }
 
@@ -3936,8 +3935,13 @@ if (isMain) {
       const kbBefore = before?.kbCommit ?? null;
       const kbAfter = next.template.kbCommit ?? null;
       const kbSwitched = kbBefore !== kbAfter;
+      // 権限設定と遮断の定義を初めて記録するときは、テンプレートの既定(この構成でテーラリングした内容)との差を出す。
+      // 記録の時点の緩みは、以後の乖離には出ないため(process-compass #317 突合 X-5)。合否には使わない
+      const firstRecord = enforcementBaselineNotes(prior, before?.digests ?? null);
+      for (const f of firstRecord) console.log(`[注記] ${f.path} を初めて記録する。${f.matchesTemplate ? 'テンプレートの既定と一致する' : `テンプレートの既定との差: ${f.notes.join(' / ')}`}`);
       const diff = [
         `取り込んだ準拠テンプレート: ${before?.commit ?? '記録なし'} → ${next.template.commit ?? '不明'}`,
+        ...firstRecord.map((f) => `${f.path} を初めて記録した: ${f.matchesTemplate ? 'テンプレートの既定と一致' : `テンプレートの既定との差(${f.notes.join(' / ')})`}`),
         nDrift === null ? '強制層の要約値: 記録なし → 記録した' : `強制層の要約値の乖離(取り直す直前): 変わった ${driftPaths.changed.length} / 無くなった ${driftPaths.missing.length} / 増えた ${driftPaths.added.length}`,
         ...(kbSwitched ? [`知識ベースの生成元: ${kbBefore ?? '記録なし'} → ${kbAfter ?? '不明'}(${standardEdition(prior) ? `従う版 ${standardEdition(prior)} は変えない` : '従う作業中の版の切り替え'})`] : []),
       ];
@@ -3951,7 +3955,7 @@ if (isMain) {
           diff,
           decidedBy: change.decidedBy,
           reason: change.reason,
-          intake: { commitBefore: before?.commit ?? null, commitAfter: next.template.commit, kbCommitBefore: kbBefore, kbCommitAfter: kbAfter, drift: driftPaths },
+          intake: { commitBefore: before?.commit ?? null, commitAfter: next.template.commit, kbCommitBefore: kbBefore, kbCommitAfter: kbAfter, drift: driftPaths, ...(firstRecord.length ? { firstRecord } : {}) },
         }),
       ];
       sealChangeLog(next);
@@ -5089,6 +5093,13 @@ if (isMain) {
       return { error };
     }
   })();
+  // 初期化は、テーラリングが書き換えない緩み(許可・既定の権限の形)を基準として記録する。その旨を注記に出す(#317 突合 X-5。合否に使わない)
+  if (!prior && tailoredEnforcement.result) {
+    for (const f of enforcementBaselineNotes(config, null)) {
+      const loose = f.notes.filter((n) => /permissions\.allow|defaultMode|disableAllHooks/.test(n));
+      if (loose.length) console.log(`[注記] ${f.path} の ${loose.join(' / ')} は、テーラリングで書き換えず、強制層の要約値の基準として記録する(以後の乖離には出ない)`);
+    }
+  }
   if (!prior && tailoredEnforcement.result && config.template?.digests) {
     config.template = {
       ...config.template,
@@ -5384,4 +5395,52 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     settingsText: JSON.stringify(mergeHookRegistration(settingsObj), null, 2) + '\n',
     messages,
   };
+}
+
+/**
+ * 権限設定(.claude/settings.json)と遮断の定義(.claude/guard.json)を初めて要約値に記録するときの、テンプレートの既定との差。
+ * 既定は、この構成で tailorGuardAndSettings が作る内容とする。記録済みのパスは対象にしない。
+ * 戻り値: [{ path, matchesTemplate, notes: [文] }](process-compass #317 突合 X-5。合否には使わない)
+ */
+export function enforcementBaselineNotes(config, recordedDigests, root = ROOT) {
+  const paths = ['.claude/settings.json', '.claude/guard.json'];
+  const fresh = paths.filter((p) => !(recordedDigests && p in recordedDigests));
+  if (!fresh.length) return [];
+  const read = (p) => (fs.existsSync(path.join(root, p)) ? fs.readFileSync(path.join(root, p), 'utf8') : null);
+  const guardText = read('.claude/guard.json');
+  const settingsText = read('.claude/settings.json');
+  if (guardText === null || settingsText === null) return fresh.map((p) => ({ path: p, matchesTemplate: false, notes: ['ファイルが無い'] }));
+  let t;
+  try {
+    t = tailorGuardAndSettings(config, guardText, settingsText);
+  } catch (e) {
+    return fresh.map((p) => ({ path: p, matchesTemplate: false, notes: [`読めない(${String(e.message).split('\n')[0]})`] }));
+  }
+  const out = [];
+  if (fresh.includes('.claude/settings.json')) {
+    const cur = JSON.parse(settingsText);
+    const tpl = JSON.parse(t.settingsText);
+    const notes = [];
+    const curDeny = new Set(cur.permissions?.deny ?? []);
+    const missing = (tpl.permissions?.deny ?? []).filter((r) => !curDeny.has(r));
+    if (missing.length) notes.push(`テンプレートの遮断のうち無いもの ${missing.join(', ')}`);
+    const allow = cur.permissions?.allow ?? [];
+    if (allow.length) notes.push(`許可(permissions.allow) ${allow.join(', ')}`);
+    if (cur.permissions?.defaultMode) notes.push(`既定の権限の形(defaultMode) ${cur.permissions.defaultMode}`);
+    if (cur.disableAllHooks === true) notes.push('disableAllHooks が true');
+    if (settingsText !== t.settingsText && !notes.length) notes.push('内容がテンプレートの既定と異なる(遮断の不足・許可・既定の権限の形には当たらない)');
+    out.push({ path: '.claude/settings.json', matchesTemplate: settingsText === t.settingsText, notes });
+  }
+  if (fresh.includes('.claude/guard.json')) {
+    const cur = JSON.parse(guardText);
+    const tpl = JSON.parse(t.guardText);
+    const notes = [];
+    if (cur.enabled !== tpl.enabled) notes.push(`enabled が ${cur.enabled}(既定は ${tpl.enabled})`);
+    const curP = new Set((cur.protectedPatterns ?? []).map((x) => x.pattern));
+    const missing = (tpl.protectedPatterns ?? []).map((x) => x.pattern).filter((x) => !curP.has(x));
+    if (missing.length) notes.push(`テンプレートの保護のうち無いもの ${missing.join(', ')}`);
+    if (guardText !== t.guardText && !notes.length) notes.push('内容がテンプレートの既定と異なる(有効・保護の不足には当たらない)');
+    out.push({ path: '.claude/guard.json', matchesTemplate: guardText === t.guardText, notes });
+  }
+  return out;
 }
