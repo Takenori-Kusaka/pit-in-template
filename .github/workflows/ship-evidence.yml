@@ -191,7 +191,8 @@ jobs:
               if cmp -s "$1" "$2"; then echo "::notice::$2 は基底ブランチに同じ内容で既にあります"; else echo "::warning::$2 は基底ブランチに別の内容で既にあります。上書きしません(集約の所見の対象)"; fi
               skipped=$((skipped+1))
             else
-              mkdir -p "$(dirname "$2")"; cp "$1" "$2"; git add "$2"; added=$((added+1))
+              # 記録の置き場は、採用者の .gitignore(例: evidence/)に当たっても取り込む(-f)。記録は無視の対象にしない
+              mkdir -p "$(dirname "$2")"; cp "$1" "$2"; git add -f "$2"; added=$((added+1))
             fi
           }
           if git rev-parse --verify --quiet "$RECORDS_BRANCH" >/dev/null; then
@@ -204,7 +205,7 @@ jobs:
           fi
           out="docs/evidence/$day-$safe.md"
           [ -e "$out" ] && out="docs/evidence/$day-$safe-$RUN_NUMBER.md"
-          mkdir -p docs/evidence && cp evidence/quality-report.md "$out" && git add "$out"
+          mkdir -p docs/evidence && cp evidence/quality-report.md "$out" && git add -f "$out"
           added=$((added+1))
           echo "::notice::複製 $added 件(上書きしなかったもの $skipped 件)。保証の開示は $out"
           # 署名の要否(record-copy.yml と同じ判定)。既定ブランチが署名を課す構成(safety / regulated)でも GitHub が署名する経路を使う
