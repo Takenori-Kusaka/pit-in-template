@@ -86,8 +86,9 @@ const config = {
 
 // ---------------------------------------------------------------- 2 つの読み取り元の突合
 {
-  const g7 = gateText('g7-v1.2.0-2026-10-20.md');
-  const g8 = gateText('g8-v1.2.0-2026-10-21.md');
+  // fixtures は LF で保存しているが、autocrlf の checkout では CRLF で読まれる。改行の形式の違いを作る前に LF へ揃える
+  const g7 = gateText('g7-v1.2.0-2026-10-20.md').replace(/\r\n/g, '\n');
+  const g8 = gateText('g8-v1.2.0-2026-10-21.md').replace(/\r\n/g, '\n');
   const branch = {
     available: true,
     ref: 'records',

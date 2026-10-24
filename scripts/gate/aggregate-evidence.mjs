@@ -152,8 +152,8 @@ export function readBaseCopies(root) {
   return result;
 }
 
-/** 様式の本文の比較の形。改行の形式と行末の空白に依らない */
-const normText = (t) => String(t ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+/** 様式の本文の比較の形。改行の形式(CRLF・CR・LF)と行末の空白に依らない */
+const normText = (t) => String(t ?? '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
 
 /**
  * 2 つの読み取り元を突き合わせる。写しは PR 番号、様式はファイル名(basename。ship-evidence.yml は basename のまま複製する)で
