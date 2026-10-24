@@ -18,8 +18,10 @@ export const G5_WORKFLOW = '.github/workflows/gate-g5.yml';
 export const G5_AGGREGATE_JOB = 'gate-g5';
 
 /**
- * G-5 の判定基準と、それを実装するジョブ(標準 第4章 G-5 の基準表)。基準6 はこのテンプレートの CI に無い(採用者が足す。
- * `.claude/skills/gate/gates/G-5.md`)。基準8 は合否を判定しない(一覧を出すだけ)ため、集約に含めることを求めない
+ * G-5 の判定基準と、それを実装するジョブ(標準 第4章 G-5 の基準表)。基準6 のジョブ(context-format)が確かめるのは参照切れ
+ * (相対リンクと取り込み @path)だけで、見出しのアンカー・逆引用符の中のパス・1ファイルの分量の上限は確かめない
+ * (process-compass #314 / ADR-0084 決定3。`.claude/skills/gate/gates/G-5.md`)。基準8 は合否を判定しない(一覧を出すだけ)ため、
+ * 集約に含めることを求めない
  */
 export const G5_CRITERION_JOBS = [
   { criterion: 1, label: '全テスト', job: 'test' },
@@ -27,6 +29,7 @@ export const G5_CRITERION_JOBS = [
   { criterion: 3, label: 'テストカバレッジ', job: 'test' },
   { criterion: 4, label: '曖昧語チェック', job: 'spec-lint' },
   { criterion: 5, label: '依存関係のライセンス検査', job: 'ip-clearance' },
+  { criterion: 6, label: '文脈ファイルの形式検査(参照切れ)', job: 'context-format' },
   { criterion: 7, label: '秘匿情報の混入検査', job: 'secret-scan' },
 ];
 /** 基準の外で G-5 の規則を実装するジョブ(構成と設定の整合、PR 単位の検査) */
@@ -121,7 +124,10 @@ export function aggregateFindings(text) {
         '集約から外すことで基準を外せません。基準を外せるのは標準 第8章の調整だけです(標準 第4章 G-5「判定基準を実装する検査と集約」)'
     );
   }
-  notes.push('G-5 基準6(文脈ファイルの形式検査)を実装するジョブは、このテンプレートにありません。採用者が足し、集約の needs へ入れます');
+  notes.push(
+    'G-5 基準6(文脈ファイルの形式検査)のジョブ context-format が確かめるのは参照切れ(相対リンクと取り込み @path)だけです。' +
+      '見出しのアンカー、逆引用符の中のパス、1ファイルの分量の上限は確かめていません(採用者が足すときは、同じジョブか集約の needs へ入れます)'
+  );
   return { needs, effective, problems, notes };
 }
 

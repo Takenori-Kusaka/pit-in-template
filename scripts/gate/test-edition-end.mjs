@@ -58,12 +58,14 @@ const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-
   check('作業中の版の表示は、最後に発行した版と標準のコミットを添える', /作業中の版\(第1版の後。標準のコミット abcdef123456\)/.test(labeled.editionLabel), labeled.editionLabel);
   const issued = { ...c, standard: { edition: '第1版' } };
   const s1 = claimStatus(issued);
+  // IMPL-0305:ok IMPL-0308:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('発行した版に従い、未達も逸脱も無い構成は「適合の主張」', s1.name === '適合の主張' && s1.blockers.length === 0, JSON.stringify(s1));
   const ended = { ...issued, changeLog: [...issued.changeLog, { kind: 'end', date: '2026-10-20', end: { reason: 'closed' }, decidedBy: '名簿 甲' }] };
   const s2 = claimStatus(ended);
   check('適用を終えた構成は、現在形の表明・主張の名を持たない', s2.name === null && s2.ended?.reason === 'closed', JSON.stringify(s2));
   const legacy = { ...issued, standard: undefined };
   check('欄の無い旧い構成は、作業中の版として読む', standardEdition(legacy) === null && claimStatus(legacy).editionLabel.startsWith('作業中の版'));
+  // IMPL-0305:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('版の書式に当たらない値は、発行した版として読まない', standardEdition({ standard: { edition: 'v1.0' } }) === null && standardEdition({ standard: { edition: '第2版 修正1' } }) === '第2版 修正1');
 }
 {
@@ -87,8 +89,10 @@ const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-
     { people: [A, B, X], seats: seatsOf({ 'value-owner': 'a', 'tech-lead': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b', 'biz-approver': 'b', 'ai-maintainer': 'a', 'ai-ops': 'b' }) }
   );
   const st2 = claimStatus({ ...same, standard: { edition: '第1版' } });
+  // IMPL-0308:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('出荷判定者 × 事業決裁者の兼務(列挙に無い離脱)がある構成は「適用の表明」まで', st2.name === '適用の表明' && st2.unlisted.some((d) => /出荷判定者|事業決裁者/.test(d.label)), JSON.stringify({ name: st2.name, unlisted: st2.unlisted.map((d) => d.label), unmet: st2.unmet }));
 }
+// IMPL-0304:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('初期化の記録が changeLog[0] にあれば問題なし', initRecordProblem({ changeLog: [{ kind: 'init' }] }) === null);
 check('changeLog[0] が init でなければ問題を返す', /init/.test(initRecordProblem({ changeLog: [{ kind: 'settings' }] }) ?? ''));
 check('changeLog が無ければ問題を返す', /init/.test(initRecordProblem({}) ?? ''));
@@ -149,6 +153,7 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const r0 = change({ kind: 'edition', edition: '第1版', summary: '第1版へ', decidedBy: '名簿 甲', reason: '発行された' });
   if (kbEdition !== '第1版') check('知識ベースの版と異なる版へは切り替えない', !r0.ok && /知識ベース/.test(r0.out), r0.out);
   const rDraft = change({ kind: 'edition', edition: null, summary: '作業中へ', decidedBy: '名簿 甲', reason: 'x' });
+  // IMPL-0306:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('作業中の版へは切り替えない', !rDraft.ok && /作業中の版/.test(rDraft.out), rDraft.out);
   // 知識ベースを第1版の複製にして切り替える
   const kb = w.readJson('scripts/vendor/tailoring-kb.json');
@@ -158,6 +163,7 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const rNoSign = change({ kind: 'edition', edition: '第1版', summary: '第1版へ' });
   check('版の切り替えは、記名と理由が無ければ拒否する', !rNoSign.ok && /decidedBy/.test(rNoSign.out), rNoSign.out);
   const r1 = change({ kind: 'edition', edition: '第1版', summary: '第1版へ切り替えた', decidedBy: '名簿 甲', reason: '第1版が発行された' });
+  // IMPL-0306:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('知識ベースの版へは、記名と理由つきで切り替えられる', r1.ok, r1.out);
   const c1 = w.readJson('process.config.json');
   check('切り替えの後、構成は第1版に従い、記録に前後の版が残る', c1.standard?.edition === '第1版' && c1.changeLog.at(-1).kind === 'edition' && c1.changeLog.at(-1).edition?.to === '第1版', JSON.stringify([c1.standard, c1.changeLog.at(-1).edition]));
@@ -166,8 +172,10 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const editionHash = w.commit('chore: edition');
   check('版の切り替えは、適用の開始(configured が true になった最初のコミット)を動かさない', findInitCommit(w.dir)?.hash === initHash);
   const rEndBad = change({ kind: 'end', endReason: 'paused', summary: '止める', decidedBy: '名簿 甲', reason: 'x' });
+  // IMPL-0307:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('一時停止などの理由の区分は受け付けない', !rEndBad.ok && /endReason/.test(rEndBad.out), rEndBad.out);
   const rEnd = change({ kind: 'end', endReason: 'closed', summary: '案件を完了した', decidedBy: '名簿 甲', reason: '納品を終えた' });
+  // IMPL-0307:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('適用の終了は、理由の区分と記名つきで記録できる', rEnd.ok, rEnd.out);
   const c2 = w.readJson('process.config.json');
   check('終了の後も configured は true のまま', c2.configured === true && c2.changeLog.at(-1).end?.reason === 'closed');
@@ -232,6 +240,7 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const v = w.node('scripts/gate/verify-gate-contract.mjs');
   check('契約検査が、初期化の記録の無いことを注記する', /構成の初期化の記録/.test(v.out), v.out);
   const a = w.node('scripts/gate/aggregate-evidence.mjs');
+  // IMPL-0304:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('集約が、適用の開始のコミットの初期化の記録の欠落を出す', /適用の開始\([0-9a-f]{12}\): .*記録の欠落です/.test(a.out), a.out);
   w.done();
 }

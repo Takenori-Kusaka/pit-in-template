@@ -88,11 +88,13 @@ const failsWith = (re, ...extra) => (r) => [...(has(r, re) ? [] : [`${re} の失
 const testListed = (count) => (r) => (r.testChanges.length === count ? [] : [`既存のテストの変更の件数 ${r.testChanges.length}(期待 ${count})`]);
 
 // ---------------------------------------------------------------- 通る場面(誤検出の候補)
+// IMPL-0203:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('テストを先に書いた PR(新しいテストの追加だけ。既存のテストは変えない)', {}, () => {
   write('test/b.test.js', "test('new', () => {\n  expect(1).toBe(1);\n});\n");
   write('src/b.js', lines(5, 'b'));
 }, passes(testListed(0)));
 const NEG = (f = {}) => `## 統制の設定の陰性の確認\n\n通した違反の場面: ${f.scene ?? '未使用の変数を含むファイルを push した'}\n結果: ${f.result ?? '止まった'}\n確かめた者: ${f.checker ?? '鈴木 一郎'}\n\n`;
+// IMPL-0202:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('閾値だけの PR(既存の除外設定だけを変える。陰性の確認の記録あり)', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
   write('.eslintrc.json', '{ "rules": { "no-unused-vars": "warn" } }\n');
 }, passes((r) => (r.thresholds.changed.length === 1 ? [] : ['閾値の変更として識別していない'])));
@@ -175,9 +177,12 @@ const rewindBase = () => {
   git('switch', '-q', 'main');
   git('reset', '-q', '--hard', 'HEAD~1');
 };
+// IMPL-0049:ok IMPL-0099:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('上限を超え、規模の確認が正しく書かれている(R2 + 確定者)→ 通る。size:over と R2 の下限が出る', { body: OVER_BODY(ATT()) }, () => write('src/big.js', lines(450, 'x')), passes(overOk));
+// IMPL-0049:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('上限を超え、規模の確認が無い', {}, () => write('src/big.js', lines(401, 'x')), failsWith(/規模の確認: PR の本文に「## 規模の確認」の節がありません/));
 scenario('上限を超え、区分が R3 のまま(下限 R2 より低い)', { body: OVER_BODY(ATT(), 'R3') }, () => write('src/big.js', lines(450, 'x')), failsWith(/区分の下限: 記載された区分 R3.*size:over/));
+// IMPL-0099:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('上限を超え、実施者が AI の名義', { body: OVER_BODY(ATT({ performer: 'Claude' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/実施者 "Claude" が AI の名義/));
 scenario('上限を超え、「読み切れたか」が「いいえ」', { body: OVER_BODY(ATT({ read: 'いいえ' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「読み切れたか」が「いいえ」/));
 scenario('上限を超え、様式の置き場(はい / いいえ)のまま', { body: OVER_BODY(ATT({ read: 'はい / いいえ' })) }, () => write('src/big.js', lines(450, 'x')), failsWith(/「はい」「いいえ」のどちらでもない/));
@@ -211,6 +216,7 @@ scenario('基準なし(null): 根拠の無い L2 の宣言では効かず、既�
   write('src/big.js', lines(450, 'x'));
 }, passes(overOk, (r) => (r.notices.some((m) => /基準値 null.*既定値/.test(m)) ? [] : ['null が効かない旨を出していない'])));
 rewindBase();
+// IMPL-0267:ok IMPL-0281:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア外の変更は、規模の確認を要さない', {}, () => {
   const cfg = JSON.parse(read('process.config.json'));
   cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
@@ -222,6 +228,7 @@ scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア�
   write('src/big.js', lines(450, 'x'));
 }, passes((r) => (!r.size.sizeOver && r.size.maxLines === null ? [] : ['基準なしが効いていない'])));
 rewindBase();
+// IMPL-0267:ng IMPL-0281:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('基準なし(null): コア指定のパスが追跡中のファイルに1件も当たらなければ未宣言として扱い、効かない(#296 L-9)', { body: OVER_BODY(ATT()) }, () => {
   const cfg = JSON.parse(read('process.config.json'));
   cfg.riskFloor = { rules: [{ id: 'auth', paths: ['src/authz/**'], floor: 'R1', why: '認証・認可(誤記で何にも当たらない)' }] };
@@ -248,6 +255,7 @@ scenario('別集計の抜け道: テスト・fixture が基準行数の 5 倍を
 scenario('別集計の抜け道: 5 倍以内は超過にしない', {}, () => {
   write('test/fixtures/big.json', lines(1900, 'd'));
 }, passes((r) => (!r.size.sizeOver ? [] : ['5 倍以内で超過にしている'])));
+// IMPL-0271:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('文書の置き場に置いたコード(docs/ の .js)は製品として数える', {}, () => {
   write('docs/hidden.js', lines(450, 'h'));
 }, failsWith(/規模の確認/, (r) => (r.size.lines >= 450 ? [] : [`算定 ${r.size.lines}`])));
@@ -264,6 +272,7 @@ scenario('文書の置き場の拡張子の無いファイルで shebang が無�
 scenario('文書の置き場のデータ(docs/ の .csv)は数えない', {}, () => {
   write('docs/data.csv', lines(3000, 'c'));
 }, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
+// IMPL-0271:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('文書の置き場の .md は従来どおり数えない', {}, () => {
   write('docs/big.md', lines(3000, 'd'));
 }, passes((r) => (r.size.lines === 0 ? [] : [`算定 ${r.size.lines}`])));
@@ -342,6 +351,7 @@ git('reset', '-q', '--hard', 'HEAD');
 git('switch', '-q', 'main');
 git('reset', '-q', '--hard', 'HEAD~1');
 scenario('上限を超え、例外承認の承認した者が PR の作成者 → 効かない', { number: 7, author: 'suzuki' }, () => write('src/big.js', lines(450, 'x')), (r) => (r.notices.some((m) => /承認した者が PR の作成者/.test(m)) && has(r, /規模の確認/) ? [] : ['理由を出していない']));
+// IMPL-0202:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('閾値・除外設定と製品のコードを同じ PR で変える', {}, () => {
   write('.eslintrc.json', '{ "rules": {} }\n');
   write('src/a.js', lines(21));
@@ -357,6 +367,7 @@ scenario('トレーラ Spec が実装計画に無いタスクを指す', { body:
 scenario('トレーラ Spec が無い仕様を指す', { body: BODY('Spec: F-404 / Task-1') }, () => write('src/a.js', lines(21)), failsWith(/仕様 specs\/F-404\/spec.md がありません/));
 
 // ---------------------------------------------------------------- 既存のテストの変更(一覧。失敗にしない)
+// IMPL-0203:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 const r1 = scenario('既存のテストの期待値を書き換える(一覧に出る。失敗にはしない)', {}, () => {
   write('test/a.test.js', read('test/a.test.js').replace('expect(line1).toBe(1)', 'expect(line1).toBe(2)'));
   write('src/a.js', lines(21));
@@ -372,7 +383,9 @@ if (!md.startsWith('<!-- pit-in:g6-test-changes -->') || !md.includes('test/a.te
 } else console.log('ok   一覧の Markdown に印とファイルが出る');
 
 // ---------------------------------------------------------------- 区分の下限と確定者(第3章 3.8.1。#288 第2巡)
+// IMPL-0062:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('区分の下限: 規則(src/auth/**、下限 R1)に当たる変更を R3 と記載', { body: BODY('Spec: F-001 / Task-1', RISK('R3')) }, () => write('src/auth/login.js', lines(3, 'l')), failsWith(/区分の下限: 記載された区分 R3 は、変更の対象から導いた下限 R1 より低い/));
+// IMPL-0062:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('区分の下限: 下限以上(R1)で、指示した者以外の確定者がいれば通る', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 佐藤 花子')) }, () => write('src/auth/login.js', lines(3, 'l')), passes());
 scenario('確定者: R2 で「確定した者」が無い', { body: BODY('Spec: F-001 / Task-1', RISK('R2')) }, () => write('src/a.js', lines(23)), failsWith(/リスク区分の確定者: R2 の区分は/));
 scenario('確定者: 確定した者が作成を指示した者', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 山田 太郎')) }, () => write('src/a.js', lines(23)), failsWith(/作成を指示した者である/));
@@ -392,12 +405,14 @@ const onBase = (mutate) => {
 };
 onBase(() => write('process.config.json', { ...config, seats: [{ role: 'biz-approver', accountable: '佐藤 花子' }, { role: 'qa-gatekeeper', accountable: '鈴木 一郎' }] }));
 const stopNo = n + 1;
+// IMPL-0059:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('停止の申し立て: ラベルが付いた PR は、解除の記録が無ければ失敗', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/停止の申し立て: ラベル state:stop-requested が付いている/));
 onBase(() => write(`docs/gates/stop-${stopNo + 1}.md`, release(100 + stopNo + 1, 'Claude')));
 scenario('停止の申し立て: AI の名義の解除は受け付けない', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/AI/));
 onBase(() => write(`docs/gates/stop-${stopNo + 2}.md`, release(100 + stopNo + 2, '佐藤 花子', { declined: '退けた' })));
 scenario('停止の申し立て: 見解を退けた解除に上申先と日付が無ければ受け付けない', { labels: STOP }, () => write('docs/x.md', 'x\n'), failsWith(/上申先と日付/));
 onBase(() => write(`docs/gates/stop-${stopNo + 3}.md`, release(100 + stopNo + 3, '佐藤 花子')));
+// IMPL-0059:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('停止の申し立て: 層1 が無ければ事業決裁者の席の責任者の解除で通す(その旨を出す)', { labels: STOP }, () => write('docs/x.md', 'x\n'), passes((r) => (r.notices.some((x) => x.includes('みなした')) ? [] : ['事業決裁者をみなした旨が出ていない'])));
 scenario('停止の申し立て: ラベルを外しただけでは解けない(履歴から検出する)', { labels: [], labelEvents: [{ event: 'labeled', label: 'state:stop-requested', at: '2026-10-03T00:00:00Z' }, { event: 'unlabeled', label: 'state:stop-requested', at: '2026-10-03T01:00:00Z' }] }, () => write('docs/x.md', 'x\n'), failsWith(/ラベルを外しただけでは解除にならない/));
 scenario('停止の申し立て: PR の中で足した解除の記録は数えない', { labels: STOP }, () => write(`docs/gates/stop-${stopNo + 5}.md`, release(100 + stopNo + 5, '佐藤 花子')), failsWith(/対象のマージを保留する/));
@@ -417,9 +432,12 @@ const noticed = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [] : [`${re}
 const notWarned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [`${re} の警告が出ている`] : []);
 const rv = (login, body = '挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた', state = 'APPROVED') => ({ author: { login }, state, body });
 scenario('承認者の数: レビューを読めないときは、その旨を出す(黙って通さない)', {}, () => write('src/a.js', lines(24)), passes(noticed(/G-6 の承認者の数: PR のレビューを読めない/)));
+// IMPL-0078:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('承認者の数: 独立した人の承認 1 名 / 要求 2 名 → 警告(失敗にはしない)', { reviews: [rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
+// IMPL-0112:ok IMPL-0078:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('承認者の数: 2 名が各自の挙動要約つきで承認 → 要求を満たす', { reviews: [rv('suzuki'), rv('sato', '挙動要約: 失効した招待を開くと再発行の画面へ進むことを、手元で操作して確かめた')] }, () => write('src/a.js', lines(24)), passes(notWarned(/G-6 の承認者/), noticed(/G-6 の承認者 2 名 \/ 要求 2 名/)));
 // 同一の文の挙動要約は、2件目に数えない(標準 第4章 G-6。#305 / ADR-0067 決定3)。空白・記号・見出し語の違いは同一として扱う
+// IMPL-0112:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('承認者の数: 2 名が同一の文の挙動要約で承認 → 2件目を数えない', { reviews: [rv('suzuki'), rv('sato')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*同一の文/)));
 scenario('承認者の数: 空白と記号だけが違う挙動要約も同一の文として扱う', { reviews: [rv('suzuki'), rv('sato', '差分を読み、 招待の失効の分岐を、自分で確かめた。')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*同一の文/)));
 scenario('承認者の数: 作成を指示した者(山田)の承認と挙動要約の無い承認は数えない', { reviews: [rv('yamada'), rv('sato', ''), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名.*作成を指示した者.*挙動要約が無い/)));
@@ -451,6 +469,7 @@ scenario('変更要求: 理由の無い変更要求のあと承認し直した(�
   const rows = [
     ['スタック: 既定ブランチから読むと、下の層で緩めた基準値で上の層を判定しない(size:over を出す)', () => {
       const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
+      // IMPL-0249:ok(違反と適合の対。標準の実装マーク。process-compass #314)
       return r.size?.sizeOver === true && r.policy?.ref === 'main' && r.policy.sameAsBase === false && r.notices.some((x) => /既定ブランチ\(main\)の先端から読む/.test(x));
     }],
     ['スタック: 既定ブランチを渡さない(手元)と、基底(下の層)の基準値で判定する(差を確かめる対照)', () => {
@@ -467,6 +486,7 @@ scenario('変更要求: 理由の無い変更要求のあと承認し直した(�
     }],
     ['スタック: 既定ブランチを解決できなければ失敗する(黙って基底から読まない)', () => {
       const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'origin/no-such-branch', pr });
+      // IMPL-0249:ng(違反と適合の対。標準の実装マーク。process-compass #314)
       return r.errors.some((e) => /既定ブランチ origin\/no-such-branch を解決できません/.test(e));
     }],
   ];

@@ -33,6 +33,7 @@ const sev = (severity, aiCause, date, changeTypes = null) => ({ id: 'BUG-9', sev
 
 // [場面, 入力を変える関数, 該当するか(G-6 を事後へ移す委任), 満たさないはずの条件, 扱い(省略時は該当=post-hoc / 該当しない=collab)]
 const cases = [
+  // IMPL-0285:ok IMPL-0286:ok IMPL-0020:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   ['該当する(規則の範囲・R3・G-5 通過・トレーラあり)', () => {}, true, []],
   ['範囲外のファイルを含む', (i) => i.files.push({ path: 'src/pay.js', additions: 1, deletions: 0 }), false, ['条件2']],
   ['強制層に触れる(.github/**)', (i) => i.files.push({ path: '.github/workflows/gate-g5.yml', additions: 1, deletions: 1 }), false, ['条件2']],
@@ -78,6 +79,7 @@ const cases = [
     ['G-6', '条件3'],
     'collab',
   ],
+  // IMPL-0020:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['適合性確認が失効している(担い手の識別が変わった)', (i) => (seat(i, 'dev-verifier').performer.model = 'model-x-2'), false, ['条件2']],
   ['変更行数が上限を超える', (i) => (i.files[0].additions = 500), false, ['条件2']],
   ['CL1', (i) => (i.config.answers['q-criticality'] = 'cl1'), false, ['条件1']],
@@ -137,10 +139,12 @@ const cases = [
   ['フォークからの PR', (i) => (i.pr.fromFork = true), false, ['前提']],
   ['プロセス構成が未設定', (i) => (i.config.configured = false), false, ['前提', '5.4.6']],
   // 第5章 5.4.6。登録した変更種別の停止(第1区分・第2区分・上限)。止まった種別の変更は協働で扱う
+  // IMPL-0284:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: AI 起因の Sev1(登録の判定より後)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05')), false, ['5.4.6']],
   ['5.4.6: 原因を特定できない Sev2', (i) => i.records.defects.rows.push(sev('Sev2', '特定できない', '2026-10-05')), false, ['5.4.6']],
   ['5.4.6: AI 起因の欄が空欄の Sev1(特定できないと同じく扱う)', (i) => i.records.defects.rows.push(sev('Sev1', '', '2026-10-05')), false, ['5.4.6']],
   ['5.4.6: 発生日の無い AI 起因の Sev1', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', null)), false, ['5.4.6']],
+  // IMPL-0284:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: AI 起因でない Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'なし', '2026-10-05')), true, []],
   ['5.4.6: AI 起因の Sev3 は止めない', (i) => i.records.defects.rows.push(sev('Sev3', 'あり', '2026-10-05')), true, []],
   ['5.4.6: 登録の判定より前の AI 起因の Sev1 は止めない(登録し直した)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-09-01')), true, []],
@@ -150,13 +154,17 @@ const cases = [
   ['5.4.6: コア機能の理解保持者数が0名(2名から一度に減った)', (i) => (i.records.core.rows[0].holders = 0), false, ['5.4.6']],
   ['5.4.6: 関わらない種別のコア機能の保持者1名は止めない', (i) => Object.assign(i.records.core.rows[0], { holders: 1, changeTypes: [] }), true, []],
   ['5.4.6: 運用引き継ぎ文書が無い(判定できない)', (i) => (i.records.core = { present: false, rows: [] }), false, ['5.4.6']],
+  // IMPL-0285:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 差し戻し率0%の2か月継続(最小標本数以上)', (i) => (i.records.rejections = []), false, ['5.4.6']],
   ['5.4.6: 判定基準の番号を引かない差し戻しは数えない(0%の継続を切らない)', (i) => (i.records.rejections[0].cited = false), false, ['5.4.6']],
+  // IMPL-0286:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 窓が最小標本数に満たない(判定不能)', (i) => (i.records.history.changes = i.records.history.changes.slice(0, 29)), false, ['5.4.6']],
   ['5.4.6: 範囲外の変更は母数に数えない(判定不能)', (i) => i.records.history.changes.slice(0, 3).forEach((c) => (c.files = ['src/pay.js'])), false, ['5.4.6']],
   ['5.4.6: 既定ブランチの履歴を読めない(浅い取得)', (i) => (i.records.history = { available: false, reason: '浅い取得', changes: [] }), false, ['5.4.6']],
   ['5.4.6: 検知の記録を渡していない', (i) => delete i.records, false, ['5.4.6']],
+  // IMPL-0289:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: AI自律レベルの上限が L2(構成)', (i) => (i.config.autonomy = { maxLevel: 'L2', source: 'tailoring' }), false, ['5.4.6']],
+  // IMPL-0289:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 上限の欄の無い旧い構成は回答から導く(CL0 は L3)', (i) => delete i.config.autonomy, true, []],
   // 検知条件から外した欄が残る旧い構成は、読まずに受け付ける(登録の要件にも数えない)
   ['旧い構成の外した検知条件の欄は読まない', (i) => (i.config.delegation.changeTypes[0].basis.detection.duplicationRate = '旧い記入'), true, []], // retired-ok: 外した旧い欄の後方互換を試す
