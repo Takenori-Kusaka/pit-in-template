@@ -27,7 +27,7 @@ import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
 import { headcountProblems, deviationCategory, deviationCategoryProblems, enforcedApprovalFindings, RULE_APPROVER_SEAT } from './config.mjs';
-import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices } from '../init/generate-profile.mjs';
+import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices, pendingTightenings } from '../init/generate-profile.mjs';
 import { discouragedPairings, discouragedUnrecorded, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
@@ -383,15 +383,61 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の�
   const rep = diffConfigOf(solo, resolvedCfg);
   const endLine = rep.loosenItems.find((i) => /未達の代償措置の終了/.test(i.line));
   // IMPL-0346:ok(違反と適合の対。標準の実装マーク。process-compass #318)
+  const stillUnmet = build(a, {
+    people: [A],
+    seats: seatsOf({ 'dev-verifier': 'a' }),
+    coverageThreshold: solo.ci.coverageThreshold,
+    coverageOrigin: solo.ci.coverageOrigin,
+    coverageBaseline: solo.ci.coverageBaseline,
+    recordCoverageOrigin: true,
+  });
+  check(
+    '下限: 未達が続く間は、再生成しても 90 を保ち、緩める向きの行を出さない',
+    stillUnmet.ci.coverageThreshold === 90 && stillUnmet.ci.coverageOrigin === 'compensation' && !diffConfigOf(solo, stillUnmet).loosenItems.some((i) => /カバレッジ/.test(i.line)),
+    JSON.stringify([stillUnmet.ci, diffConfigOf(solo, stillUnmet).loosenItems])
+  );
   check(
     '下限: 未達が解けると基準値 80 へ戻り、差分に代償措置の終了の行が緩める向き(AI維持管理者の席)で出る',
     resolvedCfg.ci.coverageThreshold === 80 && resolvedCfg.ci.coverageOrigin === 'derived' && endLine?.seat === RULE_APPROVER_SEAT && RULE_APPROVER_SEAT === 'ai-maintainer',
     JSON.stringify([resolvedCfg.ci, rep.loosenItems])
   );
   // IMPL-0346:ng(違反と適合の対。標準の実装マーク。process-compass #318)
-  const silent = { ...resolvedCfg, ci: { ...resolvedCfg.ci } };
-  const silentRep = diffConfigOf({ ...solo, ci: { ...solo.ci, coverageThreshold: 80 } }, silent);
-  check('下限: 差分に終了の行が無い戻し(前後とも 80)は、緩める向きの行を出さない(黙って戻した構成は差分で見える形にならない)', !silentRep.loosenItems.some((i) => /カバレッジの下限/.test(i.line)), JSON.stringify(silentRep.loosenItems));
+  const loweredWhileUnmet = { ...solo, ci: { ...solo.ci, coverageThreshold: 80, coverageOrigin: 'derived' } };
+  const loweredRep = diffConfigOf(solo, loweredWhileUnmet);
+  check(
+    '下限: 未達が続く構成で下限を 90 → 80 へ下げる差分は、緩める向きの行(AI維持管理者の席)に出る(記名なしには通らない)',
+    loweredRep.loosenItems.some((i) => /カバレッジの下限: 90% → 80%/.test(i.line) && i.seat === RULE_APPROVER_SEAT),
+    JSON.stringify(loweredRep.loosenItems)
+  );
+  // 限界: 差分は前後の構成だけを比べる。前後とも 80 の構成(差分の外で黙って戻した構成)は、差分の検査では見えない。
+  // 構成の書き換えは /process-change だけが行い、強制層の要約値と契約検査が手の書き換えを拾う
+  {
+    const silentRep = diffConfigOf({ ...solo, ci: { ...solo.ci, coverageThreshold: 80 } }, resolvedCfg);
+    check('限界の記述: 前後とも 80 の差分には、下限の行が出ない', !silentRep.loosenItems.some((i) => /カバレッジの下限/.test(i.line)), JSON.stringify(silentRep.loosenItems));
+  }
+  // 規則の層の代償措置(確認者なしの回答。r-s-no-external-reviewer の G-5 の強化。#318 突合 X-1)
+  {
+    const no = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-no' }, { people: [A], seats: seatsOf({ 'dev-verifier': 'a' }) });
+    check(
+      '下限(回答の経路): 確認者なしの回答で上がった 90 は代償措置であり、基準値は 80',
+      no.ci.coverageThreshold === 90 && no.ci.coverageOrigin === 'compensation' && no.ci.coverageBaseline === 80,
+      JSON.stringify(no.ci)
+    );
+    const yes = build(a, {
+      people: [A, B],
+      seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }),
+      coverageThreshold: no.ci.coverageThreshold,
+      coverageOrigin: no.ci.coverageOrigin,
+      coverageBaseline: no.ci.coverageBaseline,
+      recordCoverageOrigin: true,
+    });
+    const r = diffConfigOf(no, yes);
+    check(
+      '下限(回答の経路): 回答と名簿を改めて未達が解けると、その変更の差分に代償措置の終了の行が出る',
+      yes.ci.coverageThreshold === 80 && r.loosenItems.some((i) => /未達の代償措置の終了/.test(i.line) && i.seat === RULE_APPROVER_SEAT),
+      JSON.stringify([yes.ci, r.loosenItems])
+    );
+  }
   // 試験3: 較正した値は、未達が解けても動かない
   const calibrated = build(a, {
     people: [A, B],
@@ -444,6 +490,8 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の�
   // IMPL-0347:ng(違反と適合の対。標準の実装マーク。process-compass #318)
   const under = enforcedApprovalFindings({ ...cfg, review: { requiredApprovals: 2, reviewerCount: 2 } }, rs(1));
   check('承認の数: 強制する承認が要求を下回れば失敗', under.problems.length === 1 && under.notes.length === 0, JSON.stringify(under));
+  const handWritten = enforcedApprovalFindings({ ...cfg, review: { requiredApprovals: 1, reviewerCount: 2 } }, rs(1));
+  check('承認の数: 手で書いた構成で承認者 2 名・要求 1 件なら、強制 1 件は下回りとして失敗(大きいほうと比べる)', handWritten.problems.length === 1, JSON.stringify(handWritten));
   // IMPL-0347:ok(違反と適合の対。標準の実装マーク。process-compass #318)
   const over = enforcedApprovalFindings(cfg, rs(2));
   check('承認の数: 強制する承認が構成の承認者を上回れば、失敗ではなく注記(保証の主張に数えない)', over.problems.length === 0 && over.notes.length === 1 && /保証の主張に数えません/.test(over.notes[0]), JSON.stringify(over));
@@ -457,6 +505,34 @@ for (const cl of ['cl1', 'cl2', 'cl3']) {
     const c = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': stage, 'q-external-reviewer': 'reviewer-yes', 'q-criticality': cl }, { people: [A, B, C], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'c' }) });
     check(`${cl}・${stage}: G-6 は全変更に適用し、G-7 は適用(省略・簡略にしない)`, c.gates.g6.state === 'required' && (c.gates.g6.params?.scope ?? 'all') === 'all' && c.gates.g7.state === 'required', JSON.stringify([c.gates.g6, c.gates.g7.state]));
   }
+}
+
+// ---------------------------------------------------------------- 未適用の厳格化(#318 突合 X-4)
+{
+  const team = { people: [A, B, C], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'c' }) };
+  const fresh = [];
+  for (const cl of ['cl0', 'cl1', 'cl2', 'cl3']) {
+    for (const stage of ['poc', 'mvp', 'growth', 'stable']) {
+      const c = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': stage, 'q-external-reviewer': 'reviewer-yes', 'q-criticality': cl }, team);
+      const t = pendingTightenings(c);
+      if (t.length) fresh.push(`${cl}・${stage}: ${t.map((x) => x.text).join(' / ')}`);
+    }
+  }
+  // IMPL-0349:ok(違反と適合の対。標準の実装マーク。process-compass #318)
+  check('未適用の厳格化: 現行の規則で生成した構成には出ない(全升)', fresh.length === 0, fresh.join('\n'));
+  const cl1 = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': 'poc', 'q-external-reviewer': 'reviewer-yes', 'q-criticality': 'cl1' }, team);
+  const oldCl1 = { ...cl1, gates: { ...cl1.gates, g7: { ...cl1.gates.g7, state: 'omitted' }, g6: { ...cl1.gates.g6, params: { ...cl1.gates.g6.params, scope: 'core-only' } } } };
+  // IMPL-0349:ng(違反と適合の対。標準の実装マーク。process-compass #318)
+  const found = pendingTightenings(oldCl1);
+  check(
+    '未適用の厳格化: CL1 の S0 で G-7 を省略のまま残す旧い構成と、G-6 をコア機能に限る構成は、欠落に数える差として出る',
+    found.some((t) => t.gate === 'g7' && t.blocking && t.to === 'required') && found.some((t) => t.gate === 'g6' && t.blocking && t.from === 'core-only'),
+    JSON.stringify(found)
+  );
+  const cl0 = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes', 'q-criticality': 'cl0' }, team);
+  const oldCl0 = { ...cl0, gates: { ...cl0.gates, g7: { ...cl0.gates.g7, state: 'simplified' } } };
+  const f0 = pendingTightenings(oldCl0);
+  check('未適用の厳格化: CL0 の差は表示するが、欠落には数えない', f0.length === 1 && f0[0].blocking === false, JSON.stringify(f0));
 }
 
 console.log('');

@@ -116,6 +116,11 @@ export function evaluate(kb, answers) {
           conflict(entry, prev, `${key} は既に適用されているため、取り消しは要らない`, true);
           continue;
         }
+        // 取り消せるのは、優先度の低い省略・簡略・統合だけ。同じ優先度では、set と同じく構造操作(省略など)を優先する
+        if (prev && prev.priority >= entry.priority) {
+          conflict(entry, prev, `${key} は同じか高い優先度の「${prev.action}」が効いているため、適用へ戻さない`, true);
+          continue;
+        }
         if (prev) {
           conflict(prev, entry, `${key} への「${prev.action}」を、優先度の高い規則が取り消し(適用へ戻す)`);
           if (prev.action === 'omit') reinstate(prev);
@@ -136,6 +141,11 @@ export function evaluate(kb, answers) {
             `${key} への「${prev.action}」を優先度の高い規則が「${adj.action}」で上書き`,
             sameOutcome
           );
+          // 省略を別の省略が上書きしたら、先の省略が無効化した設定を引き継ぐ。後の省略が取り消されたときに戻すため(#318 突合 X-8)
+          if (prev.action === 'omit' && adj.action === 'omit' && invalidatedBy.has(prev)) {
+            invalidatedBy.set(entry, [...invalidatedBy.get(prev), ...(invalidatedBy.get(entry) ?? [])]);
+            invalidatedBy.delete(prev);
+          }
         }
         // 後から来た omit は、既に適用済みの set(同順位以下)を無効化する
         // (同順位は警告なし: 省略されたゲートの設定が残ると矛盾した提案になる)

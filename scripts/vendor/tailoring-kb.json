@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "14b18cca67ce4ebb51f3a2121526ebb82978165c",
+    "commit": "f44f24ca72d51a2b55e46123c9633b24b6cc6d4b",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -559,6 +559,32 @@
       "sourceFile": "rules-criticality.yaml"
     },
     {
+      "id": "r-e-small-team-not-allowed",
+      "when": {
+        "q-team-size": [
+          "size-1-2"
+        ],
+        "q-criticality": [
+          "cl1",
+          "cl2",
+          "cl3"
+        ]
+      },
+      "adjustments": [
+        {
+          "target": {
+            "type": "process"
+          },
+          "action": "note",
+          "note": "安全重要度 CL1 以上を 1〜2名の体制で扱う構成は認めない。危害の深刻度は体制の都合で下がらない。外部の評価者を含めて3名以上の体制を確保するか、設計を変えて危害の帰結を下げるか、当該の機能を実施しない(第8章 軸E)"
+        }
+      ],
+      "reason": "安全重要度 CL1 以上では、独立した人の確認と、その欠落を差し戻す出荷判定を外せない。1〜2名の体制では席を分けられず、未達の表示と代償措置で運用できるのは CL0 だけである(ADR-0028)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
+      "priority": 50,
+      "sourceFile": "rules-criticality.yaml"
+    },
+    {
       "id": "r-d-outsourcer",
       "when": {
         "q-dev-form": [
@@ -785,6 +811,30 @@
       "sourceFile": "rules-quality.yaml"
     },
     {
+      "id": "r-c-regulated-small-team-not-allowed",
+      "when": {
+        "q-team-size": [
+          "size-1-2"
+        ],
+        "q-quality": [
+          "quality-regulated"
+        ]
+      },
+      "adjustments": [
+        {
+          "target": {
+            "type": "process"
+          },
+          "action": "note",
+          "note": "規制業を 1〜2名の体制で扱う構成は認めない。判定の時点そのものが監査要件になるため、3名以上の体制を確保する(第8章 軸A)"
+        }
+      ],
+      "reason": "規制業では判定の時点そのものが監査要件になり、1〜2名の体制では席を分けられない(ADR-0028)",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
+      "priority": 30,
+      "sourceFile": "rules-quality.yaml"
+    },
+    {
       "id": "r-s-no-external-reviewer",
       "when": {
         "q-team-size": [
@@ -809,6 +859,7 @@
             "id": "g-ci"
           },
           "action": "strengthen",
+          "compensation": true,
           "note": "代償措置としてCI基準を厳格化する(カバレッジ+静的解析の基準を引き上げ)。未達の解消にも、独立レビューの代替にも数えない"
         },
         {

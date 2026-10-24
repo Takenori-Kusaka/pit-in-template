@@ -242,12 +242,8 @@ export function relaxationNotices(config) {
   const out = [];
   const ci = config?.ci ?? {};
   if (typeof ci.coverageThreshold === 'number' && (ci.coverageOrigin === undefined || ci.coverageOrigin === 'unknown')) {
-    let ruleDerived = 80;
-    try {
-      ruleDerived = evaluate(KB, config.answers ?? {}).profile['gate:g-ci']?.state === 'strengthen' ? 90 : 80;
-    } catch {
-      // 回答を評価できない構成は、既定の 80 を候補にする
-    }
+    // 代償措置の印の付いた強化を除いて導く(回答を評価できない構成は、既定の 80 を候補にする)
+    const ruleDerived = baseCiStrengthened(config.answers ?? {}) ? 90 : 80;
     const unmetComp = (config.unmet ?? []).some((u) => (u.compensation ?? []).includes('ci-strict'));
     const candidate = unmetComp ? Math.max(ruleDerived, 90) : ruleDerived;
     if (ci.coverageThreshold > candidate) {
@@ -262,6 +258,57 @@ export function relaxationNotices(config) {
       `ブランチ保護 regulated(承認 2)は、構成の承認者 ${config.review?.reviewerCount ?? 0} 名を上回る。CL2 の承認者は1名であり、現行のテンプレートは承認 1 のルールセット safety を導く(ADR-0067 決定5)。` +
         'このままでも不適合ではない。2件目の承認は、保証の主張に数えない。safety へ移るなら、/process-change の種別 settings の空の入力で再導出し、緩める向きの差分(ブランチ保護 regulated → safety)を決定者が記名する'
     );
+  }
+  return out;
+}
+
+/**
+ * 代償措置の印(compensation: true)の付いた調整を除いて評価したとき、G-5(g-ci)が強化されるか。
+ * カバレッジの下限の基準値(導出)は、代償措置を除いた規則から導く(#318 突合 X-1 / ADR-0088 決定5)
+ */
+export function baseCiStrengthened(answers, kb = KB) {
+  const base = { ...kb, rules: (kb.rules ?? []).map((r) => ({ ...r, adjustments: (r.adjustments ?? []).filter((a) => a.compensation !== true) })) };
+  try {
+    return evaluate(base, answers ?? {}).profile['gate:g-ci']?.state === 'strengthen';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 未適用の厳格化(標準 第8章「再実行の時点と向き」。process-compass #318 突合 X-4 / ADR-0088 決定4)。
+ * 構成は /process-change でしか変えられないため、知識ベースを取り込んでも既存の構成は書き換わらない。
+ * 現行の規則で再導出すると厳しくなるゲートの差を、適用されるまで表示し続ける。構成は書き換えない(AI が書き換えない)。
+ * 安全重要度 CL1 以上で G-6・G-7 が規則より緩いまま残る差は blocking(出荷の証跡の集約が欠落として数える。
+ * CL1 以上は未達のまま出荷しない)
+ */
+export function pendingTightenings(config) {
+  if (!config?.answers || !config?.gates || config.configured === false) return [];
+  let result;
+  try {
+    result = evaluate(KB, config.answers);
+  } catch {
+    return [];
+  }
+  const cl1 = ['cl1', 'cl2', 'cl3'].includes(config.answers['q-criticality']);
+  const out = [];
+  for (const g of KB.gates) {
+    const key = GATE_KEY[g.id];
+    const cur = config.gates[key];
+    // 未達は体制の表示であり、規則の状態と比べない(未達の CL1 以上は、別に出荷できない状態として扱う)
+    if (!cur?.state || cur.state === 'unmet') continue;
+    const p = result.profile[`gate:${g.id}`];
+    let rule = toGateState(p?.state);
+    if (NEVER_OMITTABLE.has(key) && rule !== 'required' && rule !== 'simplified') rule = 'required';
+    const blocking = cl1 && (key === 'g6' || key === 'g7');
+    const label = `${g.label} ${g.name}`;
+    const tail = '。/process-change の種別 settings の空の入力で再導出して適用する(厳しくする向きのため記名は要らない)。適用されるまで表示し続ける' +
+      (blocking ? '。安全重要度 CL1 以上のため、適用されるまで出荷の証跡の集約が欠落として数える(未達のまま出荷しない)' : '');
+    if (gateRank(cur.state) < gateRank(rule)) {
+      out.push({ gate: key, from: cur.state, to: rule, blocking, text: `未適用の厳格化: ${label} は構成で ${cur.state}、現行の規則の再導出では ${rule}${tail}` });
+    } else if (key === 'g6' && rule === 'required' && cur.params?.scope === 'core-only' && p?.params?.scope !== 'core-only') {
+      out.push({ gate: key, from: 'core-only', to: p?.params?.scope ?? 'all', blocking, text: `未適用の厳格化: ${label} の範囲は構成でコア機能に限るが、現行の規則の再導出では全変更${tail}` });
+    }
   }
   return out;
 }
@@ -771,8 +818,11 @@ export function buildConfig(answers, opts = {}) {
   //   基準値(coverageBaseline): 導出値(規則が G-5 を強める構成は 90、ほかは 80)、または組織が較正した値
   //   代償措置の下限: 未達の代償措置 ci-strict の 90。未達の記録(unmet[].coverageFloor)に属し、基準値と分ける
   //   由来(coverageOrigin): derived(導出)・compensation(代償措置)・calibrated(較正)・unknown(由来の記録の無い旧い構成)
-  const ruleDerivedCoverage = result.profile['gate:g-ci']?.state === 'strengthen' ? 90 : 80;
-  const compensationFloor = unmet.some((u) => (u.compensation ?? []).includes('ci-strict')) ? 90 : null;
+  // 代償措置の層は2つある。規則の層(代償措置の印 compensation: true の付いた G-5 の強化。r-s-no-external-reviewer)と、
+  // 未達の記録(unmet[].compensation の ci-strict)である。どちらも基準値(導出)へ数えない(#318 突合 X-1)
+  const ruleDerivedCoverage = baseCiStrengthened(answers) ? 90 : 80;
+  const ruleCompensation = result.profile['gate:g-ci']?.state === 'strengthen' && !baseCiStrengthened(answers);
+  const compensationFloor = ruleCompensation || unmet.some((u) => (u.compensation ?? []).includes('ci-strict')) ? 90 : null;
   // 由来の欄の無い旧い構成(または unknown)。値を黙って下げない(ADR-0085)。変化点の記録を伴う生成でだけ由来の欄を書く
   const legacyCoverage = opts.coverageThreshold !== undefined && (opts.coverageOrigin === undefined || opts.coverageOrigin === 'unknown');
   const writeCoverageOrigin = !legacyCoverage || opts.recordCoverageOrigin === true;
@@ -4049,12 +4099,16 @@ if (isMain) {
       // 再導出すると緩める向きの差分になる値の案内。値は変えない。適用は採用者の記名だけ(process-compass #318 / ADR-0088 決定7)
       const relax = relaxationNotices(prior);
       for (const r of relax) console.log(`[案内] ${r}`);
+      // 再導出すると厳しくなる差(未適用の厳格化)も示す。値は変えない(#318 突合 X-4)
+      const tighten = pendingTightenings(prior);
+      for (const t of tighten) console.log(`[案内] ${t.text}`);
       const diff = [
         `取り込んだ準拠テンプレート: ${before?.commit ?? '記録なし'} → ${next.template.commit ?? '不明'}`,
         ...firstRecord.map((f) => `${f.path} を初めて記録した: ${f.matchesTemplate ? 'テンプレートの既定と一致' : `テンプレートの既定との差(${f.notes.join(' / ')})`}`),
         nDrift === null ? '強制層の要約値: 記録なし → 記録した' : `強制層の要約値の乖離(取り直す直前): 変わった ${driftPaths.changed.length} / 無くなった ${driftPaths.missing.length} / 増えた ${driftPaths.added.length}`,
         ...(kbSwitched ? [`知識ベースの生成元: ${kbBefore ?? '記録なし'} → ${kbAfter ?? '不明'}(${standardEdition(prior) ? `従う版 ${standardEdition(prior)} は変えない` : '従う作業中の版の切り替え'})`] : []),
         ...relax.map((r) => `案内(値は変えていない): ${r}`),
+        ...tighten.map((t) => `案内(値は変えていない): ${t.text}`),
       ];
       next.changeLog = [
         ...(prior.changeLog ?? []),

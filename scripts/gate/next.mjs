@@ -48,7 +48,7 @@ import { countClarifications, unmappedCriteria } from './verification-trace.mjs'
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
 import { retiredDetectionTypes } from './config.mjs';
-import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections } from '../init/generate-profile.mjs';
+import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 
 /**
@@ -762,6 +762,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
     if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
     // 氏名の確認のうち、1名の体制の自己申告と未記録の確認(追加の裁定。2名以上の名簿の記録の無い確認は契約検査が落とす)
     for (const n of nameConfirmationNotices(config)) result.notes.push(n);
+    // 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート。#318 突合 X-4)。適用されるまで出し続ける。構成は書き換えない
+    for (const t of pendingTightenings(config)) result.notes.push(t.text);
     // 委託・受託の構成で、判定の結果を受け取る者が空欄(process-compass #317 / ADR-0087 決定3)
     const slaPath = path.join(ROOT, 'docs/ai-sla.md');
     const rn = outsourcingReceiverNote(config, fs.existsSync(slaPath) ? fs.readFileSync(slaPath, 'utf8') : null);
