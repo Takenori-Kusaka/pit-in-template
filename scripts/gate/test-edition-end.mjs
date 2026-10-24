@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT, claimStatus, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
-import { buildConfig } from '../init/generate-profile.mjs';
+import { buildConfig, renderProcessRules } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -303,6 +303,40 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   check('適用の開始の後の、記録の無い製品の変更は欠落として出る', errs.some((l) => l.includes(`コミット ${afterHash.slice(0, 8)}`)), errs.join('\n'));
   // IMPL-0119:ok(適合の入力: 適用の開始より前の製品の変更は、記録が無くても欠落にしない)
   check('適用の開始より前の製品の変更は、記録が無くても欠落にしない', !errs.some((l) => l.includes(beforeHash.slice(0, 7))), errs.join('\n'));
+  w.done();
+}
+
+// ---------------------------------------------------------------- 判定の結果を受け取る者(process-compass #317 / ADR-0086 決定3)
+{
+  const w = workspace();
+  const out = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', 'q-dev-form': 'outsourcer' }, { people: PEOPLE, seats: SEATS3 });
+  w.writeJson('process.config.json', sealed(out));
+  fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+  fs.copyFileSync(path.join(w.dir, 'templates/08-ai-sla.md'), path.join(w.dir, 'docs/ai-sla.md'));
+  w.commit('chore: outsourcer');
+  check('委託の構成では、CLAUDE.md の生成部分に受け取る者の所在の1行が入る', /docs\/ai-sla\.md` 第9節/.test(renderProcessRules(out)));
+  check('内製の構成では、受け取る者の所在の1行を入れない', !/docs\/ai-sla\.md` 第9節/.test(renderProcessRules(base)));
+  const r0 = w.node('scripts/gate/next.mjs');
+  // IMPL-0331:ng(違反の入力: 委託の構成で、受け取る者の欄が雛形の記入例のまま)
+  check('委託の構成で受け取る者が空欄なら、/pit が注記を出す(段階は止めない)', r0.ok && /判定の結果を受け取る者\(発注側\)/.test(r0.out) && /渡す先が決まっていない/.test(r0.out), r0.out.slice(-1200));
+  const sla = path.join(w.dir, 'docs/ai-sla.md');
+  fs.writeFileSync(
+    sla,
+    fs
+      .readFileSync(sla, 'utf8')
+      .replace(/^\| 判定の結果を受け取る者\(発注側\) \|[^\n]*$/m, '| 判定の結果を受け取る者(発注側) | 仕様承認者 名簿 甲 |')
+      .replace(/^\| 判定の結果を受け取る者\(受注側\) \|[^\n]*$/m, '| 判定の結果を受け取る者(受注側) | 作成を担う本人と同じ |')
+  );
+  const r1 = w.node('scripts/gate/next.mjs');
+  // IMPL-0331:ok(適合の入力: 受け取る者の欄が記入済み)
+  check('受け取る者が記入済みなら、注記を出さない', r1.ok && !/渡す先が決まっていない/.test(r1.out), r1.out.slice(-1200));
+  fs.rmSync(sla);
+  const r2 = w.node('scripts/gate/next.mjs');
+  check('委託の構成で docs/ai-sla.md が無ければ、その旨を注記する', r2.ok && /docs\/ai-sla\.md が無い/.test(r2.out), r2.out.slice(-1200));
+  const inhouse = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' }, { people: PEOPLE, seats: SEATS3 });
+  w.writeJson('process.config.json', sealed(inhouse));
+  const r3 = w.node('scripts/gate/next.mjs');
+  check('内製の構成では、受け取る者の注記を出さない', r3.ok && !/渡す先が決まっていない/.test(r3.out), r3.out.slice(-1200));
   w.done();
 }
 

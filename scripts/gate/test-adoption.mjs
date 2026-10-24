@@ -20,7 +20,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, findInitCommit, sealChangeLog, FORMAT_VERSION, hookRegistrationProblems, mergeHookRegistration } from './config.mjs';
+import { ROOT, findInitCommit, sealChangeLog, FORMAT_VERSION, hookRegistrationProblems, mergeHookRegistration, templateDrift } from './config.mjs';
 import { RULES_BEGIN as PF_BEGIN, RULES_END as PF_END, TEMPLATE_WORKFLOWS, TEMPLATE_TOP, TEMPLATE_INSTRUCTION_FILES, TEMPLATE_CODEOWNERS_PATTERNS, preflight } from './preflight.mjs';
 import { buildConfig, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
 
@@ -332,6 +332,7 @@ function workspace({ keepOwner = false } = {}) {
   const taken = w.readJson('process.config.json');
   const e1 = taken.changeLog.at(-1);
   check('取り込みは、取り込んだテンプレートのコミットと強制層の要約値を道具が書く', intake.ok && taken.template?.commit === 'abcdef1' && Object.keys(taken.template?.digests ?? {}).length > 10 && e1.kind === 'intake' && e1.decidedBy === '名簿 己', intake.out);
+  check('取り込みの要約値は、権限設定と遮断の定義を含む', ['.claude/settings.json', '.claude/guard.json'].every((k) => k in (taken.template?.digests ?? {})), Object.keys(taken.template?.digests ?? {}).join(','));
   check('要約値の範囲は、スキル(.claude/skills/**)を含む', Object.keys(taken.template?.digests ?? {}).some((k) => k.startsWith('.claude/skills/')), Object.keys(taken.template?.digests ?? {}).slice(0, 5).join(','));
   check('取り込みは、知識ベースの生成元の前後(従う作業中の版の切り替え)を記録に書く', 'kbCommitBefore' in (e1.intake ?? {}) && e1.intake.kbCommitAfter === taken.template.kbCommit, JSON.stringify(e1.intake));
   check('取り込みの値は変えない', strip(taken) === strip(before), intake.out);
@@ -402,6 +403,17 @@ function workspace({ keepOwner = false } = {}) {
   // #315 突合 X-2: 初期化は、事前点検の結果を適用の開始の記録(changeLog[0])へ道具が書く
   // IMPL-0321:ok(適合の入力: 初期化を経た構成。適用の開始の記録に事前点検の結果がある)
   check('初期化は、事前点検の結果(止める項目 0 件・資産の件数)を changeLog[0] へ書く', c.changeLog?.[0]?.preflight?.stops === 0 && c.changeLog[0].preflight.assets === 0, JSON.stringify(c.changeLog?.[0]?.preflight));
+  // process-compass #317 / ADR-0086 決定2: 要約値は権限設定と遮断の定義を含み、初期化はテーラリングした後の内容で記録する
+  const enf = ['.claude/settings.json', '.claude/guard.json'];
+  check('要約値の範囲は、権限設定(.claude/settings.json)と遮断の定義(.claude/guard.json)を含む', enf.every((k) => k in (c.template?.digests ?? {})), Object.keys(c.template?.digests ?? {}).slice(0, 5).join(','));
+  const d0 = templateDrift(c, w.dir);
+  check('初期化の直後は、権限設定と遮断の定義に乖離を出さない(書いた内容で記録する)', d0 && !d0.changed.some((p) => enf.includes(p)) && !d0.added.some((p) => enf.includes(p)), JSON.stringify(d0));
+  const sp = path.join(w.dir, '.claude/settings.json');
+  const st = JSON.parse(fs.readFileSync(sp, 'utf8'));
+  st.permissions.deny = st.permissions.deny.filter((r) => r !== 'Bash(gh pr merge:*)');
+  fs.writeFileSync(sp, JSON.stringify(st, null, 2) + '\n');
+  const d1 = templateDrift(c, w.dir);
+  check('権限設定の遮断を外すと、強制層の要約値の乖離として出る', d1?.changed.includes('.claude/settings.json'), JSON.stringify(d1));
   w.done();
 }
 {

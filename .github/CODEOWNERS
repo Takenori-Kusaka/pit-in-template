@@ -8,18 +8,32 @@
 # 既定。まずは全体を1人に置き、役割が分かれたら下の行を有効にする
 *                       @OWNER
 
-# 恒久層コンテキスト
-# /CLAUDE.md            @context-owner
-# /AGENTS.md            @context-owner
-# /context/glossary.md  @domain-expert
-# /context/standards/   @tech-lead
-# /context/decisions/   @tech-lead
-# /context/projects/    @value-owner
+# 誘導層(恒久層コンテキストとエージェントの指示)。AI維持管理者が持つ(標準 第3章 3.11.5、ADR-0073)
+# 用語・設計標準・判断記録・案件の文脈は、内容に責任を持つ席を併記する
+# /CLAUDE.md            @ai-maintainer
+# /AGENTS.md            @ai-maintainer
+# /context/glossary.md  @ai-maintainer @domain-expert
+# /context/standards/   @ai-maintainer @tech-lead
+# /context/decisions/   @ai-maintainer @tech-lead
+# /context/projects/    @ai-maintainer @value-owner
 
 # プロセス構成。緩める方向の変更は判断記録を伴う
-# /process.config.json  @tech-lead
-# /PROCESS-PROFILE.md   @tech-lead
+# /process.config.json  @ai-maintainer @tech-lead
+# /PROCESS-PROFILE.md   @ai-maintainer @tech-lead
 
-# 強制層。エージェント自身の操作で変えられてはならない
-# /.claude/settings.json  @tech-lead
-# /.github/rulesets/      @tech-lead
+# 強制層。エージェント自身の操作で変えられてはならない。変更は AI維持管理者が承認する(3.11.5、ADR-0073 決定3)
+# AI維持管理者の席の責任者が強制層を所有する組織に属さない委託では、緩める向きの変更に、
+# 所有する組織が指名した者の同意の記録も要する(docs/ai-sla.md 第9節、process-compass ADR-0086)
+# /.claude/settings.json  @ai-maintainer
+# /.claude/guard.json     @ai-maintainer
+# /.claude/hooks/         @ai-maintainer
+# /.claude/skills/        @ai-maintainer
+# /.github/rulesets/      @ai-maintainer
+# /.github/workflows/     @ai-maintainer
+# /.github/CODEOWNERS     @ai-maintainer
+# /scripts/gate/          @ai-maintainer
+# /scripts/vendor/        @ai-maintainer
+# /adapters/              @ai-maintainer
+#
+# 注: 役割の行は、Git ホスティングのチーム(@org/ai-maintainer など)へ置き換えてから有効にする。
+# CODEOWNERS の雛形の行を有効にする道具の側の扱いは、process-compass #358 で検討中であり、本雛形と重なる

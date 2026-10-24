@@ -2077,10 +2077,12 @@ export function migrationValueChanges(before, after) {
 // 表示に使い、合否に使わない。採用者の正当な書き足し(常駐の規則の前後への追記など)があるため
 
 /**
- * 要約値を記録する強制層のファイル。初期化と変化点が案件ごとに書き換えるファイル(.claude/settings.json・guard.json)は含めない。
- * スキル(手順と禁止の追記)は案件ごとに書き換えないため含める(#315 突合 X-16)
+ * 要約値を記録する強制層のファイル。スキル(手順と禁止の追記)は案件ごとに書き換えないため含める(#315 突合 X-16)。
+ * 権限設定(.claude/settings.json)と遮断の定義(.claude/guard.json)も含める。初期化はテーラリングした後の内容で記録し、
+ * 取り込み(種別 intake)はその時点のファイルで記録する。権限設定の緩みが乖離として出るようにするため(process-compass #317 /
+ * ADR-0086 決定2。ADR-0084 決定6 の要約値の範囲を置き換える)。乖離は表示に使い、合否に使わない
  */
-export const ENFORCEMENT_DIGEST_GLOBS = ['.claude/hooks/**', '.claude/skills/**', '.github/workflows/**', '.github/rulesets/**', 'scripts/gate/**', 'scripts/init/**', 'scripts/vendor/**', 'adapters/**'];
+export const ENFORCEMENT_DIGEST_GLOBS = ['.claude/settings.json', '.claude/guard.json', '.claude/hooks/**', '.claude/skills/**', '.github/workflows/**', '.github/rulesets/**', 'scripts/gate/**', 'scripts/init/**', 'scripts/vendor/**', 'adapters/**'];
 
 /** 強制層のファイルの要約値。{ 相対パス: SHA-256 }。キーは並べて返す */
 export function enforcementDigests(root = ROOT) {
@@ -2096,6 +2098,15 @@ export function enforcementDigests(root = ROOT) {
     if (ENFORCEMENT_DIGEST_GLOBS.some((g) => matchGlob(g, rel))) out[rel] = sha256(fs.readFileSync(abs));
   };
   for (const top of ['.claude', '.github', 'scripts', 'adapters']) walk(top);
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** 要約値へ、書く前の内容の要約値を差し込む。{ 相対パス: 内容 }。範囲外のパスは入れない。キーは並べて返す */
+export function enforcementDigestsWith(digests, texts) {
+  const out = { ...digests };
+  for (const [rel, text] of Object.entries(texts)) {
+    if (ENFORCEMENT_DIGEST_GLOBS.some((g) => matchGlob(g, rel))) out[rel] = sha256(Buffer.from(text, 'utf8'));
+  }
   return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
 }
 
