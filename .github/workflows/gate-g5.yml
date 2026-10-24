@@ -79,6 +79,7 @@ jobs:
       - run: node scripts/gate/test-records.mjs
       - run: node scripts/gate/test-next-records.mjs
       - run: node scripts/gate/test-aggregate-records.mjs
+      - run: node scripts/gate/test-env-findings.mjs
       # 能力依存の定数の再評価待ち(契機は performer の変化点と暦だけ。#295)
       - run: node scripts/gate/test-recalibration.mjs
       # 独立と席の規則(確認者の有無を名簿と席から導く、出荷判定者が兼ねない席、強制する承認の数。process-compass #302・#304・#305・#307)

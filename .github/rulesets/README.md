@@ -104,7 +104,9 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team.json
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json
 ```
 
-適用の後は、`node scripts/gate/adoption-trial.mjs env-check --by <氏名>` の所見(`findings`)で、記録用ブランチの保護(`non_fast_forward`・`deletion`、bypass actor なし)、`record-copy.yml` の直近の実行、写しの到着、既定ブランチの bypass actor を確かめられます。
+適用の後は、`node scripts/gate/adoption-trial.mjs env-check --by <氏名>` の所見(`findings`)で、記録用ブランチの保護(`non_fast_forward`・`deletion`、bypass actor なし)、`record-copy.yml` の直近の実行、写しの到着、既定ブランチの bypass actor を確かめられます。所見は記録(`docs/adoption-trial/env-check.json`)に残り、一致しない所見(保護の欠落、bypass actor)は `/pit` の注記と出荷の集約の項目4 の表に出続けます(確認済みの判定には入れず、欠落にもしません)。
+
+記録の置き場の `CODEOWNERS` の行(席ごと)は、`/process-init` が `PROCESS-PROFILE.md` の「記録の置き場の所有者(CODEOWNERS の案)」に、席の責任者のアカウント(人の名簿 `people[].accounts`)から起こします。人がその案を `.github/CODEOWNERS` へ写します(`/process-init` は `CODEOWNERS` を書き換えません)。
 
 適用済みのルールセットを確認します。
 

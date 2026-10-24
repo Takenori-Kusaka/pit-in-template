@@ -76,14 +76,89 @@ function loginOfEmail(email) {
   return m ? m[1] : null;
 }
 
-/** 様式のファイルを最後に触ったコミット(author と署名の検証結果)。読めなければ null */
-function lastCommitOf(cwd, rev, file) {
+/**
+ * ファイルを最後に触ったコミット(author と署名の検証結果)。rev は読む版(記録用ブランチの参照、基底なら 'HEAD')。
+ * 読めなければ null。様式の帰属の裏づけ(recordAttribution)の入力であり、集約(aggregate-evidence.mjs)も基底の様式に同じ形で使う
+ */
+export function lastCommitOf(cwd, rev, file) {
   const out = gitIn(cwd, ['log', '-1', '--format=%H%x00%an%x00%ae%x00%aI%x00%G?', rev, '--', file]);
   if (!out || !out.trim()) return null;
   const [hash, authorName, authorEmail, date, sig] = out.trim().split('\0');
   // %G?: G=有効な署名 / U=有効だが信頼の無い鍵 / E=検証できない / N=署名なし / B=不正な署名 / X・Y・R=鍵の失効・期限切れ
   const signed = sig === 'G' || sig === 'U' ? true : sig === 'N' ? false : null;
   return { hash, authorName, authorEmail, authorLogin: loginOfEmail(authorEmail), date, signed, signature: sig ?? null };
+}
+
+/**
+ * 写しの JSON を読む。読めなければ copy=null と理由(呼び出し側が skipped に出す)。
+ * 写しの最小の組の欠け(reviews の配列が無い、ファイル名と pr が違う)は、推定で補わずに落とす。
+ * 記録用ブランチ(readRecordsBranch)と基底ブランチの複製(aggregate-evidence.mjs の readBaseCopies)が同じ検査を使う
+ */
+export function parseCopy(file, text) {
+  const base = String(file ?? '').replace(/\\/g, '/').split('/').pop() ?? '';
+  const m = base.match(REVIEW_FILE_RE);
+  if (!m) return { copy: null, prNumber: null, reason: '写しの名前の形(pr-<番号>.json)でない' };
+  const prNumber = Number(m[1]);
+  let copy;
+  try {
+    copy = JSON.parse(text);
+  } catch (e) {
+    return { copy: null, prNumber, reason: `JSON として読めない: ${e.message}` };
+  }
+  if (!copy || typeof copy !== 'object' || !Array.isArray(copy.reviews)) return { copy: null, prNumber, reason: '写しの形でない(reviews の配列が無い)' };
+  if (copy.pr !== undefined && Number(copy.pr) !== prNumber) return { copy: null, prNumber, reason: `ファイル名の PR 番号 ${prNumber} と写しの pr ${copy.pr} が一致しない` };
+  return { copy, prNumber, reason: null };
+}
+
+/** 写しの head(record-copy.yml は head_sha と書く。旧い写しの head_sha_at_merge も読む)。無ければ null */
+export const headOfCopy = (copy) => copy?.head_sha ?? copy?.head_sha_at_merge ?? null;
+
+// ---------------------------------------------------------------- 様式(templates/04-gate-record.md)の冒頭の表
+//
+// 様式の欄の読み方は 1 か所に置く。docs/gates/(config.mjs の readGateRecords)、records/gates/(next.mjs)、集約の帰属の照合
+// (aggregate-evidence.mjs)が同じ読み方を使う。様式の文言を残したままの欄(`<...>`)は未記入。「対象」だけは ` / ` を許す。
+// 推奨の書き方(`F-012 / PR #34`、`F-012 / 1a2b3c4`。標準 第4章 G-2)が区切りに使うため。ほかの欄の ` / ` は様式の選択肢
+// (`通過 / 差し戻し` など)が残ったものとして未記入に数える(#321 段階 2)
+
+/** 欄の記載そのもの(前後の空白を除く。様式の文言のままの値を含む)。行が無ければ null */
+export function formCellRaw(text, key) {
+  return String(text ?? '').match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
+}
+
+/** 記入済みの欄の値。未記入(空、様式の文言のまま、選択肢が残ったまま)は null */
+export function formCell(text, key) {
+  const v = formCellRaw(text, key) ?? '';
+  if (!v || v.startsWith('<')) return null;
+  if (key !== '対象' && v.includes(' / ')) return null;
+  return v;
+}
+
+/** 様式の「対象」の欄。機械が出す欄の併記や注記(。以降)は読まない(呼び出し側が照合に使う形) */
+export const targetOfForm = (text) => formCellRaw(text, '対象');
+
+/** 様式の「判定者」の欄の記名(注記「。…」を除く)。様式の説明(<氏名>…)を残したままの欄は未記入(null) */
+export const judgeOfForm = (text) => {
+  const v = formCellRaw(text, '判定者');
+  return v && !v.startsWith('<') ? v.replace(/。.*$/, '').trim() : null;
+};
+
+/**
+ * 様式の本文から記録を起こす。file は所在、source は出所('base' = docs/gates/、'records-branch' = records/gates/)。
+ * resultRaw は結果欄の記載そのもの(2 値のどちらとも読めない理由を示すために使う)
+ */
+export function recordFromForm(text, file, source) {
+  return {
+    file,
+    source,
+    gate: formCell(text, 'ゲート'),
+    target: formCell(text, '対象'),
+    result: formCell(text, '結果'),
+    resultRaw: formCellRaw(text, '結果'),
+    mode: formCell(text, '確定の形態'),
+    riskConfirmedBy: formCell(text, 'リスク区分を確定した者'),
+    d0Version: formCell(text, '参照した D-0 の版'),
+    judgedAt: formCell(text, '判定日時'),
+  };
 }
 
 /**
@@ -124,8 +199,7 @@ export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetc
   for (const file of files) {
     if (file.startsWith(`${REVIEWS_DIR}/`)) {
       const base = file.slice(REVIEWS_DIR.length + 1);
-      const m = base.match(REVIEW_FILE_RE);
-      if (!m) {
+      if (!REVIEW_FILE_RE.test(base)) {
         result.skipped.push({ file, reason: `写しの名前の形(pr-<番号>.json)でない` });
         continue;
       }
@@ -134,20 +208,9 @@ export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetc
         result.skipped.push({ file, reason: '読めない(git show が失敗)' });
         continue;
       }
-      let copy;
-      try {
-        copy = JSON.parse(text);
-      } catch (e) {
-        result.skipped.push({ file, reason: `JSON として読めない: ${e.message}` });
-        continue;
-      }
-      if (!copy || typeof copy !== 'object' || !Array.isArray(copy.reviews)) {
-        result.skipped.push({ file, reason: '写しの形でない(reviews の配列が無い)' });
-        continue;
-      }
-      const prNumber = Number(m[1]);
-      if (copy.pr !== undefined && Number(copy.pr) !== prNumber) {
-        result.skipped.push({ file, reason: `ファイル名の PR 番号 ${prNumber} と写しの pr ${copy.pr} が一致しない` });
+      const { copy, prNumber, reason } = parseCopy(base, text);
+      if (!copy) {
+        result.skipped.push({ file, reason });
         continue;
       }
       result.reviews.set(prNumber, copy);
@@ -162,9 +225,6 @@ export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetc
   }
   return result;
 }
-
-/** 写しの head(record-copy.yml は head_sha_at_merge と書く。将来 head_sha へ改めても読めるよう両方を見る) */
-const headOfCopy = (copy) => copy?.head_sha ?? copy?.head_sha_at_merge ?? null;
 
 /**
  * 写しのレビューのうち、宣言行を持つものを判定として取り出す。judgeLogins(Set<string>)を渡せば、その login に限る。
@@ -238,10 +298,10 @@ export function recordAttribution(gateRecord, { judgeName = null, judgeLogin = n
 
 /** 様式の冒頭の表の「ゲート」欄の先頭の語(G-1〜G-8・SG)。無ければ null */
 export function gateOfRecord(text) {
-  const m = String(text ?? '').match(/^\|\s*ゲート\s*\|\s*([^|\n]+?)\s*\|/m);
-  if (!m) return null;
-  const g = m[1].match(/^(G-[1-8]|SG)\b/);
-  return g ? g[1] : m[1].trim();
+  const v = formCellRaw(text, 'ゲート');
+  if (!v) return null;
+  const g = v.match(/^(G-[1-8]|SG)\b/);
+  return g ? g[1] : v;
 }
 
 /** 件数の要約(表示用)。byGate は、宣言行を持つ判定と様式のゲート欄を、ゲートごとに数える */

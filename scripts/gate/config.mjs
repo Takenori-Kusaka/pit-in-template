@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { recordFromForm } from './records.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -1295,33 +1296,12 @@ export function classifyDelegation(config, files, ruleId = null, changedLines = 
 export function readGateRecords() {
   const dir = path.join(ROOT, 'docs/gates');
   if (!fs.existsSync(dir)) return [];
-  const raw = (text, key) => text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
-  // 「対象」だけは ` / ` を許す。推奨の書き方(`F-012 / PR #34`、`F-012 / 1a2b3c4`)が区切りに使うため。
-  // ほかの欄の ` / ` は様式の選択肢(`通過 / 差し戻し` など)が残ったものとして未記入に数える(#321 段階2)
-  const cell = (text, key) => {
-    const v = raw(text, key) ?? '';
-    if (!v || v.startsWith('<')) return null;
-    if (key !== '対象' && v.includes(' / ')) return null;
-    return v;
-  };
+  // 欄の読み方は records.mjs の recordFromForm(記録用ブランチの様式と同じ)。「対象」だけは ` / ` を許す。推奨の書き方
+  // (`F-012 / PR #34`、`F-012 / 1a2b3c4`)が区切りに使うため。ほかの欄の ` / ` は様式の選択肢が残ったものとして未記入に数える(#321 段階2)
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
-    .map((f) => {
-      const text = fs.readFileSync(path.join(dir, f), 'utf8');
-      return {
-        file: `docs/gates/${f}`,
-        gate: cell(text, 'ゲート'),
-        target: cell(text, '対象'),
-        result: cell(text, '結果'),
-        // 結果欄の記載そのもの(様式の文言を残したままの値を含む)。2値のどちらとも読めない理由を示すために使う
-        resultRaw: raw(text, '結果'),
-        mode: cell(text, '確定の形態'),
-        riskConfirmedBy: cell(text, 'リスク区分を確定した者'),
-        d0Version: cell(text, '参照した D-0 の版'),
-        judgedAt: cell(text, '判定日時'),
-      };
-    });
+    .map((f) => recordFromForm(fs.readFileSync(path.join(dir, f), 'utf8'), `docs/gates/${f}`, 'base'));
 }
 
 // ---------------------------------------------------------------- 変化点の記録の連鎖

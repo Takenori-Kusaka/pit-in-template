@@ -1024,6 +1024,47 @@ export const ENV_CHECK_ITEMS = [
 ];
 
 /**
+ * 記録用ブランチ(records)の所見(#321 段階 2 / pit-in-template #54)。env-check が同じ記録の findings へ書き、/pit の注記と
+ * 出荷の集約(項目4 の表)が表示する。**項目(ENV_CHECK_ITEMS)へは昇格させない**。確認済みの判定(confirmed)に入れない理由は 2 つ。
+ * (1) 記録用ブランチは最初のマージで record-copy.yml が作るため、初期化の直後は無いのが正常で、未確認に倒すと採用の前に確かめられない。
+ * (2) 既定ブランチの bypass actor と、GITHUB_TOKEN/App の承認が required approving review に数えられるかは、強制層の縮小の有無を
+ * 示す事実であり、構成との一致・不一致で判定する項目ではない。
+ * 一致しない所見(mismatch)は、保護の欠落または強制層の縮小であり、/pit が AI維持管理者の席へ、集約が保証の開示へ出す(欠落にはしない)
+ */
+export const ENV_CHECK_FINDINGS = [
+  ['recordsBranch', '記録用ブランチ(records)の存在と保護(non_fast_forward・deletion。bypass actor なし)'],
+  ['recordCopy', 'record-copy.yml の存在と直近の実行の成否'],
+  ['recordsCopy', '最新のマージ済み PR の写し(records/reviews/pr-<n>.json)の到着'],
+  ['defaultBypass', '既定ブランチのルールセットの bypass actor(Integration など)'],
+  ['approvalCounting', 'GITHUB_TOKEN/App の承認が required approving review に数えられる組織設定'],
+];
+
+/** 所見の状態の語(/pit・集約・導入前の検証の記録で同じ語) */
+export const FINDING_STATUS_LABEL = { confirmed: '確認済み', mismatch: '一致しない', unknown: 'API で取れない', unconfirmed: '未確認(読めない)' };
+
+/** 記録の findings を、所見の一覧(id・label・status・detail・evidence)にする。記録が無い・所見が無い記録は、理由を detail に書く */
+export function envFindingsOf(record, { recordMissing = false } = {}) {
+  return ENV_CHECK_FINDINGS.map(([id, label]) => {
+    const f = record?.findings?.[id] ?? null;
+    if (recordMissing) return { id, label, status: 'unconfirmed', detail: '記録なし', evidence: null };
+    if (!record?.findings) return { id, label, status: 'unconfirmed', detail: '記録に所見(findings)が無い(段階 2 より前の env-check。実行し直す)', evidence: null };
+    if (!f) return { id, label, status: 'unconfirmed', detail: '記録に所見の項目が無い', evidence: null };
+    const status = ['confirmed', 'mismatch', 'unknown'].includes(f.status) ? f.status : 'unconfirmed';
+    return { id, label, status, detail: String(f.detail ?? '詳細なし'), evidence: f.evidence && typeof f.evidence === 'object' ? f.evidence : null };
+  });
+}
+
+/** 所見の 1 行の要約(一致しない所見を先に。無ければ null) */
+export function envFindingsText(findings) {
+  if (!Array.isArray(findings) || !findings.length) return null;
+  const order = { mismatch: 0, unconfirmed: 1, unknown: 2, confirmed: 3 };
+  return [...findings]
+    .sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9))
+    .map((f) => `${f.label.split('(')[0]} ${f.status === 'mismatch' ? '**一致しない**' : FINDING_STATUS_LABEL[f.status] ?? f.status}(${f.detail})`)
+    .join(' / ');
+}
+
+/**
  * 確認済みの項目が伴うべき、実環境の API の応答の識別(#288 第7巡 V)。確認した者の記名だけでは、固定の応答で作った記録と
  * 実環境で作った記録を区別できない。査察で GitHub の画面と突合できる鍵(ルールセットの id、レビューの id、実行の id と URL)を
  * 記録に要し、無い確認済みは「実環境の証拠を欠く」として未確認に倒す
@@ -1070,10 +1111,13 @@ export function envEvidenceText(env) {
  */
 export function readEnvCheck(config, { root = ROOT } = {}) {
   const p = path.join(root, ENV_CHECK_FILE);
-  const out = { present: fs.existsSync(p), record: null, items: [], confirmed: false, problems: [], committed: null, summary: '' };
+  // findings: 記録用ブランチの所見(ENV_CHECK_FINDINGS)。確認済みの判定(confirmed)に入れない。attention は一致しない所見
+  const out = { present: fs.existsSync(p), record: null, items: [], findings: [], attention: [], findingsText: null, confirmed: false, problems: [], committed: null, summary: '' };
   if (!out.present) {
     out.summary = `未確認(${ENV_CHECK_FILE} が無い。採用者が実環境の gh で node scripts/gate/adoption-trial.mjs env-check --by <氏名> を実行し、記録をコミットする)`;
     out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録なし' }));
+    out.findings = envFindingsOf(null, { recordMissing: true });
+    out.findingsText = envFindingsText(out.findings);
     return out;
   }
   try {
@@ -1082,9 +1126,14 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
     out.problems.push(`${ENV_CHECK_FILE} を JSON として読めない(${e.message})`);
     out.summary = `未確認(${out.problems[0]})`;
     out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録を読めない' }));
+    out.findings = ENV_CHECK_FINDINGS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録を読めない', evidence: null }));
+    out.findingsText = envFindingsText(out.findings);
     return out;
   }
   const r = out.record;
+  out.findings = envFindingsOf(r);
+  out.attention = out.findings.filter((f) => f.status === 'mismatch');
+  out.findingsText = envFindingsText(out.findings);
   out.items = ENV_CHECK_ITEMS.map(([id, label]) => {
     const it = r.items?.[id] ?? null;
     let status = it?.status === 'confirmed' ? 'confirmed' : it?.status === 'mismatch' ? 'mismatch' : 'unconfirmed';

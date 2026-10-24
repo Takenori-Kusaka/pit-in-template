@@ -24,6 +24,14 @@ import {
   recordAttribution,
   gateOfRecord,
   summarizeRecords,
+  lastCommitOf,
+  parseCopy,
+  headOfCopy,
+  formCellRaw,
+  formCell,
+  targetOfForm,
+  judgeOfForm,
+  recordFromForm,
 } from './records.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -129,6 +137,49 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   check('帰属: コミットを読めない → backed=false, how=null', a8.backed === false && a8.how === null && /読めない/.test(a8.note), JSON.stringify(a8));
   check('様式のゲート欄: G-7 / G-8', gateOfRecord(readFixture('gates', 'g7-v1.2.0-2026-10-20.md')) === 'G-7' && gateOfRecord(readFixture('gates', 'g8-v1.2.0-2026-10-21.md')) === 'G-8');
   check('様式のゲート欄: 表が無ければ null', gateOfRecord('# 何か\n') === null);
+  check('様式のゲート欄: 空の欄は null', gateOfRecord('| ゲート |  |\n') === null);
+}
+
+// ---------------------------------------------------------------- 写しと様式の読み方(集約・next・config が共有する。#54)
+{
+  const text12 = readFixture('reviews', 'pr-12.json');
+  const p = parseCopy('records/reviews/pr-12.json', text12);
+  check('parseCopy: 写しを読み、PR 番号をファイル名から取る', p.copy !== null && p.prNumber === 12 && p.reason === null, JSON.stringify({ prNumber: p.prNumber, reason: p.reason }));
+  check('parseCopy: Windows の区切りの所在でも読む', parseCopy('docs\\records\\reviews\\pr-12.json', text12).prNumber === 12);
+  check('parseCopy: 名前の形でない', parseCopy('records/reviews/review-12.json', text12).copy === null && /名前の形/.test(parseCopy('x.json', text12).reason));
+  check('parseCopy: JSON として読めない', parseCopy('pr-1.json', '{').copy === null && /JSON/.test(parseCopy('pr-1.json', '{').reason));
+  check('parseCopy: reviews の配列が無い', parseCopy('pr-1.json', '{"pr":1}').copy === null && /reviews/.test(parseCopy('pr-1.json', '{"pr":1}').reason));
+  check('parseCopy: ファイル名と pr の不一致', parseCopy('pr-2.json', '{"pr":1,"reviews":[]}').copy === null && /一致しない/.test(parseCopy('pr-2.json', '{"pr":1,"reviews":[]}').reason));
+  check('parseCopy: pr の無い写しはファイル名の番号で読む', parseCopy('pr-7.json', '{"reviews":[]}').prNumber === 7 && parseCopy('pr-7.json', '{"reviews":[]}').copy !== null);
+  check('headOfCopy: head_sha を優先し、旧い head_sha_at_merge も読む', headOfCopy({ head_sha: 'a', head_sha_at_merge: 'b' }) === 'a' && headOfCopy({ head_sha_at_merge: 'b' }) === 'b' && headOfCopy({}) === null && headOfCopy(null) === null);
+
+  const g4 = readFixture('gates', 'g4-F-002-2026-10-22.md');
+  check('formCellRaw: 欄の記載そのもの', formCellRaw(g4, 'ゲート') === 'G-4 機能仕様承認' && formCellRaw(g4, '無い欄') === null);
+  check('formCell: 対象だけ " / " を許す', formCell(g4, '対象') === 'F-002 / 7a8b9c0' && formCell('| 結果 | 通過 / 差し戻し |\n', '結果') === null);
+  check('formCell: 様式の文言のまま・空は未記入', formCell('| 判定者 | <氏名> |\n', '判定者') === null && formCell('| 判定者 |  |\n', '判定者') === null);
+  check('targetOfForm / judgeOfForm: 欄の値', targetOfForm(g4) === 'F-002 / 7a8b9c0' && judgeOfForm(g4) === '山田 太郎');
+  check('judgeOfForm: 注記(。以降)を除き、様式の説明は未記入', judgeOfForm('| 判定者 | 鈴木 一郎。出所: レビュー user.id 12 |\n') === '鈴木 一郎' && judgeOfForm('| 判定者 | <氏名> |\n') === null);
+  const r = recordFromForm(g4, 'records/gates/g4-F-002-2026-10-22.md', 'records-branch');
+  check(
+    'recordFromForm: 欄を揃えた記録(file・source・gate・target・result・resultRaw・mode・riskConfirmedBy・d0Version・judgedAt)',
+    same(r, {
+      file: 'records/gates/g4-F-002-2026-10-22.md',
+      source: 'records-branch',
+      gate: 'G-4 機能仕様承認',
+      target: 'F-002 / 7a8b9c0',
+      result: '通過',
+      resultRaw: '通過',
+      mode: '人確定',
+      riskConfirmedBy: '—',
+      d0Version: '3',
+      judgedAt: '2026-10-22 10:00',
+    }),
+    JSON.stringify(r)
+  );
+  check('recordFromForm: 結果欄に選択肢が残っていれば result=null、resultRaw に記載', (() => {
+    const x = recordFromForm('| 結果 | 通過 / 差し戻し |\n', 'f.md', 'base');
+    return x.result === null && x.resultRaw === '通過 / 差し戻し';
+  })());
 }
 
 // ---------------------------------------------------------------- 記録用ブランチの読み取り(一時のリポジトリ)
@@ -221,6 +272,13 @@ try {
   git(D, 'remote', 'add', 'origin', A);
   const rd = readRecordsBranch({ cwd: D, fetch: true });
   check('fetch=true: origin にあるブランチを 1 回の fetch で読む', rd.available === true && rd.reviews.size === 3, JSON.stringify({ available: rd.available, reason: rd.reason }));
+
+  // --- lastCommitOf(様式を最後に触ったコミット。集約が基底の様式にも同じ形で使う)
+  const lc = lastCommitOf(A, 'refs/heads/records', 'records/gates/g7-v1.2.0-2026-10-20.md');
+  // 様式 g7 は、帰属の試験のために記名者(鈴木 一郎。noreply の email)を author にして置いてある。login を email から読めること
+  check('lastCommitOf: hash・author・email の login・署名なし(signed=false)を読む', lc !== null && /^[0-9a-f]{40}$/.test(lc.hash) && lc.authorName === '鈴木 一郎' && lc.authorLogin === 'suzuki' && lc.signed === false && lc.signature === 'N', JSON.stringify(lc));
+  check('lastCommitOf: 無いファイルは null', lastCommitOf(A, 'refs/heads/records', 'records/gates/nothing.md') === null);
+  check('lastCommitOf: 読めない参照は null', lastCommitOf(A, 'refs/heads/no-such-branch', 'README.md') === null);
 
   // --- 別の名前のブランチ
   const re = readRecordsBranch({ cwd: A, ref: 'main', fetch: false });

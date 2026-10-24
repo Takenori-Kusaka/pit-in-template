@@ -32,6 +32,11 @@
 # docs/gates/ には停止の解除・例外承認(台帳は docs/debt-ledger.md)・SG の記録も先に入るため、席ごとに分けるなら
 # ゲートごとの判定者の席(価値責任者・出荷判定者・事業決裁者)をここへ書く。
 # records ブランチ自体(records/gates/・records/reviews/)は PR を経ないため、CODEOWNERS は効かない(ルールセットで保護する)
-# /docs/gates/            @ship-judge
-# /docs/records/          @ship-judge
-# /docs/evidence/         @ship-judge
+#
+# 席ごとの行は、/process-init が PROCESS-PROFILE.md の「記録の置き場の所有者(CODEOWNERS の案)」に、席の責任者のアカウント
+# (人の名簿 people[].accounts)から起こす。人がその案をここへ写す(/process-init はこのファイルを書き換えない)。
+# 下の @ship-judge・@value-owner は席の名前の仮の置き字であり、実在のアカウントに置き換えるまで行頭の # を外さない。
+# /docs/gates/            @ship-judge     # 出荷判定者の席
+# /docs/records/          @ship-judge     # 出荷判定者の席
+# /docs/evidence/         @ship-judge     # 出荷判定者の席
+# /docs/debt-ledger.md    @value-owner    # 価値責任者の席(例外承認・前提の受容・未解決事項の台帳)
