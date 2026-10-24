@@ -93,6 +93,13 @@ import {
   answersRosterProblems,
   resolveSigner,
   accountKey,
+  EDITION_PATTERN,
+  END_REASONS,
+  WORKING_DRAFT,
+  standardEdition,
+  applicationEnd,
+  claimStatus,
+  classifyDeviations,
 } from '../gate/config.mjs';
 
 const normName = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -758,6 +765,9 @@ export function buildConfig(answers, opts = {}) {
       host: opts.platformHost ?? 'local-markdown',
       hostUrl: opts.platformHostUrl ?? null,
     },
+    // 従う本標準の版(標準 第1章 1.10.3)。初期化では、複製した知識ベースの版を書く。null は作業中の版(未発行)。
+    // 設定済みの構成では、前の構成の値を引き継ぐ(欄の無い旧い構成には足さない。要約値を保つため)。切り替えは種別 edition だけ
+    standard: 'standard' in opts ? opts.standard : { edition: KB.source?.edition ?? null },
     ruleset,
     gates,
     roles: buildRoles(gates, separations),
@@ -950,7 +960,7 @@ export function separationSummary(config) {
   const f = seatSeparationFindings(config);
   return (
     `兼務禁止への抵触 ${f.violations.length} 件 / 代償措置つきの例外 ${f.excepted.length} 件 / ` +
-    `逸脱として記録した兼務 ${f.deviated.length} 件 / ` +
+    `記録した成立しない兼務禁止(逸脱の閉じた列挙に無い) ${f.deviated.length} 件 / ` +
     `同一人物のため独立が成立しない組 ${f.notIndependent.length} 件 / 責任者が未記入の席 ${f.blank} 席`
   );
 }
@@ -1028,6 +1038,9 @@ export function changeLogEntry(e) {
     sgRecord: e.sgRecord ?? null,
     // AI が使えない期間(変化点に数えない。保証の開示の項目7 へ出す)
     outage: e.outage ?? null,
+    // 従う本標準の版の切り替え(第1章 1.10.3)と、適用の終了(同 1.10.4)。該当する種別だけが持つ
+    ...(e.edition ? { edition: e.edition } : {}),
+    ...(e.end ? { end: e.end } : {}),
     // 即時通知(第3章 3.13.6)。対象でなければ null。通知先と通知日が未記入の記録は、証跡の集約が欠落として扱う
     notice: e.notice ?? null,
     // 種別 notice の記録が、どの記録の通知を埋めるか(changeLog の添字)
@@ -2530,6 +2543,31 @@ export function renderProfileMd(config, result) {
   L.push(`- 機械可読の構成: [\`process.config.json\`](./process.config.json)`);
   L.push('');
 
+  // --- 述べられる表明と主張(標準 第1章 1.10。process-compass #313 / ADR-0083) ---
+  {
+    const cs = claimStatus(config);
+    L.push('## 適用の表明と適合の主張');
+    L.push('');
+    L.push(`- 従う本標準の版: **${cs.editionLabel}**${cs.edition ? '' : '。作業中の版は、適用の表明と適合の主張に名指せません。版の切り替えは `/process-change`(種別 `edition`)で行います'}`);
+    if (cs.ended) L.push(`- 適用の終了: ${cs.ended.date}(${cs.ended.reasonLabel})。現在形の適用の表明をしません`);
+    L.push(
+      `- この構成で述べられる名: **${cs.name ?? '表明・主張を述べられない'}**` +
+        (cs.name && cs.name !== '適用の表明' ? '(記録の欠落が無い範囲に限る。範囲の記録の欠落は、出荷判定の証跡の集約が数えます)' : '')
+    );
+    for (const b of cs.blockers) L.push(`- ${b}`);
+    if (cs.name && cs.name !== '適用の表明') {
+      L.push(
+        '- 構成に欄の無い列挙に無い離脱(コア機能の理解の保持者が1名以下、席ごとに認証情報を分けていない、層1 の記名者が事業決裁者を兼ねる)は、この名に反映していません。当たる場合に述べられるのは、適用の表明までです(標準 第1章 1.10.2)。人が確かめます'
+      );
+    }
+    if (cs.listed.length) {
+      L.push(`- 逸脱(閉じた列挙): ${cs.listed.map((d) => `${d.closedListId} ${d.label}(${d.clause})`).join(' / ')}。主張は「逸脱を伴う適合の主張」とし、各逸脱を列挙します。省略して「適合」と書きません`);
+    }
+    L.push('');
+    L.push('表明・主張の文そのものは、このファイルに出しません。必須の記載は標準 第1章 1.10.2、文の形は附属書H H.8 によります。');
+    L.push('');
+  }
+
   // --- 出荷できない状態(未達より上に置く) ---
   if (config.shipBlocked) {
     L.push('## 出荷できない状態');
@@ -2581,7 +2619,7 @@ export function renderProfileMd(config, result) {
   if (gateDeviations.length) {
     L.push('## 代償措置つきの逸脱');
     L.push('');
-    L.push('次のゲートは**実施しますが、標準が要求する属性を欠いています**。未達ではありません。');
+    L.push('次のゲートは**実施しますが、標準が要求する属性を欠いています**。未達ではありません。標準が条項で条件と代償措置を定めた逸脱(第1章 1.10.2 の閉じた列挙)です。');
     L.push('');
     L.push('| ゲート | 抵触する規則 | 欠けるもの | 解消の時点 | 根拠 |');
     L.push('| --- | --- | --- | --- | --- |');
@@ -2605,11 +2643,12 @@ export function renderProfileMd(config, result) {
 
   // --- 兼務の逸脱(1〜2名の体制で成立しない兼務禁止。代償措置は定められていない) ---
   if (seatDevs.length) {
-    L.push('## 兼務の逸脱');
+    L.push('## 成立しない兼務禁止(逸脱の閉じた列挙に無い離脱)');
     L.push('');
     L.push(
-      '次の兼務は標準が禁止していますが、**1〜2名の体制では成立しないため、逸脱として記録しています**。' +
-        '代償措置は定められていません。出荷判定者の兼務の例外(第3章 3.5.2)を、これらへ広げません。'
+      '次の兼務は標準が禁止していますが、**1〜2名の体制では成立しないため、記録して表示し続けています**。' +
+        '代償措置は定められていないため、逸脱(第1章 1.10.2 の閉じた列挙)に当たりません。この兼務がある間は、適合の主張を述べられません。' +
+        '出荷判定者の兼務の例外(第3章 3.5.2)を、これらへ広げません。'
     );
     L.push('');
     L.push('| 兼務 | 欠けるもの | 扱い | 解消の時点 | 根拠 |');
@@ -3674,6 +3713,42 @@ if (isMain) {
     } else if (change.noticeFor !== undefined || change.event !== undefined) {
       bad.push('noticeFor と event は種別 notice でだけ使えます');
     }
+    // 従う本標準の版の切り替え(標準 第1章 1.10.3)。複製した知識ベースの版に限る。適用の開始は動かさない
+    if (change.kind === 'edition') {
+      if (extra([...CONFIG_KEYS, 'settings']).length) bad.push(`種別 edition では体制と個別の値を変えられません(${extra([...CONFIG_KEYS, 'settings']).join(', ')} を外してください)`);
+      const kbEdition = KB.source?.edition ?? null;
+      if (typeof change.edition !== 'string' || !EDITION_PATTERN.test(change.edition)) {
+        bad.push(`edition "${change.edition ?? ''}" は、発行した版を「第N版」または「第N版 修正M」で書きます。${WORKING_DRAFT}へは切り替えません(第1章 1.10.3)`);
+      } else if (change.edition !== kbEdition) {
+        bad.push(
+          `複製した知識ベース(scripts/vendor/tailoring-kb.json)の版は ${kbEdition ?? WORKING_DRAFT} です。` +
+            `${change.edition} へ切り替えるには、その版の知識ベースを複製してから実行します(新しい版への主張は、その版で宣言をやり直した後の範囲に限る)`
+        );
+      } else if (change.edition === standardEdition(prior)) {
+        bad.push(`構成は既に ${change.edition} に従っています`);
+      }
+      if (!(change.decidedBy && change.reason)) bad.push('版の切り替えには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます');
+    } else if (change.edition !== undefined) {
+      bad.push('edition は種別 edition でだけ使えます');
+    }
+    // 適用の終了(標準 第1章 1.10.4)。理由の区分と記名を要する。一時停止・期日の失効・範囲の縮小の区分は置かない
+    if (change.kind === 'end') {
+      if (extra([...CONFIG_KEYS, 'settings']).length) bad.push(`種別 end では構成を変えられません(${extra([...CONFIG_KEYS, 'settings']).join(', ')} を外してください)`);
+      if (!(change.endReason in END_REASONS)) {
+        bad.push(`endReason "${change.endReason ?? ''}" は不正です。${Object.entries(END_REASONS).map(([k, v]) => `${k}(${v})`).join(' / ')} のいずれかにしてください`);
+      }
+      if (!(change.decidedBy && change.reason)) bad.push('適用の終了には、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます');
+    } else if (change.endReason !== undefined) {
+      bad.push('endReason は種別 end でだけ使えます');
+    }
+    // 適用を終えた構成へは、通知の記録のほかに変化点を追記しない。同じ案件での再開の記録は準拠テンプレートに無い(IMPL-0309。降りていない)
+    const ended = applicationEnd(prior);
+    if (ended && change.kind !== 'notice') {
+      bad.push(
+        `この構成は ${ended.date} に適用を終えています(${ended.reasonLabel})。種別 ${change.kind} の変化点を追記できません。` +
+          '同じ案件で適用を再び開始する記録は、準拠テンプレートにまだありません。件数は最初の適用の開始から数え、終了から再開までは記録の欠落になります(第1章 1.10.4)'
+      );
+    }
     if (bad.length) reject('変化点の入力を受け付けられません', bad);
 
     // 席の責任者の交代の後、その席の委任を新任者が引き継ぐ(第3章 3.13.3 / 3.4.2)。1つの入力で、
@@ -4028,6 +4103,9 @@ if (isMain) {
       // 原因は、立った時点のものを保つ。1〜2名の体制のまま区分が上がった場合と、人数が減った場合を書き分ける
       shipBlockedCause: prior?.shipBlocked ? (prior.shipBlocked.cause ?? 'headcount') : prior?.answers?.['q-team-size'] === 'size-1-2' ? 'criticality' : 'headcount',
       d0Version,
+      // 従う本標準の版。初期化では渡さない(知識ベースの版を書く)。設定済みの構成は前の値(欄が無ければ足さない)。
+      // 種別 edition だけが切り替える(第1章 1.10.3)
+      ...(prior ? { standard: change?.kind === 'edition' ? { edition: change.edition, since: day } : prior.standard } : {}),
       // 変化点を経ない再生成は、構成を変えない。生成日時も引き継ぐ
       generatedAt: prior && !change ? prior.generatedAt : undefined,
       changeLog: prior?.changeLog,
@@ -4473,7 +4551,7 @@ if (isMain) {
       refused.push(
         isTen
           ? `兼務禁止に抵触します: ${v}(10名以上の体制では、同じ人がこの2つの席の責任者になれません。第8章 軸A)。${how}`
-          : `兼務禁止に抵触します: ${v}(3名以上の体制では、同じ人がこの2つの席の責任者になれません。兼務を逸脱として記録できるのは、体制の人数が 1〜2名の場合に限ります。実際の人数と異なる人数を申告して逸脱へ逃がさないでください)。${how}`
+          : `兼務禁止に抵触します: ${v}(3名以上の体制では、同じ人がこの2つの席の責任者になれません。成立しない兼務禁止として記録できるのは、体制の人数が 1〜2名の場合に限ります。実際の人数と異なる人数を申告して記録へ逃がさないでください)。${how}`
       );
     }
     refused.push(...d0Refused);
@@ -4761,6 +4839,8 @@ if (isMain) {
             : null,
         notice,
         noticeFor: change.kind === 'notice' && change.noticeFor !== undefined ? change.noticeFor : null,
+        edition: change.kind === 'edition' ? { from: standardEdition(prior), to: change.edition } : null,
+        end: change.kind === 'end' ? { reason: change.endReason } : null,
       }),
     ];
     appended = true;

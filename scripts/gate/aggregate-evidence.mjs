@@ -98,6 +98,9 @@ import {
   parseGhVersion,
   unboundCauseText,
   aiAccountCheck,
+  findInitCommit,
+  initRecordProblem,
+  claimStatus,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
@@ -531,18 +534,9 @@ if (isMain) {
   // テンプレート由来の初期コミットなど、構成の初期化(process.config.json が設定済みになったコミット)より
   // 前の履歴は、利用者の変更ではない。対象外(pre-init)として扱い、件数を表示する。初期化のコミット自身は
   // 対象である(/process-init の例はトレーラ Risk・Verification を書く)
-  function findInitCommit() {
-    for (const h of git(['log', '--reverse', '--format=%H', '--', 'process.config.json']).split('\n').filter(Boolean)) {
-      try {
-        const c = JSON.parse(execFileSync('git', ['show', `${h}:process.config.json`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-        if (c?.configured === true) return h;
-      } catch {
-        // 読めない版は飛ばす
-      }
-    }
-    return null;
-  }
-  const initCommit = findInitCommit();
+  // 境は configured が true になった最初のコミット(標準 第1章 1.10.1。changeLog は読まない。ADR-0083)
+  const initFound = findInitCommit(ROOT);
+  const initCommit = initFound?.hash ?? null;
   const preInit = new Set(initCommit ? git(['rev-list', `${initCommit}^`]).split('\n').filter(Boolean) : []);
 
   const allCommits = git(['log', '--format=%H%x09%s%x09%P', ...logRange])
@@ -1720,6 +1714,13 @@ if (isMain) {
   // 構成の整合(契約検査のうち、構成だけから確かめられる部分)。PR を経ない体制では、契約検査が走らないまま
   // 出荷へ進む場合があるため、集約の時点でも確かめる(要約値の連鎖、回答と名簿の食い違いなど)
   for (const p of configIntegrityProblems(config)) gaps.push(`構成の整合: ${p}`);
+  // 適用の開始のコミットが、構成の初期化の記録(changeLog[0] の init)を持つか(標準 第1章 1.10.1。ADR-0083)。
+  // 持たなければ記録の欠落とする。境(configured が true になった最初のコミット)は動かさない。
+  // 欠落の範囲は適用の開始のコミットなので、そのコミットを集約の範囲に含む場合に限って出す
+  if (initFound && commits.some((c) => c.hash === initFound.hash)) {
+    const p = initRecordProblem(initFound.config);
+    if (p) gaps.push(`適用の開始(${initFound.hash.slice(0, 12)}): ${p}。手で configured を先に入れた履歴などで生じます。記録の欠落です。境は動かしません(第1章 1.10.1)`);
+  }
   for (const x of gateExceptions.rejected) {
     gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);
   }
@@ -3655,6 +3656,17 @@ if (isMain) {
     },
   ];
 
+  // 集約の範囲について述べられる表明・主張の名(標準 第1章 1.10.2。process-compass #313 / ADR-0083)。
+  // 構成から決まる条件(版・終了・未達・列挙に無い離脱・逸脱)に、範囲の記録の欠落を重ねる。文そのものは出さない(IMPL-0120)
+  const claimBase = claimStatus(config);
+  const claimForRange = {
+    edition: claimBase.editionLabel,
+    name: claimBase.name && gaps.length && claimBase.name !== '適用の表明' ? '適用の表明' : claimBase.name,
+    listedDeviations: claimBase.listed.map((d) => `${d.closedListId} ${d.label}(${d.clause})`),
+    unlistedDepartures: claimBase.unlisted.map((d) => d.label),
+    blockers: [...claimBase.blockers, ...(gaps.length ? [`この範囲に記録の欠落などの欠落が ${gaps.length} 件あります。適合の主張を述べられません`] : [])],
+  };
+
   const evidence = {
     range: { from: from || null, to, toCommit },
     // 期間を指定した開示の起点と終点。出荷の範囲の出力では null
@@ -3700,6 +3712,7 @@ if (isMain) {
     directChanges,
     assurance,
     g8Objection,
+    claim: claimForRange,
     gaps,
   };
 
@@ -3978,7 +3991,7 @@ if (isMain) {
     }
     R.push(`| G-7 出荷判定 | ${A.independence.g7} | ${prev((p) => p.independence.g7)} |`);
     R.push(`| 責任者が同一人物のため独立が成立しない組 | ${listOr(A.independence.sameAccountable)} | ${prev((p) => listOr(p.independence.sameAccountable))} |`);
-    R.push(`| 逸脱として記録した兼務(1〜2名の体制) | ${listOr(A.independence.separationDeviations)} | ${prev((p) => listOr(p.independence.separationDeviations ?? []))} |`);
+    R.push(`| 成立しない兼務禁止の記録(1〜2名の体制。逸脱の閉じた列挙に無い) | ${listOr(A.independence.separationDeviations)} | ${prev((p) => listOr(p.independence.separationDeviations ?? []))} |`);
     if (A.independence.objectionSelfAccepted) {
       R.push(`| 出荷判定者の異議と、残存リスクの受容 | **異議を書く者と、残存リスクを受容する者が同一である**(出荷判定者の席と事業決裁者の席の責任者が同一人物) | ${prev((p) => (p.independence.objectionSelfAccepted ? '同一' : '別の人'))} |`);
     }
@@ -4211,7 +4224,12 @@ if (isMain) {
     R.push('### 5. 残存リスク、既知の不具合、未回収の例外');
     R.push('');
     R.push(`- 未達のゲート: ${listOr(A.residual.unmet)}`);
-    R.push(`- 逸脱(代償措置つきの逸脱と、1〜2名の体制の兼務): ${listOr(A.residual.deviations)}`);
+    R.push(`- 逸脱と列挙に無い離脱(構成の deviations[]。閉じた列挙の逸脱と、1〜2名の体制の兼務): ${listOr(A.residual.deviations)}`);
+    R.push(
+      `- この範囲で述べられる名(第1章 1.10.2): ${evidence.claim.name ?? '表明・主張を述べられない'}(従う版: ${evidence.claim.edition})` +
+        (evidence.claim.blockers.length ? `。理由: ${evidence.claim.blockers.join(' / ')}` : '') +
+        (evidence.claim.listedDeviations.length ? `。列挙する逸脱: ${evidence.claim.listedDeviations.join(' / ')}` : '')
+    );
     // 組織の外へ渡す形では、台帳の自由記述(内容)を出さない。行の ID と件数で出す
     const idsOnly = (v) => (Array.isArray(v) ? v.map((x) => String(x).split(' ')[0]) : v);
     R.push(`- 未回収の例外(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);

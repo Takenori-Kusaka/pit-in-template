@@ -3,7 +3,9 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "189ccbc6b413c94beaccf20548e647bfee0137c1"
+    "commit": "f383ee21bcae2e74052435780d8ad330f346e519",
+    "edition": null,
+    "editionIssuedAt": null
   },
   "questions": [
     {
