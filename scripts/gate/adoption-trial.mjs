@@ -56,7 +56,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso } from './config.mjs';
-import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, readEnvCheck, envEvidenceMissing, envEvidenceText } from './org-assurance.mjs';
+import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 
 export const TRIAL_DIR = 'docs/adoption-trial';
@@ -1115,6 +1115,8 @@ function run() {
   L.push('| 項目 | 結果 | 詳細 |');
   L.push('| --- | --- | --- |');
   for (const i of env.items) L.push(`| ${i.label} | ${i.status === 'confirmed' ? '確認済み' : i.status === 'mismatch' ? '**構成と一致しない**' : '**未確認**'} | ${String(i.detail).replace(/\|/g, '/')} |`);
+  // 記録用ブランチの所見(確認済みの判定に入れない。一致しない所見は保護の欠落または強制層の縮小。#54)
+  for (const f of env.findings ?? []) L.push(`| 所見: ${f.label} | ${f.status === 'mismatch' ? '**一致しない**' : FINDING_STATUS_LABEL[f.status] ?? f.status} | ${String(f.detail).replace(/\|/g, '/')} |`);
   L.push('');
   L.push(
     env.present
@@ -1244,15 +1246,10 @@ function run() {
 // 最初のマージで record-copy.yml が作るため、初期化の直後は無いのが正常で、「未確認」に倒すと採用の前に確かめられない。
 // (2) 既定ブランチの bypass actor と、GITHUB_TOKEN/App の承認が required approving review に数えられるかは、強制層の縮小の
 // 有無を示す事実であり、構成との一致・不一致で判定する項目ではない。所見は記録へ残し、人(採用者・内部監査)が読む。
-// 所見を項目へ昇格させる(ENV_CHECK_ITEMS・ENV_EVIDENCE_KEYS へ登録して /pit と集約に出す)かは、初回の出荷の後に決める
+// 所見は項目(ENV_CHECK_ITEMS)へ昇格させない(上の 2 つの理由)。所見のまま /pit の注記と出荷の集約(項目4 の表)に出す
+// (org-assurance.mjs の ENV_CHECK_FINDINGS・readEnvCheck の findings。#54)。一致しない所見は保護の欠落または強制層の縮小として出る
 const ENV_ITEM_LABEL = Object.fromEntries(ENV_CHECK_ITEMS);
-const RECORDS_FINDING_LABEL = {
-  recordsBranch: '記録用ブランチ(records)の存在と保護(non_fast_forward・deletion。bypass actor なし)',
-  recordCopy: 'record-copy.yml の存在と直近の実行の成否',
-  recordsCopy: '最新のマージ済み PR の写し(records/reviews/pr-<n>.json)の到着',
-  defaultBypass: '既定ブランチのルールセットの bypass actor(Integration など)',
-  approvalCounting: 'GITHUB_TOKEN/App の承認が required approving review に数えられる組織設定',
-};
+const RECORDS_FINDING_LABEL = Object.fromEntries(ENV_CHECK_FINDINGS);
 
 /**
  * 記録用ブランチの所見(段階 2)。確認済みの判定に入れない(上の注記)。各所見は { status, detail, evidence }。
@@ -1521,7 +1518,7 @@ function envCheck() {
     else warn(line);
   }
   for (const [id, it] of Object.entries(findings)) {
-    const word = it.status === 'confirmed' ? '確認済み' : it.status === 'mismatch' ? '一致しない' : it.status === 'unknown' ? 'API で取れない' : '未確認(読めない)';
+    const word = FINDING_STATUS_LABEL[it.status] ?? it.status;
     const line = `所見 ${RECORDS_FINDING_LABEL[id]}: ${word}(${it.detail})`;
     if (it.status === 'confirmed') notice(line);
     else warn(line);

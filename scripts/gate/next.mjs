@@ -38,7 +38,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount } from './config.mjs';
-import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
+import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
@@ -151,28 +151,11 @@ const refersPr = (r, n) => r.prNumber === n || new RegExp(`PR\\s*#?${n}(?!\\d)`)
 const PR_RECORD_GATES = new Set(['g2', 'g3', 'g4', 'g6']);
 
 /**
- * 様式の本文から記録を起こす(config.mjs の readGateRecords と同じ読み方。記録用ブランチの様式に使う)。
- * 対象の欄だけは、様式の文言のまま(`<...>`)でなければ ` / ` を含んでも読む。G-2・G-4 の対象は「機能の ID / 確定した版」の形
- * (`F-012 / 1a2b3c4`。標準 第4章 G-2)であり、` / ` を様式の選択肢の印と読むと、書き方どおりの記録が対象なしになるため
+ * 様式の本文から記録を起こす(記録用ブランチの様式に使う)。欄の読み方は records.mjs の recordFromForm(docs/gates/ を読む
+ * config.mjs の readGateRecords と同じ)。対象の欄だけは ` / ` を含んでも読む(G-2・G-4 の対象「機能の ID / 確定した版」の形)
  */
 export function gateRecordFromText(text, file, source = 'records-branch') {
-  const raw = (key) => text.match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
-  const cell = (key, { allowSlash = false } = {}) => {
-    const v = raw(key) ?? '';
-    return v && (allowSlash || !v.includes(' / ')) && !v.startsWith('<') ? v : null;
-  };
-  return {
-    file,
-    source,
-    gate: cell('ゲート'),
-    target: cell('対象', { allowSlash: true }),
-    result: cell('結果'),
-    resultRaw: raw('結果'),
-    mode: cell('確定の形態'),
-    riskConfirmedBy: cell('リスク区分を確定した者'),
-    d0Version: cell('参照した D-0 の版'),
-    judgedAt: cell('判定日時'),
-  };
+  return recordFromForm(text, file, source);
 }
 
 /** check-pr.mjs が読むトレーラ `Spec: F-NNN / Task-N` と同じ形 */
@@ -1047,6 +1030,18 @@ function continuityNotes(config) {
     notes.push(
       `実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物): ${env.summary}。` +
         `${seatText(config, 'qa-gatekeeper')}または採用者が、実環境の gh で \`node scripts/gate/adoption-trial.mjs env-check --by <氏名>\` を実行し、記録 ${'docs/adoption-trial/env-check.json'} をコミットする。模擬の gh では「読めない」と出て未確認のまま残る(読む: ${READ.artifact('adoption-trial')})`
+    );
+  }
+  // 記録用ブランチの所見(#321 段階 2 / #54)。確認済みの判定には入れない。一致しない所見は、保護の欠落または強制層の縮小であり、
+  // 強制層を持つ AI維持管理者の席へ渡す(緩める向きの変更は state:needs-platform の経路)。記録が無いときは、上の注記が env-check を促している
+  if (env.present && env.attention.length) {
+    notes.push(
+      `記録用ブランチの所見(env-check の findings): **一致しない所見 ${env.attention.length} 件** — ${env.attention.map((f) => `${f.label.split('(')[0]}: ${f.detail}`).join(' / ')}。` +
+        `${seatText(config, 'ai-maintainer')}が、ルールセット(.github/rulesets/records.json または records-signed.json)の適用と bypass actor の有無を確かめる。bypass actor を足した変更は強制層の縮小であり、state:needs-platform の経路で記録する。所見は欠落にしない(出荷の集約の項目4 の表に出続ける)`
+    );
+  } else if (env.present && env.findings.some((f) => f.status === 'unknown')) {
+    notes.push(
+      `記録用ブランチの所見(env-check の findings)に API で取れない事実がある: ${env.findings.filter((f) => f.status === 'unknown').map((f) => `${f.label.split('(')[0]}(${f.detail})`).join(' / ')}。組織の設定の画面で人が確かめ、導入前の検証の記録の節9 へ書く`
     );
   }
 

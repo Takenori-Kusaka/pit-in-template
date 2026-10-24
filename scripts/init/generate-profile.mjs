@@ -2293,6 +2293,37 @@ export function bumpD0Version(v) {
 }
 
 /** 標準の該当節へのリンク。参照先がない項目は素のまま出す(#221) */
+/**
+ * 記録の置き場と、その所有者にする席(CODEOWNERS の案。#54)。記録だけの PR の承認者を記名者の席へ誘導する誘導層であり、
+ * 遮断に数えない。出荷の PR(ship-evidence.yml が開く ship/<日付>)は records ブランチの様式を docs/gates/ へ、承認レビューの写しを
+ * docs/records/reviews/ へ複製し、保証の開示を docs/evidence/ へ置く。その承認者は出荷判定者本人(標準 第4章「判定記録を基底ブランチへ入れる操作」)。
+ * docs/gates/ には停止の解除・例外承認・SG の記録も先に入る(記名者はそのゲートの判定者)。パス単位でさらに分けるなら人が足す
+ */
+export const CODEOWNER_RECORD_PATHS = [
+  ['/docs/gates/', 'qa-gatekeeper', '判定記録(出荷の PR が records/gates/ から複製。停止の解除・例外承認・SG の記録は先に入る)'],
+  ['/docs/records/', 'qa-gatekeeper', '承認レビューの写しの複製(出荷の PR)'],
+  ['/docs/evidence/', 'qa-gatekeeper', '保証の開示を含む品質レポート(出荷の PR)'],
+  ['/docs/debt-ledger.md', 'value-owner', '技術負債台帳(例外承認・前提の受容・未解決事項の記録。例外承認の記名者はリスク区分ごとの決定者)'],
+];
+
+/**
+ * 席の責任者のアカウントから CODEOWNERS の行を起こす。席の責任者が未記入、または名簿にアカウントが無い行は、所有者を書けないため
+ * 行頭を # にして理由を添える(推測で埋めない)。戻り値: [{ path, role, seat, owner, line }]
+ */
+export function codeownersProposal(config) {
+  return CODEOWNER_RECORD_PATHS.map(([p, role, why]) => {
+    const seat = (config.seats ?? []).find((s) => s.role === role);
+    const seatName = seat?.name ?? (KB.roles ?? []).find((r) => r.id === role)?.name ?? role;
+    const person = seat?.accountable ? findPerson(config, seat.accountable) : null;
+    const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => String(a).trim().replace(/^@/, '')).filter(Boolean);
+    const pad = p.padEnd(24, ' ');
+    if (!seat?.accountable) return { path: p, role, seat: seatName, owner: null, line: `# ${pad}<${seatName}の席の責任者が未記入>  # ${why}` };
+    if (!accounts.length) return { path: p, role, seat: seatName, owner: null, line: `# ${pad}<${personName(config, seat.accountable)} のアカウントが名簿(people[].accounts)に無い>  # ${why}` };
+    const owner = accounts.map((a) => `@${a}`).join(' ');
+    return { path: p, role, seat: seatName, owner, line: `${pad}${owner}  # ${seatName}。${why}` };
+  });
+}
+
 function link(text, url) {
   return url ? `[${text}](${url})` : text;
 }
@@ -2575,6 +2606,27 @@ export function renderProfileMd(config, result) {
       );
     }
     L.push('');
+    // 記録の置き場の所有者(CODEOWNERS の案)。席の責任者のアカウントから起こす。/process-init は .github/CODEOWNERS を書き換えない(#54)
+    L.push('### 記録の置き場の所有者(CODEOWNERS の案)');
+    L.push('');
+    L.push(
+      '記録だけの PR(出荷の PR `ship/<日付>`、停止の解除・例外承認の台帳)の承認者を、記名者の席へ誘導する `.github/CODEOWNERS` の行です。' +
+        '席の責任者とそのアカウント(人の名簿)から起こしています。**`/process-init` は `.github/CODEOWNERS` を書き換えません**。人がこの案を写し、体制が変わったら写し直します。' +
+        'これは誘導層です。所有者の誰か 1 人で足り、bypass actor を素通りさせるため、**遮断に数えません**(`.github/rulesets/README.md`「記録だけの PR にも承認 1 件が残る」)。'
+    );
+    L.push('');
+    L.push('```');
+    for (const row of codeownersProposal(config)) L.push(row.line);
+    L.push('```');
+    L.push('');
+    const unfilled = codeownersProposal(config).filter((r) => !r.owner);
+    if (unfilled.length) {
+      L.push(
+        `責任者またはアカウントが未記入の席があるため、${unfilled.length} 行は所有者を書けていません(行頭を \`#\` にして出しています)。` +
+          '`/process-change`(種別 `accountable`)で席の責任者と `people[].accounts` を記入すると、再生成でこの案に入ります。'
+      );
+      L.push('');
+    }
     const d = config.delegation ?? { allowed: false, blockedBy: [], rules: [] };
     L.push('### 委任の範囲');
     L.push('');

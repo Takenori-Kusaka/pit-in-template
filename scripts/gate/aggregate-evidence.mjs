@@ -46,7 +46,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord } from './records.mjs';
+import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord, lastCommitOf, parseCopy, headOfCopy, targetOfForm, judgeOfForm } from './records.mjs';
+// 写し・様式の読み方の正本は records.mjs。試験(test-aggregate-records.mjs)が従来の名前で引けるよう、ここからも出す
+export { parseCopy, targetOfForm, judgeOfForm };
 import {
   loadConfig,
   loadAdapter,
@@ -136,26 +138,7 @@ import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } f
 /** 基底ブランチに複製された写しの置き場(ship-evidence.yml が records/reviews/ から複製する) */
 export const BASE_COPIES_DIR = 'docs/records/reviews';
 
-/**
- * 写しの JSON を読む(記録用ブランチの readRecordsBranch と同じ検査)。読めなければ copy=null と理由。
- * 写しの最小の組の欠け(reviews の配列が無い、ファイル名と pr が違う)は、推定で補わずに落とす
- */
-export function parseCopy(file, text) {
-  const m = path.posix.basename(String(file).replace(/\\/g, '/')).match(/^pr-(\d+)\.json$/);
-  if (!m) return { copy: null, prNumber: null, reason: '写しの名前の形(pr-<番号>.json)でない' };
-  const prNumber = Number(m[1]);
-  let copy;
-  try {
-    copy = JSON.parse(text);
-  } catch (e) {
-    return { copy: null, prNumber, reason: `JSON として読めない: ${e.message}` };
-  }
-  if (!copy || typeof copy !== 'object' || !Array.isArray(copy.reviews)) return { copy: null, prNumber, reason: '写しの形でない(reviews の配列が無い)' };
-  if (copy.pr !== undefined && Number(copy.pr) !== prNumber) return { copy: null, prNumber, reason: `ファイル名の PR 番号 ${prNumber} と写しの pr ${copy.pr} が一致しない` };
-  return { copy, prNumber, reason: null };
-}
-
-/** 基底ブランチの写しの複製(docs/records/reviews/)を読む。置き場が無ければ present=false で空 */
+/** 基底ブランチの写しの複製(docs/records/reviews/)を読む(写しの検査は records.mjs の parseCopy)。置き場が無ければ present=false で空 */
 export function readBaseCopies(root) {
   const dir = path.join(root, BASE_COPIES_DIR);
   const result = { present: fs.existsSync(dir), reviews: new Map(), skipped: [] };
@@ -169,8 +152,6 @@ export function readBaseCopies(root) {
   return result;
 }
 
-/** 写しの head(record-copy.yml は head_sha。旧い写しの head_sha_at_merge も読む) */
-const copyHead = (copy) => copy?.head_sha ?? copy?.head_sha_at_merge ?? null;
 /** 様式の本文の比較の形。改行の形式と行末の空白に依らない */
 const normText = (t) => String(t ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
 
@@ -231,7 +212,7 @@ export function mergeRecordSources({ branch, base, baseGates = [] }) {
  *   - 対象の固定(G-6 の条件3): 承認の commit_id がマージ時の head と違う承認は失効した承認であり、数えない(state を STALE にする)
  */
 export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
-  const head = copyHead(copy);
+  const head = headOfCopy(copy);
   const stale = [];
   const reviews = [];
   for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
@@ -426,14 +407,6 @@ export function formAttribution(gateRecord, { judgeName = null, person = null, a
   best ??= recordAttribution(gateRecord, { judgeName });
   return { ...best, clerical, selfAttested: !best.backed };
 }
-
-/** 様式の「対象」の欄(判定記録の冒頭の表)。機械が出す欄の併記や注記(。以降)は読まない */
-export const targetOfForm = (text) => String(text ?? '').match(/^\|\s*対象\s*\|\s*(.*?)\s*\|\s*$/m)?.[1]?.trim() ?? null;
-/** 様式の「判定者」の欄。様式の説明(<氏名>…)を残したままの欄は未記入 */
-export const judgeOfForm = (text) => {
-  const v = String(text ?? '').match(/^\|\s*判定者\s*\|\s*(.*?)\s*\|\s*$/m)?.[1]?.trim() ?? null;
-  return v && !v.startsWith('<') ? v.replace(/。.*$/, '').trim() : null;
-};
 
 // --- 集約の本体 ----------------------------------------------------------------
 //
@@ -2081,15 +2054,6 @@ if (!period && config.gates.g7?.state !== 'omitted') {
 //
 // 記名者本人の裏づけ(記名者本人の承認レビュー、署名コミット、author の login・email)の無い様式は、記名が自己申告である。
 // 件数で保証の開示の項目1 に出し、欠落には数えない。記録だけの PR に記名者以外の承認が付いていれば、取り込みの事務として開示する
-/** 様式のファイルを最後に触ったコミット(author と署名の検証結果)。records.mjs の lastCommitOf と同じ形(読めなければ null) */
-function fileCommit(file) {
-  const out = git(['log', '-1', '--format=%H%x00%an%x00%ae%x00%aI%x00%G?', 'HEAD', '--', file]);
-  if (!out) return null;
-  const [hash, authorName, authorEmail, date, sig] = out.split('\0');
-  const signed = sig === 'G' || sig === 'U' ? true : sig === 'N' ? false : null;
-  const m = String(authorEmail ?? '').match(/^(?:\d+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)@users\.noreply\.github\.com$/i);
-  return { hash, authorName, authorEmail, authorLogin: m ? m[1] : null, date, signed, signature: sig ?? null };
-}
 const attribution = { backed: [], selfAttested: [], clerical: [] };
 const attributeForm = (gateRecord, approvers, prNumber) => {
   const judgeName = judgeOfForm(gateRecord.text);
@@ -2106,7 +2070,8 @@ for (const r of records) {
   const added = recordCommitOf(r.file);
   const m = added ? commitPr.get(added) : null;
   const pr = m?.role === 'merge' ? (anyPrByNumber.get(m.number) ?? null) : null;
-  attributeForm({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), commit: fileCommit(r.file) }, pr ? pr.g6.approvers : null, pr?.number ?? null);
+  // 基底の様式を最後に触ったコミット(records.mjs の lastCommitOf。記録用ブランチの様式と同じ読み方)
+  attributeForm({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), commit: lastCommitOf(ROOT, 'HEAD', r.file) }, pr ? pr.g6.approvers : null, pr?.number ?? null);
 }
 
 // リリース決裁(G-8)の決断の記録の「出荷判定者の異議」欄。空欄は記載の欠落である(標準 第4章 G-8)。
@@ -2654,7 +2619,9 @@ const machineChecks = {
   // 実環境の統制の確認(附属書I I.11 要件⑦。#288 第6巡)。ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物の取得を、
   // 採用者が実環境の gh で確かめた記録(docs/adoption-trial/env-check.json)。未確認は未達のゲートと同じく表示し続ける(欠落にはしない)
   envControls: envCheck.summary,
-  envControlsDetail: { present: envCheck.present, confirmed: envCheck.confirmed, items: envCheck.items, problems: envCheck.problems, committed: envCheck.committed, checkedAt: envCheck.record?.checkedAt ?? null, checkedBy: envCheck.record?.checkedBy ?? null, repoUrl: envCheck.record?.repoUrl ?? null, evidenceText: envCheck.evidenceText ?? null },
+  // 記録用ブランチの所見(#321 段階 2 / #54)。確認済みの判定に入れない。一致しない所見は保護の欠落または強制層の縮小として開示する(欠落にはしない)
+  envFindings: envCheck.findingsText ?? '記録なし',
+  envControlsDetail: { present: envCheck.present, confirmed: envCheck.confirmed, items: envCheck.items, findings: envCheck.findings, attention: envCheck.attention.map((f) => f.id), problems: envCheck.problems, committed: envCheck.committed, checkedAt: envCheck.record?.checkedAt ?? null, checkedBy: envCheck.record?.checkedBy ?? null, repoUrl: envCheck.record?.repoUrl ?? null, evidenceText: envCheck.evidenceText ?? null },
 };
 
 // 壊してはならない品質条件の突合・G-7 基準1 の件数・欠陥の台帳(基準2)。項目4・5 と基準1・2 の材料(下で欠落も判定する)
@@ -4117,6 +4084,8 @@ function renderAssurance(external) {
   // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
   // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
   R.push(`| 実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);
+  // 記録用ブランチの所見(env-check の findings。#54)。確認済みの判定に入れない。一致しない所見は、保護の欠落または強制層の縮小の開示
+  R.push(`| 記録用ブランチの所見(records の保護・record-copy の実行・写しの到着・既定ブランチの bypass actor・機械の承認の数え方。確認済みの判定に入れない) | ${A.machineChecks.envFindings ?? '記録なし'} |`);
   const vf = A.verification;
   R.push(`| 壊してはならない品質条件(受入基準とテストの両方から参照) | ${vf.qc.length ? `${vf.qc.filter((q) => q.state === 'verified').length} / ${vf.qc.length} 件` : '企画書に識別子つきの条件なし'}${vf.qcMissingIds.length ? `。**識別子を持たない条件 ${vf.qcMissingIds.length} 件(記載の欠落)**` : ''} |`);
   const c1 = vf.criterion1;
