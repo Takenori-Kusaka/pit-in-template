@@ -15,5 +15,5 @@
   "thresholdFiles": [".nycrc", ".nycrc.*", ".c8rc", ".c8rc.*", "jest.config.*", "vitest.config.*", ".eslintrc", ".eslintrc.*", "eslint.config.*", ".eslintignore", "biome.json", "biome.jsonc"],
   "coverageSummary": "coverage/coverage-summary.json",
   "coverageDetail": "coverage/coverage-final.json",
-  "note": "audit の最小の重大度は構成 ci.failOnSeverity から adapter.mjs が PIT_IN_AUDIT_LEVEL として渡す(未設定なら high)。coverage は coverage-summary.json(istanbul 形式)を出す設定にしてください。出せない場合は coverageSummary を null にすると、カバレッジ判定は実施しない扱いとして記録されます。thresholdFiles は、閾値・除外設定のファイル(禁止事項6。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)。coverageDetail は行単位の被覆(istanbul の coverage-final.json。c8 の --reporter=json)。構成 ci.coverageScope が changed(既定)のとき、変更で加えた・変えた行の割合を測るために使う(process-compass #296)"
+  "note": "audit の最小の重大度は構成 ci.failOnSeverity から adapter.mjs が PIT_IN_AUDIT_LEVEL として渡す(未設定なら high)。coverage は coverage-summary.json(istanbul 形式)を出す設定にしてください。出せない場合は coverageSummary を null にすると、カバレッジ判定は実施しない扱いとして記録されます。thresholdFiles は、閾値・除外設定のファイル(第4章 G-5「基準値と除外設定の変更」。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)。coverageDetail は行単位の被覆(istanbul の coverage-final.json。c8 の --reporter=json)。構成 ci.coverageScope が changed(既定)のとき、変更で加えた・変えた行の割合を測るために使う(process-compass #296)"
 }

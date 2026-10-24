@@ -48,7 +48,7 @@ node scripts/init/generate-profile.mjs --answers process.config.json
 chore: 体制の変化点を反映する(<種別>)
 
 - <summary>
-- 向き: <緩める / 任免の決定 / 厳しくする / 未達・逸脱の発生 / なし>。決定: <decidedBy>
+- 向き: <緩める / 任免の決定 / 厳しくする / 未達・逸脱・列挙に無い離脱の発生 / なし>。決定: <decidedBy>
 
 Risk: R2
 Verification: verify-gate-contract・check-d0・check-process-rules が通過

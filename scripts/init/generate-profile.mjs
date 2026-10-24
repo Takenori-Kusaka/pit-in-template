@@ -119,6 +119,7 @@ import {
   applicationEnd,
   claimStatus,
   classifyDeviations,
+  deviationCategory,
 } from '../gate/config.mjs';
 
 const normName = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -203,8 +204,11 @@ const NEVER_OMITTABLE = new Set(['g4', 'g5']);
 /** 判定を実施する状態か(簡略化も実施に含む) */
 const isActiveState = (s) => s === 'required' || s === 'simplified';
 
-/** 逸脱1件を識別するキー。ゲートの逸脱はゲート、兼務の逸脱は兼務禁止表の id */
+/** deviations[] の1件を識別するキー。ゲートの逸脱(D-1)はゲート、兼務の列挙に無い離脱は兼務禁止表の id */
 const deviationKey = (d) => d.gate ?? d.separationId;
+
+/** deviations[] の1件の呼び名。閉じた列挙の逸脱(D-1)か、列挙に無い離脱か(標準 第1章 1.10.2。process-compass #316) */
+const deviationTerm = (d) => (deviationCategory(d) === 'listed' ? '逸脱' : '列挙に無い離脱');
 
 const ROLES_URL = 'https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/';
 
@@ -380,6 +384,7 @@ export function detectDeviations(answers, gates) {
   if (gates.g7?.params?.approverMode === 'value-owner-merged' && isActiveState(gates.g7.state)) {
     deviations.push({
       gate: 'g7',
+      category: 'listed',
       label: 'G-7 出荷判定',
       rule: '開発ライン × 出荷判定者(同一案件)の兼務の禁止(第3章 3.5)',
       reason:
@@ -667,7 +672,7 @@ export function buildConfig(answers, opts = {}) {
   // 記入済みの調達先は再生成で失わない
   for (const u of unmet) u.reviewSourcing = opts.reviewSourcing?.[u.gate] ?? u.reviewSourcing;
   const deviations = detectDeviations(answers, gates);
-  // 1〜2名の体制で成立しない兼務禁止は、拒否せず逸脱として記録する(第3章 3.5)。
+  // 1〜2名の体制で成立しない兼務禁止は、拒否せず列挙に無い離脱として記録する(第3章 3.5)。
   // 規模の規則が分離を必須とした組(10名以上の価値責任者 × 技術判断者。第8章 軸A)を、兼務禁止表へ足す
   // 出荷判定者 × 事業決裁者は、知識ベースが同じ組を持たない版でも兼務禁止表へ足す(第3章 3.5)
   const kbSeparations = KB.separations ?? [];
@@ -871,7 +876,7 @@ export function seatSeparationFindings(config) {
   const violationDetails = [];
   const excepted = [];
   const notIndependent = [];
-  // 1〜2名の体制で、同一人物が占めた兼務禁止の組。拒否せず逸脱として記録する
+  // 1〜2名の体制で、同一人物が占めた兼務禁止の組。拒否せず列挙に無い離脱として記録する
   const deviated = [];
   for (const sep of config.separations ?? []) {
     // 実行主体の文脈の単位でだけ課す規則は、席の責任者の兼務として検査しない(標準 第3章 3.5.3。人の単位では課さない)
@@ -933,15 +938,16 @@ export function separationRemedies(config, detail) {
 }
 
 /**
- * 1〜2名の体制で成立しない兼務禁止を、逸脱の記録へ変える(標準 第3章 3.5)。
+ * 1〜2名の体制で成立しない兼務禁止を、列挙に無い離脱の記録へ変える(標準 第3章 3.5)。
  *
  * 出荷判定者の兼務の例外(3.5.2)と違い、代償措置は定められていない。標準が求めるのは、
- * 逸脱として D-0 体制図へ記録し、表示し続けることである。3名以上では拒否する。
+ * 列挙に無い離脱として D-0 体制図へ記録し、表示し続けることである。3名以上では拒否する。
  */
 export function seatDeviations(config) {
   return seatSeparationFindings(config).deviated.map((d) => ({
     gate: null,
     separationId: d.id,
+    category: 'unlisted',
     label: `${d.names.join(' × ')} の兼務`,
     rule: `${d.names.join(' × ')} の兼務の禁止(第3章 3.5)`,
     // 出荷判定者 × 事業決裁者は、保証の開示の項目1 へ「異議を書く者と、残存リスクを受容する者が同一である」と出す(K50)
@@ -1034,7 +1040,7 @@ export function changeLogEntry(e) {
     d0Before: e.d0Before ?? null,
     d0After: e.d0After ?? null,
     diff: e.diff ?? [],
-    // 未達・逸脱の発生。決定ではなく事実であり、記名を待たずに反映する(第3章 3.13.3)
+    // 未達・逸脱・列挙に無い離脱の発生。決定ではなく事実であり、記名を待たずに反映する(第3章 3.13.3)
     arising: e.arising ?? [],
     separationRecheck: e.separationRecheck ?? null,
     invalidatedChecks: e.invalidatedChecks ?? [],
@@ -1093,7 +1099,7 @@ const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
  * 席の責任者(D-0 表1「体制と運用形態」の決定者。governance.structureDecider)に限る
  * (loosenItems の seat。null は後者に限る)。
  *
- * 人の離脱などで統制が成立しなくなった変化は、緩める向きの決定ではなく、未達・逸脱の
+ * 人の離脱などで統制が成立しなくなった変化は、緩める向きの決定ではなく、未達・逸脱・列挙に無い離脱の
  * 発生である。arising へ入れ、記名を待たずに反映する(第3章 3.13.3)。
  */
 export function diffConfig(before, after) {
@@ -1114,7 +1120,7 @@ export function diffConfig(before, after) {
   };
   const seatIn = (c, role) => (c.seats ?? []).find((s) => s.role === role);
 
-  // 人が実際に減ったか。未達・逸脱を「発生」(決定ではない事実)として扱えるのは、名簿の体制内の人が
+  // 人が実際に減ったか。未達・逸脱・列挙に無い離脱を「発生」(決定ではない事実)として扱えるのは、名簿の体制内の人が
   // 減った場合、または席の責任者が名簿から外れた場合に限る。人が減っていないのに、回答や席の入力で
   // 独立レビューや承認数を下げる変更は、緩める向きの決定である(第3章 3.13.2 / 3.13.3)
   const insiders = (c) => (c.people ?? []).filter((p) => p?.external !== true);
@@ -1170,7 +1176,7 @@ export function diffConfig(before, after) {
   // 組織上の任命権者は確認者ではない。数えない
   const others = (after.people ?? []).filter((p) => p.id !== author && p.appointer !== true).length;
   const g6Forced = departure && becameUnmet('g6') && others === 0;
-  // 1名の体制では、席の兼務に選択の余地がない。兼務の逸脱を決定として扱わない
+  // 1名の体制では、席の兼務に選択の余地がない。兼務の列挙に無い離脱を決定として扱わない
   const soleInsider = insiders(after).length === 1;
   /** 回答から導かれる値の変化。体制の縮小の帰結であれば、発生として扱う */
   const derived = (line, b, a) => {
@@ -1240,7 +1246,7 @@ export function diffConfig(before, after) {
     if (!sepIds(after).has(s.id)) derived(`兼務禁止: ${s.roles.map(roleName).join(' × ')} の分離必須が外れる(10名未満)`, 1, 0);
   }
 
-  // 未達と逸脱。消えた逸脱は例外の失効として挙げる(第3章 3.5.2 / ADR-0029)
+  // 未達と、逸脱・列挙に無い離脱。消えたゲートの逸脱は例外の失効として挙げる(第3章 3.5.2 / ADR-0029)
   const keysOf = (list, keyFn) => new Set((list ?? []).map(keyFn));
   const unmetKey = (u) => u.gate;
   for (const u of after.unmet ?? []) {
@@ -1253,16 +1259,17 @@ export function diffConfig(before, after) {
   }
   for (const d of after.deviations ?? []) {
     if (keysOf(before.deviations, deviationKey).has(deviationKey(d))) continue;
-    // ゲートの逸脱(出荷判定者の兼務)は、チーム規模の回答から導かれる。席の兼務の逸脱は、席の入力から導かれる
+    // ゲートの逸脱(出荷判定者の兼務)は、チーム規模の回答から導かれる。席の兼務の列挙に無い離脱は、席の入力から導かれる
     const fact = d.gate ? shrinkOnly : soleInsider;
+    const term = deviationTerm(d);
     if (fact) {
-      arising.push(`逸脱の発生: ${d.label} — ${d.rule}`);
-      diff.push(`${d.label}: 逸脱が生じる`);
+      arising.push(`${term}の発生: ${d.label} — ${d.rule}`);
+      diff.push(`${d.label}: ${term}が生じる`);
     } else {
       push(
         d.gate
-          ? `${d.label}: 逸脱が生じる(人は減っていない。体制の入力を下げる決定である)`
-          : `${d.label}: 逸脱が生じる(別の人を置ける体制で、同じ人が兼ねる決定である)`,
+          ? `${d.label}: ${term}が生じる(人は減っていない。体制の入力を下げる決定である)`
+          : `${d.label}: ${term}が生じる(別の人を置ける体制で、同じ人が兼ねる決定である)`,
         1,
         0
       );
@@ -1270,8 +1277,8 @@ export function diffConfig(before, after) {
   }
   for (const d of before.deviations ?? []) {
     if (!keysOf(after.deviations, deviationKey).has(deviationKey(d))) {
-      expired.push(d.gate ? `例外の失効: ${d.label}(${d.source})。兼務を解く` : `逸脱の解消: ${d.label}`);
-      push(`${d.label}: 逸脱が解消する`, 0, 1);
+      expired.push(d.gate ? `例外の失効: ${d.label}(${d.source})。兼務を解く` : `${deviationTerm(d)}の解消: ${d.label}`);
+      push(`${d.label}: ${deviationTerm(d)}が解消する`, 0, 1);
     }
   }
 
@@ -1767,7 +1774,7 @@ export function diffConfig(before, after) {
     if (!owned.length) continue;
     remaining.push(
       `${s.name} の責任者が未記入のため、${owned.join(' / ')} は「適用する」のまま、判定できる人がいない。` +
-        '後任を置く、外部の確認者を名簿へ記入して置く(external: true)、残った人が兼ねる(1〜2名の体制では、未達または逸脱として記録される)、のいずれかを /process-change で反映する'
+        '後任を置く、外部の確認者を名簿へ記入して置く(external: true)、残った人が兼ねる(1〜2名の体制では、未達または列挙に無い離脱として記録される)、のいずれかを /process-change で反映する'
     );
   }
   if (!(after.people ?? []).length) {
@@ -1989,7 +1996,7 @@ export function renderChangeReport(report, clamps = [], config = null) {
   section('構成の差分', report.diff, '構成の変更なし');
   section('失効するもの', report.expired, 'なし');
   section(
-    '未達の発生・逸脱の発生(即時に反映する。決定ではないため、記名を要求しない。人が減った結果として生じたもの、選択の余地がないものに限る)',
+    '未達の発生・逸脱の発生・列挙に無い離脱の発生(即時に反映する。決定ではないため、記名を要求しない。人が減った結果として生じたもの、選択の余地がないものに限る)',
     report.arising,
     'なし'
   );
@@ -2743,7 +2750,7 @@ export function renderProfileMd(config, result) {
       const also = r.mustNotAlso
         .map((s) => {
           const name = config.roles.find((x) => x.id === s.role)?.name ?? s.role ?? 'すべての役割';
-          // ただし書きは、兼務を認める例外とは限らない(1〜2名の体制で逸脱として記録する組を含む)
+          // ただし書きは、兼務を認める例外とは限らない(1〜2名の体制で列挙に無い離脱として記録する組を含む)
           return s.exception === 'none' ? name : `${name}(ただし書きあり)`;
         })
         .filter(Boolean);
@@ -2907,7 +2914,7 @@ export function renderProfileMd(config, result) {
     }
     L.push(
       '種別の番号は、D-0 体制図「更新の契機」の1〜5 です。成立済みの判定記録は、変化点の後も書き換えません。' +
-        '向きが「未達・逸脱の発生」の行は、人が減った結果の反映であり、決定ではありません(記名を要しません)。' +
+        '向きが「未達・逸脱・列挙に無い離脱の発生」の行は、人が減った結果の反映であり、決定ではありません(記名を要しません)。' +
         '各記録は、適用後の構成の要約値と、直前の記録の要約値を持ちます。記録を消す・書き換える・切り詰めると、契約検査が失敗します。'
     );
     L.push('');
@@ -2983,7 +2990,7 @@ export function renderProfileMd(config, result) {
   L.push('');
   L.push('- 体制・運用形態・ステージが変わったら `/process-change` で反映する。**変化点の後、最初のゲート判定より前に行う**');
   L.push(`- **厳しくする方向の変更は即時に適用する**。緩める方向の変更は、決定した者の記名と理由を要する。決定できるのは、対象の席の責任者、または${structureDeciderLabel(config)}に限る`);
-  L.push('- 人の離脱で統制が成立しなくなった変化は、緩める方向の決定ではなく、未達・逸脱の発生である。記名を待たず、即時に反映して表示する');
+  L.push('- 人の離脱で統制が成立しなくなった変化は、緩める方向の決定ではなく、未達・逸脱・列挙に無い離脱の発生である。記名を待たず、即時に反映して表示する');
   L.push('- **人が減っていないのに、回答や席の入力で独立レビューや承認数を下げる変更は、緩める方向の決定である**。記名と理由を要する');
   L.push(`- 事業ステージを前へ戻す変更は、ステージ移行ゲート(SG)の判定による。${structureDeciderLabel(config)}の記名を要する`);
   L.push('- 納期だけの変更は変化点に数えない。起票された場合は「構成の変更なし」と記録する');
@@ -3067,14 +3074,14 @@ export const RULES_END = '<!-- generated:process-rules end -->';
 export const STOP_REQUEST_LABEL = 'state:stop-requested';
 
 /**
- * ロールと Label Mailbox の対応(第5章 4.3 / 4.3.1)。
+ * ロールと受信箱のラベルの対応(第3章 3.5.5)。
  * ラベルは状態であり、常に「次に動く人」を指す。
  */
 export const MAILBOX = {
   'value-owner': { inbox: ['state:needs-po'], hands: ['state:needs-dev', 'state:needs-tech', 'state:needs-audit', 'state:needs-platform', 'state:needs-owner', STOP_REQUEST_LABEL] },
   'tech-lead': { inbox: ['state:needs-tech'], hands: ['state:needs-dev', 'state:needs-po', 'state:needs-owner', STOP_REQUEST_LABEL] },
   'dev-verifier': { inbox: ['state:needs-dev', 'state:qm-blocked'], hands: ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-platform', STOP_REQUEST_LABEL] },
-  // state:dev-done の受け手は独立レビュアだけ(標準 第5章 Label Mailbox 4.3・4.3.1。#312)。ready-to-merge は、
+  // state:dev-done の受け手は独立レビュアだけ(標準 第3章 3.5.5。#312)。ready-to-merge は、
   // 独立レビュアが G-6 の判定記録を作成した後に付け、出荷判定者のレーンへ渡す。出荷判定者は dev-done を受け取らず、
   // ready-to-merge を付けない。G-7 は出荷の範囲ごとの判定で、このラベルでは起動しない(next.mjs の出荷の段が出す)
   // needs-platform は、レビューや記録の突合で強制層の変更の要否・統制の弱化に気付いた席が付ける(4.3 の付与者・4.7.3)
@@ -3092,7 +3099,7 @@ function g6Active(config) {
 }
 
 /**
- * 構成に応じた受信箱(第5章 Label Mailbox 4.3.1。#312 の突合 X-1)。
+ * 構成に応じた受信箱(第3章 3.5.5。#312 の突合 X-1)。
  * G-6 が有効なら MAILBOX のまま(state:dev-done の受け手は独立レビュア)。G-6 が省略・未達の構成では独立レビュアの席に
  * 担い手がいないため、state:dev-done の受け手を出荷判定者にする。出荷判定者は G-6 の省略・未達を開示したうえで扱い、
  * state:ready-to-merge は使わない。開発者が自ら ready-to-merge を付ける形は採らない(確認の段を作成者が飛ばす形になる)
@@ -3274,7 +3281,7 @@ export function renderRoleCard(config, roleId) {
     L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ') || '—'}`);
     L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ') || '—'}`);
     if (mb.withoutG6) {
-      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第5章 Label Mailbox 4.3.1)');
+      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第3章 3.5.5)');
     }
     L.push('');
     if (r.gatesUnmet.length && !r.gatesOwned.length) {
@@ -4542,7 +4549,7 @@ if (isMain) {
     console.log(renderChangeReport(report, clamps, config));
     console.log(`## 兼務禁止と独立性の再判定\n\n- ${separationSummary(config)}`);
     for (const v of sep.violations) console.log(`- 抵触: ${v}`);
-    for (const v of sep.deviated) console.log(`- 逸脱として記録(1〜2名の体制): ${v.pair}`);
+    for (const v of sep.deviated) console.log(`- 列挙に無い離脱として記録(1〜2名の体制): ${v.pair}`);
     for (const v of sep.notIndependent) console.log(`- 独立が成立しない: ${v}`);
     for (const n of seatPairingNotes(config)) console.log(`- 注記(兼務禁止ではない組。規定を構造的に満たせない組と、非推奨の兼務): ${n}`);
     console.log('');
@@ -4840,7 +4847,7 @@ if (isMain) {
       console.log('[連鎖の開始] この変化点から、変化点の記録へ要約値を持たせます。これより前の構成と記録は、書き換えの有無を検証できません');
     }
     if (report.arising.length) {
-      console.log('[即時反映] 未達・逸脱の発生を含みます。決定ではないため、記名を待たずに反映します。未達のまま出荷するかどうかは、既存の規定によります(R1 の変更は標準 第7章 7.3 の例外承認。CL1 以上と規制業は不可)');
+      console.log('[即時反映] 未達・逸脱・列挙に無い離脱の発生を含みます。決定ではないため、記名を待たずに反映します。未達のまま出荷するかどうかは、既存の規定によります(R1 の変更は標準 第7章 7.3 の例外承認。CL1 以上と規制業は不可)');
     }
     if (config.shipBlocked) console.log(`[出荷不可] ${config.shipBlocked.reason}`);
     for (const n of nameOverrides(config)) console.log(`[上書き] 名義の機械検査を人が上書きした: ${n}`);
@@ -5072,7 +5079,7 @@ if (isMain) {
           { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
           { "pattern": ".claude/hooks/**", "reason": "書き込み遮断フック。書き換えられると遮断が無効になります" },
           { "pattern": "process.config.json", "reason": "有効なゲートと品質閾値（カバレッジ等）の正本" },
-          { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱の記録）" },
+          { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱と列挙に無い離脱の記録）" },
           { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
           { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
         ];
@@ -5155,8 +5162,8 @@ if (isMain) {
           ];
           
           console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
-          // 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、enabled に依らずフックが適用する(#286)
-          console.log('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
+          // 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、enabled に依らずフックが適用する(#286)
+          console.log('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
         } else {
           // 事業ステージに依らず、エージェント用ガードを有効化（enabled: true）し、
           // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
@@ -5189,7 +5196,7 @@ if (isMain) {
         
         fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
         // テンプレートのフックの登録を併合する(既存の登録は残す)。既存の settings.json を残す持ち込みで、登録が黙って外れないようにする
-        // (禁止事項3 の機械の遮断。process-compass #315 / ADR-0084 決定2)
+        // (5.8.5 の禁止事項3 の機械の遮断。process-compass #315 / ADR-0084 決定2)
         fs.writeFileSync(settingsPath, JSON.stringify(mergeHookRegistration(settingsObj), null, 2) + '\n', 'utf8');
       }
     } catch (e) {
@@ -5241,8 +5248,8 @@ if (isMain) {
     }
     if (config.deviations.length) {
       console.log('');
-      console.log('[逸脱] 次のゲート・兼務は、標準が要求する属性を欠いています:');
-      for (const d of config.deviations) console.log(`  - ${d.label}: ${d.rule}`);
+      console.log('[逸脱・列挙に無い離脱] 次のゲート・兼務は、標準が要求する属性を欠いています:');
+      for (const d of config.deviations) console.log(`  - ${d.label}(${deviationTerm(d)}): ${d.rule}`);
     }
     // ブランチ保護(#286)。初期化の直後に、適用のコマンドを出す。適用は人が行う。独立レビューを強制しない構成でも、
     // 必須チェック(gate-g5)だけのルールセットを置く。プランによって私有リポジトリでは使えない(README「ブランチ保護」)

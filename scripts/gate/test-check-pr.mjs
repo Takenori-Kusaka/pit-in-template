@@ -355,11 +355,11 @@ scenario('上限を超え、例外承認の承認した者が PR の作成者 �
 scenario('閾値・除外設定と製品のコードを同じ PR で変える', {}, () => {
   write('.eslintrc.json', '{ "rules": {} }\n');
   write('src/a.js', lines(21));
-}, failsWith(/禁止事項6/));
+}, failsWith(/基準値と除外設定の変更/));
 scenario('構成のカバレッジの下限と製品のコードを同じ PR で変える', {}, () => {
   write('process.config.json', { ...config, ci: { coverageThreshold: 60 } });
   write('src/a.js', lines(21));
-}, failsWith(/禁止事項6.*process\.config\.json\(ci\)/));
+}, failsWith(/基準値と除外設定の変更.*process\.config\.json\(ci\)/));
 scenario('トレーラ Spec が無い', { body: '## 変更の概要\n\n説明\n' }, () => write('src/a.js', lines(21)), failsWith(/トレーラ `Spec: F-NNN \/ Task-N` が PR の本文にありません/));
 scenario('トレーラ Spec が本文の途中にある(様式の冒頭のまま)', { body: '## 対応タスク\n\nSpec: F-001 / Task-1\n\n## 変更の概要\n\n説明\n' }, () => write('src/a.js', lines(21)), failsWith(/末尾の段落にありません/));
 scenario('トレーラ Spec が様式の置き場のまま', { body: BODY('Spec: F-xxx / Task-N') }, () => write('src/a.js', lines(21)), failsWith(/形式が違います/));

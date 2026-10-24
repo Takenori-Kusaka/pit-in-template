@@ -75,6 +75,7 @@ import {
   standardEdition,
   hookRegistrationProblems,
   codeownersState,
+  deviationCategoryProblems,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
@@ -113,7 +114,7 @@ if (process.argv.includes('--delegation')) {
   ].filter(Boolean);
   const lines = sumNumstat(git(['diff', '--numstat', mergeBase]));
   // 証跡の集約と、PR 上の判定(check-delegation)と同じ判定を通す。ここだけ別の結論を出すと、案内どおりに
-  // トレーラを書いた変更が、集約で「委任の範囲の逸脱」になる。規則の範囲に加えて、確約範囲とコア指定の
+  // トレーラを書いた変更が、集約で「委任の条件に反する変更」になる。規則の範囲に加えて、確約範囲とコア指定の
   // パスの宣言、決定した者、AI維持管理者の承認、変更種別の登録者まで確かめる
   const rules = config.delegation?.rules ?? [];
   const reasons = [];
@@ -258,7 +259,7 @@ if (config.configured === false) {
 // ---------------------------------------------------------- 0.5 版の欄・取り込んだテンプレート・フックの登録・CODEOWNERS
 //
 // process-compass #315 / ADR-0084 決定2・5・6。知らない版(既知より大きい formatVersion・schemaVersion)の構成は読まずに失敗にする。
-// フックの登録(禁止事項3 の機械の遮断)の欠けと、CODEOWNERS の雛形の所有者 @OWNER の残りは、黙って統制が外れる状態のため失敗にする。
+// フックの登録(5.8.5 の禁止事項3 の機械の遮断)の欠けと、CODEOWNERS の雛形の所有者 @OWNER の残りは、黙って統制が外れる状態のため失敗にする。
 // 取り込んだ準拠テンプレートの記録と現在の強制層のファイルの不一致は表示だけで、合否に使わない
 {
   for (const p of versionProblems(config)) problems.push(p);
@@ -353,6 +354,8 @@ for (const [key, g] of Object.entries(config.gates ?? {})) {
 // 逸脱はゲートを実施したうえで属性を欠く状態のため、state は required か simplified になる。
 // 「逸脱の記録を消して普通の required に見せる」書き換えを検出する(第3章 3.5.2 / ADR-0029)
 const isActive = (s) => s === 'required' || s === 'simplified';
+// 項目ごとの区分(process-compass #316 / ADR-0085)。区分の正本は閉じた列挙(第1章 1.10.2)
+problems.push(...deviationCategoryProblems(config));
 for (const d of config.deviations ?? []) {
   const id = d.gate ?? d.separationId ?? '(識別子なし)';
   if (!d.gate && !d.separationId) problems.push('deviations に、ゲートも兼務禁止の組(separationId)も持たない記録があります');

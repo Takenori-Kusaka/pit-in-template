@@ -378,7 +378,7 @@ function workspace({ keepOwner = false } = {}) {
   delete s.hooks;
   w.writeJson('.claude/settings.json', s);
   v = w.node('scripts/gate/verify-gate-contract.mjs');
-  // IMPL-0314:ng(違反の入力: 禁止事項3 の遮断のフックが登録されていない設定。契約検査の入口を通す)
+  // IMPL-0314:ng(違反の入力: 5.8.5 の禁止事項3 の遮断のフックが登録されていない設定。契約検査の入口を通す)
   check('フックの登録が欠けた設定済みのリポジトリは、契約検査が失敗にする', contractErrors(v.out).some((l) => /merge-hooks/.test(l)), v.out.slice(-800));
   w.write('.claude/settings.json', settings);
   const co = w.read('.github/CODEOWNERS');

@@ -14,5 +14,5 @@
   },
   "thresholdFiles": [".coveragerc", "pytest.ini", ".flake8", ".pylintrc", "pylintrc", "ruff.toml", ".ruff.toml", "mypy.ini", ".mypy.ini", ".bandit"],
   "coverageSummary": "coverage.json",
-  "note": "coverage.json は pytest-cov の JSON 形式です。totals.percent_covered を読みます。thresholdFiles は、閾値・除外設定のファイル(禁止事項6。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
+  "note": "coverage.json は pytest-cov の JSON 形式です。totals.percent_covered を読みます。thresholdFiles は、閾値・除外設定のファイル(第4章 G-5「基準値と除外設定の変更」。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
 }

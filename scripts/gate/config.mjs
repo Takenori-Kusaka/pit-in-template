@@ -147,11 +147,35 @@ export function applicationEnd(config) {
 /**
  * 逸脱の閉じた列挙(標準 第1章 1.10.2)。本標準が条項で条件と代償措置を定めて認めた離脱に限る。
  * 構成の deviations[] には、条件と代償措置を定めていない兼務(1〜2名の体制で成立しない兼務禁止)も入る。
- * 構成の形は変えず(旧い構成の要約値を保つため)、読むときにこの列挙で分ける
+ * 初期化と構成の変更は、項目ごとに区分(category: listed / unlisted)を書く(process-compass #316 / ADR-0085)。
+ * 区分を持たない旧い構成は書き換えず(要約値を保つため)、読むときにこの列挙で分ける。区分の正本はこの列挙であり、
+ * 書かれた区分と列挙が食い違えば、契約検査が失敗にする(区分の記載で逸脱へ格上げさせない)
  */
 export const CLOSED_DEVIATIONS = [
   { id: 'D-1', label: '開発ライン × 出荷判定者の兼務', clause: '第3章 3.5.2', match: (d) => d?.gate === 'g7' },
 ];
+
+/** deviations[] の1件の区分。閉じた列挙に当たれば listed、当たらなければ unlisted(書かれた category は見ない) */
+export function deviationCategory(d) {
+  return CLOSED_DEVIATIONS.some((c) => c.match(d)) ? 'listed' : 'unlisted';
+}
+
+/**
+ * deviations[] の書かれた区分(category)と、閉じた列挙から導いた区分の食い違い。区分を持たない旧い記録は問わない。
+ * 書かれた区分で、列挙に無い離脱を逸脱へ格上げさせない(標準 第1章 1.10.2。process-compass #316 / ADR-0085)
+ */
+export function deviationCategoryProblems(config) {
+  const out = [];
+  for (const d of config?.deviations ?? []) {
+    if (d?.category === undefined) continue;
+    const want = deviationCategory(d);
+    if (d.category !== want) out.push(`deviations の ${d.gate ?? d.separationId ?? '(識別子なし)'}: 区分 "${d.category}" が逸脱の閉じた列挙(第1章 1.10.2)と一致しません(正しくは "${want}")`);
+  }
+  return out;
+}
+
+/** 区分の値(構成の deviations[].category) */
+export const DEVIATION_CATEGORIES = { listed: '逸脱(閉じた列挙)', unlisted: '列挙に無い離脱' };
 
 /** 構成の deviations[] を、閉じた列挙の逸脱(listed)と、列挙に無い離脱(unlisted)に分ける */
 export function classifyDeviations(config) {
@@ -234,7 +258,7 @@ export function preflightRecordProblem(configAtInit, { root = ROOT, initHash = n
 export const OUTAGE_HANDLING = { human: '人へ戻した', stop: '止めた' };
 
 /**
- * 変化点の向きの表示名。arising は、未達・逸脱の発生(決定ではなく事実。第3章 3.13.3)。
+ * 変化点の向きの表示名。arising は、未達・逸脱・列挙に無い離脱の発生(決定ではなく事実。第3章 3.13.3)。
  * 人が実際に減った変化点に限って付く。人が減っていないのに統制を下げる変更は loosen である
  */
 export const DIRECTION_LABEL = {
@@ -242,7 +266,7 @@ export const DIRECTION_LABEL = {
   // 席の責任者の任免。統制の向きにかかわらず決定として扱い、決定者の記名と理由を要する(第3章 3.13.3)
   appoint: '任免の決定',
   tighten: '厳しくする',
-  arising: '未達・逸脱の発生',
+  arising: '未達・逸脱・列挙に無い離脱の発生',
   none: '—',
 };
 
@@ -717,7 +741,7 @@ export function isAppointer(config, ref) {
 
 /**
  * 出荷判定者 × 事業決裁者の兼務禁止(標準 第3章 3.5)。異議を書く者と、残存リスクを受容する者が
- * 同一になり、受容が自己完結する。3名以上は拒否、1〜2名は逸脱として記録する。
+ * 同一になり、受容が自己完結する。3名以上は拒否、1〜2名は列挙に無い離脱として記録する。
  *
  * 知識ベース(scripts/vendor/tailoring-kb.json の separations)が同じ2席の組を持てば、そちらを使う。
  * 持たない版の知識ベースでも働くよう、構成の生成が足す(generate-profile.mjs の buildConfig)
@@ -727,7 +751,7 @@ export const SHIPPING_BUSINESS_SEPARATION = {
   roles: ['qa-gatekeeper', 'biz-approver'],
   scope: 'same-project',
   reason: '異議を書く者と、残存リスクを受容する者が同一である(G-8 の受容が自己完結する)',
-  exception: '1〜2名体制で分離が成立しない場合に限り、逸脱として記録し、保証の開示の項目1 へ表示する(第3章 3.5)',
+  exception: '1〜2名体制で分離が成立しない場合に限り、列挙に無い離脱として記録し、保証の開示の項目1 へ表示する(第3章 3.5)',
   gate: null,
   source: 'https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/',
 };
@@ -949,7 +973,7 @@ export function headcountProblems(config) {
   }
   if (size && size !== 'size-1-2' && rosterInsiders > 0 && rosterInsiders < 3) {
     out.push(
-      `人の名簿の体制の内の人は ${rosterInsiders} 名ですが、チーム規模の回答は 3名以上のままです。人の離脱で成立しなくなった統制は、未達・逸脱として即時に反映します(answers の q-team-size を size-1-2 へ改めます。席の責任者でない担い手も、名簿へ記入します)`
+      `人の名簿の体制の内の人は ${rosterInsiders} 名ですが、チーム規模の回答は 3名以上のままです。人の離脱で成立しなくなった統制は、未達・逸脱・列挙に無い離脱として即時に反映します(answers の q-team-size を size-1-2 へ改めます。席の責任者でない担い手も、名簿へ記入します)`
     );
   }
   return out;
@@ -2117,7 +2141,7 @@ export function templateImplements(root = ROOT) {
 
 /**
  * テンプレートのフックの登録。既存の .claude/settings.json を持つリポジトリへ持ち込むと、上書きしない複製では既存の側が残り、
- * 登録が黙って外れる(禁止事項3 の機械の遮断が効かない)。初期化はこの登録を併合し、契約の検査は required の登録を確かめる
+ * 登録が黙って外れる(5.8.5 の禁止事項3 の機械の遮断が効かない)。初期化はこの登録を併合し、契約の検査は required の登録を確かめる
  */
 export const TEMPLATE_HOOKS = [
   { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|NotebookEdit', command: 'node .claude/hooks/guard-write.mjs', timeout: 15, required: true },
@@ -2145,7 +2169,7 @@ export function hookRegistrationProblems(settings) {
   if (settings.disableAllHooks === true) problems.push('.claude/settings.json の disableAllHooks が true です。フックがすべて止まります');
   if (settings.hooks !== undefined && (typeof settings.hooks !== 'object' || Array.isArray(settings.hooks))) problems.push('.claude/settings.json の hooks がオブジェクトでない');
   const missing = TEMPLATE_HOOKS.filter((h) => !hookRegistered(settings, h));
-  for (const h of missing.filter((x) => x.required)) problems.push(`.claude/settings.json に、テンプレートのフックの登録(${h.event}: ${h.command})が無い。禁止事項3 の機械の遮断が効かない`);
+  for (const h of missing.filter((x) => x.required)) problems.push(`.claude/settings.json に、テンプレートのフックの登録(${h.event}: ${h.command})が無い。5.8.5 の禁止事項3 の機械の遮断が効かない`);
   return { problems, missing };
 }
 

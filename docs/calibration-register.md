@@ -1,6 +1,6 @@
 # 能力依存の定数の再評価の記録
 
-能力依存の定数(`scripts/gate/recalibration-registry.json`。標準 第6章 metrics「能力依存の定数の登録簿」)を、**人が**「残す・外す・移す」と判断した記録です。`/process-change` の出力と `/pit` が出す「再評価待ち」は、ここに記録があると解けます。
+能力依存の定数(`scripts/gate/recalibration-registry.json`。標準 第3章 3.12.12「能力依存の定数の登録簿」)を、**人が**「残す・外す・移す」と判断した記録です。`/process-change` の出力と `/pit` が出す「再評価待ち」は、ここに記録があると解けます。
 
 - 値は自動で変えません。値を変えるときは `/process-change`(種別 settings)を使います
 - 記名は名簿(`people[]`)の人に限ります。AI の名義の行は数えません

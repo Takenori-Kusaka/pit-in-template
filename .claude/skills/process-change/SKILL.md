@@ -51,7 +51,7 @@ description: 体制の変化点(責任者の増減・交代、人数の境界の
 node scripts/init/generate-profile.mjs --change /tmp/change.json --dry-run
 ```
 
-5. **向きに応じて進める**。緩める向き・任免は、記名と理由を受け取るまで適用しない。未達・逸脱の発生は記名を待たず即時に適用する。見分け方: `reference/direction.md`
+5. **向きに応じて進める**。緩める向き・任免は、記名と理由を受け取るまで適用しない。未達・逸脱・列挙に無い離脱の発生は記名を待たず即時に適用する。見分け方: `reference/direction.md`
 6. **適用し、検査する**。書き換わるファイルと、構成を変えない再生成: `reference/apply.md`
 
 ```bash

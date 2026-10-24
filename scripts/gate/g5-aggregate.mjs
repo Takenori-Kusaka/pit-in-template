@@ -35,7 +35,7 @@ export const G5_CRITERION_JOBS = [
 /** 基準の外で G-5 の規則を実装するジョブ(構成と設定の整合、PR 単位の検査) */
 export const G5_RULE_JOBS = [
   { label: '構成と CI・ブランチ保護の整合(契約検査)', job: 'contract' },
-  { label: 'PR 単位の検査(禁止事項6・陰性の確認・区分の下限ほか)', job: 'pr-rules' },
+  { label: 'PR 単位の検査(基準値と除外設定・陰性の確認・区分の下限ほか)', job: 'pr-rules' },
 ];
 
 /** ジョブ名 → ジョブの本文(2 字下げのキーから次の 2 字下げのキーまで) */
