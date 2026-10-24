@@ -764,19 +764,41 @@ if (isMain) {
     notice(`PR の記録を引くリポジトリ: ${repo}(${repoInfo.source} から)`);
   }
   const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels,createdAt';
+  // statusCheckRollup は、他の App が作った check run を含むと GITHUB_TOKEN では読めないことがある(GraphQL: Resource not accessible by
+  // integration。2026-10-24 の通し実行で観測)。その場合は rollup 抜きで PR の記録を取り直し、gate-g5 の結果は check-runs API で
+  // gate-g5 の check run だけを引く(g5FromCheckRuns)
+  const PR_FIELDS_NO_ROLLUP = PR_FIELDS.split(',').filter((f) => f !== 'statusCheckRollup').join(',');
   const prData = new Map();
   // PR の記録を取得できなかった理由(PR の番号ごと)
   const prFetchError = new Map();
   const fetchPr = (n) => {
     if (!prData.has(n)) {
       lastGhError = null;
-      const d = repo ? gh(['pr', 'view', String(n), '--repo', repo, '--json', PR_FIELDS]) : null;
+      let d = repo ? gh(['pr', 'view', String(n), '--repo', repo, '--json', PR_FIELDS]) : null;
+      if (!d && repo) {
+        const rollupError = lastGhError;
+        d = gh(['pr', 'view', String(n), '--repo', repo, '--json', PR_FIELDS_NO_ROLLUP]);
+        if (d) {
+          d.statusCheckRollup = null;
+          d.rollupError = rollupError;
+        }
+      }
       prData.set(n, d);
       if (!d) prFetchError.set(n, repo ? `gh: ${lastGhError ?? '応答なし'}` : 'リポジトリを特定できないため、PR の記録を引いていない(--repo を渡す)');
     }
     return prData.get(n);
   };
   for (const n of candidateNumbers) fetchPr(n);
+  /** gate-g5 の check run の結果を、コミットの check-runs API で引く(rollup を読めないときの後退経路)。無ければ null */
+  const g5FromCheckRuns = (sha) => {
+    if (!repo || !sha) return null;
+    const r = gh(['api', `repos/${repo}/commits/${sha}/check-runs?check_name=gate-g5&per_page=20`]);
+    const runs = Array.isArray(r?.check_runs) ? r.check_runs : [];
+    if (!runs.length) return null;
+    // 最後に完了したもの(再実行があれば新しいほう)
+    runs.sort((a, b) => String(b.completed_at ?? b.started_at ?? '').localeCompare(String(a.completed_at ?? a.started_at ?? '')));
+    return { name: 'gate-g5', conclusion: runs[0].conclusion ?? null, state: runs[0].status ?? null, source: 'check-runs' };
+  };
 
   const inRange = new Map(commits.map((c) => [c.hash, c]));
   const sameTime = (a, b) => Boolean(a && b) && new Date(a).getTime() === new Date(b).getTime();
@@ -1263,7 +1285,9 @@ if (isMain) {
     // ラベルは写しに無い)。写しも無ければ null(欄は取れない。その旨と gh の失敗の理由を出す)
     const api = prData.get(n) ?? null;
     const d = api ?? prRecordFromCopy(copyEntry?.copy);
-    const g5 = (api?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5');
+    // gate-g5 の結果。PR の記録の rollup に無ければ(rollup を読めない、または写しで対応づけた PR)、PR の head の check-runs を引く
+    const headSha = (Array.isArray(api?.commits) ? api.commits.at(-1)?.oid : null) ?? headOfCopy(copyEntry?.copy) ?? null;
+    const g5 = (api?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5') ?? g5FromCheckRuns(headSha);
     const ins = instructorsOf(d ?? {});
     // G-6 の承認は、写しがあれば写しから読む(無ければ PR の記録)。写しと PR の記録の両方が読めるときは突合し、本文の編集・
     // dismiss・ログイン名の変化を所見に出す。写しの承認のうち commit_id がマージ時の head と違うものは、失効した承認として数えない
@@ -2003,7 +2027,7 @@ if (isMain) {
   // gate-g5 の成功を持たない PR は欠落である。結果の記録が無い PR(unknown)も含める。ブランチ保護(必須チェック)を
   // 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
   for (const p of [...prs, ...recordPrs]) {
-    if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる' : `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、写しで対応づけた PR。写しは gate-g5 の結果を持たない。gh で集約し直す(ワークフローの GITHUB_TOKEN には checks: read が要る)`})`);
+    if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる。PR の head の check-runs にも gate-g5 が無い' : `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、写しで対応づけた PR。写しの head の check-runs にも gate-g5 が無い。gh で集約し直す(ワークフローの GITHUB_TOKEN には checks: read が要る)`})`);
     else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
   }
 
