@@ -229,6 +229,28 @@ export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
   return { reviews, stale, head };
 }
 
+/**
+ * PR の記録を gh で取得できないときの後退経路。写しが持つマージ時の題名・本文・作成者から、PR の記録(gh pr view --json)と同じ形の
+ * 最小の組を起こす(推定を含まない写し。record-copy.yml はマージの時点の題名と本文を写す)。本文の欄(検証方法と結果・リスク区分・
+ * 作成を指示した者・規模の確認)はこれで読める。gate-g5 の結果(statusCheckRollup)・ラベル・作成日時は写しに無く、null のまま
+ * (呼び出し側が「記録なし」として出す)。写しに本文が無ければ null
+ */
+export function prRecordFromCopy(copy) {
+  if (!copy || typeof copy !== 'object' || typeof copy.body !== 'string') return null;
+  return {
+    number: copy.pr ?? null,
+    title: typeof copy.title === 'string' ? copy.title : null,
+    body: copy.body,
+    author: copy.author && typeof copy.author === 'object' ? { login: copy.author.login ?? null, id: copy.author.id ?? null } : null,
+    createdAt: null,
+    labels: [],
+    reviews: null,
+    statusCheckRollup: null,
+    mergeCommit: copy.merge_commit_sha ? { oid: copy.merge_commit_sha } : null,
+    fromCopy: true,
+  };
+}
+
 /** 承認の数。承認者ごとの最後の状態(APPROVED / CHANGES_REQUESTED / DISMISSED)が承認である人の数。写しの状態をそのまま数える */
 export function approvalCountOfCopy(copy) {
   const last = new Map();
@@ -1236,16 +1258,18 @@ if (isMain) {
   for (const [hash, m] of commitPr) {
     if (m.role !== 'merge') continue;
     const n = m.number;
-    // PR の記録(gh)。写しで対応づけた PR では null(欄は取れない。その旨を出す)
-    const d = prData.get(n) ?? null;
-    const g5 = (d?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5');
+    const copyEntry = recordSources.copies.get(n) ?? null;
+    // PR の記録(gh)。取得できなければ、写しが持つマージ時の題名・本文・作成者で本文の欄を読む(prRecordFromCopy。gate-g5 の結果と
+    // ラベルは写しに無い)。写しも無ければ null(欄は取れない。その旨と gh の失敗の理由を出す)
+    const api = prData.get(n) ?? null;
+    const d = api ?? prRecordFromCopy(copyEntry?.copy);
+    const g5 = (api?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5');
     const ins = instructorsOf(d ?? {});
     // G-6 の承認は、写しがあれば写しから読む(無ければ PR の記録)。写しと PR の記録の両方が読めるときは突合し、本文の編集・
     // dismiss・ログイン名の変化を所見に出す。写しの承認のうち commit_id がマージ時の head と違うものは、失効した承認として数えない
-    const copyEntry = recordSources.copies.get(n) ?? null;
-    const fromCopy = copyEntry ? reviewsOfCopy(copyEntry.copy, { apiReviews: d?.reviews ?? null }) : null;
-    const reviews = fromCopy ? fromCopy.reviews : (d?.reviews ?? []);
-    const copyFindings = copyEntry && Array.isArray(d?.reviews) ? reconcileCopy(copyEntry.copy, d.reviews, { pr: n }) : [];
+    const fromCopy = copyEntry ? reviewsOfCopy(copyEntry.copy, { apiReviews: api?.reviews ?? null }) : null;
+    const reviews = fromCopy ? fromCopy.reviews : (api?.reviews ?? []);
+    const copyFindings = copyEntry && Array.isArray(api?.reviews) ? reconcileCopy(copyEntry.copy, api.reviews, { pr: n }) : [];
     // 変更したファイル(コア機能の判定と、記録だけの PR の識別に使う。第1の親との差分。マージコミットの方式でも読める)と、
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
     const prFiles = git(['diff', '--name-only', `${hash}^1`, hash]).split('\n').filter(Boolean);
@@ -1261,12 +1285,14 @@ if (isMain) {
     (recordOnly ? recordPrs : prs).push({
       size: sizeMeasured,
       sizeAttestation: sizeAtt.present ? { readAll: sizeAtt.readAll, performerPresent: filled(sizeAtt.performer), reasonPresent: filled(sizeAtt.reason), assurancePresent: filled(sizeAtt.assurance) } : null,
-      reviewMinutes: approvalMinutes(d),
+      reviewMinutes: approvalMinutes(api),
       number: n,
       title: d?.title ?? null,
-      // PR の記録を取得できたか。写しで対応づけた PR(記録なし)は、PR 本文の欄と G-5 の結果を読めない
-      recordFound: Boolean(d),
-      recordSource: d ? 'api' : 'copy',
+      // PR の記録を gh で取得できたか。取得できない PR は、写しの本文(マージ時)で本文の欄を読む(bodySource='copy')。G-5 の結果は読めない
+      recordFound: Boolean(api),
+      recordSource: api ? 'api' : 'copy',
+      bodySource: api ? 'api' : d ? 'copy' : null,
+      fetchError: api ? null : (prFetchError.get(n) ?? null),
       // 記録だけの PR(変更の単位に数えない)
       recordOnly,
       files: prFiles.length,
@@ -1758,11 +1784,16 @@ if (isMain) {
   // 成立とは別である。G-6 の状態に依らず、無ければ欠落とする。独立した人の確認が無い体制ほど、
   // この記載が唯一の証拠になる(標準 第5章 5.5.6)。開発者の席の委任の範囲の変更では、担い手が実行結果の証拠として書く。
   // 人確定・協働の変更では、人が書く。誰が書いたかは、機械では確かめない
+  /** PR の記録を gh で取得できなかった PR の、本文の出所と gh の失敗の理由(欠落の文に添える。黙って落とさない) */
+  const noApiText = (p) =>
+    p.bodySource === 'copy'
+      ? `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、マージ時の承認レビューの写しの本文で読んだ`
+      : `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、承認レビューの写しで対応づけた PR。写しに本文が無く、PR 本文を読めていない。gh で集約し直す`;
   for (const p of prs) {
     if (p.authorVerificationPresent) continue;
     gaps.push(
       `PR #${p.number}: 作成側の検証の記載(PR 本文「検証方法と結果」)がありません` +
-        (p.recordFound ? '' : '(PR の記録を取得できず、承認レビューの写しで対応づけた PR。PR 本文を読めていない。gh で集約し直す)') +
+        (p.recordFound ? '' : `(${noApiText(p)})`) +
         (p.delegated ? '。開発者の席の委任の範囲の変更では、担い手が実行結果の証拠として書きます' : '')
     );
   }
@@ -1782,7 +1813,7 @@ if (isMain) {
   for (const p of prs) {
     if (p.riskClass) continue;
     gaps.push(
-      `PR #${p.number}: リスク区分が未記入です(選択肢を残したままの欄は未記入として扱います${p.recordFound ? '' : '。PR の記録を取得できず、承認レビューの写しで対応づけた PR のため、PR 本文を読めていない。gh で集約し直す'})。リスク区分は変更ごとに確定する記録です(第3章 3.8.1)`
+      `PR #${p.number}: リスク区分が未記入です(選択肢を残したままの欄は未記入として扱います${p.recordFound ? '' : `。${noApiText(p)}`})。リスク区分は変更ごとに確定する記録です(第3章 3.8.1)`
     );
   }
 
@@ -1972,7 +2003,7 @@ if (isMain) {
   // gate-g5 の成功を持たない PR は欠落である。結果の記録が無い PR(unknown)も含める。ブランチ保護(必須チェック)を
   // 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
   for (const p of [...prs, ...recordPrs]) {
-    if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる' : 'PR の記録を取得できず、写しで対応づけた PR。gh で集約し直す'})`);
+    if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる' : `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、写しで対応づけた PR。写しは gate-g5 の結果を持たない。gh で集約し直す(ワークフローの GITHUB_TOKEN には checks: read が要る)`})`);
     else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
   }
 

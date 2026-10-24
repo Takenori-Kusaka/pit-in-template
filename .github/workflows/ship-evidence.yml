@@ -75,6 +75,10 @@ permissions:
   contents: write
   pull-requests: write
   actions: read
+  # 集約が `gh pr view --json statusCheckRollup` で gate-g5 の結果を読む(checks: read が無いと PR の記録の取得が失敗し、
+  # 写しで対応づけた PR として本文の欄と G-5 の結果が欠落になる。2026-10-24 の通し実行で観測)。停止の申し立てのラベルの履歴は issues の events
+  checks: read
+  issues: read
 
 env:
   RECORDS_BRANCH: records

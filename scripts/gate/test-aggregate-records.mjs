@@ -29,6 +29,7 @@ import {
   machineFields,
   copyCoverage,
   formAttribution,
+  prRecordFromCopy,
   targetOfForm,
   judgeOfForm,
 } from './aggregate-evidence.mjs';
@@ -275,6 +276,16 @@ const config = {
   const multi = { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki-old', 'suzuki'] };
   const a9 = formAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', person: multi, approvers: ['SUZUKI-OLD'] });
   check('帰属: 名簿の複数のアカウント(大文字小文字を問わない)のいずれかで裏づける', a9.backed === true && a9.how === 'approval-review', JSON.stringify(a9));
+}
+
+// ---------------------------------------------------------------- PR の記録を gh で取得できないときの後退経路(写しの本文)
+{
+  const copy = { pr: 7, title: 'feat: x', body: '## 検証方法と結果\n\n- 通過\n\n## リスク区分\n\nR3\n', author: { id: 1, login: 'suzuki' }, merge_commit_sha: 'abc', reviews: [] };
+  const r = prRecordFromCopy(copy);
+  check('prRecordFromCopy: 題名・本文・作成者・マージコミットを写しから起こし、fromCopy の印を付ける', r.number === 7 && r.title === 'feat: x' && /検証方法と結果/.test(r.body) && r.author.login === 'suzuki' && r.mergeCommit.oid === 'abc' && r.fromCopy === true, JSON.stringify(r));
+  check('prRecordFromCopy: gate-g5 の結果・ラベル・作成日時・レビューは写しに無い(null・空)', r.statusCheckRollup === null && r.labels.length === 0 && r.createdAt === null && r.reviews === null);
+  check('prRecordFromCopy: 本文の無い写し(旧い形)と写し無しは null', prRecordFromCopy({ pr: 7, reviews: [] }) === null && prRecordFromCopy(null) === null);
+  check('prRecordFromCopy: 作成者の無い写しは author=null', prRecordFromCopy({ pr: 7, body: 'x', reviews: [] }).author === null);
 }
 
 console.log('');

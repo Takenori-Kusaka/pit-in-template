@@ -32,6 +32,9 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  # 集約が `gh pr view --json statusCheckRollup` で gate-g5 の結果を読む(checks: read)。停止の申し立てのラベルの履歴は issues の events
+  checks: read
+  issues: read
 
 jobs:
   period:
