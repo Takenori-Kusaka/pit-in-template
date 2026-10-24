@@ -64,6 +64,7 @@ import {
   TEMPLATE_COMMIT_PATTERN,
   hookRegistrationProblems,
   mergeHookRegistration,
+  enforcementDigestsWith,
   DIRECTION_LABEL,
   modeRank,
   performerKey,
@@ -2743,6 +2744,13 @@ export function renderProfileMd(config, result) {
   L.push(`| 既存の承認ゲート | ${a['q-existing-gates']} |`);
   L.push(`| AI 利用の制約 | ${a['q-ai-constraint']} |`);
   L.push('');
+  {
+    const outsourcing = outsourcingPointer(config);
+    if (outsourcing) {
+      L.push(outsourcing);
+      L.push('');
+    }
+  }
   L.push('成熟度やスコアは出しません。評価ではなく構成の導出です。');
   L.push('');
 
@@ -3187,6 +3195,22 @@ export const ESCALATION = [
  * エージェントが起動時に読む文書は CLAUDE.md である。手書きのままでは標準の改訂も
  * 案件の構成も届かないため、構成へ依存する部分は導出物として差し替える(#220 / ADR-0035)。
  */
+/** 委託・受託の構成(軸D)の開発形態の値 */
+export const OUTSOURCING_DEV_FORMS = ['outsourcer', 'vendor'];
+
+/**
+ * 委託・受託の構成で、判定の結果を受け取る者の所在を示す1行。内製の構成では null。
+ * 受け取る者の値そのものは構成へ写さない。正本は docs/ai-sla.md 第9節の1か所(process-compass #317 / ADR-0087 決定3)
+ */
+export function outsourcingPointer(config) {
+  if (!OUTSOURCING_DEV_FORMS.includes(config?.answers?.['q-dev-form'])) return null;
+  return (
+    '**委託・受託の構成**: 判定の結果を受け取る者は `docs/ai-sla.md` 第9節にある(構成へ写さない)。' +
+    '相手の組織へ判定の結果を渡すときも、`state:*` のラベルと判定記録で渡す。コメントや `@mention` だけで済ませない(`CLAUDE.md`「行ってはならない作業」の7)。' +
+    '渡したら、判定記録の「結果の受け渡し」へ渡した先と日時を書く'
+  );
+}
+
 export function renderProcessRules(config) {
   if (config.configured === false) {
     return `## このプロジェクトの構成(自動生成)
@@ -3279,6 +3303,9 @@ export function renderProcessRules(config) {
   } else {
     L.push('- **委任の範囲: なし**。人の事前確認(ゲートの判定)を経ずに先へ進めてよい変更は、この構成にありません');
   }
+  // 委託・受託の構成だけ、判定の結果を受け取る者の所在を常駐させる。値は構成へ写さない(正本は様式 08 の1か所。process-compass #317 / ADR-0087 決定3)
+  const outsourcing = outsourcingPointer(config);
+  if (outsourcing) L.push(`- ${outsourcing}`);
   const filled = seats.filter((s) => s.accountable).length;
   L.push(`- 席の責任者: ${filled} / ${seats.length} 席が記入済み${filled < seats.length ? '。**未記入の席の任免は人が行う**(氏名を推測で埋めない)' : ''}`);
   L.push('');
@@ -5049,6 +5076,29 @@ if (isMain) {
   }
 
   // 最後の記録へ、適用後の構成の要約値と、直前の記録の要約値を書く
+  // .claude/guard.json と settings.json に書く内容を、構成を書く前に作る。初期化では、強制層の要約値をこの内容で記録する。
+  // 書いた直後の要約値の不一致(乖離)を出さないため。設定済みの構成は記録を保つため、権限設定が緩むとその差が乖離として出る
+  // (process-compass #317 / ADR-0087 決定2)
+  const tailoredEnforcement = (() => {
+    const guardPath = path.join(ROOT, '.claude/guard.json');
+    const settingsPath = path.join(ROOT, '.claude/settings.json');
+    if (!fs.existsSync(guardPath) || !fs.existsSync(settingsPath)) return { result: null };
+    try {
+      return { result: tailorGuardAndSettings(config, fs.readFileSync(guardPath, 'utf8'), fs.readFileSync(settingsPath, 'utf8')) };
+    } catch (error) {
+      return { error };
+    }
+  })();
+  if (!prior && tailoredEnforcement.result && config.template?.digests) {
+    config.template = {
+      ...config.template,
+      digests: enforcementDigestsWith(
+        { ...config.template.digests },
+        { '.claude/guard.json': tailoredEnforcement.result.guardText, '.claude/settings.json': tailoredEnforcement.result.settingsText }
+      ),
+    };
+  }
+
   if (appended) sealChangeLog(config);
 
   const md = renderProfileMd(config, result);
@@ -5114,142 +5164,14 @@ if (isMain) {
       }
     }
 
-    // .claude/guard.json & settings.json の自動テーラリング（Issue #19）
+    // .claude/guard.json & settings.json の自動テーラリング（Issue #19）。内容は構成を書く前に作ってある(tailoredEnforcement)
     try {
-      const guardPath = path.join(ROOT, '.claude/guard.json');
-      const settingsPath = path.join(ROOT, '.claude/settings.json');
-      
-      if (fs.existsSync(guardPath) && fs.existsSync(settingsPath)) {
-        const guardObj = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
-        const settingsObj = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        // 既存の settings.json が permissions を持たない持ち込みでも、遮断の書き込みを飛ばさない(process-compass #315)
-        if (!settingsObj.permissions || typeof settingsObj.permissions !== 'object') settingsObj.permissions = {};
-        
-        // 1. 最小限の保護パターン（Category A & B）
-        const baseProtectedPatterns = [
-          { "pattern": ".claude/settings.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
-          { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
-          { "pattern": ".claude/hooks/**", "reason": "書き込み遮断フック。書き換えられると遮断が無効になります" },
-          { "pattern": "process.config.json", "reason": "有効なゲートと品質閾値（カバレッジ等）の正本" },
-          { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱と列挙に無い離脱の記録）" },
-          { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
-          { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
-        ];
-        
-        const standardSecrets = [
-          "Read(./.env)",
-          "Read(./.env.*)",
-          "Read(./**/*.pem)",
-          "Read(./**/*.key)",
-          "Read(./**/id_rsa*)",
-          "Read(./**/.aws/**)",
-          "Read(./**/.ssh/**)"
-        ];
-
-        // 保管領域の読み込みの拒否(標準 第3章 3.11.4 要求事項7)。ステージと guard.enabled に依らず残す。
-        // 全部を置き換えた判断記録・廃止した判断記録も、ここへ移して読み込みから外す(第6章 テンプレ2「置き換えと廃止」)
-        const standardArchive = [
-          "Read(./context/_archive/**)"
-        ];
-
-        const standardCategoryAB = [
-          "Edit(./.claude/settings.json)",
-          "Edit(./.claude/guard.json)",
-          "Edit(./.claude/hooks/**)",
-          "Edit(./process.config.json)"
-        ];
-
-        const standardCategoryC = [
-          "Edit(./.github/rulesets/**)",
-          "Edit(./.github/workflows/**)",
-          "Edit(./adapters/**)",
-          "Edit(./scripts/gate/**)",
-          "Edit(./scripts/vendor/**)",
-          "Write(./scripts/vendor/**)"
-        ];
-
-        const standardBash = [
-          "Bash(git push --force:*)",
-          "Bash(git push -f:*)",
-          "Bash(gh pr review:*)",
-          "Bash(gh pr merge:*)",
-          "Bash(gh api repos/*/rulesets:*)"
-        ];
-
-        // テンプレート標準プロセスが管理する全遮断パターンの集合
-        const allStandardRules = [
-          ...standardSecrets,
-          ...standardArchive,
-          ...standardCategoryAB,
-          ...standardCategoryC,
-          ...standardBash
-        ];
-
-        // 既存の deny リストを取得し、カスタム（手動追加）されたルールを抽出（Issue #23 解決）
-        const existingDeny = Array.isArray(settingsObj.permissions?.deny) ? settingsObj.permissions.deny : [...standardSecrets];
-        const customDenyRules = existingDeny.filter(rule => !allStandardRules.includes(rule));
-        
-        // 2. guard.enabled の設定。事業ステージ(PoC を含む)に依らず有効にする(標準 第8章 軸B「本軸は、強制層に置くと決めた規則
-        // そのものを動かしません」、ADR-0050 決定1。process-compass #290 / ADR-0074)。かつては PoC で無効にしており、ADR-0050 が
-        // 退けた「S0 に限り強制層の適用を免除する」を初期化が既定で行っていた(#286 の評価で重大)。
-        // 外すのは process.config.json の guard の上書き(期限 guard.reviewBy と理由 guard.reason を要し、契約検査が期限を確かめる)だけ
-        let guardEnabled = true;
-        let isOverridden = false;
-        
-        if (config.guard && typeof config.guard.enabled === 'boolean') {
-          guardEnabled = config.guard.enabled;
-          isOverridden = true;
-        }
-        
-        if (!guardEnabled) {
-          guardObj.enabled = false;
-          guardObj.protectedPatterns = baseProtectedPatterns;
-          
-          // guard.enabled: false（一時緩和・探索フェーズ）の時は、標準の編集・書き込み遮断や Bash 遮断を一切適用せず、
-          // 最小限の秘匿ファイル Read 遮断および利用者が手動で追加したカスタムルールのみを残します（Issue #23 解決）。
-          settingsObj.permissions.deny = [
-            ...standardSecrets,
-            ...standardArchive,
-            ...customDenyRules
-          ];
-          
-          console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
-          // 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、enabled に依らずフックが適用する(#286)
-          console.log('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
-        } else {
-          // 事業ステージに依らず、エージェント用ガードを有効化（enabled: true）し、
-          // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
-          guardObj.enabled = true;
-          
-          guardObj.protectedPatterns = [
-            ...baseProtectedPatterns,
-            { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
-            { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
-            { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
-            { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
-            { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
-          ];
-          
-          settingsObj.permissions.deny = [
-            ...standardSecrets,
-            ...standardArchive,
-            ...standardCategoryAB,
-            ...standardCategoryC,
-            ...standardBash,
-            ...customDenyRules
-          ];
-          
-          if (isOverridden) {
-            console.log(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持し、全ファイルを厳格にロックダウン（遮断）しました。理由: ${config.guard.reason || '未記入'}`);
-          } else {
-            console.log('[プロセス構成] エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。事業ステージ（PoC を含む）に依らず有効です（標準 第8章 軸B、ADR-0050）。');
-          }
-        }
-        
-        fs.writeFileSync(guardPath, JSON.stringify(guardObj, null, 2) + '\n', 'utf8');
-        // テンプレートのフックの登録を併合する(既存の登録は残す)。既存の settings.json を残す持ち込みで、登録が黙って外れないようにする
-        // (5.8.5 の禁止事項3 の機械の遮断。process-compass #315 / ADR-0085 決定2)
-        fs.writeFileSync(settingsPath, JSON.stringify(mergeHookRegistration(settingsObj), null, 2) + '\n', 'utf8');
+      if (tailoredEnforcement.error) throw tailoredEnforcement.error;
+      if (tailoredEnforcement.result) {
+        const t = tailoredEnforcement.result;
+        fs.writeFileSync(path.join(ROOT, '.claude/guard.json'), t.guardText, 'utf8');
+        fs.writeFileSync(path.join(ROOT, '.claude/settings.json'), t.settingsText, 'utf8');
+        for (const m of t.messages) console.log(m);
       }
     } catch (e) {
       console.warn(`[警告] .claude/guard.json または settings.json のカスタマイズ中にエラーが発生しました: ${e.message}`);
@@ -5319,4 +5241,147 @@ if (isMain) {
       console.log(next.stdout.trimEnd());
     }
   }
+}
+
+
+/**
+ * .claude/guard.json と settings.json のテーラリング(Issue #19)。ファイルを書かずに、書く内容を返す。
+ * 初期化が強制層の要約値を、書く前の内容から記録するために分けた(process-compass #317 / ADR-0087 決定2)。
+ * 戻り値: { guardText, settingsText, messages }
+ */
+function tailorGuardAndSettings(config, guardSource, settingsSource) {
+  const messages = [];
+  const guardObj = JSON.parse(guardSource);
+  const settingsObj = JSON.parse(settingsSource);
+  // 既存の settings.json が permissions を持たない持ち込みでも、遮断の書き込みを飛ばさない(process-compass #315)
+  if (!settingsObj.permissions || typeof settingsObj.permissions !== 'object') settingsObj.permissions = {};
+
+  // 1. 最小限の保護パターン（Category A & B）
+  const baseProtectedPatterns = [
+    { "pattern": ".claude/settings.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
+    { "pattern": ".claude/guard.json", "reason": "遮断の定義そのもの。書き換えられると他がすべて無効になります" },
+    { "pattern": ".claude/hooks/**", "reason": "書き込み遮断フック。書き換えられると遮断が無効になります" },
+    { "pattern": "process.config.json", "reason": "有効なゲートと品質閾値（カバレッジ等）の正本" },
+    { "pattern": "PROCESS-PROFILE.md", "reason": "人間向けのプロセス構成正本（ゲート、未達、逸脱と列挙に無い離脱の記録）" },
+    { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
+    { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
+  ];
+
+  const standardSecrets = [
+    "Read(./.env)",
+    "Read(./.env.*)",
+    "Read(./**/*.pem)",
+    "Read(./**/*.key)",
+    "Read(./**/id_rsa*)",
+    "Read(./**/.aws/**)",
+    "Read(./**/.ssh/**)"
+  ];
+
+  // 保管領域の読み込みの拒否(標準 第3章 3.11.4 要求事項7)。ステージと guard.enabled に依らず残す。
+  // 全部を置き換えた判断記録・廃止した判断記録も、ここへ移して読み込みから外す(第6章 テンプレ2「置き換えと廃止」)
+  const standardArchive = [
+    "Read(./context/_archive/**)"
+  ];
+
+  const standardCategoryAB = [
+    "Edit(./.claude/settings.json)",
+    "Edit(./.claude/guard.json)",
+    "Edit(./.claude/hooks/**)",
+    "Edit(./process.config.json)"
+  ];
+
+  const standardCategoryC = [
+    "Edit(./.github/rulesets/**)",
+    "Edit(./.github/workflows/**)",
+    "Edit(./adapters/**)",
+    "Edit(./scripts/gate/**)",
+    "Edit(./scripts/vendor/**)",
+    "Write(./scripts/vendor/**)"
+  ];
+
+  const standardBash = [
+    "Bash(git push --force:*)",
+    "Bash(git push -f:*)",
+    "Bash(gh pr review:*)",
+    "Bash(gh pr merge:*)",
+    "Bash(gh api repos/*/rulesets:*)"
+  ];
+
+  // テンプレート標準プロセスが管理する全遮断パターンの集合
+  const allStandardRules = [
+    ...standardSecrets,
+    ...standardArchive,
+    ...standardCategoryAB,
+    ...standardCategoryC,
+    ...standardBash
+  ];
+
+  // 既存の deny リストを取得し、カスタム（手動追加）されたルールを抽出（Issue #23 解決）
+  const existingDeny = Array.isArray(settingsObj.permissions?.deny) ? settingsObj.permissions.deny : [...standardSecrets];
+  const customDenyRules = existingDeny.filter(rule => !allStandardRules.includes(rule));
+
+  // 2. guard.enabled の設定。事業ステージ(PoC を含む)に依らず有効にする(標準 第8章 軸B「本軸は、強制層に置くと決めた規則
+  // そのものを動かしません」、ADR-0050 決定1。process-compass #290 / ADR-0074)。かつては PoC で無効にしており、ADR-0050 が
+  // 退けた「S0 に限り強制層の適用を免除する」を初期化が既定で行っていた(#286 の評価で重大)。
+  // 外すのは process.config.json の guard の上書き(期限 guard.reviewBy と理由 guard.reason を要し、契約検査が期限を確かめる)だけ
+  let guardEnabled = true;
+  let isOverridden = false;
+
+  if (config.guard && typeof config.guard.enabled === 'boolean') {
+    guardEnabled = config.guard.enabled;
+    isOverridden = true;
+  }
+
+  if (!guardEnabled) {
+    guardObj.enabled = false;
+    guardObj.protectedPatterns = baseProtectedPatterns;
+
+    // guard.enabled: false（一時緩和・探索フェーズ）の時は、標準の編集・書き込み遮断や Bash 遮断を一切適用せず、
+    // 最小限の秘匿ファイル Read 遮断および利用者が手動で追加したカスタムルールのみを残します（Issue #23 解決）。
+    settingsObj.permissions.deny = [
+      ...standardSecrets,
+      ...standardArchive,
+      ...customDenyRules
+    ];
+
+    messages.push(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを無効化（enabled: false）状態のまま維持しました。settings.json の編集遮断や Bash 遮断も一時的に解放されています。理由: ${config.guard.reason || '未記入'}`);
+    // 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、enabled に依らずフックが適用する(#286)
+    messages.push('[プロセス構成] 自己修正のロック中のテストへの書き込みの遮断(5.8.5 の禁止事項3)は、段階に依らず有効です(scripts/gate/self-heal.mjs)。');
+  } else {
+    // 事業ステージに依らず、エージェント用ガードを有効化（enabled: true）し、
+    // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
+    guardObj.enabled = true;
+
+    guardObj.protectedPatterns = [
+      ...baseProtectedPatterns,
+      { "pattern": ".github/rulesets/**", "reason": "ブランチ保護ルール。書き換えられると独立レビューの強制力が失われます" },
+      { "pattern": ".github/workflows/**", "reason": "CI ワークフロー定義。書き換えられると自動検証がバイパスされます" },
+      { "pattern": "adapters/**", "reason": "スタック別アダプタ定義。書き換えられると検査コマンドの偽装が可能です" },
+      { "pattern": "scripts/gate/**", "reason": "ゲート検証コード。書き換えられると合否判定ロジックの書き換えが可能です" },
+      { "pattern": "scripts/vendor/**", "reason": "テーラリング規則。書き換えられると不変条件の無効化が可能です" }
+    ];
+
+    settingsObj.permissions.deny = [
+      ...standardSecrets,
+      ...standardArchive,
+      ...standardCategoryAB,
+      ...standardCategoryC,
+      ...standardBash,
+      ...customDenyRules
+    ];
+
+    if (isOverridden) {
+      messages.push(`[プロセス構成] process.config.json の上書き設定を検出したため、ガードを有効化（enabled: true）状態に維持し、全ファイルを厳格にロックダウン（遮断）しました。理由: ${config.guard.reason || '未記入'}`);
+    } else {
+      messages.push('[プロセス構成] エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。事業ステージ（PoC を含む）に依らず有効です（標準 第8章 軸B、ADR-0050）。');
+    }
+  }
+
+  return {
+    guardText: JSON.stringify(guardObj, null, 2) + '\n',
+    // テンプレートのフックの登録を併合する(既存の登録は残す)。既存の settings.json を残す持ち込みで、登録が黙って外れないようにする
+    // (5.8.5 の禁止事項3 の機械の遮断。process-compass #315 / ADR-0085 決定2)
+    settingsText: JSON.stringify(mergeHookRegistration(settingsObj), null, 2) + '\n',
+    messages,
+  };
 }
