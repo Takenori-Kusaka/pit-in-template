@@ -19,7 +19,7 @@ export const G5_AGGREGATE_JOB = 'gate-g5';
 
 /**
  * G-5 の判定基準と、それを実装するジョブ(標準 第4章 G-5 の基準表)。基準6 のジョブ(context-format)が確かめるのは参照切れ
- * (相対リンクと取り込み @path)だけで、見出しのアンカー・逆引用符の中のパス・1ファイルの分量の上限は確かめない
+ * (相対リンク・取り込み @path・逆引用符の中の .claude/ と scripts/ で始まるパス)だけで、見出しのアンカー・それ以外で始まる逆引用符の中のパス・1ファイルの分量の上限は確かめない
  * (process-compass #314 / ADR-0083 決定3。`.claude/skills/gate/gates/G-5.md`)。基準8 は合否を判定しない(一覧を出すだけ)ため、
  * 集約に含めることを求めない
  */
@@ -126,7 +126,7 @@ export function aggregateFindings(text) {
   }
   notes.push(
     'G-5 基準6(文脈ファイルの形式検査)のジョブ context-format が確かめるのは参照切れ(相対リンクと取り込み @path)だけです。' +
-      '見出しのアンカー、逆引用符の中のパス、1ファイルの分量の上限は確かめていません(採用者が足すときは、同じジョブか集約の needs へ入れます)'
+      '見出しのアンカー、逆引用符の中の .claude/・scripts/ 以外で始まるパス、1ファイルの分量の上限は確かめていません(採用者が足すときは、同じジョブか集約の needs へ入れます)'
   );
   return { needs, effective, problems, notes };
 }

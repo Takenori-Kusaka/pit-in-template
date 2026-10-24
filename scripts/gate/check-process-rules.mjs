@@ -13,12 +13,13 @@
 // (claude-md-resident.json)にある節と規則が CLAUDE.md にあることを確かめます(process-compass #306)。
 // 規則は、規則ごとの核の文言を、同じ節の行と正規化して照合します(process-compass #314 / ADR-0083 決定2)。
 // 案件が行の前後へ書き足すこと・並べ替えることは妨げません。一覧から規則を除くのは強制層の縮小です(state:needs-platform)。
+// 除いた規則(omit)の各項目に、理由(reason)と承認した者(approvedBy。AI の名義でない)が無ければ落とします(#314 の突合 X-12)。
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, aiNameBlocked } from './config.mjs';
 import { renderProcessRules, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
-import { RESIDENT_FILE, buildManifest, loadManifest, missingResident } from './claude-md-resident.mjs';
+import { RESIDENT_FILE, buildManifest, loadManifest, missingResident, omitProblems } from './claude-md-resident.mjs';
 
 const config = loadConfig();
 const FILE = path.join(ROOT, 'CLAUDE.md');
@@ -79,6 +80,15 @@ if (!manifest) {
     `常駐の規則の節の一覧(${path.relative(ROOT, RESIDENT_FILE)})がありません。テンプレートから戻してください。` +
       '一覧が無いと、CLAUDE.md に常駐の規則があるかを確かめられません'
   );
+  process.exit(1);
+}
+const omitIssues = omitProblems(manifest, (name) => aiNameBlocked(config, name));
+if (omitIssues.length > 0) {
+  fail(`常駐の規則の一覧の omit に、不備が ${omitIssues.length} 件あります`);
+  for (const p of omitIssues) console.log(`  ${p}`);
+  console.log('');
+  console.log('一覧から規則を除くのは強制層の縮小です。state:needs-platform を経て、AI維持管理者(人)が承認し、');
+  console.log('omit の項目へ reason(除く理由)と approvedBy(承認した者の氏名)を書きます。AI の名義の承認は受け付けません。');
   process.exit(1);
 }
 const { absent, empty, rules } = missingResident(text, manifest);

@@ -8,6 +8,8 @@
 // 照合の単位は規則(1行が1つの規則。process-compass #314 / ADR-0083 決定2)。一覧は規則ごとに
 // 識別子・節・核の文言を持ちます。照合は正規化(太字・逆引用符・リンクの記法・HTML コメント・空白の違いを除く)
 // したうえで、核の文言が同じ節のいずれかの行に含まれることを確かめます。
+// HTML コメントは、行に分ける前に、複数行にわたるものも行番号を保って空行へ置き換えます。描画されない
+// コメントの中の規則を、規則があると数えないためです(process-compass #314 の突合 X-5)。
 //   - 案件が行の前後へ書き足すこと、節の中で行を並べ替えること、節へ行を足すことは妨げません
 //   - 核の文言を変えること(否定を除く等)は標準の規定の書き換えであり、照合が落ちるのは真の検出です
 //   - 表の行の核は、列の見出しが「#」「止める仕組み」「例」以外の升です(止める仕組みは案件の CI に合わせて書き換えてよい)
@@ -15,9 +17,15 @@
 // 一覧の正本は、テンプレートの CLAUDE.md です。CLAUDE.md の規則を足したら、次で一覧へ追加します。
 //   node scripts/gate/check-process-rules.mjs --write-resident
 // 作り直しは追加だけです。一覧から規則を除くことは強制層の縮小であり、`state:needs-platform` を経て、
-// 除いた規則を omit へ理由つきで移します(手で編集する。作り直しは omit の規則を足し戻しません)。
+// 除いた規則を omit へ移します(手で編集する。作り直しは omit の規則を足し戻しません)。
+// omit の各項目には reason(除く理由)と approvedBy(承認した AI維持管理者の氏名。AI の名義は受け付けない)が要ります。
+// check-process-rules.mjs が、欠けた項目を落とします(process-compass #314 の突合 X-12)。
 // test-init-g5.mjs が、一覧とテンプレートの CLAUDE.md の一致を確かめ、
-// test-claude-md-resident.mjs が変異(行の削除・節の置き換え・否定の除去)で落ちることを確かめます。
+// test-claude-md-resident.mjs が、試験の中に持つ固定の写しへの変異(行の削除・節の置き換え・否定の除去・
+// 複数行のコメントで囲む)で落ちることを確かめます。
+//
+// 機械で止まらないこと(ADR-0083 決定2 の限界): 案件が CLAUDE.md の行と一覧の規則を同じ変更で消すこと
+// (差分のレビューだけが拾う)、行末へ打ち消し(「当社では適用しない」等)を書き足すこと。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,12 +36,19 @@ export const RESIDENT_FILE = path.join(ROOT, 'scripts', 'gate', 'claude-md-resid
 // 構成依存部分を置く節。目印の区間は check-process-rules.mjs が別に確かめる
 const GENERATED_HEADING = 'このプロジェクトの構成(自動生成)';
 
+/** HTML コメント(複数行にわたるものを含む)を、改行だけを残して消す。行番号は保たれる */
+export function blankComments(text) {
+  return String(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ''));
+}
+
 /** 見出し(## と ###)と、その下に本文があるかを返す。コードブロックの中は見出しとして数えない */
 export function parseSections(text) {
   const sections = [];
   let inFence = false;
   let current = null;
-  for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+  for (const raw of blankComments(text).split('\n')) {
     if (/^\s*(```|~~~)/.test(raw)) {
       inFence = !inFence;
       if (current) current.hasBody = true;
@@ -80,7 +95,7 @@ export function extractRules(text) {
   let inFence = false;
   let section = null;
   let header = null;
-  for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+  for (const raw of blankComments(text).split('\n')) {
     if (/^\s*(```|~~~)/.test(raw)) {
       inFence = !inFence;
       continue;
@@ -135,7 +150,7 @@ function linesBySection(text) {
   let inFence = false;
   let section = null;
   let header = null;
-  for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+  for (const raw of blankComments(text).split('\n')) {
     if (/^\s*(```|~~~)/.test(raw)) {
       inFence = !inFence;
       continue;
@@ -199,11 +214,30 @@ export function buildManifest(text, previous = null) {
     note:
       'CLAUDE.md の常駐の規則の一覧(節と、規則ごとの核の文言)。正本はテンプレートの CLAUDE.md。' +
       '追加: node scripts/gate/check-process-rules.mjs --write-resident(追加だけ)。' +
-      '規則を除くのは強制層の縮小であり、state:needs-platform を経て omit へ理由つきで移す',
+      '規則を除くのは強制層の縮小であり、state:needs-platform を経て omit へ移す。' +
+      'omit の各項目には reason(理由)と approvedBy(承認した AI維持管理者の氏名。AI の名義は不可)を書く',
     sections,
     rules,
     omit,
   };
+}
+
+/**
+ * omit の項目の不備を返す。各項目に reason と approvedBy が要り、approvedBy は AI の名義であってはならない。
+ * aiReason(name) は、AI の名義なら理由の文、そうでなければ null を返す関数
+ */
+export function omitProblems(manifest, aiReason) {
+  const out = [];
+  for (const o of manifest?.omit ?? []) {
+    const id = o?.id ?? '(識別子なし)';
+    if (!o || typeof o.reason !== 'string' || !o.reason.trim()) out.push(`${id}: reason(除く理由)がありません`);
+    if (!o || typeof o.approvedBy !== 'string' || !o.approvedBy.trim()) out.push(`${id}: approvedBy(承認した AI維持管理者の氏名)がありません`);
+    else {
+      const why = aiReason(o.approvedBy);
+      if (why) out.push(`${id}: approvedBy "${o.approvedBy}" は ${why}。AI の名義の承認を受け付けません`);
+    }
+  }
+  return out;
 }
 
 export function loadManifest() {

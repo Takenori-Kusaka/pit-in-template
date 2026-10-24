@@ -101,10 +101,13 @@ jobs:
       - run: node scripts/gate/test-self-heal.mjs
       # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)
       - run: node scripts/gate/test-size-observation.mjs
-      # 文脈ファイルの参照切れの検査(G-5 基準6。相対リンクと取り込み @path に限る。process-compass #314 / ADR-0083)
+      # 文脈ファイルの参照切れの検査(G-5 基準6。相対リンク・取り込み @path・逆引用符の中の .claude/ と scripts/ のパス。process-compass #314 / ADR-0083)
       - run: node scripts/gate/test-context-refs.mjs
-      # 常駐の規則の照合: 規則ごとの核の文言の照合と、変異(行の削除・節の置き換え・否定の除去)で落ちること(process-compass #314 / ADR-0083)
+      # 常駐の規則の照合: 規則ごとの核の文言の照合と、試験の中の固定の写しへの変異(行の削除・節の置き換え・否定の除去・
+      # 複数行のコメントで囲む)で落ちること。案件の CLAUDE.md は読まない(process-compass #314 / ADR-0083)
       - run: node scripts/gate/test-claude-md-resident.mjs
+      # 曖昧語の検査の検出語の知識ベース: 無い・空なら失敗すること(標準 第4章 G-2。process-compass #314)
+      - run: node scripts/gate/test-spec-lint.mjs
       # 外部の確認者の記名による緩める向きの決定を、変化点の入口が拒否すること(標準 第3章 3.13.3。process-compass #314 / ADR-0083)
       - run: node scripts/gate/test-loosening-decider.mjs
 
@@ -181,7 +184,7 @@ jobs:
       - run: node scripts/gate/spec-lint.mjs
 
   # 基準6 文脈ファイルの形式検査のうち、リポジトリ内の参照切れ(相対リンクと取り込み @path)。構成に依存しないため常に走らせる。
-  # 見出しのアンカー、逆引用符の中のパス、1ファイルの分量の上限は確かめない(process-compass #314 / ADR-0083 決定3)
+  # 見出しのアンカー、逆引用符の中の .claude/・scripts/ 以外で始まるパス、1ファイルの分量の上限は確かめない(process-compass #314 / ADR-0083 決定3)
   context-format:
     name: context-format
     runs-on: ubuntu-latest

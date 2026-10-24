@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, autonomyNoteLines, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions } from './autonomy.mjs';
+import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -331,9 +331,19 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('判定不能からの回復: 判定可能な窓が得られると、登録し直さずに戻る', autonomyState(r.config, r.records).types[0].level === 'L3');
   // 表示は判定不能を「異常なし」と書かない(突合 X-15)
   const lines1 = autonomyNoteLines(rs1).join('\n');
+  // IMPL-0281:ng(違反の入力: 窓が最小標本数に満たない判定不能。/pit の注記に判定不能と出す。process-compass #314)
   check('表示: 判定不能を出し、「異常なし」と書かない', /判定不能/.test(lines1) && !/異常なし/.test(lines1) && /判定を待たずに戻る/.test(lines1));
-  const lines0 = autonomyNoteLines(autonomyState(base().config, base().records)).join('\n');
-  check('表示: 停止の無い種別でも「異常なし」と書かず、手戻り率を集計していないと出す', /停止なし/.test(lines0) && !/異常なし/.test(lines0) && /集計していない/.test(lines0));
+  const sOk = autonomyState(base().config, base().records);
+  const lines0 = autonomyNoteLines(sOk).join('\n');
+  // IMPL-0281:ok(適合の入力: 判定可能で停止の無い種別。判定不能と出さない)
+  check('表示: 停止の無い種別でも「異常なし」と書かず、手戻り率を集計していないと出す', /停止なし/.test(lines0) && !/異常なし/.test(lines0) && !/判定不能/.test(lines0) && /集計していない/.test(lines0));
+  // 保証の開示の項目3 が使う1行の表示(aggregate-evidence.mjs の rejectionText・stopsText)
+  const rej1 = `${rejectionText(rs1.types[0])} / ${stopsText(rs1.types[0])}`;
+  // IMPL-0282:ng(違反の入力: 判定不能の窓。開示の行に判定不能と出し、「異常なし」と書かない)
+  check('開示の行: 判定不能の窓を判定不能と出し、「異常なし」と書かない', /判定不能/.test(rej1) && !/異常なし/.test(rej1), rej1);
+  const rej0 = `${rejectionText(sOk.types[0])} / ${stopsText(sOk.types[0])}`;
+  // IMPL-0282:ok(適合の入力: 判定可能で停止の無い種別。判定不能と出さない)
+  check('開示の行: 判定可能で停止の無い種別は、判定不能と出さず停止なしと出す', !/判定不能/.test(rej0) && !/異常なし/.test(rej0) && /なし$/.test(rej0), rej0);
   // 上限の理由(突合 X-16)
   const capNoQ = autonomyCap({ configured: true, answers: {} });
   check('上限: 回答に安全重要度の無い構成は L1 とし、理由を出す', capNoQ.level === 'L1' && /q-criticality/.test(capNoQ.reason));
