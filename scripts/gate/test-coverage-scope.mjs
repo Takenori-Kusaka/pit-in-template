@@ -100,8 +100,12 @@ let r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'changed' }),
 // IMPL-0245:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('changed: 全体が 90.9% でも、変更の範囲が 0%(分母 10 行)なら落とす', r.code === 1 && r.result.scope === 'changed' && r.result.denominator === 10 && r.result.pct === 0, JSON.stringify(r.result));
 check('changed: 結果に範囲・分母・測っていない製品のファイルの数を書く', r.result.scopeLabel === '変更で加えた・変えたコード' && r.result.unmeasuredProductFiles === 0 && r.result.whole.pct === 90.91, JSON.stringify(r.result));
+const changedResult = r;
 r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'whole' }), adapter: NODE, base: 'main' });
+// IMPL-0260:ng(違反の入力: 全体で判定し、変更の未被覆が全体の被覆で薄まる。薄まる旨・分母を結果に書く。process-compass #314)
 check('whole: 全体 90.9% は通るが、変更の未被覆が薄まる旨(dilution)と分母を出す', r.code === 0 && r.result.dilution === true && r.result.denominator === 110 && r.result.scope === 'whole', JSON.stringify(r.result));
+// IMPL-0260:ok(適合の入力: 変更の範囲で判定する。薄まる旨を書かない)
+check('changed: 変更の範囲で判定した結果には、薄まる旨を書かない', changedResult.result.dilution !== true && !changedResult.messages.some((m) => /薄まります/.test(m.text)), JSON.stringify(changedResult.result));
 check('whole: 薄まる旨を通知に出す', r.messages.some((m) => /薄まります/.test(m.text)), JSON.stringify(r.messages));
 
 // 新しい 10 行のうち 9 行を被覆 → 90%

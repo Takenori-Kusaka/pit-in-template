@@ -108,8 +108,10 @@ scenario('番号の重複(置き場と保管領域)', {
     parseDecision(adr({ num: '0006', state: '採用(2026-07-01)' }), D('0006-f.md')),
   ];
   const ids = overdueDecisions(list, '2026-10-23').map((d) => d.id);
-  // IMPL-0140:ng IMPL-0140:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-  check('期限を過ぎて採用のまま・期限の前の継続だけの判断記録を出し、継続・廃止・期限前・期限なしは出さない', JSON.stringify(ids) === JSON.stringify(['ADR-0001', 'ADR-0005']), JSON.stringify(ids));
+  // IMPL-0140:ng(違反の入力: 期限を過ぎて採用のまま・期限の前の継続だけ。標準の実装マーク。process-compass #314)
+  check('期限を過ぎて採用のまま・期限の前の継続だけの判断記録を出す', ids.includes('ADR-0001') && ids.includes('ADR-0005'), JSON.stringify(ids));
+  // IMPL-0140:ok(適合の入力: 期限の後の継続・廃止・期限前・期限なし)
+  check('期限の後の継続・廃止・期限前・期限なしの判断記録は出さない', ['ADR-0002', 'ADR-0003', 'ADR-0004', 'ADR-0006'].every((id) => !ids.includes(id)) && ids.length === 2, JSON.stringify(ids));
 }
 
 // ---------------------------------------------------------------- 件数の表示(出荷判定の証跡の集約)

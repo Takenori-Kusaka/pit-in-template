@@ -267,7 +267,37 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const d0 = fs.readFileSync(path.join(w.dir, 'templates/00-d0-governance.md'), 'utf8').split('\n').filter((l) => !/^- 従う本標準の版:/.test(l)).join('\n');
   fs.writeFileSync(path.join(w.dir, 'docs/D-0-governance.md'), d0);
   const pit = w.node('scripts/gate/next.mjs');
+  // IMPL-0311:ng(違反の入力: 欄の無い D-0。標準の実装マーク。process-compass #314)
   check('D-0 に従う本標準の版の欄が無ければ、/pit が注記する', /従う本標準の版」が無い/.test(pit.out), pit.out.slice(0, 1500));
+  const filled = fs
+    .readFileSync(path.join(w.dir, 'templates/00-d0-governance.md'), 'utf8')
+    .split('\n')
+    .map((l) => (/^- 従う本標準の版:/.test(l) ? '- 従う本標準の版: 作業中の版(未発行)' : l))
+    .join('\n');
+  fs.writeFileSync(path.join(w.dir, 'docs/D-0-governance.md'), filled);
+  const pitOk = w.node('scripts/gate/next.mjs');
+  // IMPL-0311:ok(適合の入力: 欄を記入した D-0)
+  check('D-0 の従う本標準の版の欄を記入すれば、/pit は注記しない', pitOk.ok !== false && !/従う本標準の版」が/.test(pitOk.out), pitOk.out.slice(0, 1500));
+  w.done();
+}
+
+{
+  // 適用の開始の前後(第1章 1.10.1。IMPL-0119)。前の変更は数えず欠落にもせず、後の変更は要求事項のすべての対象にする
+  const w = workspace();
+  w.commit('chore: template');
+  fs.mkdirSync(path.join(w.dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(w.dir, 'src/before.js'), 'export const a = 1;\n');
+  const beforeHash = w.commit('feat: 適用の開始より前の製品の変更');
+  w.writeJson('process.config.json', sealed(base));
+  w.commit('chore: init');
+  fs.writeFileSync(path.join(w.dir, 'src/after.js'), 'export const b = 1;\n');
+  const afterHash = w.commit('feat: 適用の開始の後の製品の変更');
+  const a = w.node('scripts/gate/aggregate-evidence.mjs');
+  const errs = a.out.split('\n').filter((l) => /::error::/.test(l));
+  // IMPL-0119:ng(違反の入力: 適用の開始の後の、記録の無い製品の変更。標準の実装マーク。process-compass #314)
+  check('適用の開始の後の、記録の無い製品の変更は欠落として出る', errs.some((l) => l.includes(`コミット ${afterHash.slice(0, 8)}`)), errs.join('\n'));
+  // IMPL-0119:ok(適合の入力: 適用の開始より前の製品の変更は、記録が無くても欠落にしない)
+  check('適用の開始より前の製品の変更は、記録が無くても欠落にしない', !errs.some((l) => l.includes(beforeHash.slice(0, 7))), errs.join('\n'));
   w.done();
 }
 
