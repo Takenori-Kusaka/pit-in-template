@@ -35,6 +35,7 @@ import {
   END_REASONS,
   findInitCommit,
   initRecordProblem,
+  preflightRecordProblem,
   modeRank,
   qualificationProblems,
   classifyDelegation,
@@ -204,6 +205,19 @@ function compareWithBase() {
       }
       const found = baseChainProblems(baseConfig, config);
       for (const p of found) problems.push(`${p}(基底: ${base})`);
+      // 取り込んだテンプレートの記録の上で、要約値が変わったパス(#315 突合 X-6)。強制層を変える変更と記録の取り直しを
+      // 同じ PR に入れると、乖離の注記は「一致」になる。記録の差を列挙して、どのファイルの要約値を取り直したかを見せる
+      const bd = baseConfig?.template?.digests;
+      const hd = config.template?.digests;
+      if (bd && hd && typeof bd === 'object' && typeof hd === 'object') {
+        const moved = [...new Set([...Object.keys(bd), ...Object.keys(hd)])].filter((k) => bd[k] !== hd[k]).sort();
+        if (moved.length) {
+          notes.push(
+            `この変更は、取り込んだ準拠テンプレートの記録の要約値を ${moved.length} 件取り直しています(基底: ${base})。` +
+              `取り直したパス: ${moved.slice(0, 20).join(', ')}${moved.length > 20 ? ` ほか ${moved.length - 20} 件` : ''}。強制層の変更として AI維持管理者(人)が承認します`
+          );
+        }
+      }
       if (baseConfig?.configured === true && !found.length) notice(`基底ブランチ ${base} の構成と比べました。変化点の記録は追記だけです`);
     }
   }
@@ -270,7 +284,7 @@ if (config.configured === false) {
   }
   const drift = templateDrift(config, ROOT);
   if (!config.template) {
-    notes.push('構成に、取り込んだ準拠テンプレートの記録(template)がありません。/process-change(種別 migrate。templateCommit に取り込んだコミット)で記録できます');
+    notes.push('構成に、取り込んだ準拠テンプレートの記録(template)がありません。/process-change(種別 intake。記名の自然人の決定と、templateCommit に取り込んだコミット)で記録できます');
   } else if (drift) {
     const n = drift.changed.length + drift.missing.length + drift.added.length;
     const head = `取り込んだ準拠テンプレート ${drift.commit ?? '不明(コミットの識別の記録なし)'}(${drift.recordedAt ?? '日付なし'} に記録)`;
@@ -610,6 +624,10 @@ if (!Array.isArray(config.seats)) {
       if (e.kind === 'migrate' && !(Number.isInteger(e.migrate?.from) && Number.isInteger(e.migrate?.to) && e.migrate.from <= e.migrate.to)) {
         problems.push(`changeLog[${i}]: 構成の移行の記録に、移行元と移行先の形式の版がありません(種別 migrate。ADR-0085 決定5)`);
       }
+      // 取り込み(強制層の要約値の記録し直し)は、記名の自然人の決定である(#315 突合 X-6)
+      if (e.kind === 'intake' && !(e.intake && typeof e.intake === 'object' && e.decidedBy && e.reason)) {
+        problems.push(`changeLog[${i}]: テンプレートの取り込みの記録に、取り込みの内容(intake)、決定した者、理由のいずれかがありません(種別 intake。ADR-0085 決定6)`);
+      }
       if (e.kind === 'end' && !(e.end?.reason in END_REASONS && e.decidedBy)) {
         problems.push(`changeLog[${i}]: 適用の終了の記録に、理由の区分(${Object.keys(END_REASONS).join(' / ')})または決定した者がありません(第1章 1.10.4)`);
       }
@@ -644,6 +662,9 @@ if (!Array.isArray(config.seats)) {
       if (inScope) problems.push(`${msg}。適用の開始のコミットが検査の範囲にあります。同じコミットに changeLog の init を書いてください`);
       else notes.push(msg);
     }
+    // 適用の開始の記録の事前点検の結果(#315 突合 X-2)。記録の欠落として表示し、失敗にはしない(ADR-0083 決定3 と同じ扱い)
+    const pfProblem = init ? preflightRecordProblem(init.config, { root: ROOT, initHash: init.hash }) : null;
+    if (pfProblem) notes.push(`${pfProblem}(${init.hash.slice(0, 12)})。記録の欠落です。出荷の証跡の集約は、適用の開始のコミットを範囲に含む出荷で記録の欠落として扱います`);
     // 即時通知(第3章 3.13.6)の記録が済んでいない変化点。出荷判定の証跡の集約が、記録の欠落として扱う
     for (const n of pendingNotices(config)) {
       notes.push(

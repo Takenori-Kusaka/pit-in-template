@@ -1426,6 +1426,8 @@ function envCheck() {
   //    必須チェック gate-g5 は G-6 の状態に依らず確かめる(#315 R-4。checks-only の構成で確かめる項目が無かった穴を塞ぐ。
   //    附属書H 項目4 と第4章 G-5 の必須チェック)。承認の規則は G-6 が有効な構成でだけ確かめる
   let effectiveRulesetIds = [];
+  // 旧来のブランチ保護と合わせて読み直すための、ルールセットの側の読めた内容(#315 突合 X-17)
+  let rsRead = null;
   if (!repo) items.ruleset = noRepo();
   else {
     const api = `repos/${repo}/rules/branches/${branch}`;
@@ -1433,8 +1435,10 @@ function envCheck() {
     const r = ghJson(['api', api]);
     if (!Array.isArray(r.value)) items.ruleset = fromFailure(r, 'ルールセットの一覧を読めない');
     // 読めた空の一覧は「不一致」(読めなかった場合と区別する。#315 R-4)
-    else if (!r.value.length) items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)`, evidence: { rulesetIds: [], api, fetchedAt } };
-    else {
+    else if (!r.value.length) {
+      items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)`, evidence: { rulesetIds: [], api, fetchedAt } };
+      rsRead = { pr: null, checks: [], rulesetIds: [], api, fetchedAt };
+    } else {
       const pr = r.value.find((x) => x?.type === 'pull_request')?.parameters ?? null;
       const checks = r.value.filter((x) => x?.type === 'required_status_checks').flatMap((x) => x?.parameters?.required_status_checks ?? []).map((c) => c?.context).filter(Boolean);
       const bad = [];
@@ -1453,6 +1457,7 @@ function envCheck() {
       // 実環境の識別: 応答の各規則が属するルールセットの id(GitHub の設定画面の Rulesets の URL の末尾と一致する)
       const rulesetIds = [...new Set(r.value.map((x) => x?.ruleset_id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number))];
       effectiveRulesetIds = rulesetIds;
+      rsRead = { pr, checks, rulesetIds, api, fetchedAt };
       const evidence = { rulesetIds, api, fetchedAt };
       const what = g6Active
         ? `承認 ${pr?.required_approving_review_count} 名・push での古い承認の失効・最後の push の後の承認${ownerReview ? '・コードオーナー' : ''}・必須チェック ${checks.join('/')}`
@@ -1465,6 +1470,7 @@ function envCheck() {
 
   // 1b. 旧来のブランチ保護との重なり(#315 R-4)。旧来の保護とルールセットは重ねて効き、厳しい方が勝つ。重なりは不一致にせず、
   //     何が効いているかを記録に書く。保護が無い(404 Branch not protected)は確認済み(重なりなし)。読むには admin の権限が要る
+  let classicRead = null;
   if (!repo) items.classicProtection = noRepo();
   else {
     const api = `repos/${repo}/branches/${branch}/protection`;
@@ -1479,9 +1485,44 @@ function envCheck() {
         `管理者にも適用 ${r.value.enforce_admins?.enabled === true ? 'する' : 'しない'}`,
       ];
       items.classicProtection = confirmedWith('classicProtection', `旧来のブランチ保護がルールセットと重なっている(${parts.join('・')})。重なりは厳しい方が勝つ。緩める根拠には使わない`, { protected: true, url: typeof r.value.url === 'string' ? r.value.url : null, api, fetchedAt });
+      classicRead = { checks, reviews, enforceAdmins: r.value.enforce_admins?.enabled === true, url: typeof r.value.url === 'string' ? r.value.url : api };
     } else if (r.http === 404 && /not protected/i.test(r.message ?? '')) {
       items.classicProtection = confirmedWith('classicProtection', `ブランチ ${branch} に旧来のブランチ保護は無い(重なりなし。統制はルールセットだけ)`, { protected: false, api, fetchedAt });
     } else items.classicProtection = fromFailure(r, '旧来のブランチ保護を読めない');
+  }
+
+  // 1b'. 旧来のブランチ保護だけで(またはルールセットと合わせて)gate-g5 と承認の規則を効かせている構成(#315 突合 X-17)。
+  //     ルールセットと旧来の保護は重ねて効くため、規則ごとにどちらかが満たせば効いていると読み、ルールセットの項目を確認済みにする。
+  //     ただし旧来の保護が管理者に適用されない(enforce_admins が無効)なら、管理者が規則を通らずにマージできる経路が残る
+  //     (ルールセットのバイパスの主体と同じ扱い)ため、旧来の保護を数えない
+  let rulesetViaClassic = false;
+  if (items.ruleset?.status === 'mismatch' && rsRead && classicRead) {
+    const cr = classicRead.reviews ?? null;
+    const pr = rsRead.pr ?? {};
+    const both = {
+      checks: [...new Set([...rsRead.checks, ...classicRead.checks])],
+      approvals: Math.max(Number(pr.required_approving_review_count ?? 0) || 0, Number(cr?.required_approving_review_count ?? 0) || 0),
+      dismissStale: pr.dismiss_stale_reviews_on_push === true || cr?.dismiss_stale_reviews === true,
+      lastPush: pr.require_last_push_approval === true || cr?.require_last_push_approval === true,
+      codeOwner: pr.require_code_owner_review === true || cr?.require_code_owner_reviews === true,
+    };
+    const bad = [];
+    if (!classicRead.enforceAdmins) bad.push('旧来のブランチ保護が管理者に適用されない(enforce_admins が無効。管理者が規則を通らずにマージできるため、旧来の保護を数えない)');
+    if (!both.checks.includes('gate-g5')) bad.push('ルールセットにも旧来の保護にも、必須チェック gate-g5 が無い');
+    if (g6Active) {
+      if (!(both.approvals >= want)) bad.push(`要求する承認の数 ${both.approvals} < 構成 ${want}`);
+      if (!both.dismissStale) bad.push('push で古い承認を無効にする設定が無効');
+      if (!both.lastPush) bad.push('最後の push の後の承認が無効');
+      if (ownerReview && !both.codeOwner) bad.push('コードオーナーの承認が無効');
+    }
+    if (!bad.length) {
+      rulesetViaClassic = true;
+      items.ruleset = confirmedWith(
+        'ruleset',
+        `ブランチ ${branch} に、旧来のブランチ保護${rsRead.rulesetIds.length ? 'とルールセットを合わせて' : 'で'}必須チェック ${both.checks.join('/')}${g6Active ? `・承認 ${both.approvals} 名・push での古い承認の失効・最後の push の後の承認${ownerReview ? '・コードオーナー' : ''}` : ''}が効いている(旧来の保護は管理者にも適用。テンプレートの統制の手段はルールセットで、資産の一覧で「置き換える」とすることを勧める)`,
+        { rulesetIds: rsRead.rulesetIds, classicProtectionUrl: classicRead.url, api: rsRead.api, fetchedAt: rsRead.fetchedAt },
+      );
+    } else items.ruleset = { ...items.ruleset, detail: `${items.ruleset.detail}。旧来のブランチ保護と合わせても満たさない: ${bad.join('。')}` };
   }
 
   // 1c. 効いている CODEOWNERS の所在と codeowners/errors(#315 R-4)。GitHub は .github/・根・docs/ の順に最初の1つだけを使う
@@ -1524,8 +1565,8 @@ function envCheck() {
   // 1d. ルールセットのバイパスの主体(#315 R-4)。テンプレートのルールセットはバイパスの主体を持たない。主体があれば、gate-g5 と
   //     承認の規則を通らずにマージできる経路がある。bypass_actors は admin の権限でしか返らない(無ければ権限不足で読めない)
   if (!repo) items.bypass = noRepo();
-  else if (!effectiveRulesetIds.length) items.bypass = items.ruleset?.status === 'mismatch' && items.ruleset?.evidence?.rulesetIds?.length === 0
-    ? { status: 'notApplicable', detail: '効いているルールセットが無い(ルールセットの項目で不一致)。確認済みには数えない' }
+  else if (!effectiveRulesetIds.length) items.bypass = (items.ruleset?.status === 'mismatch' && items.ruleset?.evidence?.rulesetIds?.length === 0) || (rulesetViaClassic && items.ruleset?.status === 'confirmed')
+    ? { status: 'notApplicable', detail: rulesetViaClassic ? '効いているルールセットが無い(統制は旧来のブランチ保護で、管理者にも適用されている)。確認済みには数えない' : '効いているルールセットが無い(ルールセットの項目で不一致)。確認済みには数えない' }
     : unconfirmed(`ルールセットを読めないため、バイパスの主体を確かめられない(${items.ruleset?.detail ?? ''})`, items.ruleset?.reason ?? 'unreadable');
   else {
     const fetchedAt = localIso();

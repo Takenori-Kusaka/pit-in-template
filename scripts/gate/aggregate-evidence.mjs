@@ -100,6 +100,7 @@ import {
   aiAccountCheck,
   findInitCommit,
   initRecordProblem,
+  preflightRecordProblem,
   claimStatus,
   standardEdition,
 } from './config.mjs';
@@ -1702,6 +1703,9 @@ if (isMain) {
   if (initFound && commits.some((c) => c.hash === initFound.hash)) {
     const p = initRecordProblem(initFound.config);
     if (p) gaps.push(`適用の開始(${initFound.hash.slice(0, 12)}): ${p}。手で configured を先に入れた履歴などで生じます。記録の欠落です。境は動かしません(第1章 1.10.1)`);
+    // 事前点検の結果の記録(#315 突合 X-2)。初期化を経ない経路で欠けた記録を、適用の開始の記録の欠落として扱う
+    const pf = preflightRecordProblem(initFound.config, { root: ROOT, initHash: initFound.hash });
+    if (pf) gaps.push(`適用の開始(${initFound.hash.slice(0, 12)}): ${pf}。記録の欠落です(第1章 1.10.1 の要求事項1〜3)`);
   }
   for (const x of gateExceptions.rejected) {
     gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);

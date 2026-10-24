@@ -1159,7 +1159,32 @@ export const ENV_REASON_TEXT = {
   'no-subject': '確かめる対象がまだ無い',
   'no-evidence': '実環境の識別を欠く',
   legacy: '旧い形の記録(4値より前)',
+  'na-not-allowed': '対象外にできない項目・場合',
 };
+
+/**
+ * 項目を対象外と読んでよい場合(#315 突合 X-1)。書く側(env-check)が対象外を出す2つの場合に限り、読む側でも同じ条件を確かめる。
+ * 記録はリポジトリの中のファイルで手で書けるため、対象外を重ねて全体を確認済みに至る経路を読む側で塞ぐ。
+ * ルールセット・旧来の保護・PR のレビュー・ship-evidence は対象外にしない。CODEOWNERS は現在の構成がコードオーナーの承認を
+ * 要しない場合だけ、バイパスは同じ記録のルールセットが「不一致」で読めた一覧が空の場合だけ。null なら許す、文字列なら許さない理由
+ */
+export function envNotApplicableRefusal(id, config, record) {
+  if (id === 'codeowners') {
+    const rs = config?.ruleset ?? null;
+    return rs === 'regulated' || rs === 'safety' ? `現在の構成(ルールセット ${rs})はコードオーナーの承認を要するため、CODEOWNERS を対象外にできない` : null;
+  }
+  if (id === 'bypass') {
+    const rsItem = record?.items?.ruleset;
+    const ids = rsItem?.evidence?.rulesetIds;
+    const noRuleset = Array.isArray(ids) && ids.length === 0;
+    // 効いているルールセットが無い場合だけ。ルールセットの項目が不一致か、旧来のブランチ保護だけで確認済み(X-17)のとき
+    const viaClassic = rsItem?.status === 'confirmed' && typeof rsItem?.evidence?.classicProtectionUrl === 'string';
+    return noRuleset && (rsItem?.status === 'mismatch' || viaClassic)
+      ? null
+      : 'バイパスの主体を対象外にできるのは、同じ記録で効いているルールセットが無い場合だけ(ルールセットの項目が「不一致」で読めた一覧が空、または旧来のブランチ保護だけで確認済み)';
+  }
+  return 'この項目は対象外にできない(書く側の env-check が対象外を出さない項目)';
+}
 
 /** 項目の状態の短い表示(記録の節3・集約・次の一手・env-check の出力で同じ語) */
 export function envStatusLabel(item) {
@@ -1173,7 +1198,8 @@ export function envStatusLabel(item) {
  * 記録に要し、無い確認済みは「実環境の証拠を欠く」として未確認に倒す
  */
 export const ENV_EVIDENCE_KEYS = {
-  ruleset: [['rulesetIds', (v) => Array.isArray(v) && v.length > 0]],
+  // ルールセットの id。旧来のブランチ保護だけで効かせている構成(#315 突合 X-17)は、ルールセットの id の代わりに旧来の保護の所在
+  ruleset: [['rulesetIds', (v, e) => (Array.isArray(v) && v.length > 0) || (Array.isArray(v) && typeof e?.classicProtectionUrl === 'string' && e.classicProtectionUrl.length > 0)]],
   // 旧来の保護: 保護が無い(404 Branch not protected)なら protected: false。有れば応答の url(API の保護の所在)
   classicProtection: [['protected', (v) => typeof v === 'boolean']],
   // 効いている CODEOWNERS の所在と、既定ブランチ上の blob の sha(手元の git hash-object と突合できる)
@@ -1196,7 +1222,7 @@ export const ENV_EVIDENCE_KEYS = {
 export function envEvidenceMissing(id, evidence) {
   const keys = ENV_EVIDENCE_KEYS[id] ?? [];
   if (!evidence || typeof evidence !== 'object') return keys.map(([k]) => k);
-  return keys.filter(([k, ok]) => !ok(evidence[k])).map(([k]) => k);
+  return keys.filter(([k, ok]) => !ok(evidence[k], evidence)).map(([k]) => k);
 }
 
 /** 記録の実環境の識別を1行で(記録の節3・集約の項目4・次の一手で同じ文)。識別が1つも無ければ null */
@@ -1208,6 +1234,7 @@ export function envEvidenceText(env) {
     const e = i.evidence;
     if (!e || typeof e !== 'object') continue;
     if (i.id === 'ruleset' && Array.isArray(e.rulesetIds) && e.rulesetIds.length) parts.push(`ルールセット id ${e.rulesetIds.join('・')}`);
+    if (i.id === 'ruleset' && typeof e.classicProtectionUrl === 'string') parts.push(`旧来のブランチ保護 ${e.classicProtectionUrl}`);
     if (i.id === 'classicProtection' && typeof e.protected === 'boolean') parts.push(`旧来のブランチ保護 ${e.protected ? `あり(${e.url ?? 'url なし'})` : 'なし'}`);
     if (i.id === 'codeowners' && e.path) parts.push(`CODEOWNERS ${e.path}${e.blobSha ? `(blob ${String(e.blobSha).slice(0, 12)})` : ''}`);
     if (i.id === 'bypass' && Array.isArray(e.rulesetIds) && e.rulesetIds.length) parts.push(`バイパスの主体を読んだルールセット id ${e.rulesetIds.join('・')}`);
@@ -1260,6 +1287,15 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
       reason = 'legacy';
       detail = `旧い形の記録(確かめる項目なしを確認済みとして書いていた。env-check を実行し直す)。元の記載: ${detail}`;
     }
+    // 対象外は、書く側が対象外を出す場合に限って受け入れる。それ以外は未確認(対象外にできない項目)に倒す(#315 突合 X-1)
+    if (status === 'notApplicable') {
+      const refusal = envNotApplicableRefusal(id, config, r);
+      if (refusal) {
+        status = 'unconfirmed';
+        reason = 'na-not-allowed';
+        detail = `${refusal}。env-check を実行し直す。元の記載: ${detail}`;
+      }
+    }
     // 確認済みは、実環境の API の応答の識別を伴う。識別の無い確認済みは実環境の証拠を欠くため未確認に倒す(#288 第7巡 V)
     if (status === 'confirmed') {
       const missing = envEvidenceMissing(id, it?.evidence);
@@ -1276,6 +1312,8 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   const want = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
   if (r.config && Number(r.config.reviewerCount) !== want) out.problems.push(`記録の時点の承認者の数(${r.config.reviewerCount})が現在の構成(${want})と違う。確認し直す`);
   if (r.config && (config.ruleset ?? null) && r.config.ruleset !== config.ruleset) out.problems.push(`記録の時点のルールセット(${r.config.ruleset ?? 'なし'})が現在の構成(${config.ruleset})と違う。確認し直す`);
+  // G-6 の有効・無効でルールセットの項目の中身(承認の規則を確かめるか)が変わる。記録の時点と現在が違えば確認し直す(#315 突合 X-1)
+  if (r.config && 'g6' in r.config && (r.config.g6 ?? null) !== (config.gates?.g6?.state ?? null)) out.problems.push(`記録の時点の G-6 の状態(${r.config.g6 ?? 'なし'})が現在の構成(${config.gates?.g6?.state ?? 'なし'})と違う。確認し直す`);
   try {
     const committed = execFileSync('git', ['log', '-1', '--format=%cI', '--', ENV_CHECK_FILE], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     const dirty = execFileSync('git', ['status', '--porcelain', '--', ENV_CHECK_FILE], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();

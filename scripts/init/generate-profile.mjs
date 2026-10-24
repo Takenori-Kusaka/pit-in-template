@@ -42,7 +42,7 @@ import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
-import { preflight, printPreflight } from '../gate/preflight.mjs';
+import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
 import {
   isFilledValue,
   reviewersRequiredOf,
@@ -60,6 +60,7 @@ import {
   migrateConfig,
   migrationValueChanges,
   templateRecord,
+  templateDrift,
   TEMPLATE_COMMIT_PATTERN,
   hookRegistrationProblems,
   mergeHookRegistration,
@@ -1063,8 +1064,10 @@ export function changeLogEntry(e) {
     // 従う本標準の版の切り替え(第1章 1.10.3)と、適用の終了(同 1.10.4)。該当する種別だけが持つ
     ...(e.edition ? { edition: e.edition } : {}),
     ...(e.end ? { end: e.end } : {}),
-    // 構成の形式の移行(種別 migrate。process-compass #315)。移行元と移行先の版、取り込んだ準拠テンプレートのコミット
+    // 構成の形式の移行(種別 migrate。process-compass #315)。移行元と移行先の版
     ...(e.migrate ? { migrate: e.migrate } : {}),
+    // 準拠テンプレートの更新の取り込み(種別 intake。#315 突合 X-6・X-18)。前後のコミット・知識ベースの版と、取り直す直前の乖離
+    ...(e.intake ? { intake: e.intake } : {}),
     // 即時通知(第3章 3.13.6)。対象でなければ null。通知先と通知日が未記入の記録は、証跡の集約が欠落として扱う
     notice: e.notice ?? null,
     // 種別 notice の記録が、どの記録の通知を埋めるか(changeLog の添字)
@@ -2323,7 +2326,7 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
     log.forEach((e, i) => {
       // 個別の値の変更は体制の変化点ではない。構成の変更記録(changeLog[])にだけ残す。
       // 過去の変化点の通知を埋める記録は、その変化点の行へ出す
-      if (e.kind === 'settings' || e.kind === 'migrate' || (e.kind === 'notice' && e.noticeFor != null)) return;
+      if (e.kind === 'settings' || e.kind === 'migrate' || e.kind === 'intake' || (e.kind === 'notice' && e.noticeFor != null)) return;
       const kind =
         e.kind === 'init'
           ? '構成の生成'
@@ -3578,21 +3581,24 @@ if (isMain) {
   // 構成を設定済み(configured: true)にする前に、統制が黙って外れる状態を見つけて止める。点検は読むだけで、
   // 設問の回答を検出の結果で埋めない。止める項目が1つでもあれば、構成を書かない
   const templateCommit = arg(argv, '--template-commit', null);
+  let preflightResult = null;
   if (!prior && !changeFile) {
     if (templateCommit !== null && !TEMPLATE_COMMIT_PATTERN.test(templateCommit)) {
       reject(`--template-commit "${templateCommit}" は、取り込んだ準拠テンプレートのコミットの識別(7〜40 桁の16進)で書きます`);
     }
     const pf = preflight(ROOT);
+    preflightResult = pf;
     console.log('');
     printPreflight(pf);
-    if (pf.stops.length && !dryRun) {
-      reject('事前点検が止める項目を見つけました。構成を書きません', [
+    // --dry-run でも、止める項目があれば構成を出さずに非0で終える。出力の流用で点検を迂回させない(#315 突合 X-2)
+    if (pf.stops.length) {
+      reject(`事前点検が止める項目を見つけました。構成を${dryRun ? '出力しません(--dry-run)' : '書きません'}`, [
         '直し方は上の [止める] の行にあります。点検だけを繰り返すときは node scripts/gate/preflight.mjs を実行します',
         '既存のリポジトリへ持ち込む手順: README.md の「既存のリポジトリへ持ち込む場合」',
       ]);
     }
   } else if (templateCommit !== null) {
-    reject('--template-commit は初期化でだけ使えます。設定済みの構成では /process-change(種別 migrate の templateCommit)で記録します');
+    reject('--template-commit は初期化でだけ使えます。設定済みの構成では /process-change(種別 intake の templateCommit。記名の自然人の決定)で記録します');
   }
 
   // --- 入力の検査 ---
@@ -3816,14 +3822,21 @@ if (isMain) {
     } else if (change.endReason !== undefined) {
       bad.push('endReason は種別 end でだけ使えます');
     }
-    // 構成の形式の移行と、取り込んだ準拠テンプレートの記録(process-compass #315 / ADR-0085 決定5・6)。値を変えない
-    if (change.kind === 'migrate') {
-      if (extra([...CONFIG_KEYS, 'settings']).length) bad.push(`種別 migrate では体制と個別の値を変えられません(${extra([...CONFIG_KEYS, 'settings']).join(', ')} を外してください)。値を変える必要がある構成は、記名を伴う種別で直します`);
+    // 構成の形式の移行(process-compass #315 / ADR-0085 決定5)。値を変えない。強制層の要約値を記録し直さない(#315 突合 X-6)
+    if (change.kind === 'migrate' || change.kind === 'intake') {
+      if (extra([...CONFIG_KEYS, 'settings']).length) bad.push(`種別 ${change.kind} では体制と個別の値を変えられません(${extra([...CONFIG_KEYS, 'settings']).join(', ')} を外してください)。値を変える必要がある構成は、記名を伴う種別で直します`);
+    }
+    // 準拠テンプレートの更新の取り込み(#315 突合 X-6・X-18 / ADR-0085 決定6)。強制層の要約値を記録し直す唯一の経路。
+    // 取り込みは強制層の変更で、AI維持管理者(人)が承認する。記名(decidedBy。AI の名義でない)と理由を要する
+    if (change.kind === 'intake') {
+      if (!(change.decidedBy && change.reason)) bad.push('テンプレートの取り込みには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。強制層の要約値を記録し直すためです');
+      else if (aiNameReason(String(change.decidedBy))) bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(String(change.decidedBy))}。強制層の要約値の記録し直しを AI の名義で決めません`);
+      if (formatVersionOf(prior) !== FORMAT_VERSION) bad.push(`構成の形式の版が ${formatVersionOf(prior)} です。先に種別 migrate で現行の版(${FORMAT_VERSION})へ移してから取り込みを記録します`);
       if (change.templateCommit !== undefined && change.templateCommit !== null && !TEMPLATE_COMMIT_PATTERN.test(String(change.templateCommit))) {
         bad.push(`templateCommit "${change.templateCommit}" は、取り込んだ準拠テンプレートのコミットの識別(7〜40 桁の16進)で書きます`);
       }
     } else if (change.templateCommit !== undefined) {
-      bad.push('templateCommit は種別 migrate でだけ使えます');
+      bad.push(change.kind === 'migrate' ? 'templateCommit は種別 intake で書きます。種別 migrate は取り込んだテンプレートの記録を書き換えません(#315 突合 X-6)' : 'templateCommit は種別 intake でだけ使えます');
     }
     // 適用を終えた構成へは、通知の記録のほかに変化点を追記しない。同じ案件での再開の記録は準拠テンプレートに無い(IMPL-0309。降りていない)
     const ended = applicationEnd(prior);
@@ -3835,7 +3848,8 @@ if (isMain) {
     }
     if (bad.length) reject('変化点の入力を受け付けられません', bad);
 
-    // 構成の形式の移行(種別 migrate)。版ごとの現行の版への直接の変換を当て、取り込んだ準拠テンプレートの記録を書く。
+    // 構成の形式の移行(種別 migrate)。版ごとの現行の版への直接の変換を当てる。取り込んだ準拠テンプレートの記録は
+    // 書き換えない(#315 突合 X-6。記録し直しは種別 intake の記名で行う)。
     // 導出をやり直さない(知識ベースの更新でゲートの状態などが変わるため)。値が変われば拒否する
     if (change.kind === 'migrate') {
       const from = formatVersionOf(prior);
@@ -3845,7 +3859,7 @@ if (isMain) {
       } catch (e) {
         reject(e.message);
       }
-      migrated.template = templateRecord(change.templateCommit ?? prior.template?.commit ?? null, ROOT, day);
+      if (prior.template !== undefined) migrated.template = prior.template;
       const changed = migrationValueChanges(prior, migrated);
       if (changed.length) reject('移行が構成の値を変えます。移行は値を変えません', [`変わる欄: ${changed.join(', ')}`, '値を変える必要がある構成は、記名を伴う種別(accountable・settings など)で直します']);
       migrated.changeLog = [
@@ -3858,19 +3872,65 @@ if (isMain) {
           diff: from === FORMAT_VERSION ? [] : [`構成の形式の版: ${from} → ${FORMAT_VERSION}`],
           decidedBy: change.decidedBy ?? null,
           reason: change.reason ?? null,
-          migrate: { from, to: FORMAT_VERSION, templateCommit: migrated.template.commit },
+          migrate: { from, to: FORMAT_VERSION },
         }),
       ];
       sealChangeLog(migrated);
-      const drift = Object.keys(migrated.template.digests).length;
       if (dryRun) {
         console.log(JSON.stringify(migrated, null, 2));
         console.log('--dry-run のため、構成は書き換えていません');
         process.exit(0);
       }
       fs.writeFileSync(path.join(ROOT, 'process.config.json'), JSON.stringify(migrated, null, 2) + '\n', 'utf8');
-      console.log(`wrote process.config.json(形式の版 ${from} → ${FORMAT_VERSION}。取り込んだ準拠テンプレート ${migrated.template.commit ?? '不明'}。強制層のファイル ${drift} 件の要約値を記録した)`);
+      console.log(`wrote process.config.json(形式の版 ${from} → ${FORMAT_VERSION}。取り込んだ準拠テンプレートの記録は書き換えていない)`);
+      if (!migrated.template) console.log('取り込んだ準拠テンプレートの記録(template)がありません。種別 intake(記名の自然人の決定)で記録します');
       console.log('移行はゲートの状態・席・名簿・閾値の値を変えていません。移行の PR は強制層の変更として扱い、AI維持管理者(人)が承認します(state:needs-platform)');
+      process.exit(0);
+    }
+
+    // 準拠テンプレートの更新の取り込み(種別 intake。#315 突合 X-6・X-18)。強制層の要約値を記録し直す。取り直す直前の乖離
+    // (変わった・無くなった・増えたパス)と、取り込みの前後の知識ベースの版(従う作業中の版の切り替え)を道具が書く
+    if (change.kind === 'intake') {
+      const next = JSON.parse(JSON.stringify(prior));
+      const drift = templateDrift(prior, ROOT);
+      const before = prior.template ?? null;
+      next.template = templateRecord(change.templateCommit ?? before?.commit ?? null, ROOT, day);
+      const changed = migrationValueChanges(prior, next);
+      if (changed.length) reject('取り込みが構成の値を変えます。取り込みは値を変えません', [`変わる欄: ${changed.join(', ')}`]);
+      const driftPaths = drift ? { changed: drift.changed, missing: drift.missing, added: drift.added } : null;
+      const nDrift = driftPaths ? driftPaths.changed.length + driftPaths.missing.length + driftPaths.added.length : null;
+      const kbBefore = before?.kbCommit ?? null;
+      const kbAfter = next.template.kbCommit ?? null;
+      const kbSwitched = kbBefore !== kbAfter;
+      const diff = [
+        `取り込んだ準拠テンプレート: ${before?.commit ?? '記録なし'} → ${next.template.commit ?? '不明'}`,
+        nDrift === null ? '強制層の要約値: 記録なし → 記録した' : `強制層の要約値の乖離(取り直す直前): 変わった ${driftPaths.changed.length} / 無くなった ${driftPaths.missing.length} / 増えた ${driftPaths.added.length}`,
+        ...(kbSwitched ? [`知識ベースの生成元: ${kbBefore ?? '記録なし'} → ${kbAfter ?? '不明'}(${standardEdition(prior) ? `従う版 ${standardEdition(prior)} は変えない` : '従う作業中の版の切り替え'})`] : []),
+      ];
+      next.changeLog = [
+        ...(prior.changeLog ?? []),
+        changeLogEntry({
+          kind: 'intake',
+          date: day,
+          summary: change.summary,
+          result: nDrift === 0 && !kbSwitched && before?.commit === next.template.commit ? 'no-change' : 'changed',
+          diff,
+          decidedBy: change.decidedBy,
+          reason: change.reason,
+          intake: { commitBefore: before?.commit ?? null, commitAfter: next.template.commit, kbCommitBefore: kbBefore, kbCommitAfter: kbAfter, drift: driftPaths },
+        }),
+      ];
+      sealChangeLog(next);
+      if (dryRun) {
+        console.log(JSON.stringify(next, null, 2));
+        console.log('--dry-run のため、構成は書き換えていません');
+        process.exit(0);
+      }
+      fs.writeFileSync(path.join(ROOT, 'process.config.json'), JSON.stringify(next, null, 2) + '\n', 'utf8');
+      console.log(`wrote process.config.json(取り込んだ準拠テンプレート ${next.template.commit ?? '不明'}。強制層のファイル ${Object.keys(next.template.digests).length} 件の要約値を記録し直した)`);
+      for (const l of diff) console.log(`  - ${l}`);
+      if (driftPaths && nDrift) console.log(`  取り直す直前に記録と違ったパス: ${[...driftPaths.changed, ...driftPaths.missing, ...driftPaths.added].join(', ')}`);
+      console.log('取り込みは強制層の変更です。PR は AI維持管理者(人)が承認します(state:needs-platform)');
       process.exit(0);
     }
 
@@ -4261,6 +4321,10 @@ if (isMain) {
   }
 
   const { config, result, clamps } = built;
+  // 初期化の記録(changeLog[0])へ、事前点検の結果を道具が書く(#315 突合 X-2)。要約値の連鎖は書き出しの前に封をする
+  if (!prior && preflightResult && config.changeLog?.[0]?.kind === 'init') {
+    config.changeLog[0].preflight = preflightRecord(preflightResult, ROOT, config.changeLog[0].at ?? null);
+  }
   // 区分の下限の規則と依存先の欄(種別 settings で書く)。再生成で失わない。null は設定を消す
   for (const key of ['riskFloor', 'dependencies']) {
     const now = S[key] !== undefined ? S[key] : prior?.[key];

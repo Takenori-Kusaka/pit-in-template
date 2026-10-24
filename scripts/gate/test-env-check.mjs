@@ -155,6 +155,16 @@ if (process.platform === 'win32') {
   // 旧来のブランチ保護・CODEOWNERS
   const classic = w.run(ghMap({ [`api repos/${R}/branches/main/protection`]: { stdout: { url: `https://api.github.com/repos/${R}/branches/main/protection`, required_status_checks: { contexts: ['build'] }, enforce_admins: { enabled: false } } } }));
   check('旧来のブランチ保護があれば、重なりの内容を記録に書く', classic.items.classicProtection?.status === 'confirmed' && classic.items.classicProtection?.evidence?.protected === true && /build/.test(classic.items.classicProtection?.detail ?? ''), JSON.stringify(classic.items.classicProtection));
+  // 旧来のブランチ保護だけで gate-g5 と承認の規則を効かせている構成(#315 突合 X-17)
+  const classicOnlyBody = (enforce) => ({ url: `https://api.github.com/repos/${R}/branches/main/protection`, required_status_checks: { contexts: ['gate-g5'] }, required_pull_request_reviews: { required_approving_review_count: 1, dismiss_stale_reviews: true, require_last_push_approval: true }, enforce_admins: { enabled: enforce } });
+  const classicOnly = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [] }, [`api repos/${R}/branches/main/protection`]: { stdout: classicOnlyBody(true) } }));
+  check('旧来のブランチ保護だけで gate-g5 と承認の規則が効き、管理者にも適用されていれば、ルールセットの項目は確認済み', classicOnly.items.ruleset?.status === 'confirmed' && /旧来のブランチ保護/.test(classicOnly.items.ruleset?.detail ?? '') && classicOnly.items.bypass?.status === 'notApplicable', JSON.stringify([classicOnly.items.ruleset, classicOnly.items.bypass]));
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: classic');
+  const classicRead = readEnvCheck(TEAM, { root: w.dir });
+  check('旧来のブランチ保護だけの記録を読む側も、ルールセットとバイパスの主体を受け入れる', classicRead.items.find((i) => i.id === 'ruleset')?.status === 'confirmed' && classicRead.items.find((i) => i.id === 'bypass')?.status === 'notApplicable', classicRead.summary);
+  const classicNoAdmin = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [] }, [`api repos/${R}/branches/main/protection`]: { stdout: classicOnlyBody(false) } }));
+  check('旧来のブランチ保護が管理者に適用されなければ、旧来の保護を数えず「不一致」', classicNoAdmin.items.ruleset?.status === 'mismatch' && /enforce_admins/.test(classicNoAdmin.items.ruleset?.detail ?? ''), JSON.stringify(classicNoAdmin.items.ruleset));
   const coErr = w.run(ghMap({ [`api repos/${R}/codeowners/errors?ref=main`]: { stdout: { errors: [{ line: 3, kind: 'Unknown owner' }] } } }));
   check('codeowners/errors に誤りがあれば「不一致」', coErr.items.codeowners?.status === 'mismatch' && /Unknown owner/.test(coErr.items.codeowners?.detail ?? ''), JSON.stringify(coErr.items.codeowners));
   const noCo = w.run(ghMap({ [`api repos/${R}/contents/.github/CODEOWNERS?ref=main`]: { code: 1, stderr: 'gh: Not Found (HTTP 404)' } }));
@@ -183,6 +193,24 @@ if (process.platform === 'win32') {
   const na = readEnvCheck(TEAM, { root: w.dir });
   // IMPL-0315:ok(適合の入力: 対象外は対象外として表示し、確認済みの件数に数えない)
   check('対象外の項目は「対象外」と表示し、確認済みの件数に数えない', na.confirmed === true && na.counts?.notApplicable === 1 && na.counts?.confirmed === 5 && /対象外 1 項目/.test(na.summary), na.summary);
+  // 偽装の記録(#315 突合 X-1): 対象外にできない項目を notApplicable と書き、ship-evidence だけを確認済みにした手書きの記録
+  const forged = JSON.parse(JSON.stringify(env.record));
+  for (const id of ['ruleset', 'classicProtection', 'codeowners', 'bypass', 'prReviews']) forged.items[id] = { status: 'notApplicable', detail: '手で書いた対象外' };
+  fs.writeFileSync(p, JSON.stringify(forged, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: 偽装');
+  const fake = readEnvCheck(TEAM, { root: w.dir });
+  const refused = fake.items.filter((i) => i.reason === 'na-not-allowed').map((i) => i.id);
+  // IMPL-0315:ng(違反の入力: 対象外にできない項目を対象外と書き、対象外を重ねて全体を確認済みにしようとする記録)
+  check('対象外にできない項目の対象外は未確認(対象外にできない項目)に倒し、全体を確認済みにしない', fake.confirmed === false && ['ruleset', 'classicProtection', 'bypass', 'prReviews'].every((id) => refused.includes(id)) && !refused.includes('codeowners'), JSON.stringify({ refused, summary: fake.summary }));
+  const regulated = readEnvCheck({ ...TEAM, ruleset: 'regulated' }, { root: w.dir });
+  check('コードオーナーの承認を要する構成では、CODEOWNERS の対象外も受け入れない', regulated.items.find((i) => i.id === 'codeowners')?.reason === 'na-not-allowed', JSON.stringify(regulated.items.find((i) => i.id === 'codeowners')));
+  // 記録の時点の G-6 の状態が現在の構成と違えば、確認し直す
+  fs.writeFileSync(p, JSON.stringify({ ...env.record, config: { ...env.record.config, g6: 'disabled' } }, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: g6');
+  const g6 = readEnvCheck(TEAM, { root: w.dir });
+  check('記録の時点の G-6 の状態が現在の構成と違えば、全体を確認済みにしない', g6.confirmed === false && g6.problems.some((x) => /G-6/.test(x)), JSON.stringify(g6.problems));
   w.done();
 }
 
