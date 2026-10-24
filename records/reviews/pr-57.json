@@ -1,0 +1,24 @@
+{
+  "repository": "Takenori-Kusaka/pit-in-template",
+  "pr": 57,
+  "title": "feat(#54): 段階2 の後続(records.mjs への統合・env-check 所見の表示・CODEOWNERS の案・字下げ)",
+  "body": "## 変更の概要\n\npit-in-template #54(process-compass #321 / ADR-0070 段階 2)の残り項目のうち、コードで閉じる 4 件。\n\n- `records.mjs` に `lastCommitOf`・`parseCopy`・`headOfCopy`・`formCell`・`targetOfForm`・`judgeOfForm`・`recordFromForm` を export し、`aggregate-evidence.mjs`・`next.mjs`・`config.mjs` の複製を消す(様式の欄の読み方を 1 か所に)\n- env-check の所見(`findings`)を `/pit` の注記と出荷の集約(項目4 の表)へ出す。所見は項目へ昇格させず、確認済みの判定に入れない(`org-assurance.mjs` の `ENV_CHECK_FINDINGS`。理由はコードの注記)\n- `PROCESS-PROFILE.md` に「記録の置き場の所有者(CODEOWNERS の案)」を生成する(席の責任者のアカウントから。`/process-init` は `CODEOWNERS` を書き換えない)\n- `aggregate-evidence.mjs` の本体の字下げを整える(別コミット。字下げだけ)\n\n## 検証方法と結果\n\n- `node scripts/gate/g5-local.mjs`: contract 8 本 + spec-lint 通過(test-records 78、test-env-findings 23 を含む)\n- 字下げの前後で、同じ `records` ブランチ(6a61811)に対する集約の出力が、範囲に加わったコミットの差分を除いて一致\n\n## AI 関与範囲\n\n- 生成: コードと試験(Claude Fable 5.1)\n- 人の確認: 作成を指示した者がマージで確認\n\n## 作成を指示した者\n\n@Takenori-Kusaka\n\n## リスク区分\n\nR3\n\nSpec: setup\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+  "head_ref": "chore/54-stage2-followups",
+  "merge_commit_sha": "0d7edd97df0d6637c48586944191005fe47c2fec",
+  "head_sha": "5f7faf892de740cada0f0eb31207ffb1dacf0232",
+  "author": {
+    "id": 22556919,
+    "login": "Takenori-Kusaka"
+  },
+  "merged_at": "2026-10-24T00:06:18Z",
+  "merged_by": {
+    "login": "Takenori-Kusaka"
+  },
+  "base": {
+    "ref": "main"
+  },
+  "copied_at": "2026-10-24T00:06:26Z",
+  "copied_by": "record-copy workflow (GITHUB_TOKEN)",
+  "reviews": [],
+  "audit_log": "取れない(組織の監査ログ API は Enterprise Cloud に限る。bypass・保護の変更の記録は、この写しに含まれない)"
+}
