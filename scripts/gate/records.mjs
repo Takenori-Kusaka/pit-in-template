@@ -125,26 +125,42 @@ export function formCellRaw(text, key) {
   return String(text ?? '').match(new RegExp(`^\\|\\s*${key}\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'))?.[1]?.trim() ?? null;
 }
 
-/** 記入済みの欄の値。未記入(空、様式の文言のまま、選択肢が残ったまま)は null */
+/**
+ * 欄の値から Markdown の装飾を除く(比べる前に使う)。除くのは強調の `**` と `__`、インラインコードのバッククォート、
+ * リンク `[文字](URL)` の URL(文字だけ残す)。採用先の記録は欄を太字やコード表記で書くことがあり、そのままでは
+ * `**通過**` が通過と、`` `specs/F-001` `` が F-001 と一致しない。値の判定そのもの(結果欄の完全一致など)は緩めない
+ */
+export function normalizeCell(v) {
+  if (v === null || v === undefined) return v;
+  return String(v)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*|__|`/g, '')
+    .trim();
+}
+
+/** 欄の値(装飾を除いたもの)。行が無ければ null */
+const formCellPlain = (text, key) => normalizeCell(formCellRaw(text, key));
+
+/** 記入済みの欄の値(装飾を除いたもの)。未記入(空、様式の文言のまま、選択肢が残ったまま)は null */
 export function formCell(text, key) {
-  const v = formCellRaw(text, key) ?? '';
+  const v = formCellPlain(text, key) ?? '';
   if (!v || v.startsWith('<')) return null;
   if (key !== '対象' && v.includes(' / ')) return null;
   return v;
 }
 
-/** 様式の「対象」の欄。機械が出す欄の併記や注記(。以降)は読まない(呼び出し側が照合に使う形) */
-export const targetOfForm = (text) => formCellRaw(text, '対象');
+/** 様式の「対象」の欄(装飾を除いたもの)。機械が出す欄の併記や注記(。以降)は読まない(呼び出し側が照合に使う形) */
+export const targetOfForm = (text) => formCellPlain(text, '対象');
 
 /** 様式の「判定者」の欄の記名(注記「。…」を除く)。様式の説明(<氏名>…)を残したままの欄は未記入(null) */
 export const judgeOfForm = (text) => {
-  const v = formCellRaw(text, '判定者');
+  const v = formCellPlain(text, '判定者');
   return v && !v.startsWith('<') ? v.replace(/。.*$/, '').trim() : null;
 };
 
 /**
  * 様式の本文から記録を起こす。file は所在、source は出所('base' = docs/gates/、'records-branch' = records/gates/)。
- * resultRaw は結果欄の記載そのもの(2 値のどちらとも読めない理由を示すために使う)
+ * resultRaw は結果欄の記載そのもの(装飾も除かない。2 値のどちらとも読めない理由を示すために使う)
  */
 export function recordFromForm(text, file, source) {
   return {
@@ -298,7 +314,7 @@ export function recordAttribution(gateRecord, { judgeName = null, judgeLogin = n
 
 /** 様式の冒頭の表の「ゲート」欄の先頭の語(G-1〜G-8・SG)。無ければ null */
 export function gateOfRecord(text) {
-  const v = formCellRaw(text, 'ゲート');
+  const v = formCellPlain(text, 'ゲート');
   if (!v) return null;
   const g = v.match(/^(G-[1-8]|SG)\b/);
   return g ? g[1] : v;
