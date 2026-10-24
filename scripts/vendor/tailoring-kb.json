@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "d6bb50ec55d5c0f885ec732734a26f6b04e25b2b",
+    "commit": "b3829f9b8594d63c79308210589d6545ee0d2b06",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1206,7 +1206,7 @@
       ],
       "criteriaComplete": false,
       "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
-      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-1-企画承認事業決裁者既存規程どおり"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#g-1-企画承認事業決裁者既存規程または-d-0-の記名による"
     },
     {
       "id": "g-req-agree",

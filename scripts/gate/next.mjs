@@ -266,7 +266,7 @@ function cmd(command, reason, extra = {}) {
 
 /** 委託・受託の構成(軸D)の開発形態の値 */
 const OUTSOURCING_FORMS = ['outsourcer', 'vendor'];
-/** 様式 08 の第9節で、判定の結果を受け取る者を書く行 */
+/** 様式 08 で、判定の結果を受け取る者を書く行(節の番号に依らず行を探す。旧い様式では第2節にある) */
 const RECEIVER_ROWS = ['判定の結果を受け取る者(発注側)', '判定の結果を受け取る者(受注側)'];
 
 /**
@@ -283,7 +283,7 @@ export function outsourcingReceiverNote(config, slaText) {
   }
   if (!blank.length) return null;
   return (
-    (slaText == null ? '委託・受託の構成だが、docs/ai-sla.md が無い。' : `docs/ai-sla.md 第9節の「${blank.join('」「')}」が空欄(雛形の記入例のまま)。`) +
+    (slaText == null ? '委託・受託の構成だが、docs/ai-sla.md が無い。' : `docs/ai-sla.md の「${blank.join('」「')}」が空欄(雛形の記入例のまま)。`) +
     '判定の結果を相手の組織へ渡す先が決まっていない。締結時に当事者が決めて記入する(AI が氏名を推測で埋めない)。' +
     `読む: ${READ.artifact('08-ai-sla')}`
   );

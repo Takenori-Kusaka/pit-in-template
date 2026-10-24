@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT, claimStatus, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
-import { buildConfig, renderProcessRules } from '../init/generate-profile.mjs';
+import { buildConfig, renderProcessRules, renderProfileMd } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -314,8 +314,13 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
   fs.copyFileSync(path.join(w.dir, 'templates/08-ai-sla.md'), path.join(w.dir, 'docs/ai-sla.md'));
   w.commit('chore: outsourcer');
-  check('委託の構成では、CLAUDE.md の生成部分に受け取る者の所在の1行が入る', /docs\/ai-sla\.md` 第9節/.test(renderProcessRules(out)));
-  check('内製の構成では、受け取る者の所在の1行を入れない', !/docs\/ai-sla\.md` 第9節/.test(renderProcessRules(base)));
+  check('委託の構成では、CLAUDE.md の生成部分に受け取る者の所在の1行が入る', /docs\/ai-sla\.md` の「判定の置き先と結果の受け渡し」の節/.test(renderProcessRules(out)));
+  {
+    const built = quiet(() => buildConfig({ ...COMMON, 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', 'q-dev-form': 'outsourcer' }, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS3 }));
+    check('委託の構成では、構成書(PROCESS-PROFILE)にも受け取る者の所在の1行が入る', /docs\/ai-sla\.md` の「判定の置き先と結果の受け渡し」の節/.test(renderProfileMd(built.config, built.result)));
+    check('生成の1行は、組織をまたぐ引き渡しに state ラベルを課さない(ADR-0069 決定2)', !/state:\*/.test(renderProcessRules(out)));
+  }
+  check('内製の構成では、受け取る者の所在の1行を入れない', !/docs\/ai-sla\.md` の「判定の置き先と結果の受け渡し」の節/.test(renderProcessRules(base)));
   const r0 = w.node('scripts/gate/next.mjs');
   // IMPL-0331:ng(違反の入力: 委託の構成で、受け取る者の欄が雛形の記入例のまま)
   check('委託の構成で受け取る者が空欄なら、/pit が注記を出す(段階は止めない)', r0.ok && /判定の結果を受け取る者\(発注側\)/.test(r0.out) && /渡す先が決まっていない/.test(r0.out), r0.out.slice(-1200));
