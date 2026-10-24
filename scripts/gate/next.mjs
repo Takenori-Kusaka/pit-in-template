@@ -786,7 +786,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
             ? `**コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。パス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言。コア機能に当たる変更を確かめられない**。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く'})。${cp.unmatched.length ? `${unmatchedCoreText(cp)}(当たるパスが無ければ未宣言として扱う)。` : ''}コア機能に触れる変更の承認者が ${rc.core} 名に満たなければ、G-5 が警告し、出荷の集約が「承認者 N 名 / 要求 ${rc.core} 名(コア機能)」として独立した人の確認を経ていない変更に数える。`
             : '') +
           (audit ? '判定記録は監査対応書式(構成 review.recordFormat: audit)。変更ごとに G-6 の判定記録を残し、「監査対応書式」の表(2人目の承認者・安全性の評価者)を埋める。PR の承認だけでは記録にならない。' : '') +
-          (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
+          (safety ? '独立した安全性の評価者(実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上。標準 第1章 1.4・附属書F。AI の担い手は数えない)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
           `読む: ${READ.gate('g6')}`
       );
     }

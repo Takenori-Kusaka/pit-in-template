@@ -6,7 +6,9 @@
 // 依存なしの ESM。Astro アイランド(#61)からも node スクリプトからも import できる。
 
 /** 構造を変える操作(同一対象に1つだけ生き残る) */
-const STRUCTURAL_ACTIONS = new Set(['omit', 'simplify', 'strengthen', 'merge-into']);
+const STRUCTURAL_ACTIONS = new Set(['omit', 'simplify', 'strengthen', 'merge-into', 'restore']);
+/** 統制を下げる構造操作。restore(適用へ戻す)が取り消す対象(#318 / ADR-0088 決定4) */
+const RELAXING_ACTIONS = new Set(['omit', 'simplify', 'merge-into']);
 
 /** 対象の一意キー(例: "gate:g-ship", "process") */
 export function targetKey(target) {
@@ -72,6 +74,22 @@ export function evaluate(kb, answers) {
     if (quiet) return;
     warnings.push({ target: targetKey(loser.target), loser: loser.ruleId, winner: winner.ruleId, message });
   };
+  /** omit が無効化した設定(omit の調整 → 無効化した set の調整)。省略が取り消されたら、設定を戻す */
+  const invalidatedBy = new Map();
+  // 省略を取り消して対象を復活させたとき、その省略が無効化した設定を戻す。復活したゲートが、
+  // 省略の前に決まっていた設定(判定者の方式・レビューの方式など)を失わないため(#318)
+  const reinstate = (omitEntry) => {
+    for (const pentry of invalidatedBy.get(omitEntry) ?? []) {
+      const pkey = `${targetKey(pentry.target)}#${pentry.param}`;
+      const cur = params.get(pkey);
+      // 省略の後に同じ設定を別の規則が決めていれば、そちらが勝つ
+      if (cur && cur !== pentry && cur.status === 'applied') continue;
+      pentry.status = 'applied';
+      delete pentry.overriddenBy;
+      params.set(pkey, pentry);
+    }
+    invalidatedBy.delete(omitEntry);
+  };
 
   for (const rule of ordered) {
     for (const adj of rule.adjustments) {
@@ -90,10 +108,28 @@ export function evaluate(kb, answers) {
       trace.push(entry);
       const key = targetKey(adj.target);
 
+      if (adj.action === 'restore') {
+        // restore(適用へ戻す): 先に効いている省略・簡略・統合を取り消し、標準の適用へ戻す。
+        // 厳格化(strengthen)は下げない。既に適用以上なら何もしない(#318 / ADR-0088 決定4)
+        const prev = structural.get(key);
+        if (prev && !RELAXING_ACTIONS.has(prev.action)) {
+          conflict(entry, prev, `${key} は既に適用されているため、取り消しは要らない`, true);
+          continue;
+        }
+        if (prev) {
+          conflict(prev, entry, `${key} への「${prev.action}」を、優先度の高い規則が取り消し(適用へ戻す)`);
+          if (prev.action === 'omit') reinstate(prev);
+        }
+        structural.set(key, entry);
+        continue;
+      }
+
       if (STRUCTURAL_ACTIONS.has(adj.action)) {
         const prev = structural.get(key);
         if (prev) {
-          const sameOutcome = prev.action === adj.action && prev.value === adj.value;
+          // 適用へ戻した対象を厳格化するのは、同じ向きの合成であり衝突ではない
+          const sameOutcome =
+            (prev.action === adj.action && prev.value === adj.value) || (prev.action === 'restore' && adj.action === 'strengthen');
           conflict(
             prev,
             entry,
@@ -106,6 +142,7 @@ export function evaluate(kb, answers) {
         if (adj.action === 'omit') {
           for (const [pkey, pentry] of params) {
             if (pkey.startsWith(`${key}#`) && pentry.status === 'applied' && pentry.priority <= entry.priority) {
+              invalidatedBy.set(entry, [...(invalidatedBy.get(entry) ?? []), pentry]);
               conflict(
                 pentry,
                 entry,
@@ -131,8 +168,10 @@ export function evaluate(kb, answers) {
           if (st.priority < entry.priority) {
             conflict(st, entry, `${key} の省略を、優先度の高い設定要求が取り消し(対象を復活)`);
             structural.delete(key);
+            reinstate(st);
           } else {
             conflict(entry, st, `${key} は省略のため設定「${adj.param}」は適用しない`, true);
+            invalidatedBy.set(st, [...(invalidatedBy.get(st) ?? []), entry]);
             continue;
           }
         }
@@ -149,7 +188,8 @@ export function evaluate(kb, answers) {
     const key = targetKey(entry.target);
     const p = (profile[key] ??= { target: entry.target, state: 'standard', params: {}, notes: [] });
     if (STRUCTURAL_ACTIONS.has(entry.action)) {
-      p.state = entry.action === 'merge-into' ? `merged-into:${entry.value}` : entry.action;
+      p.state =
+        entry.action === 'merge-into' ? `merged-into:${entry.value}` : entry.action === 'restore' ? 'standard' : entry.action;
     } else if (entry.action === 'set') {
       p.params[entry.param] = entry.value;
     }
