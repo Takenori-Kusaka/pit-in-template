@@ -29,6 +29,7 @@ import {
   headOfCopy,
   formCellRaw,
   formCell,
+  normalizeCell,
   targetOfForm,
   judgeOfForm,
   recordFromForm,
@@ -180,6 +181,24 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const x = recordFromForm('| 結果 | 通過 / 差し戻し |\n', 'f.md', 'base');
     return x.result === null && x.resultRaw === '通過 / 差し戻し';
   })());
+
+  // 採用先の記録は欄を太字・コード表記・リンクで書くことがある。比べる前に装飾を除く。結果欄の完全一致は緩めない
+  const decorated = [
+    '| ゲート | **G-1 企画承認(再判定)** |',
+    '| 対象 | **P-001 Filetto** / `specs/F-001` |',
+    '| 結果 | **通過** |',
+    '| 判定者 | **山田 太郎**。出所: レビュー |',
+    '',
+  ].join('\n');
+  const d = recordFromForm(decorated, 'docs/gates/g1.md', 'base');
+  check('装飾: ゲート欄の太字を除く', d.gate === 'G-1 企画承認(再判定)' && gateOfRecord(decorated) === 'G-1', JSON.stringify(d));
+  check('装飾: 結果欄の太字を除き、通過と読む。resultRaw は記載のまま', d.result === '通過' && d.resultRaw === '**通過**', JSON.stringify(d));
+  check('装飾: 対象欄の太字・コード表記を除き、区切ると F-001 を含む', d.target === 'P-001 Filetto / specs/F-001' && d.target.split(/[\s,、/]+/).includes('F-001') && targetOfForm(decorated) === d.target, JSON.stringify(d));
+  check('装飾: 判定者の太字を除く', judgeOfForm(decorated) === '山田 太郎');
+  check('装飾: 注記のある結果(**通過**(転記))は通過と読まない', recordFromForm('| 結果 | **通過**(転記) |\n', 'f.md', 'base').result !== '通過');
+  check('装飾: 除いた後も、対象以外の " / " は未記入', formCell('| 結果 | **通過** / **差し戻し** |\n', '結果') === null);
+  check('装飾: コード表記の様式の文言(`<氏名>`)は未記入', formCell('| 判定者 | `<氏名>` |\n', '判定者') === null);
+  check('normalizeCell: 強調 ** と __、バッククォートを除き、リンクは文字だけ残す', normalizeCell('__G-4__ [F-002](specs/F-002.md) `7a8b9c0`') === 'G-4 F-002 7a8b9c0' && normalizeCell(null) === null);
 }
 
 // ---------------------------------------------------------------- 記録用ブランチの読み取り(一時のリポジトリ)
