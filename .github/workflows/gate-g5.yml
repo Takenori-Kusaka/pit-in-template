@@ -81,6 +81,8 @@ jobs:
       - run: node scripts/gate/test-roster-rules.mjs
       # 記録の無い非推奨の兼務を、出荷判定の証跡の集約が記載の欠落にすることを、一時の置き場で通しで試験する(process-compass #312)
       - run: node scripts/gate/test-discouraged-evidence.mjs
+      # 従う本標準の版・適用の終了・適用の開始の境・述べられる主張の名を、一時の置き場で通しで試験する(process-compass #313)
+      - run: node scripts/gate/test-edition-end.mjs
       # 判断記録の状態と置き換えの両側の参照、状態に応じた置き場(標準 第6章 テンプレ2「置き換えと廃止」、第4章 G-3「記載の検査」。process-compass #289)
       - run: node scripts/gate/check-decisions.mjs
       - run: node scripts/gate/test-decisions.mjs
