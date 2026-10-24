@@ -126,11 +126,11 @@ gh variable set RECORDS_SIGNED --body true                                      
 
 ### 判定記録を基底ブランチへ入れる(出荷の PR)
 
-判定記録の様式と承認レビューの写しは、記録用ブランチ `records` にあります。基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。タグ(`v*`)の push、または `ship-evidence` の手動実行で、ワークフローが証跡を集約し、出荷の PR を 1 本開きます。
+判定記録の様式と承認レビューの写しは、記録用ブランチ `records` にあります。基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。タグ(`v*`)の push、または `ship-evidence` の手動実行で、ワークフローが証跡を集約し、出荷のブランチを push します。**出荷の PR を開くのは出荷判定者(人)です**。
 
 1. `ship-evidence` が `records` ブランチを取り込み、証跡を集約する(`evidence/`。Actions の成果物にも残る)
-2. ブランチ `ship/<日付>` に、`records/reviews/*.json` を `docs/records/reviews/` へ、`records/gates/*.md` を `docs/gates/` へ複製し(追加だけ。既存のファイルは上書きしない)、品質レポート(保証の開示を含む)を `docs/evidence/<日付>-<範囲>.md` へ置いた PR を開く
-3. **`GITHUB_TOKEN` で開いた PR では、gate-g5 とこのワークフローの検査が自動では起動しません**(GitHub の仕様)。出荷判定者が PR を閉じて開き直す(または空のコミットを push する)と起動します。再検査だけなら、`ship-evidence` の手動実行で `verify_pr` に PR の番号を渡します(結果は PR のコメントに出る)
+2. ブランチ `ship/<日付>` に、`records/reviews/*.json` を `docs/records/reviews/` へ、`records/gates/*.md` を `docs/gates/` へ複製し(追加だけ。既存のファイルは上書きしない)、品質レポート(保証の開示を含む)を `docs/evidence/<日付>-<範囲>.md` へ置いて push し、PR を開く URL(題名と本文を入力済み)を実行の要約と成果物 `ship-pr` に出す
+3. **出荷判定者がその URL から PR を開きます**。ワークフローは PR を開きません。GitHub の既定の設定では `GITHUB_TOKEN` は PR を作れず(「GitHub Actions is not permitted to create or approve pull requests」。これを許す設定は機械の承認も許すため採らない)、作れる設定でも `GITHUB_TOKEN` で開いた PR は gate-g5 と verify を起動しません(GitHub の仕様)。人が開いた PR では両方が自動で起動します。再検査だけなら、`ship-evidence` の手動実行で `verify_pr` に PR の番号を渡します(結果は PR のコメントに出る)
 4. PR の上で同じ集約が再実行され、複製が `records` ブランチと一致することが検査されます(写しは id・commit_id・submitted_at・user.id・body、様式は内容。不一致は失敗)
 5. **出荷判定者本人が承認してマージします**(`.github/CODEOWNERS` の `docs/gates/`・`docs/records/` の所有者)。この承認は取り込みの操作であり、判定は `records/gates/` の様式で成立しています。記名者以外の承認が付く体制では、その承認は取り込みの事務です(標準 第4章「判定記録を基底ブランチへ入れる操作」)
 

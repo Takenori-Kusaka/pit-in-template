@@ -70,7 +70,7 @@ git commit -S -m "chore: 記録用ブランチを初期化する" && git push or
 
 ## 出荷の PR(記録を基底ブランチへ入れる)
 
-`ship-evidence.yml` は、タグの push(または手動実行)で証跡を集約した後、出荷の PR を 1 本開きます。
+`ship-evidence.yml` は、タグの push(または手動実行)で証跡を集約した後、出荷のブランチを push し、PR を開く URL(題名と本文を入力済み)を出します。PR を開くのは出荷判定者(人)です。
 
 | 項目 | 内容 |
 | --- | --- |
@@ -78,9 +78,9 @@ git commit -S -m "chore: 記録用ブランチを初期化する" && git push or
 | 中身 | `records/reviews/*.json` → `docs/records/reviews/`、`records/gates/*.md` → `docs/gates/`(追加だけ。基底ブランチに既にあるファイルは上書きしない)。品質レポート(保証の開示を含む)→ `docs/evidence/<日付>-<範囲>.md` |
 | 承認者 | **出荷判定者本人**(`CODEOWNERS` の `docs/gates/`・`docs/records/` の所有者)。記名者以外の承認が付く体制では、その承認は取り込みの事務 |
 | 検査 | PR の上で `ship-evidence` の verify ジョブが同じ集約を再実行し、複製が `records` ブランチと一致することを検査する。JSON は `pr`・`merge_commit_sha`・`head_sha` と `reviews[]` の `id`・`commit_id`・`submitted_at`・`user.id`・`body`、md は内容。不一致は失敗。記録の置き場の既存のファイルの変更・削除も失敗 |
-| 起動 | **`GITHUB_TOKEN` で開いた PR では、gate-g5 も verify も自動では起動しません**(GitHub の仕様)。出荷判定者が PR を閉じて開き直す(または空のコミットを push する)と起動します。再検査だけなら `ship-evidence` の手動実行(入力 `verify_pr` に PR の番号)で、結果は PR のコメントに出ます(ステータスチェックには付きません) |
+| 起動 | **PR は出荷判定者が開きます**(実行の要約・成果物 `ship-pr` の URL から)。人が開いた PR では gate-g5 と verify が自動で起動します。`GITHUB_TOKEN` は既定の設定で PR を作れず(「GitHub Actions is not permitted to create or approve pull requests」)、作れる設定でも `GITHUB_TOKEN` で開いた PR は gate-g5 も verify も起動しません(GitHub の仕様)。再検査だけなら `ship-evidence` の手動実行(入力 `verify_pr` に PR の番号)で、結果は PR のコメントに出ます(ステータスチェックには付きません) |
 
-個人のトークン(PAT)で PR を開いてワークフローを起動させる形は採りません。人の名義の操作を機械が行う形になるためです。
+「Allow GitHub Actions to create and approve pull requests」を有効にして機械に PR を開かせる形は採りません。この設定は機械の承認も許し、required approving review を `GITHUB_TOKEN` の承認で満たせる状態を作るためです(env-check の所見 approvalCounting)。個人のトークン(PAT)で PR を開く形も採りません。人の名義の操作を機械が行う形になるためです。
 
 ## 記録だけの PR にも承認 1 件が残る(降りていない規定)
 

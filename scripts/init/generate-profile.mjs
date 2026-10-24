@@ -2295,7 +2295,7 @@ export function bumpD0Version(v) {
 /** 標準の該当節へのリンク。参照先がない項目は素のまま出す(#221) */
 /**
  * 記録の置き場と、その所有者にする席(CODEOWNERS の案。#54)。記録だけの PR の承認者を記名者の席へ誘導する誘導層であり、
- * 遮断に数えない。出荷の PR(ship-evidence.yml が開く ship/<日付>)は records ブランチの様式を docs/gates/ へ、承認レビューの写しを
+ * 遮断に数えない。出荷の PR(ship-evidence.yml が push する ship/<日付> から出荷判定者が開く)は records ブランチの様式を docs/gates/ へ、承認レビューの写しを
  * docs/records/reviews/ へ複製し、保証の開示を docs/evidence/ へ置く。その承認者は出荷判定者本人(標準 第4章「判定記録を基底ブランチへ入れる操作」)。
  * docs/gates/ には停止の解除・例外承認・SG の記録も先に入る(記名者はそのゲートの判定者)。パス単位でさらに分けるなら人が足す
  */
