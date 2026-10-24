@@ -174,15 +174,15 @@ for (const n of [1, 3]) {
     W.write('specs/F-001/spec.md', closed);
     r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-4', 'specs/F-001');
     check(`${tag}: 閉じた機能仕様と様式の実装計画では、未確定事項 0 件、対応の無い受入基準なし`, r.ok && /未確定事項 0 件/.test(r.out) && /合否は出さない\): なし/.test(r.out), r.out);
-    const acRow0 = '| 3 | ユビキタス | システムは招待トークンをログへ出力してはならない |';
-    W.write('specs/F-001/spec.md', closed.replace(acRow0, `${acRow0}\n| 4 | ユビキタス | システムは招待の一覧を 50 件ずつ表示しなければならない |`));
+    const acRow0 = '| 3 | 常時 | システムは招待トークンをログへ出力してはならない |';
+    W.write('specs/F-001/spec.md', closed.replace(acRow0, `${acRow0}\n| 4 | 常時 | システムは招待の一覧を 50 件ずつ表示しなければならない |`));
     r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-4', 'specs/F-001');
     check(`${tag}: タスクに現れない受入基準 AC-4 を一覧に出し、合否には使わない`, r.ok && /F-001\/AC-4/.test(r.out), r.out);
     W.write('specs/F-001/spec.md', W.read('templates/01-feature-spec.md'));
   }
   // 検査の範囲は受入基準の節(標準 第4章 G-2)。節の外の語は検出しない
   const specBase = W.read('specs/F-001/spec.md');
-  const acRow = '| 3 | ユビキタス | システムは招待トークンをログへ出力してはならない |';
+  const acRow = '| 3 | 常時 | システムは招待トークンをログへ出力してはならない |';
   const withRow = (row) => specBase.replace(acRow, `${acRow}\n${row}`);
   check(`${tag}: 様式の受入基準の表に、行を足す目印がある`, specBase.includes(acRow));
   W.write('specs/F-001/spec.md', specBase + '\n| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |\n');
@@ -193,13 +193,13 @@ for (const n of [1, 3]) {
   r = W.node('scripts/gate/spec-lint.mjs');
   // IMPL-0106:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check(`${tag}: 機能仕様に曖昧語を足すと spec-lint が落ちる`, !r.ok && /specs.F-001.spec\.md/.test(r.out), r.out);
-  W.write('specs/F-001/spec.md', withRow('| 9 | ユビキタス | システムは一覧を高速に表示しなければならない |'));
+  W.write('specs/F-001/spec.md', withRow('| 9 | 常時 | システムは一覧を高速に表示しなければならない |'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 標準の表に足した検出語(高速に)で spec-lint が落ちる`, !r.ok && /高速に/.test(r.out), r.out);
-  W.write('specs/F-001/spec.md', withRow('| 9 | 望ましくない事象 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok --> |'));
+  W.write('specs/F-001/spec.md', withRow('| 9 | 望まない挙動 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok --> |'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 理由の無い除外の印は無効(spec-lint が落ちる)`, !r.ok && /理由がありません/.test(r.out), r.out);
-  W.write('specs/F-001/spec.md', withRow('| 9 | 望ましくない事象 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok: 「不適切に操作」は条件の名前で、E-01 の定義に閉じている --> |'));
+  W.write('specs/F-001/spec.md', withRow('| 9 | 望まない挙動 | 不適切に操作した場合、システムはエラー E-01 を返さなければならない <!-- spec-lint-ok: 「不適切に操作」は条件の名前で、E-01 の定義に閉じている --> |'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 理由を書いた除外の印の行は検出から外し、件数と所在を出す`, r.ok && /除外の印で外した行 1 件/.test(r.out) && /specs.F-001.spec\.md:\d+ 除外の印/.test(r.out), r.out);
   r = W.node('scripts/gate/spec-lint.mjs', ['--terms']);
@@ -270,7 +270,7 @@ for (const n of [1, 3]) {
     // IMPL-0123:ng(違反と適合の対。標準の実装マーク。process-compass #314)
     check(
       `${tag}: 区間の目印だけを足した既存の CLAUDE.md では check-process-rules が落ちる(常駐の規則が無い)`,
-      !r.ok && /常駐の規則の節が 16 件、規則が \d+ 件ありません/.test(r.out) && /見出しが無い: ### 行ってはならない作業/.test(r.out),
+      !r.ok && /常駐の規則の節が 17 件、規則が \d+ 件ありません/.test(r.out) && /見出しが無い: ### 行ってはならない作業/.test(r.out),
       r.out
     );
     // 見出しだけを足して本文を持たない節は、あるものとして数えない

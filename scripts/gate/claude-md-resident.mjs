@@ -78,7 +78,7 @@ export function normalizeRule(text) {
 }
 
 // 表の列のうち、核に含めないもの(行の番号と、案件の CI・例に合わせて書き換えてよい列)
-const NON_CORE_COLUMNS = new Set(['#', '止める仕組み', '例']);
+const NON_CORE_COLUMNS = new Set(['#', '止める仕組み', '例', '標準の所在', '関係する標準の所在']);
 // 規則ではなく所在だけを示す行
 const POINTER_LINE = /^(?:理由|詳細)(?:\([^)]*\))?\s*[::]/;
 

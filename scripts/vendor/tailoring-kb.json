@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "cf72e166cbee76dcbb89d60f0b09f28fb650d01b",
+    "commit": "55dfa3d5fd71e9a0e7a0a258ad436689ca8630d6",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1291,7 +1291,8 @@
         "レビュアが挙動を自分の言葉で説明できる",
         "(コア機能のみ)設計意図の記録が完備",
         "レビュアが作成の指示者本人でない",
-        "(依存の追加・更新を含む場合)追加の必要性を確認した"
+        "(依存の追加・更新を含む場合)追加の必要性を確認した",
+        "変更の検証の方法と結果が記録されている"
       ],
       "criteriaComplete": false,
       "criteriaNote": "この一覧は標準 第4章の判定基準表のみである。表の外にある規範(手続・禁止・注記)は含まない。source を参照すること",
@@ -1551,6 +1552,12 @@
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#未達のまま出荷する場合の例外承認適用-r1-の変更"
     },
     {
+      "title": "変更の要求を経ないコミット",
+      "range": "PR を経ずに既定ブランチへ入れるコミット",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#変更の要求を経ないコミット適用-pr-を経ずに既定ブランチへ入れるコミット"
+    },
+    {
       "title": "基準値を超えた変更の扱い",
       "range": "規模の基準値を超えた PR",
       "unit": "other",
@@ -1623,6 +1630,12 @@
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#b-3-設計審査会適用-s2-スケールまたは安全法規制の対象となる機能"
     },
     {
+      "title": "3.12.12 能力依存の定数の再評価",
+      "range": "能力依存として登録した定数",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#31212-能力依存の定数の再評価適用-能力依存として登録した定数"
+    },
+    {
       "title": "外部の確認者を高リスクの変更へ集中させる",
       "range": "チーム規模 1〜2名",
       "unit": "other",
@@ -1657,12 +1670,6 @@
       "range": "規模の基準値を超えた PR",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase5-implementation/pr-workflow/#規模の基準値適用-規模の基準値を超えた-pr"
-    },
-    {
-      "title": "能力依存の定数の登録簿",
-      "range": "能力依存として登録した定数",
-      "unit": "other",
-      "source": "https://takenori-kusaka.github.io/process-compass/phase6-operation/metrics/#能力依存の定数の登録簿適用-能力依存として登録した定数"
     }
   ]
 }

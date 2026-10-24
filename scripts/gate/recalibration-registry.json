@@ -1,6 +1,6 @@
 {
   "schemaVersion": 0,
-  "note": "能力依存の定数の登録簿(標準 第6章 metrics.md「能力依存の定数の登録簿」の機械可読版。#295 / ADR-0058)。契機は、/process-change(種別 performer)の記録にあるモデル・指示資産の版の変更と、暦(半期)だけである。契機で値を自動で変えない。人が「残す・外す・移す」を docs/calibration-register.md へ記録する。能力に依らない周期・窓は capabilityDependent を false にし、再評価待ちに数えない。noRelaxByCapability は、人の帯域に由来する定数で、能力が上がったことを理由に緩めない(変えるなら実績と手段の変化の記録を要する)ことを示す",
+  "note": "能力依存の定数の登録簿(標準 第3章 3.12.12「能力依存の定数の登録簿」の機械可読版。#295 / ADR-0058)。契機は、/process-change(種別 performer)の記録にあるモデル・指示資産の版の変更と、暦(半期)だけである。契機で値を自動で変えない。人が「残す・外す・移す」を docs/calibration-register.md へ記録する。能力に依らない周期・窓は capabilityDependent を false にし、再評価待ちに数えない。noRelaxByCapability は、人の帯域に由来する定数で、能力が上がったことを理由に緩めない(変えるなら実績と手段の変化の記録を要する)ことを示す",
   "calendarDays": 183,
   "constants": [
     {

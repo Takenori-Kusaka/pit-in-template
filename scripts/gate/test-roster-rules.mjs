@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
-import { headcountProblems } from './config.mjs';
+import { headcountProblems, deviationCategory, deviationCategoryProblems } from './config.mjs';
 import { discouragedPairings, discouragedUnrecorded } from './org-assurance.mjs';
 
 let failures = 0;
@@ -117,6 +117,18 @@ for (const size of ['size-3-9', 'size-10plus']) {
   // IMPL-0002:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('2名: 独立レビュア = 出荷判定者 は拒否せず、代償措置つきの例外(第3章 3.5.2)として扱う', f2.violations.length === 0 && f2.excepted.some((v) => v.includes('独立レビュア') && v.includes('出荷判定者')), JSON.stringify(f2));
   check('2名: 出荷判定(G-7)の兼務は逸脱として記録される', two.deviations.some((d) => d.gate === 'g7'));
+  // 項目ごとの区分(process-compass #316 / ADR-0086)。G-7 の兼務は閉じた列挙の逸脱、1〜2名の席の兼務は列挙に無い離脱
+  const twoBiz = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'a' }) });
+  // IMPL-0329:ok(適合の入力: 初期化が書いた区分は閉じた列挙と一致する)
+  check(
+    '2名: deviations[] の項目は区分を持ち、G-7 の兼務は listed、席の兼務は unlisted(閉じた列挙と一致する)',
+    twoBiz.deviations.some((d) => d.gate === 'g7' && d.category === 'listed') && twoBiz.deviations.some((d) => !d.gate && d.category === 'unlisted') && deviationCategoryProblems(twoBiz).length === 0,
+    JSON.stringify(twoBiz.deviations.map((d) => [d.gate ?? d.separationId, d.category]))
+  );
+  // IMPL-0329:ng(違反の入力: 列挙に無い離脱を、書いた区分で逸脱へ格上げする)
+  const promoted = { ...twoBiz, deviations: twoBiz.deviations.map((d) => (d.gate ? d : { ...d, category: 'listed' })) };
+  check('区分を listed と書いた席の兼務は、閉じた列挙と食い違うとして検出する', deviationCategoryProblems(promoted).some((p) => /閉じた列挙/.test(p)), JSON.stringify(deviationCategoryProblems(promoted)));
+  check('区分の無い旧い記録は問わず、閉じた列挙で読む', deviationCategoryProblems({ deviations: [{ gate: null, separationId: 'x' }] }).length === 0 && deviationCategory({ gate: 'g7' }) === 'listed' && deviationCategory({ gate: null, separationId: 'x' }) === 'unlisted');
 }
 
 // ---------------------------------------------------------------- 強制する承認の数(ルールセット)

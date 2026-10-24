@@ -906,7 +906,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
           { role: 'dev-verifier', action: `/implement で ${t.id} を続け、Draft PR を出す` },
           ...(isGateActive(config, 'g6')
             ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})。判定記録の後に \`state:ready-to-merge\` を付ける` }]
-            : [{ role: 'qa-gatekeeper', action: 'PR が `state:dev-done` になったら受ける(この構成では G-6 が省略・未達)。PR に G-6 の省略・未達を開示したうえで扱い、`state:ready-to-merge` は使わない(第5章 Label Mailbox 4.3.1)' }]),
+            : [{ role: 'qa-gatekeeper', action: 'PR が `state:dev-done` になったら受ける(この構成では G-6 が省略・未達)。PR に G-6 の省略・未達を開示したうえで扱い、`state:ready-to-merge` は使わない(第3章 3.5.5)' }]),
         ],
       });
       continue;

@@ -103,6 +103,7 @@ import {
   preflightRecordProblem,
   claimStatus,
   standardEdition,
+  deviationCategory,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
@@ -1553,7 +1554,7 @@ if (isMain) {
   //   2. 独立レビュアの席が委任を宣言しており、その席の規則にも当たる
   //   3. PR のリスク区分が R3 と記録されている(R1・R2・未記入の変更は移さない)
   // 開発者の席の規則だけでは、G-6 の承認は免除されない。
-  // トレーラ Delegated を持つ変更のリスク区分が R3 でない場合は、委任の範囲の逸脱である(第4章 G-6)。
+  // トレーラ Delegated を持つ変更のリスク区分が R3 でない場合は、委任の条件に反する変更である(第4章 G-6)。
   // G-6 を事後へ移す変更で、開発者の席がその変更について協働である(開発者の席の規則に当たらない)場合は、
   // 開発者の席の責任者(人)の承認を要する(第5章 5.5.6)。
 
@@ -1933,13 +1934,13 @@ if (isMain) {
     if (d.exempt) continue;
     if (!d.inScope) {
       gaps.push(
-        `コミット ${d.commit}: 委任の範囲の逸脱です(Delegated: ${d.rule})。${d.problems.join('。')}。` +
+        `コミット ${d.commit}: 委任の条件に反する変更です(Delegated: ${d.rule})。${d.problems.join('。')}。` +
           '該当の範囲を協働へ引き下げ、人の判定を受けてください'
       );
     } else if (d.riskClass !== 'R3') {
       // 委任の識別を持つ変更は R3 に限る(第4章 G-6「委任の識別を持つ変更が R3 でない場合」)
       gaps.push(
-        `コミット ${d.commit}${d.pr ? `(PR #${d.pr})` : ''}: 委任の範囲の逸脱です(Delegated: ${d.rule})。委任の識別を持つ変更のリスク区分が R3 でない(記録: ${d.riskClass ?? '未記入'})。` +
+        `コミット ${d.commit}${d.pr ? `(PR #${d.pr})` : ''}: 委任の条件に反する変更です(Delegated: ${d.rule})。委任の識別を持つ変更のリスク区分が R3 でない(記録: ${d.riskClass ?? '未記入'})。` +
           '委任の範囲に入れられるのは R3 の変更だけです。該当の範囲を協働へ引き下げ、人の判定を受けてください'
       );
     }
@@ -2237,8 +2238,10 @@ if (isMain) {
 
   // --- 代償措置つきの逸脱(未達と区別して載せる) ------------------------------
 
+  // 区分(listed: 閉じた列挙の逸脱 / unlisted: 列挙に無い離脱。標準 第1章 1.10.2。process-compass #316)
   const deviations = (config.deviations ?? []).map((d) => ({
     gate: d.gate,
+    category: deviationCategory(d),
     label: d.label ?? d.gate,
     rule: d.rule ?? null,
     reason: d.reason,
@@ -3260,7 +3263,7 @@ if (isMain) {
   // 理由の内容は判定しない。欄の記載が異議の有無だけかどうかを表示するに留める
   // 事項3 は、次の2つの量を別々に比べる。どちらか一方が増えれば当たる。合算して比べない(第4章 G-8)。
   //   独立した人の確認を経ていない変更の件数(項目1。G-6 を事後へ移した変更を含む)
-  //   構成上の未達のゲートと逸脱の数の合計(項目1)
+  //   構成上の未達のゲート・逸脱・列挙に無い離脱の数の合計(項目1)
   const unmetAndDeviations = unmet.length + deviations.length;
   const prevUnmetAndDeviations = prevA?.residual
     ? (Array.isArray(prevA.residual.unmet) ? prevA.residual.unmet.length : 0) + (Array.isArray(prevA.residual.deviations) ? prevA.residual.deviations.length : 0)
@@ -3271,7 +3274,7 @@ if (isMain) {
       ? `独立した人の確認を経ていない変更の件数が増えた(前回 ${prevWithoutIndependentHuman} 件 / 今回 ${withoutIndependentHuman} 件)`
       : null,
     prevUnmetAndDeviations !== null && unmetAndDeviations > prevUnmetAndDeviations
-      ? `構成上の未達のゲートと逸脱の数が増えた(前回 ${prevUnmetAndDeviations} / 今回 ${unmetAndDeviations})`
+      ? `構成上の未達のゲート・逸脱・列挙に無い離脱の数が増えた(前回 ${prevUnmetAndDeviations} / 今回 ${unmetAndDeviations})`
       : null,
   ].filter(Boolean);
   const objectionMatters = [
@@ -3285,7 +3288,7 @@ if (isMain) {
       : null,
   ].filter(Boolean);
   const objectionNotJudged = [
-    ...(prevA ? [] : ['事項3(独立した人の確認を経ていない変更の件数、または構成上の未達のゲートと逸脱の数が、前回より増えた): 前回の出力が無いため、判定していない']),
+    ...(prevA ? [] : ['事項3(独立した人の確認を経ていない変更の件数、または構成上の未達のゲート・逸脱・列挙に無い離脱の数が、前回より増えた): 前回の出力が無いため、判定していない']),
     ...(prevA && prevWithoutIndependentHuman === null ? ['事項3 のうち、独立した人の確認を経ていない変更の件数: 前回の出力が値を持たないため、比べていない'] : []),
     ...(unclassifiedUnconfirmed
       ? [`事項1: リスク区分が未記入で、独立した人の確認を経ていない変更が ${unclassifiedUnconfirmed} 件ある。R1 かどうかを判定していない`]
@@ -3440,7 +3443,12 @@ if (isMain) {
     } else if (c.kind === '未達ゲート') {
       if (unmet.length) hit(`未達のゲート ${unmet.map((u) => u.label).join(' / ')}`, '保証の開示 項目1・5');
     } else if (c.kind === '逸脱') {
-      if (deviations.length) hit(`逸脱 ${deviations.map((d) => d.label).join(' / ')}`, '保証の開示 項目5');
+      // [逸脱] は閉じた列挙の逸脱に限る。列挙に無い離脱は [離脱] が当たる(process-compass #316 / ADR-0086)
+      const listed = deviations.filter((d) => d.category === 'listed');
+      if (listed.length) hit(`逸脱 ${listed.map((d) => d.label).join(' / ')}`, '保証の開示 項目5');
+    } else if (c.kind === '離脱') {
+      const unlisted = deviations.filter((d) => d.category === 'unlisted');
+      if (unlisted.length) hit(`列挙に無い離脱 ${unlisted.map((d) => d.label).join(' / ')}`, '保証の開示 項目1・5');
     } else if (c.kind === '未回収の例外') {
       const ex = openLedger.filter((r) => r.kind === '例外');
       if (ex.length) hit(`未回収の例外 ${ex.map((r) => r.id).join(', ')}`, '技術負債台帳(保証の開示 項目5)');
@@ -3785,15 +3793,16 @@ if (isMain) {
   }
 
   if (deviations.length) {
-    R.push('## 逸脱');
+    R.push('## 逸脱と列挙に無い離脱');
     R.push('');
-    R.push('**標準が要求する属性を欠いているゲート・兼務があります。未達ではありません。**');
+    R.push('**標準が要求する属性を欠いているゲート・兼務があります。未達ではありません。**区分の「逸脱」は第1章 1.10.2 の閉じた列挙に当たるもの、「列挙に無い離脱」は条件と代償措置の定めの無いものです。');
     R.push('');
-    R.push('| 対象 | 抵触する規則 | 欠けるもの | 代償措置 | 解消の時点 |');
-    R.push('| --- | --- | --- | --- | --- |');
+    R.push('| 対象 | 区分 | 抵触する規則 | 欠けるもの | 代償措置 | 解消の時点 |');
+    R.push('| --- | --- | --- | --- | --- | --- |');
     for (const d of deviations) {
       const comp = d.compensation.join(' / ') || (d.gate ? '**なし**' : '定められていない(記録と表示による)');
-      R.push(`| ${d.label} | ${d.rule ?? '—'} | ${d.reason} | ${comp} | ${d.resolveWhen ?? '**未記入**'} |`);
+      const cat = d.category === 'listed' ? '逸脱' : '列挙に無い離脱';
+      R.push(`| ${d.label} | ${cat} | ${d.rule ?? '—'} | ${d.reason} | ${comp} | ${d.resolveWhen ?? '**未記入**'} |`);
     }
     R.push('');
   }
@@ -4002,7 +4011,7 @@ if (isMain) {
       R.push(`| 出荷判定者の異議と、残存リスクの受容 | **異議を書く者と、残存リスクを受容する者が同一である**(出荷判定者の席と事業決裁者の席の責任者が同一人物) | ${prev((p) => (p.independence.objectionSelfAccepted ? '同一' : '別の人'))} |`);
     }
     if (policy.present && policy.signerIsBizApprover) {
-      R.push('| 層1 の記名者と事業決裁者 | **層1 の記名者が、事業決裁者の席の責任者と同一である**(受容の基準を定める者と案件の残存リスクを受容する者が同一。テンプレ11 の要求事項5 の逸脱。1名・3名未満の体制では避けられない) | — |');
+      R.push('| 層1 の記名者と事業決裁者 | **層1 の記名者が、事業決裁者の席の責任者と同一である**(受容の基準を定める者と案件の残存リスクを受容する者が同一。テンプレ11 の要求事項5 を満たさない、列挙に無い離脱。1名・3名未満の体制では避けられない) | — |');
     }
     R.push(`| 責任者が未記入の席 | ${seats.length ? `${A.independence.seatsWithoutAccountable} 席` : NO_RECORD} | ${prev((p) => `${p.independence.seatsWithoutAccountable} 席`)} |`);
     R.push(`| 変更の件数 | ${ch.total} | ${prev((p) => p.independence.changes.total)} |`);
@@ -4163,8 +4172,8 @@ if (isMain) {
     const dgb = dg.withoutPriorHumanBreakdown;
     R.push(
       `- 変更ごとの検証を担い手へ委ねた変更(トレーラ Delegated): ${dg.inScope} 件 / うち独立した人が事前に承認 ${dg.withIndependentHuman} 件 / ` +
-        `独立した人の事前の承認が無い委任の変更 ${dg.withoutPriorHuman} 件(内訳: G-6 を事後の抜き取りへ移した変更=人の事前確認を経ていない変更 ${dgb.g6PostHoc} 件 / それ以外=独立した人の確認を経ていない変更 ${dgb.other} 件) / 範囲の逸脱 ${dg.outOfScope} 件` +
-        `(${prev((p) => `${p.changes.delegated.inScope} 件 / 独立した人の事前の承認が無い ${p.changes.delegated.withoutPriorHuman ?? '値なし'} 件 / 範囲の逸脱 ${p.changes.delegated.outOfScope} 件`)})`
+        `独立した人の事前の承認が無い委任の変更 ${dg.withoutPriorHuman} 件(内訳: G-6 を事後の抜き取りへ移した変更=人の事前確認を経ていない変更 ${dgb.g6PostHoc} 件 / それ以外=独立した人の確認を経ていない変更 ${dgb.other} 件) / 委任の条件に反する変更 ${dg.outOfScope} 件` +
+        `(${prev((p) => `${p.changes.delegated.inScope} 件 / 独立した人の事前の承認が無い ${p.changes.delegated.withoutPriorHuman ?? '値なし'} 件 / 委任の条件に反する変更 ${p.changes.delegated.outOfScope} 件`)})`
     );
     const dc = A.changes.directCommits;
     R.push(
