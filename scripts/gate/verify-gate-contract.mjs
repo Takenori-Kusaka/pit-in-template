@@ -66,6 +66,14 @@ import {
   nameConfirmationProblems,
   nameConfirmationNotices,
   confirmedAccounts,
+  FORMAT_VERSION,
+  formatVersionOf,
+  versionProblems,
+  templateDrift,
+  templateImplements,
+  standardEdition,
+  hookRegistrationProblems,
+  codeownersState,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
@@ -231,6 +239,56 @@ if (config.configured === false) {
   for (const p of chain.problems) problems.push(p);
 
   compareWithBase();
+}
+
+// ---------------------------------------------------------- 0.5 版の欄・取り込んだテンプレート・フックの登録・CODEOWNERS
+//
+// process-compass #315 / ADR-0085 決定2・5・6。知らない版(既知より大きい formatVersion・schemaVersion)の構成は読まずに失敗にする。
+// フックの登録(禁止事項3 の機械の遮断)の欠けと、CODEOWNERS の雛形の所有者 @OWNER の残りは、黙って統制が外れる状態のため失敗にする。
+// 取り込んだ準拠テンプレートの記録と現在の強制層のファイルの不一致は表示だけで、合否に使わない
+{
+  for (const p of versionProblems(config)) problems.push(p);
+  const fv = formatVersionOf(config);
+  if (Number.isInteger(fv) && fv < FORMAT_VERSION) {
+    notes.push(`構成の形式の版は ${fv} です(現行 ${FORMAT_VERSION})。読み込みは同じ結果になる補いだけで行っています。/process-change(種別 migrate)で現行の版へ移せます。移行は値を変えません`);
+  }
+  let settings = null;
+  try {
+    settings = JSON.parse(read('.claude/settings.json') ?? 'null');
+  } catch {
+    settings = null;
+  }
+  for (const p of hookRegistrationProblems(settings).problems) {
+    problems.push(`${p}。node scripts/init/generate-profile.mjs --merge-hooks で併合します(既存の登録は残す)`);
+  }
+  const co = codeownersState(ROOT);
+  if (co.owner.length) {
+    problems.push(`${co.effective} に雛形の所有者 @OWNER が残っています(${co.owner.join('・')} 行目)。不正な所有者の行は黙って飛ばされ、コードオーナーが誰もいません。実在のアカウントかチームへ置き換えてください(人が決める)`);
+  }
+  if (co.places.length > 1) {
+    notes.push(`CODEOWNERS が ${co.places.length} か所にあります(${co.places.join(' / ')})。GitHub は最初の1つ(${co.effective})だけを使います。ほかは効いていません`);
+  }
+  const drift = templateDrift(config, ROOT);
+  if (!config.template) {
+    notes.push('構成に、取り込んだ準拠テンプレートの記録(template)がありません。/process-change(種別 migrate。templateCommit に取り込んだコミット)で記録できます');
+  } else if (drift) {
+    const n = drift.changed.length + drift.missing.length + drift.added.length;
+    const head = `取り込んだ準拠テンプレート ${drift.commit ?? '不明(コミットの識別の記録なし)'}(${drift.recordedAt ?? '日付なし'} に記録)`;
+    if (n) {
+      notes.push(
+        `${head}の強制層のファイルの要約値と、現在のファイルが ${n} 件一致しません(変わった ${drift.changed.length} / 無くなった ${drift.missing.length} / 増えた ${drift.added.length})。` +
+          `表示だけで、合否に使いません。記録は来歴の主張であって、配布したファイルと一致することの証明ではありません。例: ${[...drift.changed, ...drift.missing, ...drift.added].slice(0, 5).join(', ')}`
+      );
+    } else notes.push(`${head}の強制層のファイルの要約値と、現在のファイルは一致しています(記録は来歴の主張であり、証明ではありません)`);
+  }
+  const impl = templateImplements(ROOT);
+  const followed = standardEdition(config);
+  if (followed && impl.edition !== followed) {
+    notes.push(
+      `構成は ${followed} に従いますが、この準拠テンプレートの検査が実装する版は ${impl.edition ?? `作業中の版(${impl.basedOn ? `${impl.basedOn}の後` : '未発行'})`} です。` +
+        '要求事項の検査を変えるテンプレートの更新は、版の切り替え(/process-change 種別 edition)と同時に取り込みます(第1章 1.10.3)'
+    );
+  }
 }
 
 // ---------------------------------------------------------- 1. 状態の値
@@ -548,6 +606,9 @@ if (!Array.isArray(config.seats)) {
       // 版の切り替えと適用の終了は、記名の自然人の決定である(標準 第1章 1.10.3・1.10.4)
       if (e.kind === 'edition' && !(EDITION_PATTERN.test(e.edition?.to ?? '') && e.decidedBy && e.reason)) {
         problems.push(`changeLog[${i}]: 版の切り替えの記録に、切り替えた版(第N版 / 第N版 修正M)、決定した者、理由のいずれかがありません(第1章 1.10.3)`);
+      }
+      if (e.kind === 'migrate' && !(Number.isInteger(e.migrate?.from) && Number.isInteger(e.migrate?.to) && e.migrate.from <= e.migrate.to)) {
+        problems.push(`changeLog[${i}]: 構成の移行の記録に、移行元と移行先の形式の版がありません(種別 migrate。ADR-0085 決定5)`);
       }
       if (e.kind === 'end' && !(e.end?.reason in END_REASONS && e.decidedBy)) {
         problems.push(`changeLog[${i}]: 適用の終了の記録に、理由の区分(${Object.keys(END_REASONS).join(' / ')})または決定した者がありません(第1章 1.10.4)`);

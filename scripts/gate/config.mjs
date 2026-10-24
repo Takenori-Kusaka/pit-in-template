@@ -75,6 +75,8 @@ export const CHANGE_KINDS = {
   // どちらも適用の開始を動かさない(同 1.10.1)。process-compass #313 / ADR-0083
   edition: null,
   end: null,
+  // 構成の形式の移行と、取り込んだ準拠テンプレートの記録(process-compass #315 / ADR-0085)。体制の変化点に数えない。値を変えない
+  migrate: null,
 };
 
 /** 変化点に数えない種別の表示名 */
@@ -85,6 +87,7 @@ export const KIND_NOTE = {
   notice: '即時通知の記録(変化点に数えない)',
   edition: '従う本標準の版の切り替え(変化点に数えない。適用の開始を動かさない)',
   end: '適用の終了(変化点に数えない)',
+  migrate: '構成の形式の移行・取り込んだテンプレートの記録(変化点に数えない。値を変えない)',
 };
 
 // ---------------------------------------------------------------- 本標準の版・適用の終了・主張の名(標準 第1章 1.10。process-compass #313 / ADR-0083)
@@ -1905,12 +1908,15 @@ export function aiAccountCheck(config, login, bot = false) {
 /**
  * 適用の開始のコミット。process.config.json の configured が true になった最初のコミット(標準 第1章 1.10.1)。
  * changeLog は読まずに境を決める(changeLog[0] は切り詰め・書き換えができ、境を後から動かせるため。ADR-0083)。
- * 返す config は、そのコミットの構成。初期化の記録の有無は initRecordProblem で確かめる
+ * 返す config は、そのコミットの構成。初期化の記録の有無は initRecordProblem で確かめる。
+ * 境は、HEAD(既定ブランチ)の第1親の連鎖の上で探す(process-compass #315 / ADR-0085 決定3)。併合した別の履歴の中の
+ * configured が true のコミットを境にしない。全履歴を歩くと、併合した別の履歴の古いコミットが先に見つかり、
+ * 境が別の履歴へ移る(品質保証の委員の V-4。test-adoption.mjs が再現する)
  */
 export function findInitCommit(cwd = ROOT) {
   let hashes = [];
   try {
-    hashes = execFileSync('git', ['log', '--reverse', '--format=%H', '--', 'process.config.json'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    hashes = execFileSync('git', ['log', '--first-parent', '--reverse', '--format=%H', '--', 'process.config.json'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .split('\n')
       .filter(Boolean);
   } catch {
@@ -1925,4 +1931,199 @@ export function findInitCommit(cwd = ROOT) {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------- 構成の形式の版と移行(process-compass #315 / ADR-0085 決定5)
+//
+// 構成は形式の版(formatVersion)を持つ。schemaVersion(要約値の連鎖の有無)の意味は変えない。
+// 欄の無い構成は形式の版 0 として読む。読み込み時に既定値で補うのは、判定の結果が補う前と同じか、より厳しくなる場合に限る
+// (版 0 → 1 は欄を足すだけで、判定に効く値を持たない)。緩める向きの補いは置かない。補いが必要な値は、移行の PR で人が確定する。
+// 知らない版(この準拠テンプレートが知るより大きい版)の構成は、読まずに失敗にする。黙って通さない(外部の前例はどれも未知の版を拒む)。
+// 移行は /process-change の種別 migrate で、版ごとに現行の版への直接の変換を1つずつ持つ(連鎖しない)。
+// 移行は、ゲートの状態・席・名簿・閾値などの値を変えない。値を変える必要がある構成(規則の強化で落ちる構成)は、
+// 移行の後も契約の検査で落ち、記名を伴う構成の変更(accountable・settings など)で直す。猶予の期間は置かない
+
+/** 現行の形式の版 */
+export const FORMAT_VERSION = 1;
+
+/** 構成の形式の版。欄の無い構成は 0 */
+export function formatVersionOf(config) {
+  return config?.formatVersion === undefined ? 0 : config.formatVersion;
+}
+
+/** 版の欄の検査。知らない版(既知より大きい formatVersion・schemaVersion)、整数でない値を問題として返す */
+export function versionProblems(config) {
+  const out = [];
+  const fv = formatVersionOf(config);
+  if (!Number.isInteger(fv) || fv < 0) out.push(`formatVersion "${config.formatVersion}" は 0 以上の整数で書きます`);
+  else if (fv > FORMAT_VERSION) {
+    out.push(
+      `構成の形式の版(formatVersion ${fv})は、この準拠テンプレートが知る版(${FORMAT_VERSION})より新しいです。知らない版の構成を読まずに失敗にします。` +
+        '構成を生成した版の準拠テンプレートを取り込んでから検査します'
+    );
+  }
+  const sv = config?.schemaVersion ?? 0;
+  if (!Number.isInteger(sv) || sv < 0) out.push(`schemaVersion "${config?.schemaVersion}" は 0 以上の整数で書きます`);
+  else if (sv > CHAINED_SCHEMA_VERSION) {
+    out.push(`構成の schemaVersion ${sv} は、この準拠テンプレートが知る版(${CHAINED_SCHEMA_VERSION})より新しいです。知らない版の構成を読まずに失敗にします`);
+  }
+  return out;
+}
+
+/**
+ * 版ごとの、現行の版への直接の変換。キーは移行元の版。各変換は現行の版の構成を返し、値を変えない。
+ * 形式の版を上げる更新は、ここへ旧い版ごとの変換を足す(保守者の義務。community/standard-editions の「既存の採用者を落とす変更」)
+ */
+export const MIGRATIONS = {
+  // 版 0 → 1: 形式の版の欄を足す。取り込んだテンプレートの記録(template)は、移行の入口が別に書く
+  0: (c) => ({ ...c, formatVersion: FORMAT_VERSION }),
+};
+
+/** 移行で変わってよい欄。これ以外の欄が変われば、移行は値を変えている */
+export const MIGRATION_FREE_KEYS = ['formatVersion', 'schemaVersion', 'template', 'changeLog'];
+
+/** 構成を現行の形式の版へ移す。変換の無い版・知らない版は例外 */
+export function migrateConfig(config) {
+  const from = formatVersionOf(config);
+  if (from === FORMAT_VERSION) return { ...JSON.parse(JSON.stringify(config)), formatVersion: FORMAT_VERSION };
+  const fn = MIGRATIONS[from];
+  if (!fn) throw new Error(`形式の版 ${from} から現行の版 ${FORMAT_VERSION} への移行の手段がありません`);
+  return fn(JSON.parse(JSON.stringify(config)));
+}
+
+/** 移行の前後で値が変わった欄(移行で変わってよい欄を除く) */
+export function migrationValueChanges(before, after) {
+  const keys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])].filter((k) => !MIGRATION_FREE_KEYS.includes(k));
+  return keys.filter((k) => canonicalJson(before?.[k] ?? null) !== canonicalJson(after?.[k] ?? null));
+}
+
+// ---------------------------------------------------------------- 取り込んだ準拠テンプレートの記録(process-compass #315 / ADR-0085 決定6)
+//
+// 構成の template は、取り込んだ準拠テンプレートのコミット(commit)と、記録の時点の強制層のファイルの要約値(digests)を持つ。
+// 書くのは初期化と /process-change の種別 migrate だけで、手で書かない。記録は来歴の主張であって、配布したファイルと
+// 一致することの証明ではない(要約値も同じリポジトリの中の値であり、改ざんを止めない)。要約値と現在のファイルの不一致は
+// 表示に使い、合否に使わない。採用者の正当な書き足し(常駐の規則の前後への追記など)があるため
+
+/** 要約値を記録する強制層のファイル。初期化と変化点が案件ごとに書き換えるファイル(.claude/settings.json・guard.json)は含めない */
+export const ENFORCEMENT_DIGEST_GLOBS = ['.claude/hooks/**', '.github/workflows/**', '.github/rulesets/**', 'scripts/gate/**', 'scripts/init/**', 'scripts/vendor/**', 'adapters/**'];
+
+/** 強制層のファイルの要約値。{ 相対パス: SHA-256 }。キーは並べて返す */
+export function enforcementDigests(root = ROOT) {
+  const out = {};
+  const walk = (rel) => {
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs)) return;
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) {
+      for (const e of fs.readdirSync(abs).sort()) walk(rel ? `${rel}/${e}` : e);
+      return;
+    }
+    if (ENFORCEMENT_DIGEST_GLOBS.some((g) => matchGlob(g, rel))) out[rel] = sha256(fs.readFileSync(abs));
+  };
+  for (const top of ['.claude', '.github', 'scripts', 'adapters']) walk(top);
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** テンプレートのコミットの識別の書式(7〜40 桁の16進) */
+export const TEMPLATE_COMMIT_PATTERN = /^[0-9a-f]{7,40}$/;
+
+/** 取り込みの記録を作る。commit は人が渡す識別(分からなければ null) */
+export function templateRecord(commit, root = ROOT, at = null) {
+  return { commit: commit ?? null, recordedAt: at, digests: enforcementDigests(root) };
+}
+
+/**
+ * 記録した要約値と現在のファイルの差。{ recorded, changed: [パス], missing: [パス], added: [パス] }。記録が無ければ null。
+ * 表示に使い、合否に使わない
+ */
+export function templateDrift(config, root = ROOT) {
+  const rec = config?.template;
+  if (!rec || typeof rec !== 'object' || !rec.digests || typeof rec.digests !== 'object') return null;
+  const now = enforcementDigests(root);
+  const changed = [];
+  const missing = [];
+  for (const [p, d] of Object.entries(rec.digests)) {
+    if (!(p in now)) missing.push(p);
+    else if (now[p] !== d) changed.push(p);
+  }
+  const added = Object.keys(now).filter((p) => !(p in rec.digests));
+  return { commit: rec.commit ?? null, recordedAt: rec.recordedAt ?? null, changed, missing, added };
+}
+
+/** 準拠テンプレートの検査が実装する本標準の版(複製した知識ベースの source による)。{ edition, basedOn, commit } */
+export function templateImplements(root = ROOT) {
+  try {
+    const kb = JSON.parse(fs.readFileSync(path.join(root, 'scripts/vendor/tailoring-kb.json'), 'utf8'));
+    const s = kb.source ?? {};
+    return { edition: s.edition ?? null, basedOn: s.basedOn ?? null, commit: typeof s.commit === 'string' ? s.commit : null };
+  } catch {
+    return { edition: null, basedOn: null, commit: null };
+  }
+}
+
+// ---------------------------------------------------------------- フックの登録と CODEOWNERS(process-compass #315 / ADR-0085 決定2)
+
+/**
+ * テンプレートのフックの登録。既存の .claude/settings.json を持つリポジトリへ持ち込むと、上書きしない複製では既存の側が残り、
+ * 登録が黙って外れる(禁止事項3 の機械の遮断が効かない)。初期化はこの登録を併合し、契約の検査は required の登録を確かめる
+ */
+export const TEMPLATE_HOOKS = [
+  { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|NotebookEdit', command: 'node .claude/hooks/guard-write.mjs', timeout: 15, required: true },
+  { event: 'SessionStart', matcher: null, command: 'node scripts/gate/next.mjs --brief', timeout: 15, required: false },
+];
+
+/** settings に、フックの登録 h があるか(同じ事象で、コマンドが一致する登録。PreToolUse は書き込みの道具をすべて覆う照合子) */
+function hookRegistered(settings, h) {
+  const groups = settings?.hooks?.[h.event];
+  if (!Array.isArray(groups)) return false;
+  return groups.some((g) => {
+    const cmds = Array.isArray(g?.hooks) ? g.hooks : [];
+    if (!cmds.some((x) => x?.type === 'command' && String(x.command ?? '').trim() === h.command)) return false;
+    if (!h.matcher) return true;
+    const m = String(g?.matcher ?? '');
+    if (m === '' || m === '*') return true;
+    return h.matcher.split('|').every((tool) => m.split('|').map((t) => t.trim()).includes(tool));
+  });
+}
+
+/** 登録の欠け。{ problems: [必須の登録の欠け・読めない設定], missing: [欠けた登録(必須以外を含む)] } */
+export function hookRegistrationProblems(settings) {
+  const problems = [];
+  if (!settings || typeof settings !== 'object') return { problems: ['.claude/settings.json を読めない(無い、または JSON でない)'], missing: TEMPLATE_HOOKS };
+  if (settings.disableAllHooks === true) problems.push('.claude/settings.json の disableAllHooks が true です。フックがすべて止まります');
+  if (settings.hooks !== undefined && (typeof settings.hooks !== 'object' || Array.isArray(settings.hooks))) problems.push('.claude/settings.json の hooks がオブジェクトでない');
+  const missing = TEMPLATE_HOOKS.filter((h) => !hookRegistered(settings, h));
+  for (const h of missing.filter((x) => x.required)) problems.push(`.claude/settings.json に、テンプレートのフックの登録(${h.event}: ${h.command})が無い。禁止事項3 の機械の遮断が効かない`);
+  return { problems, missing };
+}
+
+/** フックの登録を併合した settings を返す(既存の登録は残し、欠けた登録だけを足す)。元の値は変えない */
+export function mergeHookRegistration(settings) {
+  const out = JSON.parse(JSON.stringify(settings ?? {}));
+  if (!out.hooks || typeof out.hooks !== 'object' || Array.isArray(out.hooks)) out.hooks = {};
+  for (const h of TEMPLATE_HOOKS) {
+    if (hookRegistered(out, h)) continue;
+    if (!Array.isArray(out.hooks[h.event])) out.hooks[h.event] = [];
+    out.hooks[h.event].push({ ...(h.matcher ? { matcher: h.matcher } : {}), hooks: [{ type: 'command', command: h.command, timeout: h.timeout }] });
+  }
+  return out;
+}
+
+/** CODEOWNERS の置き場。GitHub は、この順で最初に見つけた1つだけを使う */
+export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+
+/** CODEOWNERS の状態。{ places: [あるファイル], effective: 効くファイル, owner: 雛形の所有者 @OWNER が残る行 } */
+export function codeownersState(root = ROOT) {
+  const places = CODEOWNERS_PLACES.filter((p) => fs.existsSync(path.join(root, p)));
+  const effective = places[0] ?? null;
+  const owner = [];
+  if (effective) {
+    fs.readFileSync(path.join(root, effective), 'utf8')
+      .split(/\r?\n/)
+      .forEach((l, i) => {
+        const body = l.replace(/#.*$/, '').trim();
+        if (body && /(^|\s)@OWNER(\s|$)/.test(body)) owner.push(i + 1);
+      });
+  }
+  return { places, effective, owner };
 }

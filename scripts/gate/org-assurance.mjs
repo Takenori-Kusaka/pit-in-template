@@ -1093,9 +1093,12 @@ export function competenceState(config, policy, { day = null } = {}) {
 /** 名簿の外の確認した者の注記の短い形(D-0 節9・集約・次の一手で同じ語) */
 export const OUTSIDE_ROSTER = '(名簿の外)';
 
-/** 実環境の統制の確認の項目(附属書I I.11 要件⑦) */
+/** 実環境の統制の確認の項目(附属書I I.11 要件⑦。#315 R-4 で旧来のブランチ保護・CODEOWNERS・バイパスの主体を足した) */
 export const ENV_CHECK_ITEMS = [
-  ['ruleset', 'ルールセットの適用(要求する承認の数・最後の push の後の承認・コードオーナー・必須チェック)'],
+  ['ruleset', 'ルールセットの適用(必須チェック gate-g5。G-6 が有効なら要求する承認の数・最後の push の後の承認・コードオーナー)'],
+  ['classicProtection', '旧来のブランチ保護との重なり(gh api …/branches/<branch>/protection)'],
+  ['codeowners', '効いている CODEOWNERS の所在と codeowners/errors の結果'],
+  ['bypass', 'ルールセットのバイパスの主体(bypass_actors)'],
   ['prReviews', 'PR のレビューの取得(gate-g5 が PR_REVIEWS に渡す gh api …/pulls/N/reviews)'],
   ['shipEvidence', 'ship-evidence の成果物の取得(gate-g5 の実行の license-scan・test-results)'],
 ];
@@ -1142,12 +1145,43 @@ export function envFindingsText(findings) {
 }
 
 /**
+ * env-check の結果の4値(#315 R-4)。確認済み / 不一致 / 未確認(理由つき)/ 対象外。
+ * 対象外は確認済みに数えない(V-1: 2値では「確かめる項目なし」が確認済みに重なっていた)。
+ * 読めた空の一覧は「不一致」、読めなかった場合は「未確認」で区別する
+ */
+export const ENV_STATUS_TEXT = { confirmed: '確認済み', mismatch: '不一致', unconfirmed: '未確認', notApplicable: '対象外' };
+
+/** 未確認の理由。権限不足で読めない・実行していない を区別する(#315 R-4) */
+export const ENV_REASON_TEXT = {
+  permission: '権限不足で読めない',
+  'not-run': '実行していない',
+  unreadable: '読めない(gh が無い・未認証・模擬)',
+  'no-subject': '確かめる対象がまだ無い',
+  'no-evidence': '実環境の識別を欠く',
+  legacy: '旧い形の記録(4値より前)',
+};
+
+/** 項目の状態の短い表示(記録の節3・集約・次の一手・env-check の出力で同じ語) */
+export function envStatusLabel(item) {
+  if (item?.status === 'unconfirmed') return `未確認(${ENV_REASON_TEXT[item.reason] ?? '理由不明'})`;
+  return ENV_STATUS_TEXT[item?.status] ?? '未確認(理由不明)';
+}
+
+/**
  * 確認済みの項目が伴うべき、実環境の API の応答の識別(#288 第7巡 V)。確認した者の記名だけでは、固定の応答で作った記録と
  * 実環境で作った記録を区別できない。査察で GitHub の画面と突合できる鍵(ルールセットの id、レビューの id、実行の id と URL)を
  * 記録に要し、無い確認済みは「実環境の証拠を欠く」として未確認に倒す
  */
 export const ENV_EVIDENCE_KEYS = {
   ruleset: [['rulesetIds', (v) => Array.isArray(v) && v.length > 0]],
+  // 旧来の保護: 保護が無い(404 Branch not protected)なら protected: false。有れば応答の url(API の保護の所在)
+  classicProtection: [['protected', (v) => typeof v === 'boolean']],
+  // 効いている CODEOWNERS の所在と、既定ブランチ上の blob の sha(手元の git hash-object と突合できる)
+  codeowners: [
+    ['path', (v) => typeof v === 'string' && v.length > 0],
+    ['blobSha', (v) => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v)],
+  ],
+  bypass: [['rulesetIds', (v) => Array.isArray(v) && v.length > 0]],
   prReviews: [
     ['pr', (v) => Number.isFinite(Number(v)) && Number(v) > 0],
     ['reviewIds', (v) => Array.isArray(v) && v.length > 0],
@@ -1174,6 +1208,9 @@ export function envEvidenceText(env) {
     const e = i.evidence;
     if (!e || typeof e !== 'object') continue;
     if (i.id === 'ruleset' && Array.isArray(e.rulesetIds) && e.rulesetIds.length) parts.push(`ルールセット id ${e.rulesetIds.join('・')}`);
+    if (i.id === 'classicProtection' && typeof e.protected === 'boolean') parts.push(`旧来のブランチ保護 ${e.protected ? `あり(${e.url ?? 'url なし'})` : 'なし'}`);
+    if (i.id === 'codeowners' && e.path) parts.push(`CODEOWNERS ${e.path}${e.blobSha ? `(blob ${String(e.blobSha).slice(0, 12)})` : ''}`);
+    if (i.id === 'bypass' && Array.isArray(e.rulesetIds) && e.rulesetIds.length) parts.push(`バイパスの主体を読んだルールセット id ${e.rulesetIds.join('・')}`);
     if (i.id === 'prReviews' && Array.isArray(e.reviewIds) && e.reviewIds.length) parts.push(`PR #${e.pr} のレビュー id ${e.reviewIds.join('・')}${e.lastSubmittedAt ? `(最後の提出 ${e.lastSubmittedAt})` : ''}`);
     if (i.id === 'shipEvidence' && e.runId) parts.push(`gate-g5 の実行 ${e.runId}(${e.runUrl ?? 'URL なし'}${Array.isArray(e.artifactIds) && e.artifactIds.length ? `。成果物 id ${e.artifactIds.join('・')}` : ''})`);
   }
@@ -1192,7 +1229,7 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   const out = { present: fs.existsSync(p), record: null, items: [], findings: [], attention: [], findingsText: null, confirmed: false, problems: [], committed: null, summary: '' };
   if (!out.present) {
     out.summary = `未確認(${ENV_CHECK_FILE} が無い。採用者が実環境の gh で node scripts/gate/adoption-trial.mjs env-check --by <氏名> を実行し、記録をコミットする)`;
-    out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録なし' }));
+    out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', reason: 'not-run', detail: '記録なし' }));
     out.findings = envFindingsOf(null, { recordMissing: true });
     out.findingsText = envFindingsText(out.findings);
     return out;
@@ -1202,7 +1239,7 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   } catch (e) {
     out.problems.push(`${ENV_CHECK_FILE} を JSON として読めない(${e.message})`);
     out.summary = `未確認(${out.problems[0]})`;
-    out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録を読めない' }));
+    out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', reason: 'unreadable', detail: '記録を読めない' }));
     out.findings = ENV_CHECK_FINDINGS.map(([id, label]) => ({ id, label, status: 'unconfirmed', detail: '記録を読めない', evidence: null }));
     out.findingsText = envFindingsText(out.findings);
     return out;
@@ -1213,18 +1250,26 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   out.findingsText = envFindingsText(out.findings);
   out.items = ENV_CHECK_ITEMS.map(([id, label]) => {
     const it = r.items?.[id] ?? null;
-    let status = it?.status === 'confirmed' ? 'confirmed' : it?.status === 'mismatch' ? 'mismatch' : 'unconfirmed';
-    let detail = it?.detail ?? '記録に項目が無い';
-    // 確認済みは、実環境の API の応答の識別を伴う(構成が確かめる項目を要しない「確かめる項目なし」は除く)。
-    // 識別の無い確認済みは実環境の証拠を欠くため未確認に倒す(#288 第7巡 V)。第6巡の記録(識別なし)もここで未確認になる
-    if (status === 'confirmed' && it?.notApplicable !== true) {
+    let status = ['confirmed', 'mismatch', 'notApplicable', 'unconfirmed'].includes(it?.status) ? it.status : 'unconfirmed';
+    let reason = status === 'unconfirmed' ? (ENV_REASON_TEXT[it?.reason] ? it.reason : it ? 'unreadable' : 'not-run') : null;
+    let detail = it?.detail ?? '記録に項目が無い(4値より前の記録、または実行していない)';
+    // 4値より前の記録(#315 R-4)は「確かめる項目なし」を confirmed + notApplicable で書いていた。対象外を確認済みに数えないため、
+    // 旧い形は確認済みにも対象外にも読み替えず、未確認(旧い形の記録)に倒す。env-check を実行し直す
+    if (status === 'confirmed' && it?.notApplicable === true) {
+      status = 'unconfirmed';
+      reason = 'legacy';
+      detail = `旧い形の記録(確かめる項目なしを確認済みとして書いていた。env-check を実行し直す)。元の記載: ${detail}`;
+    }
+    // 確認済みは、実環境の API の応答の識別を伴う。識別の無い確認済みは実環境の証拠を欠くため未確認に倒す(#288 第7巡 V)
+    if (status === 'confirmed') {
       const missing = envEvidenceMissing(id, it?.evidence);
       if (missing.length) {
         status = 'unconfirmed';
+        reason = 'no-evidence';
         detail = `実環境の証拠を欠く(記録に応答の識別 ${missing.join('・')} が無い。第7巡より前の記録、または識別を返さない gh。env-check を実行し直す)。元の記載: ${detail}`;
       }
     }
-    return { id, label, status, detail, evidence: it && typeof it.evidence === 'object' ? it.evidence : null, notApplicable: it?.notApplicable === true };
+    return { id, label, status, reason, detail, evidence: it && typeof it.evidence === 'object' ? it.evidence : null };
   });
   if (!isFilledValue(r.checkedBy) || aiNameReason(String(r.checkedBy))) out.problems.push('確認した者(checkedBy)が未記入、または AI の名義');
   if (!isRealDay(String(r.checkedAt ?? '').slice(0, 10))) out.problems.push('確認日(checkedAt)が日付でない');
@@ -1240,13 +1285,15 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   } catch {
     out.committed = null;
   }
-  const allOk = out.items.every((i) => i.status === 'confirmed');
+  // 全体の確認済みは、各項目が確認済みか対象外で、かつ確認済みが1つ以上あること。対象外の項目は確認済みに数えず、件数を分けて出す
+  out.counts = Object.fromEntries(Object.keys(ENV_STATUS_TEXT).map((k) => [k, out.items.filter((i) => i.status === k).length]));
+  const allOk = out.items.every((i) => i.status === 'confirmed' || i.status === 'notApplicable') && out.counts.confirmed > 0;
   out.confirmed = allOk && !out.problems.length;
-  const itemText = out.items.map((i) => `${i.label.split('(')[0]} ${i.status === 'confirmed' ? '確認済み' : i.status === 'mismatch' ? '**構成と一致しない**' : '**未確認**'}(${i.detail})`).join(' / ');
+  const itemText = out.items.map((i) => `${i.label.split('(')[0]} ${i.status === 'confirmed' || i.status === 'notApplicable' ? envStatusLabel(i) : `**${envStatusLabel(i)}**`}(${i.detail})`).join(' / ');
   out.evidenceText = envEvidenceText(out);
   out.summary = out.confirmed
-    ? `確認済み(${String(r.checkedAt).slice(0, 10)} ${r.checkedBy}。対象 ${r.repo ?? 'リポジトリ未記録'})。${itemText}${out.evidenceText ? `。実環境の識別: ${out.evidenceText}` : ''}`
-    : `未確認(${[...out.items.filter((i) => i.status !== 'confirmed').map((i) => `${i.label.split('(')[0]}: ${i.detail}`), ...out.problems].join(' / ')})`;
+    ? `確認済み(${String(r.checkedAt).slice(0, 10)} ${r.checkedBy}。対象 ${r.repo ?? 'リポジトリ未記録'}。確認済み ${out.counts.confirmed} 項目・対象外 ${out.counts.notApplicable} 項目。対象外は確認済みに数えない)。${itemText}${out.evidenceText ? `。実環境の識別: ${out.evidenceText}` : ''}`
+    : `未確認(${[...out.items.filter((i) => i.status !== 'confirmed' && i.status !== 'notApplicable').map((i) => `${i.label.split('(')[0]}: ${envStatusLabel(i)}。${i.detail}`), ...out.problems].join(' / ')})`;
   return out;
 }
 

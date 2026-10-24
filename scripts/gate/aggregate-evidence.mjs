@@ -532,13 +532,17 @@ if (isMain) {
 
   // --- 構成の初期化より前の履歴(pre-init) ---------------------------------------
   //
-  // テンプレート由来の初期コミットなど、構成の初期化(process.config.json が設定済みになったコミット)より
-  // 前の履歴は、利用者の変更ではない。対象外(pre-init)として扱い、件数を表示する。初期化のコミット自身は
-  // 対象である(/process-init の例はトレーラ Risk・Verification を書く)
-  // 境は configured が true になった最初のコミット(標準 第1章 1.10.1。changeLog は読まない。ADR-0083)
+  // 適用の開始(process.config.json が設定済みになった最初のコミット)より前の履歴は、出所を問わず(採用者の過去の変更、
+  // 併合した他の履歴、テンプレートの開発履歴)本標準の要求事項の対象外である。対象外(pre-init)として扱い、件数だけを
+  // 表示する。内訳を分類しない(テンプレート由来かどうかの識別で免除しない。識別を誤ると製品の変更が開示から消える。
+  // トレーラ・作者・ファイルの一覧は出所を証明しない。process-compass #315 / ADR-0085 決定3)。初期化のコミット自身は対象である。
+  // 境は、既定ブランチの第1親の連鎖の上で configured が true になった最初のコミット(標準 第1章 1.10.1。findInitCommit)。
+  // 開始の後に共通の祖先の無い履歴を併合した場合、その履歴のコミットは境の祖先でないため、対象として数える(免除しない)。
+  // 開始の前の集合は、境のコミットの全祖先(第2親の側を含む。境自身を除く)。境がマージのとき、併合した側の開始より前の
+  // コミットを開始の後に数えない
   const initFound = findInitCommit(ROOT);
   const initCommit = initFound?.hash ?? null;
-  const preInit = new Set(initCommit ? git(['rev-list', `${initCommit}^`]).split('\n').filter(Boolean) : []);
+  const preInit = new Set(initCommit ? git(['rev-list', initCommit]).split('\n').filter((h) => h && h !== initCommit) : []);
 
   const allCommits = git(['log', '--format=%H%x09%s%x09%P', ...logRange])
     .split('\n')
@@ -1493,33 +1497,10 @@ if (isMain) {
   // 対象外にしたコミットは、変更の件数にも数えない。件数は表示する。
   // 記録の置き場(RECORD_PATHS・CONDITIONAL_RECORD_PATHS)は、PR の変更の一覧より前で定義している(記録だけの PR の識別と共用)
 
-  // 構成の初期化より前のコミットのうち、製品のコード(記録の置き場の外)を変えたもの。欠落にはしないが、
-  // 件数を保証の開示の項目1・5 に出し、品質レポートに一覧を出す(隠さない)。独立した人の確認・リスク区分・
-  // 検証の記載は確かめていない。テンプレート由来の初期コミット(親を持たず、テンプレートのファイルだけを持つ
-  // コミット)は、一覧から除いて件数だけ出す
-  const TEMPLATE_FILES = [
-    '.claude/**', '.github/**', 'adapters/**', 'context/**', 'docs/**', 'evidence/**', 'profiles/**', 'scripts/**', 'specs/**', 'templates/**',
-    'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'README.md', 'process.config.json', 'PROCESS-PROFILE.md', '.gitignore',
-  ];
-  const preInitDetail = (() => {
-    const product = [];
-    let templateOrigin = 0;
-    let recordOnly = 0;
-    for (const c of preInitCommits) {
-      const files = git(['show', '--name-only', '--format=', c.hash]).split('\n').filter(Boolean);
-      if (!c.parents.length && files.length && files.every((x) => TEMPLATE_FILES.some((g) => matchGlob(g, x)))) {
-        templateOrigin++;
-        continue;
-      }
-      const outside = files.filter((x) => !RECORD_PATHS.some((g) => matchGlob(g, x)));
-      if (!outside.length) {
-        recordOnly++;
-        continue;
-      }
-      product.push({ commit: c.hash.slice(0, 8), subject: c.subject, files: outside.length });
-    }
-    return { total: preInitCommits.length, templateOrigin, recordOnly, product };
-  })();
+  // 適用の開始より前のコミット。出所を問わず要求事項の対象外として、件数だけを保証の開示の項目1・5 と品質レポートに出す
+  // (隠さない)。欠落にはしない。独立した人の確認・リスク区分・検証の記載は確かめていない。1件ずつの分類はしない
+  // (大きな履歴で出荷のたびに重くならないため。process-compass #315)
+  const preInitDetail = { total: preInitCommits.length };
   const commitRefers = (hash) => (text) => (String(text ?? '').match(/\b[0-9a-f]{7,40}\b/gi) ?? []).some((t) => hash.toLowerCase().startsWith(t.toLowerCase()));
   const directChanges = trailers
     .filter((c) => !commitPr.has(c.hash))
@@ -2744,10 +2725,10 @@ if (isMain) {
     // 壊してはならない品質条件のうち、検証へ降ろしていないもの(第4章 G-7「壊してはならない品質条件の突合」。G-8 の受容の対象)
     qcNoTest: trace.qcNoTest,
     qcUnreferenced: trace.qcUnreferenced,
-    // 構成の初期化より前に、製品のコードを変えたコミット。独立した人の確認・リスク区分・検証の記載を確かめていない
-    preInitProductChanges: preInitDetail.product.length,
+    // 適用の開始より前のコミット(出所を問わず要求事項の対象外)。独立した人の確認・リスク区分・検証の記載を確かめていない
+    preInitCommits: preInitDetail.total,
   };
-  independence.preInit = { productChanges: preInitDetail.product.length, templateOrigin: preInitDetail.templateOrigin };
+  independence.preInit = { commits: preInitDetail.total };
 
   // 6. 検出能力の測定値と測定時点(人の層・AI の層)
   // 測定の記録は、記録の置き場 docs/adoption-trial/seeded-errors.json(導入前の検証の tally が書き、コミットされる)を読む。
@@ -3698,10 +3679,8 @@ if (isMain) {
     preInit: {
       commits: preInitCommits.length,
       initCommit: initCommit ? initCommit.slice(0, 8) : null,
-      // 製品のコード(記録の置き場の外)を変えたコミット。テンプレート由来の初期コミットは件数だけ
-      productChanges: preInitDetail.product,
-      templateOrigin: preInitDetail.templateOrigin,
-      recordOnly: preInitDetail.recordOnly,
+      // 出所を問わず要求事項の対象外。内訳は分類しない(テンプレート由来の識別はしない。ADR-0085 決定3)
+      outOfScope: true,
     },
     // G-7 の基準ごとの、機械が確かめた範囲
     criteria,
@@ -4090,7 +4069,7 @@ if (isMain) {
     }
     if (preInitDetail.total) {
       R.push(
-        `| 構成の初期化より前に、製品のコードを変えたコミット(変更の件数に数えていない。独立した人の確認・リスク区分・検証の記載を確かめていない) | ${A.independence.preInit.productChanges} 件(ほかにテンプレート由来の初期コミット ${A.independence.preInit.templateOrigin} 件) | ${prev((p) => (p.independence.preInit ? `${p.independence.preInit.productChanges} 件` : '値なし'))} |`
+        `| 適用の開始より前のコミット(要求事項の対象外。出所を問わず内訳を区別しない。変更の件数に数えていない。独立した人の確認・リスク区分・検証の記載を確かめていない) | ${A.independence.preInit.commits} 件 | ${prev((p) => (p.independence.preInit ? `${p.independence.preInit.commits ?? p.independence.preInit.productChanges} 件` : '値なし'))} |`
       );
     }
     const r1 = A.independence.r1WithoutIndependentHuman;
@@ -4233,7 +4212,7 @@ if (isMain) {
     R.push(`| 集約 gate-g5 が合否に使う検査(G-5 の基準を実装するジョブ) | ${aggP.length ? `**不備 ${aggP.length} 件**: ${aggP.join(' / ')}` : '基準を実装するジョブはすべて集約の needs にある(基準6 は参照切れだけを確かめる。見出しのアンカー・逆引用符の中の .claude/・scripts/ 以外で始まるパス・分量の上限は確かめていない)'} |`);
     // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
     // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
-    R.push(`| 実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);
+    R.push(`| 実環境の統制の確認(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・PR のレビューの取得・ship-evidence の成果物。確認済み / 不一致 / 未確認 / 対象外。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);
     // 記録用ブランチの所見(env-check の findings。#54)。確認済みの判定に入れない。一致しない所見は、保護の欠落または強制層の縮小の開示
     R.push(`| 記録用ブランチの所見(records の保護・record-copy の実行・写しの到着・既定ブランチの bypass actor・機械の承認の数え方。確認済みの判定に入れない) | ${A.machineChecks.envFindings ?? '記録なし'} |`);
     const vf = A.verification;
@@ -4265,7 +4244,7 @@ if (isMain) {
     R.push(`- 検証へ降ろしていない品質条件(受入基準から参照なし): ${listOr(A.residual.qcUnreferenced ?? [])}`);
     if (preInitDetail.total) {
       R.push(
-        `- 構成の初期化より前に、製品のコードを変えたコミット: ${A.residual.preInitProductChanges} 件(独立した人の確認・リスク区分・検証の記載を確かめていない。一覧は品質レポートの「変更単位」にある)`
+        `- 適用の開始より前のコミット: ${A.residual.preInitCommits} 件(要求事項の対象外。出所を問わず内訳を区別しない。独立した人の確認・リスク区分・検証の記載を確かめていない)`
       );
     }
     R.push(...renderContinuityResidual(A.continuity, external));
@@ -4507,11 +4486,9 @@ if (isMain) {
   if (preInitCommits.length) {
     const pi = preInitDetail;
     R.push(
-      `- 構成の初期化より前の履歴(pre-init): ${pi.total} 件。上の件数にも変更の件数にも数えていない(初期化のコミット ${initCommit.slice(0, 8)} 自身は対象)。` +
-        `内訳: テンプレート由来の初期コミット ${pi.templateOrigin} 件 / 記録だけのコミット ${pi.recordOnly} 件 / 製品のコード(記録の置き場の外)を変えたコミット ${pi.product.length} 件。` +
-        '初期化より前のコミットは、独立した人の確認・リスク区分・検証の記載を確かめていない(欠落として扱わない)'
+      `- 適用の開始より前の履歴(pre-init): ${pi.total} 件。要求事項の対象外(出所を問わず、内訳を区別しない)。上の件数にも変更の件数にも数えていない(初期化のコミット ${initCommit.slice(0, 8)} 自身は対象)。` +
+        '開始より前のコミットは、独立した人の確認・リスク区分・検証の記載を確かめていない(欠落として扱わない)'
     );
-    for (const p of pi.product) R.push(`  - ${p.commit} ${p.subject}(記録の置き場の外のファイル ${p.files} 件)`);
   }
   R.push(
     `- PR を経ていないコミット: ${directChanges.length} 件(うち、記録だけのコミット ${count(directChanges, (d) => d.exempt === 'record-only')} 件と、ファイルの変更を持たないコミット ${count(directChanges, (d) => d.exempt === 'empty')} 件は、変更の件数とリスク区分の対象外)`

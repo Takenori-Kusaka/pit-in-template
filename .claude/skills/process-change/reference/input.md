@@ -37,6 +37,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `sgRecord` | ステージを前へ戻す変更で、SG の判定記録の所在(`docs/gates/` 配下の実在する .md) |
 | `notice` | 即時通知の記録 `{ "to", "at" }`(`kinds/notice.md`) |
 | `edition` | 種別 `edition` の切り替える版(`第N版` / `第N版 修正M`)。複製した知識ベースの版に限る(`kinds/edition.md`) |
+| `templateCommit` | 種別 `migrate` の、取り込んだ準拠テンプレートのコミットの識別(7〜40 桁の16進)。推測で書かない(`kinds/migrate.md`) |
 | `endReason` | 種別 `end` の理由の区分(`closed` / `operation-ended` / `withdrawn`。`kinds/end.md`) |
 | `invalidatedChecks` | 無効になった確認と、やり直しの要否(`reference/direction.md`) |
 | `recheckDue` | 失効した適合性確認・例外の、再確認の期日 |
