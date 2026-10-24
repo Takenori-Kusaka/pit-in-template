@@ -63,6 +63,8 @@ function workspace(label) {
   };
   const exists = (rel) => fs.existsSync(path.join(dir, rel));
   const read = (rel) => fs.readFileSync(path.join(dir, rel), 'utf8');
+  // 雛形の所有者(@OWNER)は採用者が置き換える(置き換えないと事前点検が止める。process-compass #315 R-2)
+  write('.github/CODEOWNERS', read('.github/CODEOWNERS').replace(/@OWNER\b/g, '@tester'));
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');
   git('config', 'user.name', 'tester');
@@ -78,6 +80,23 @@ const ANSWERS = {
 };
 const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free' };
 const dirs = [];
+/** 回答の JSON を作業の場所の外へ置く(作業の場所に置くと、事前点検が既存のファイルとして数える) */
+function answersFile(obj) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-answers-'));
+  dirs.push(d);
+  const p = path.join(d, 'answers.json');
+  fs.writeFileSync(p, JSON.stringify(obj));
+  return p;
+}
+/** 事前点検の下書きから一覧を作り、人が扱いと記名を書いた状態にする(試験のための記名) */
+function signInventory(W) {
+  const draft = W.node('scripts/gate/preflight.mjs', '--draft');
+  const text = draft.out
+    .replace('<氏名>', '名簿 戊')
+    .replace('<YYYY-MM-DD>', '2026-10-24')
+    .replace(/^(\| (?!資産 |---|\(検出)[^|]+\| [^|]+\| [^|]+\| ) \|  \|$/gm, '$1取り込む | 試験 |');
+  W.write('docs/adoption-inventory.md', text);
+}
 
 // 常駐の規則の一覧が、テンプレートの CLAUDE.md と一致する(節・規則を足したのに一覧へ追加していない状態と、
 // 一覧の規則がテンプレートから消えた状態を落とす。process-compass #306・#314)
@@ -104,10 +123,15 @@ for (const n of [1, 3]) {
   const tag = `${n}名`;
   // 既存のファイルを書き換えないこと(3名では package.json を先に置いておく)
   if (n === 3) W.write('package.json', '{ "name": "kept", "private": true, "scripts": { "test": "node --test \\"tests/**/*.test.*\\"" } }\n');
-  W.write('answers.json', JSON.stringify({ ...ANSWERS[n], ...COMMON }));
-  const init = W.node('scripts/init/generate-profile.mjs', '--answers', 'answers.json', '--stack', 'node');
+  const answers = answersFile({ ...ANSWERS[n], ...COMMON });
+  if (n === 3) {
+    // 既存の package.json は既存の資産。一覧が無ければ事前点検が止め、初期化は構成を書かない(process-compass #315 R-1・R-2)
+    const stopped = W.node('scripts/init/generate-profile.mjs', '--answers', answers, '--stack', 'node');
+    check(`${tag}: 既存の資産があり一覧が無ければ、初期化は止まり構成を書かない`, !stopped.ok && /adoption-inventory/.test(stopped.out) && JSON.parse(W.read('process.config.json')).configured === false, stopped.out);
+    signInventory(W);
+  }
+  const init = W.node('scripts/init/generate-profile.mjs', '--answers', answers, '--stack', 'node');
   check(`${tag}: 初期化が通る`, init.ok, init.out);
-  fs.rmSync(path.join(W.dir, 'answers.json'));
 
   // 基盤
   if (n === 1) {
@@ -311,8 +335,7 @@ for (const n of [1, 3]) {
 for (const stack of ['python', 'go', 'none', 'undetermined']) {
   const W = workspace(stack);
   dirs.push(W.dir);
-  W.write('answers.json', JSON.stringify({ ...ANSWERS[1], ...COMMON }));
-  const init = W.node('scripts/init/generate-profile.mjs', '--answers', 'answers.json', '--stack', stack);
+  const init = W.node('scripts/init/generate-profile.mjs', '--answers', answersFile({ ...ANSWERS[1], ...COMMON }), '--stack', stack);
   check(`${stack}: 初期化が通る`, init.ok, init.out);
   check(`${stack}: package.json を作らない`, !W.exists('package.json'));
   check(`${stack}: 初回の G-5 までに作るものを列挙する`, /初回の G-5 を通すまでに作るもの/.test(init.out), init.out);

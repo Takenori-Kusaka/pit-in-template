@@ -110,6 +110,11 @@ jobs:
       - run: node scripts/gate/test-spec-lint.mjs
       # 外部の確認者の記名による緩める向きの決定を、変化点の入口が拒否すること(標準 第3章 3.13.3。process-compass #314 / ADR-0083)
       - run: node scripts/gate/test-loosening-decider.mjs
+      # 既存のリポジトリへの持ち込み: 適用の開始の境(第1親の連鎖)、開始より前の履歴の扱い、事前点検、フックの登録・@OWNER、
+      # 構成の形式の版と移行、取り込んだテンプレートの記録(標準 第1章 1.10.1・1.10.3。process-compass #315 / ADR-0084)
+      - run: node scripts/gate/test-adoption.mjs
+      # 実環境の統制の確認(env-check)の4値と確認の項目を、模擬の gh で試験する(附属書I I.11 要件⑦。process-compass #315)
+      - run: node scripts/gate/test-env-check.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:

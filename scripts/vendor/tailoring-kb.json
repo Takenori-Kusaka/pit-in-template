@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "2fd6927f8961f6c7b0c67572c3f1d01c39ae1a9b",
+    "commit": "96599c5e598160bf380aa88808a1d7ad0421a1e9",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1585,6 +1585,12 @@
       "range": "事業ステージのスコープ3層の規模の合意",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/lifecycle/#2102-規模の合意適用-事業ステージのスコープ3層の規模の合意"
+    },
+    {
+      "title": "既存のリポジトリで適用を始める場合",
+      "range": "既存のコードと履歴を持つリポジトリで適用を始める案件",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/#既存のリポジトリで適用を始める場合適用-既存のコードと履歴を持つリポジトリで適用を始める案件"
     },
     {
       "title": "委任を適用した変更",

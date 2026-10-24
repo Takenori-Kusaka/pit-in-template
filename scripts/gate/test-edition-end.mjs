@@ -104,6 +104,9 @@ function workspace() {
     if (SKIP.has(e.name)) continue;
     fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
   }
+  // 雛形の所有者(@OWNER)は採用者が置き換える(残すと契約検査が失敗にする。process-compass #315 R-2)
+  const co = path.join(dir, '.github/CODEOWNERS');
+  fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');
@@ -211,10 +214,12 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   // 旧い構成(standard の欄なし)は、変化点を経ない再生成で欄を足さない
   const w = workspace();
   w.commit('chore: template');
-  fs.writeFileSync(path.join(w.dir, 'answers.json'), JSON.stringify({ ...COMMON, 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' }));
-  const init = w.node('scripts/init/generate-profile.mjs', '--answers', 'answers.json', '--stack', 'node');
+  // 回答は作業の場所の外へ置く(作業の場所に置くと、事前点検が既存のファイルとして数える。process-compass #315)
+  const answers = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-answers-')), 'answers.json');
+  fs.writeFileSync(answers, JSON.stringify({ ...COMMON, 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' }));
+  const init = w.node('scripts/init/generate-profile.mjs', '--answers', answers, '--stack', 'node');
   check('試験の前提: 初期化が通る', init.ok, init.out);
-  fs.rmSync(path.join(w.dir, 'answers.json'));
+  fs.rmSync(path.dirname(answers), { recursive: true, force: true });
   const legacy = w.readJson('process.config.json');
   delete legacy.standard;
   w.writeJson('process.config.json', sealed(legacy));
