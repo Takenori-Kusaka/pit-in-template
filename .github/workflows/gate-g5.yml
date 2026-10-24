@@ -101,6 +101,12 @@ jobs:
       - run: node scripts/gate/test-self-heal.mjs
       # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)
       - run: node scripts/gate/test-size-observation.mjs
+      # 文脈ファイルの参照切れの検査(G-5 基準6。相対リンクと取り込み @path に限る。process-compass #314 / ADR-0083)
+      - run: node scripts/gate/test-context-refs.mjs
+      # 常駐の規則の照合: 規則ごとの核の文言の照合と、変異(行の削除・節の置き換え・否定の除去)で落ちること(process-compass #314 / ADR-0083)
+      - run: node scripts/gate/test-claude-md-resident.mjs
+      # 外部の確認者の記名による緩める向きの決定を、変化点の入口が拒否すること(標準 第3章 3.13.3。process-compass #314 / ADR-0083)
+      - run: node scripts/gate/test-loosening-decider.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:
@@ -173,6 +179,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: node scripts/gate/spec-lint.mjs
+
+  # 基準6 文脈ファイルの形式検査のうち、リポジトリ内の参照切れ(相対リンクと取り込み @path)。構成に依存しないため常に走らせる。
+  # 見出しのアンカー、逆引用符の中のパス、1ファイルの分量の上限は確かめない(process-compass #314 / ADR-0083 決定3)
+  context-format:
+    name: context-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node scripts/gate/check-context-refs.mjs
 
   # 基準5 依存関係のライセンス検査(合否条件)
   #
@@ -311,7 +326,7 @@ jobs:
   gate-g5:
     name: gate-g5
     runs-on: ubuntu-latest
-    needs: [config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan, pr-rules]
+    needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules]
     if: always()
     steps:
       - name: 全検査の結果を突合する
@@ -321,6 +336,7 @@ jobs:
           echo "test:            ${{ needs.test.result }}"
           echo "static-analysis: ${{ needs.static-analysis.result }}"
           echo "spec-lint:       ${{ needs.spec-lint.result }}"
+          echo "context-format:  ${{ needs.context-format.result }}"
           echo "ip-clearance:    ${{ needs.ip-clearance.result }}"
           echo "secret-scan:     ${{ needs.secret-scan.result }}"
           echo "pr-rules:        ${{ needs.pr-rules.result }}"

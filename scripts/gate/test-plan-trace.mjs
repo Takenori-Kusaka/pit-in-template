@@ -74,6 +74,7 @@ check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', J
 {
   const r = root({ 'specs/F-001/spec.md': SPEC([1, 2, 3]), 'specs/F-001/plan.md': PLAN([['Task-1', '1, 2'], ['Task-2', '3']]) });
   const u = unmappedCriteria('F-001', { root: r });
+  // IMPL-0150:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('全部が対応に現れる計画は、一覧が空', u.unmapped.length === 0 && u.criteria.length === 3 && u.tasks.length === 2 && u.problem === null, JSON.stringify(u));
 }
 
@@ -81,6 +82,7 @@ check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', J
 {
   const r = root({ 'specs/F-001/spec.md': SPEC([1, 2, 3, 4]), 'specs/F-001/plan.md': PLAN([['Task-1', '1'], ['Task-2', '3']]) });
   const u = unmappedCriteria('F-001', { root: r });
+  // IMPL-0150:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('どのタスクにも現れない受入基準 AC-2・AC-4 を一覧に出す', JSON.stringify(u.unmapped) === '["F-001/AC-2","F-001/AC-4"]', JSON.stringify(u));
 }
 
@@ -158,9 +160,11 @@ check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', J
   let r = run('specs/F-001');
   check('--gate を付けない spec-lint(CI と同じ)は、未確定事項で落ちない', r.ok, r.out);
   r = run('--gate', 'G-2', 'specs/F-001');
+  // IMPL-0142:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('spec-lint --gate G-2 は、未確定事項が残ると落ち、件数と G-2 前提条件1 を出す', !r.ok && /未確定事項が 1 件/.test(r.out) && /G-2 前提条件1/.test(r.out), r.out);
   put('specs/F-001/spec.md', SPEC([1, 2, 3], '(なし)'));
   r = run('--gate', 'G-2', 'specs/F-001');
+  // IMPL-0142:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('未確定事項を閉じると spec-lint --gate G-2 が通る', r.ok && /未確定事項 0 件/.test(r.out), r.out);
   r = run('--gate', 'G-4', 'specs/F-001');
   check('spec-lint --gate G-4 は、どのタスクにも現れない受入基準を一覧に出し、合否に使わない', r.ok && /G-4 基準6 の材料/.test(r.out) && /F-001\/AC-2/.test(r.out), r.out);

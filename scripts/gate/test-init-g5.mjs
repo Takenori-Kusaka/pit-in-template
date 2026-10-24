@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { buildManifest, loadManifest } from './claude-md-resident.mjs';
+import { buildManifest, loadManifest, missingResident } from './claude-md-resident.mjs';
 
 const own = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
 if (own.configured !== false) {
@@ -79,14 +79,22 @@ const ANSWERS = {
 const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free' };
 const dirs = [];
 
-// 常駐の規則の節の一覧が、テンプレートの CLAUDE.md と一致する(節を変えたのに一覧を作り直していない状態を落とす)
+// 常駐の規則の一覧が、テンプレートの CLAUDE.md と一致する(節・規則を足したのに一覧へ追加していない状態と、
+// 一覧の規則がテンプレートから消えた状態を落とす。process-compass #306・#314)
 {
-  const built = buildManifest(fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'));
+  const text = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
   const stored = loadManifest();
+  const built = buildManifest(text, stored);
   check(
-    '常駐の規則の節の一覧(claude-md-resident.json)が、テンプレートの CLAUDE.md の節と一致する',
-    stored !== null && JSON.stringify(stored.sections) === JSON.stringify(built.sections) && built.sections.length > 0,
-    '作り直し: node scripts/gate/check-process-rules.mjs --write-resident'
+    '常駐の規則の一覧(claude-md-resident.json)に、テンプレートの CLAUDE.md の節と規則がすべてある',
+    stored !== null && JSON.stringify(stored.sections) === JSON.stringify(built.sections) && JSON.stringify(stored.rules) === JSON.stringify(built.rules) && built.rules.length > 0,
+    '追加: node scripts/gate/check-process-rules.mjs --write-resident'
+  );
+  const m = stored ? missingResident(text, stored) : { absent: [1], empty: [], rules: [] };
+  check(
+    'テンプレートの CLAUDE.md が、常駐の規則の一覧のすべての節と規則を満たす',
+    m.absent.length === 0 && m.empty.length === 0 && m.rules.length === 0,
+    JSON.stringify(m.rules.map((r) => r.id))
   );
 }
 
@@ -155,9 +163,11 @@ for (const n of [1, 3]) {
   check(`${tag}: 様式の受入基準の表に、行を足す目印がある`, specBase.includes(acRow));
   W.write('specs/F-001/spec.md', specBase + '\n| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |\n');
   r = W.node('scripts/gate/spec-lint.mjs');
+  // IMPL-0106:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check(`${tag}: 受入基準の節の外の語では spec-lint が落ちない`, r.ok, r.out);
   W.write('specs/F-001/spec.md', withRow('| 9 | 事象駆動 | 入力が空の場合など、エラーを返す |'));
   r = W.node('scripts/gate/spec-lint.mjs');
+  // IMPL-0106:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check(`${tag}: 機能仕様に曖昧語を足すと spec-lint が落ちる`, !r.ok && /specs.F-001.spec\.md/.test(r.out), r.out);
   W.write('specs/F-001/spec.md', withRow('| 9 | ユビキタス | システムは一覧を高速に表示しなければならない |'));
   r = W.node('scripts/gate/spec-lint.mjs');
@@ -175,12 +185,13 @@ for (const n of [1, 3]) {
 
   // 契約検査と生成区間
   r = W.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0258:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check(`${tag}: verify-gate-contract が通る`, r.ok, r.out);
   // 集約(gate-g5)の needs から G-5 の基準を実装するジョブを外すと、契約検査が落ちる(標準 第4章 G-5「判定基準を実装する検査と集約」。#290)
   {
     const wfPath = '.github/workflows/gate-g5.yml';
     const wfText = W.read(wfPath);
-    const cut = wfText.replace(/needs: \[config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan, pr-rules\]/, 'needs: [config, contract, pr-rules]');
+    const cut = wfText.replace(/needs: \[config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules\]/, 'needs: [config, contract, pr-rules]');
     check(`${tag}: 集約の needs を書き換える試験の目印がある`, cut !== wfText);
     W.write(wfPath, cut);
     r = W.node('scripts/gate/verify-gate-contract.mjs');
@@ -201,6 +212,7 @@ for (const n of [1, 3]) {
       check(`${tag}: ルールセット ${cfg.ruleset} に dismiss_stale_reviews_on_push がある`, cut !== rsText);
       W.write(rsPath, cut);
       r = W.node('scripts/gate/verify-gate-contract.mjs');
+      // IMPL-0258:ng(違反と適合の対。標準の実装マーク。process-compass #314)
       check(`${tag}: ルールセット ${cfg.ruleset} の dismiss_stale_reviews_on_push を外すと、契約検査が落ちる`, !r.ok && /dismiss_stale_reviews_on_push/.test(r.out), r.out);
       W.write(rsPath, rsText);
     }
@@ -211,9 +223,11 @@ for (const n of [1, 3]) {
     check(`${tag}: 企画書の様式に「カバレッジの測る範囲」の行がある`, row('全体') !== brief, brief.split('\n').filter((l) => l.includes('カバレッジ')).join(' / '));
     W.write('docs/project-brief.md', row('全体'));
     r = W.node('scripts/gate/verify-gate-contract.mjs');
+    // IMPL-0255:ng(違反と適合の対。標準の実装マーク。process-compass #314)
     check(`${tag}: 企画書の範囲(全体)と構成の範囲(変更)が食い違えば、契約検査が落ちる`, !r.ok && /企画書に記録したカバレッジの測る範囲/.test(r.out), r.out);
     W.write('docs/project-brief.md', row('変更で加えた・変えたコード'));
     r = W.node('scripts/gate/verify-gate-contract.mjs');
+    // IMPL-0255:ok(違反と適合の対。標準の実装マーク。process-compass #314)
     check(`${tag}: 企画書の範囲と構成の範囲が一致すれば、契約検査が通る`, r.ok, r.out);
     fs.rmSync(path.join(W.dir, 'docs/project-brief.md'));
   }
@@ -229,9 +243,10 @@ for (const n of [1, 3]) {
     const own = '# 既存の規約\n\n- 変数名はキャメルケースで書く\n';
     W.write('CLAUDE.md', `${own}\n## このプロジェクトの構成(自動生成)\n\n${region}\n`);
     r = W.node('scripts/gate/check-process-rules.mjs');
+    // IMPL-0123:ng(違反と適合の対。標準の実装マーク。process-compass #314)
     check(
       `${tag}: 区間の目印だけを足した既存の CLAUDE.md では check-process-rules が落ちる(常駐の規則が無い)`,
-      !r.ok && /常駐の規則の節が 16 件ありません/.test(r.out) && /見出しが無い: ### 行ってはならない作業/.test(r.out),
+      !r.ok && /常駐の規則の節が 16 件、規則が \d+ 件ありません/.test(r.out) && /見出しが無い: ### 行ってはならない作業/.test(r.out),
       r.out
     );
     // 見出しだけを足して本文を持たない節は、あるものとして数えない
@@ -245,6 +260,7 @@ for (const n of [1, 3]) {
     // 既存の内容を残して、テンプレートの節を含めれば通る
     W.write('CLAUDE.md', `${own}\n${full}\n## 案件で足した節\n\n- 案件の規則\n`);
     r = W.node('scripts/gate/check-process-rules.mjs');
+    // IMPL-0123:ok(違反と適合の対。標準の実装マーク。process-compass #314)
     check(`${tag}: 既存の内容を残してテンプレートの節を含めた CLAUDE.md は check-process-rules が通る`, r.ok, r.out);
     W.write('CLAUDE.md', full);
   }

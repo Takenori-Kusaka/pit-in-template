@@ -79,8 +79,10 @@ for (const [stage, withConfirmer] of [['poc', 'omitted'], ['mvp', 'required'], [
   const no = build({ ...yes, 'q-external-reviewer': 'reviewer-no' });
   check('回答「いない」・席が未記入: 食い違いではない(注記なし)', answersRosterNotices(no).length === 0 && answersRosterProblems(no).length === 0);
   const noButOther = build({ ...yes, 'q-external-reviewer': 'reviewer-no' }, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }) });
+  // IMPL-0111:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('回答「いない」・席に別の人: 回答と名簿の矛盾として拒否する(従来どおり)', answersRosterProblems(noButOther).length === 1, JSON.stringify(answersRosterProblems(noButOther)));
   const ok = build(yes, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }) });
+  // IMPL-0111:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('回答「いる」・席に別の人: 注記も矛盾も無い', answersRosterNotices(ok).length === 0 && answersRosterProblems(ok).length === 0);
   check('confirmerOnRoster: 3名以上の体制には当てない', confirmerOnRoster(build({ 'q-team-size': 'size-3-9', 'q-biz-phase': 'mvp' })).applies === false);
 }
@@ -101,15 +103,18 @@ for (const size of ['size-3-9', 'size-10plus']) {
   const all = (m) => seatsOf({ 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'c', ...m });
   const bad = build(three, { people: [A, B, C], seats: all({ 'dev-verifier': 'b', 'independent-reviewer': 'c', 'qa-gatekeeper': 'c' }) });
   const f = seatSeparationFindings(bad);
+  // IMPL-0114:ng IMPL-0001:ng IMPL-0002:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('3名: 独立レビュア = 出荷判定者 は兼務禁止に抵触する', f.violations.some((v) => v.includes('独立レビュア') && v.includes('出荷判定者')), JSON.stringify(f.violations));
   const dev = build(three, { people: [A, B, C], seats: all({ 'dev-verifier': 'c', 'independent-reviewer': 'a', 'qa-gatekeeper': 'c' }) });
   check('3名: 開発者 = 出荷判定者 は兼務禁止に抵触する(従来どおり)', seatSeparationFindings(dev).violations.some((v) => v.includes('開発者') && v.includes('出荷判定者')));
   const good = build(three, { people: [A, B, C], seats: all({ 'dev-verifier': 'b', 'independent-reviewer': 'a', 'qa-gatekeeper': 'c' }) });
+  // IMPL-0114:ok IMPL-0001:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('3名: 3つの席が別の人なら抵触しない(独立レビュアは価値責任者・技術判断者・事業決裁者と兼ねてよい)', seatSeparationFindings(good).violations.length === 0, JSON.stringify(seatSeparationFindings(good).violations));
   const vo = build(three, { people: [A, B, C], seats: seatsOf({ 'biz-approver': 'a', 'value-owner': 'c', 'tech-lead': 'c', 'context-owner': 'c', 'ai-maintainer': 'a', 'ai-ops': 'c', 'dev-verifier': 'b', 'independent-reviewer': 'a', 'qa-gatekeeper': 'c' }) });
   check('3名: 出荷判定者が価値責任者・技術判断者・文脈オーナー・AI運用担当者を兼ねることは禁じない', seatSeparationFindings(vo).violations.length === 0, JSON.stringify(seatSeparationFindings(vo).violations));
   const two = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'b' }) });
   const f2 = seatSeparationFindings(two);
+  // IMPL-0002:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('2名: 独立レビュア = 出荷判定者 は拒否せず、代償措置つきの例外(第3章 3.5.2)として扱う', f2.violations.length === 0 && f2.excepted.some((v) => v.includes('独立レビュア') && v.includes('出荷判定者')), JSON.stringify(f2));
   check('2名: 出荷判定(G-7)の兼務は逸脱として記録される', two.deviations.some((d) => d.gate === 'g7'));
 }
@@ -120,10 +125,12 @@ for (const size of ['size-3-9', 'size-10plus']) {
   const cl2 = build({ ...g, 'q-criticality': 'cl2' });
   check('CL2: 承認者は1名、ルールセットは safety(承認 1)', cl2.review.reviewerCount === 1 && cl2.ruleset === 'safety', JSON.stringify([cl2.review.reviewerCount, cl2.ruleset]));
   const cl3 = build({ ...g, 'q-criticality': 'cl3' });
+  // IMPL-0110:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('CL3: 承認者は2名、ルールセットは regulated(承認 2)', cl3.review.reviewerCount === 2 && cl3.ruleset === 'regulated', JSON.stringify([cl3.review.reviewerCount, cl3.ruleset]));
   const reg = build({ ...g, 'q-quality': 'quality-regulated' });
   check('規制業: 承認者は2名、ルールセットは regulated', reg.review.reviewerCount === 2 && reg.ruleset === 'regulated', JSON.stringify([reg.review.reviewerCount, reg.ruleset]));
   const std = build(g);
+  // IMPL-0110:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('標準品質・CL0: ルールセットは team', std.ruleset === 'team', String(std.ruleset));
   const read = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, '.github/rulesets', `${name}.json`), 'utf8'));
   const prOf = (r) => r.rules.find((x) => x.type === 'pull_request').parameters;
@@ -137,7 +144,9 @@ for (const size of ['size-3-9', 'size-10plus']) {
 {
   const k = behaviorSummaryKey;
   check('挙動要約: 空白・記号・見出し語だけが違う文は同一として扱う', k('挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた') === k('差分を読み、 招待の失効の分岐を、自分で確かめた。'));
+  // IMPL-0093:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('挙動要約: 別の文は同一として扱わない', k('差分を読み、招待の失効の分岐を自分で確かめた') !== k('失効した招待を開くと再発行の画面へ進むことを確かめた'));
+  // IMPL-0093:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('挙動要約: 最低限の形を満たさない本文は比べない(null)', k('LGTM') === null && k('') === null);
 }
 
@@ -168,9 +177,11 @@ for (const size of ['size-3-9', 'size-10plus']) {
   const bySelf = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Devin Smith', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
   const byAi = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Claude', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
   check('上書き: 記録が無ければ AI の名義として扱う', aiAccountCheck(base, 'devin-smith').reason !== null && !aiAccountCheck(base, 'devin-smith').overridden);
+  // IMPL-0260:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('上書き: 記録が無い accountsConfirmed は契約検査が落とす', accountConfirmationProblems(base).length === 1, JSON.stringify(accountConfirmationProblems(base)));
   const ok = aiAccountCheck(byOther, 'devin-smith');
   check('上書き: 本人以外が記名した名簿の変更があれば、人のアカウントとして扱う(上書きした旨を返す)', ok.reason === null && ok.overridden === true && ok.by === '山田 太郎', JSON.stringify(ok));
+  // IMPL-0260:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('上書き: 本人以外の記名があれば契約検査は落とさない', accountConfirmationProblems(byOther).length === 0, JSON.stringify(accountConfirmationProblems(byOther)));
   check('上書き: 本人の記名では効かない', aiAccountCheck(bySelf, 'devin-smith').reason !== null && confirmedAccounts(bySelf).size === 0 && accountConfirmationProblems(bySelf).length === 1);
   check('上書き: AI の名義の記名では効かない', aiAccountCheck(byAi, 'devin-smith').reason !== null && confirmedAccounts(byAi).size === 0);
@@ -230,10 +241,13 @@ check('承認した版: 版を確かめられなければ数えない(unknown)',
   const base = { 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' };
   const seats10 = seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p0', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' });
   const large = build({ ...base, 'q-team-size': 'size-10plus' }, { people: many, seats: seats10 });
+  // IMPL-0290:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('10名以上: 価値責任者 × 技術判断者の兼務は拒否する(sep-size)', seatSeparationFindings(large).violations.some((v) => /価値責任者/.test(v) && /技術判断者/.test(v)), JSON.stringify(seatSeparationFindings(large).violations));
   check('10名以上: 価値責任者 × 技術判断者の禁止は非推奨の注記にしない', discouragedPairings(large).length === 0);
   const mid = build({ ...base, 'q-team-size': 'size-3-9' }, { people: many.slice(0, 5), seats: seats10 });
+  // IMPL-0290:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('3〜9名: 価値責任者 × 技術判断者の兼務は拒否しない', seatSeparationFindings(mid).violations.length === 0, JSON.stringify(seatSeparationFindings(mid).violations));
+  // IMPL-0291:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('3〜9名: 価値責任者 × 技術判断者の兼務を非推奨の注記に出す', seatPairingNotes(mid).some((n) => /非推奨の兼務/.test(n) && /価値責任者/.test(n)), JSON.stringify(seatPairingNotes(mid)));
   const bizSeats = seatsOf({ 'value-owner': 'p0', 'biz-approver': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3' });
   const bizLarge = build({ ...base, 'q-team-size': 'size-10plus' }, { people: many, seats: bizSeats });
@@ -250,6 +264,7 @@ check('承認した版: 版を確かめられなければ数えない(unknown)',
   check('記録: D-0 が無ければ欠落を出さない(D-0 の欠落は別に出る)', discouragedUnrecorded(mid, null).length === 0);
   // /pit の注記の出し分け(突合 X-6)
   const recorded = d0('| 価値責任者 × 技術判断者 | 名簿 甲 | 技術判断を担える人が他にいない | 2026-10-23 |');
+  // IMPL-0291:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('注記: D-0 に記録のある非推奨の兼務は /pit の注記に出さない', !seatPairingNotes(mid, { d0: recorded }).some((t) => /非推奨の兼務/.test(t)), JSON.stringify(seatPairingNotes(mid, { d0: recorded })));
   check('注記: D-0 に記録の無い非推奨の兼務は「記録なし」として出す', seatPairingNotes(mid, { d0: d0('| | | | |') }).some((t) => /非推奨の兼務/.test(t) && /記録なし/.test(t)));
   check('注記: 記録の無い兼務の文が、写す元(templates/00-d0-governance.md の節2)を示す(突合 X-7)', seatPairingNotes(mid, { d0: d0('| | | | |') }).some((t) => /templates\/00-d0-governance\.md の節2/.test(t)));
@@ -262,12 +277,14 @@ check('ready-to-merge を付けるのは独立レビュアだけ', Object.entrie
 check('ready-to-merge は出荷判定者の受信箱に入る', MAILBOX['qa-gatekeeper'].inbox.includes('state:ready-to-merge'));
 check('事業決裁者の受信箱は needs-owner(価値責任者の受信箱と分ける)', MAILBOX['biz-approver'].inbox.includes('state:needs-owner') && !MAILBOX['value-owner'].inbox.includes('state:needs-owner'));
 check('needs-platform は独立レビュア・出荷判定者も付けられる(4.3 の付与者・4.7.3)', MAILBOX['independent-reviewer'].hands.includes('state:needs-platform') && MAILBOX['qa-gatekeeper'].hands.includes('state:needs-platform'));
+// IMPL-0013:ng IMPL-0296:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('needs-dev を独立レビュア・出荷判定者は付けない(差し戻しは qm-blocked。4.3 の付与者)', !MAILBOX['independent-reviewer'].hands.includes('state:needs-dev') && !MAILBOX['qa-gatekeeper'].hands.includes('state:needs-dev'));
 check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の差し戻しの2行)', Object.entries(MAILBOX).filter(([, m]) => m.hands.includes('state:qm-blocked')).map(([r]) => r).sort().join(',') === 'independent-reviewer,qa-gatekeeper');
 
 // 構成ごとの dev-done の受け手(突合 X-1)
 {
   const g6on = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }) });
+  // IMPL-0013:ok IMPL-0296:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('構成: G-6 が有効で独立レビュアの席が埋まっていれば、dev-done の受け手は独立レビュア', g6on.gates.g6.state === 'required' && devDoneReceiver(g6on).join(',') === 'independent-reviewer', `${g6on.gates.g6.state} ${devDoneReceiver(g6on)}`);
   check('構成: G-6 が有効なら、ready-to-merge は出荷判定者の受信箱に入る', mailboxFor(g6on)['qa-gatekeeper'].inbox.includes('state:ready-to-merge'));
   const omitted = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'poc', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }) });
@@ -286,11 +303,13 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の�
 {
   const people = (k) => Array.from({ length: k }, (_, i) => ({ id: `h${i}`, name: `人数 ${i}号`, accounts: [`h${i}`] }));
   const cfg = (size, k) => ({ answers: { 'q-team-size': size }, people: people(k), seats: [] });
+  // IMPL-0294:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('人数: 1〜2名の回答で名簿に3名なら出す', headcountProblems(cfg('size-1-2', 3)).length === 1);
   check('人数: 3〜9名の回答で名簿に10名なら出す', headcountProblems(cfg('size-3-9', 10)).length === 1);
   check('人数: 10名以上の回答で名簿に5名なら出す', headcountProblems(cfg('size-10plus', 5)).length === 1);
   check('人数: 3〜9名の回答で名簿に2名なら出す', headcountProblems(cfg('size-3-9', 2)).length === 1);
   check('人数: 3名以上の回答で名簿が空なら出さない(降りていない差。IMPL-0272)', headcountProblems(cfg('size-3-9', 0)).length === 0);
+  // IMPL-0294:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('人数: 外部の確認者は数えない', headcountProblems({ answers: { 'q-team-size': 'size-1-2' }, people: [...people(2), { ...X }], seats: [] }).length === 0);
 }
 

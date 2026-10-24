@@ -52,6 +52,7 @@ check('理由: 理由を読めなければ識別だけで比べる', signatureKe
 const L = { max: 3, noProgress: 2 };
 const start = { state: 'active', spec: 'F-001', task: 'Task-1', iterations: 0, history: [] };
 let s1 = nextIteration(start, ['a'], L);
+// IMPL-0269:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('判定: 1 回目の失敗は保留にしない', s1.state === 'active' && s1.iterations === 1, JSON.stringify(s1));
 let s2 = nextIteration(s1, ['a'], L);
 check('判定: 同じ失敗の集合が 2 回続けば保留(無進捗)', s2.state === 'held' && s2.condition === 'no-progress' && /無進捗/.test(s2.reason), JSON.stringify(s2));
@@ -108,12 +109,15 @@ r = run('iterate');
 check('実行: iterate がテストを実行し、失敗したテストを記録する', r.status === 0 && JSON.stringify(lock().history[0].failures) === JSON.stringify(['limit', 'rejects empty']), `${r.stdout}${r.stderr}`);
 check('実行: 理由を読めないテストは、識別だけで比べる旨を出す', /理由を出力から読めない/.test(r.stderr), r.stderr);
 r = run('iterate');
+// IMPL-0266:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: 同じ失敗が続けば保留(終了コード 3)', r.status === 3 && lock().state === 'held' && lock().condition === 'no-progress', `${r.status} ${r.stderr}`);
 r = run('release', '--by', 'Claude');
+// IMPL-0267:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: AI の名義では保留を解かない', r.status === 2 && fs.existsSync(path.join(dir, '.claude/.self-heal')), r.stderr);
 r = run('release', '--by', '見知らぬ人');
 check('実行: 名簿に無い名義では保留を解かない', r.status === 2, r.stderr);
 r = run('release', '--by', '山田 太郎');
+// IMPL-0267:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: 名簿の人が保留を解く', r.status === 0 && !fs.existsSync(path.join(dir, '.claude/.self-heal')), r.stderr);
 run('start', '--spec', 'F-001', '--task', 'Task-2');
 setTests('a');
@@ -122,6 +126,7 @@ setTests('b');
 run('iterate');
 setTests('c');
 r = run('iterate');
+// IMPL-0269:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: 失敗が毎回変わっても、3 回で保留(連続失敗)', r.status === 3 && lock().condition === 'consecutive-failures', `${r.status} ${r.stderr}`);
 run('release', '--by', '山田 太郎');
 run('start', '--spec', 'F-001', '--task', 'Task-4');
@@ -129,14 +134,17 @@ setTests('adds:Expected 3 but got 1');
 run('iterate');
 setTests('adds:Expected 3 but got 2');
 r = run('iterate');
+// IMPL-0270:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: 同じテストでも理由が変われば進捗とみなし、保留にしない', r.status === 0 && lock().state === 'active', `${r.status} ${r.stderr}`);
 setTests('adds:Expected 3 but got 2');
 r = run('iterate');
+// IMPL-0270:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: 同じテストが同じ理由で続けば保留(無進捗)', r.status === 3 && lock().condition === 'no-progress', `${r.status} ${r.stderr}`);
 run('release', '--by', '山田 太郎');
 run('start', '--spec', 'F-001', '--task', 'Task-3');
 setTests('');
 r = run('iterate');
+// IMPL-0266:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('実行: テストが通れば iterate がロックを終える', r.status === 0 && !fs.existsSync(path.join(dir, '.claude/.self-heal')), `${r.stdout}${r.stderr}`);
 const LOG_REL = logRelFor({ spec: 'F-001', task: 'Task-1' });
 const logText = fs.existsSync(path.join(dir, LOG_REL)) ? fs.readFileSync(path.join(dir, LOG_REL), 'utf8') : '';

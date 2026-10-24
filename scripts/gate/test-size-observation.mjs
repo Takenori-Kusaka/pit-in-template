@@ -33,6 +33,7 @@ const b = summarizeSizeObservation([...prs].reverse());
 check('決定性: 同じ入力を2回与えると同じ出力', JSON.stringify(summarizeSizeObservation(prs)) === JSON.stringify(a));
 check('決定性: 入力の並びに依らない', JSON.stringify(a) === JSON.stringify(b), JSON.stringify([a.overPrs, b.overPrs]));
 check('決定性: 表の文字列も同じ', renderSizeObservation(a).join('\n') === renderSizeObservation(b).join('\n'));
+// IMPL-0264:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('内訳: 行・ファイル・別集計・ファイル数だけ・理由不明', JSON.stringify(a.overReasons) === JSON.stringify({ lines: 1, files: 1, test: 1, filesOnly: 1, unknown: 1 }), JSON.stringify(a.overReasons));
 const ratio = Object.fromEntries(a.testRatio.over.map((o) => [o.factor, o.count]));
 check('倍率: 1 倍超 2 件・2 倍超 2 件・5 倍超 1 件(倍率の無い PR は数えない)', ratio[1] === 2 && ratio[2] === 2 && ratio[5] === 1 && a.testRatio.measured === 4, JSON.stringify(a.testRatio));
@@ -40,6 +41,7 @@ check('読めない PR は別に数える', a.unreadable.length === 1 && a.unrea
 check('超過の件数', a.over === 4);
 const text = renderSizeObservation(a).join('\n');
 check('表: 超過の理由の内訳と倍率を出す', /ファイル/.test(text) && /5 倍/.test(text), text.slice(0, 800));
+// IMPL-0264:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('表: 前回との比較を出さない', !/前回/.test(text.replace(/前回の集約との比較は出さない[^\n]*/g, '')), text.slice(0, 800));
 
 console.log('');

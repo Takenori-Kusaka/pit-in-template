@@ -97,6 +97,7 @@ const cfg = (ci) => ({ ci: { coverageThreshold: 80, ...ci } });
 // 既存 100 行は全行被覆、新しい 10 行は未被覆 → 全体は 100/110 = 90.9%、変更の範囲は 0%
 writeCoverage([stmts('src/old.js', 100, () => 1), stmts('src/new.js', 10, () => 0)], 90.91, 110);
 let r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'changed' }), adapter: NODE, base: 'main' });
+// IMPL-0239:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('changed: 全体が 90.9% でも、変更の範囲が 0%(分母 10 行)なら落とす', r.code === 1 && r.result.scope === 'changed' && r.result.denominator === 10 && r.result.pct === 0, JSON.stringify(r.result));
 check('changed: 結果に範囲・分母・測っていない製品のファイルの数を書く', r.result.scopeLabel === '変更で加えた・変えたコード' && r.result.unmeasuredProductFiles === 0 && r.result.whole.pct === 90.91, JSON.stringify(r.result));
 r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'whole' }), adapter: NODE, base: 'main' });
@@ -106,6 +107,7 @@ check('whole: 薄まる旨を通知に出す', r.messages.some((m) => /薄まり
 // 新しい 10 行のうち 9 行を被覆 → 90%
 writeCoverage([stmts('src/old.js', 100, () => 1), stmts('src/new.js', 10, (l) => (l === 10 ? 0 : 3))], 99.09, 110);
 r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'changed' }), adapter: NODE, base: 'main' });
+// IMPL-0239:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('changed: 変更の範囲 90%(10 行中 9 行)は基準値 80% を通る', r.code === 0 && r.result.pct === 90 && r.result.covered === 9 && r.result.ok === true, JSON.stringify(r.result));
 r = evaluateCoverage({ root: dir, config: cfg({}), adapter: NODE, base: 'main' });
 check('構成に範囲が無い node は従来どおり whole で測り、既定から補った旨と移行の手順(--reporter=json)を出す', r.code === 0 && r.result.scope === 'whole' && r.result.scopeDeclared === false && r.result.scopeDefaulted === true && r.messages.some((m) => /ci\.coverageScope/.test(m.text) && /--reporter=json/.test(m.text)), JSON.stringify(r.messages));
