@@ -77,7 +77,7 @@ git show origin/main:templates/04-gate-record.md > records/gates/<ゲート>-<�
 
 順序は「判定基準との突合 → **記録の作成** → `state:*` ラベルの遷移 → Issue・PR の事務」です。逆にしません。記録の無いまま次工程へ渡っている状態を見つけたら、着手せず判定者へ差し戻します。
 
-様式は、**判定者本人が記録用ブランチ `records` へ直接 push します**(`reference/recording.md`「様式の届け方」)。PR も、他者の承認も要りません。`records-signed.json` を適用する構成では署名コミット(`git commit -S`)で push します。基底ブランチへは、出荷判定(G-7)の PR(`ship-evidence.yml` が開く `ship/<日付>`)が `records/gates/` を `docs/gates/` へ複製して運びます。承認レビューの写しは、マージを契機にワークフロー `record-copy.yml` が `records` へ置きます。人は何もしません。
+様式は、**判定者本人が記録用ブランチ `records` へ直接 push します**(`reference/recording.md`「様式の届け方」)。PR も、他者の承認も要りません。`records-signed.json` を適用する構成では署名コミット(`git commit -S`)で push します。基底ブランチへは、出荷判定(G-7)の PR(`ship-evidence.yml` が push する `ship/<日付>` から出荷判定者が開く)が `records/gates/` を `docs/gates/` へ複製して運びます。承認レビューの写しは、マージを契機にワークフロー `record-copy.yml` が `records` へ置きます。人は何もしません。
 
 例外承認の台帳(`docs/debt-ledger.md`)と停止の申し立ての解除の記録は、現行どおり**基底ブランチへ先に**入れます(記録だけの PR が 1 本残る。承認者は記名者本人。`reference/recording.md`「記録だけの PR の届け方」)。
 

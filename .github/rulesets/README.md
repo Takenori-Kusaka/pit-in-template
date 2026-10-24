@@ -36,7 +36,7 @@
 - `pull_request` と `required_status_checks` は置きません。記録だけのコミットに、記名者以外の承認を課さないためです(標準 第4章「判定の成立」、第5章 CI/CD ゲート構成)。履歴は追記だけになり、既存の記録の書き換え(force push)と削除は止まります
 - **既定ブランチのルールセットは変えません。bypass actor を足しません。`exempt` を使いません**。写しを置くために既定ブランチの強制層を縮小する構成(Bot の bypass)は採りません。強制層の縮小(ADR-0038)であり、「App の名義の変更は人の承認を経ない」と開示してしか成立しないためです
 - 記録用ブランチへ書くのは、マージを契機に走るワークフロー `record-copy.yml`(承認レビューの写し `records/reviews/pr-<番号>.json`。`GITHUB_TOKEN` の `contents: write` で足り、App の鍵を要しません)と、判定者本人(様式 `records/gates/<ゲート>-<対象>-<日付>.md`。直接 push する。PR も他者の承認も要らない。`.claude/skills/gate/reference/recording.md`「様式の届け方」)です
-- 記録用ブランチの内容を基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。`ship-evidence.yml` が出荷の PR(`ship/<日付>`)を 1 本開き、`records/reviews/` を `docs/records/reviews/` へ、`records/gates/` を `docs/gates/` へ複製します(下記「出荷の PR」)。入れる操作に、記名者(出荷判定者)以外の承認を課しません
+- 記録用ブランチの内容を基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。`ship-evidence.yml` が出荷のブランチ `ship/<日付>` を 1 本 push し、`records/reviews/` を `docs/records/reviews/` へ、`records/gates/` を `docs/gates/` へ複製します。PR を開くのは出荷判定者です(下記「出荷の PR」)。入れる操作に、記名者(出荷判定者)以外の承認を課しません
 
 ### 署名を必須にする構成(`records-signed.json`)と変数 `RECORDS_SIGNED`
 
