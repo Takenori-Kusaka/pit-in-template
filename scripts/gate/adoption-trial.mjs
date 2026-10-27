@@ -5,7 +5,9 @@
 //   node scripts/gate/adoption-trial.mjs tally --manifest <path> [--human <json>] [--ai <json>] [--tolerance 3]
 //                                                                    封じた要約値を照合し、見つける者の記録と突き合わせて集計する
 //   node scripts/gate/adoption-trial.mjs env-check --by <氏名>       実環境の統制(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・
-//                                                                    PR のレビューの取得・ship-evidence の成果物)を採用者の実環境の gh で読み、
+//                                                                    PR のレビューの取得・ship-evidence の成果物、配備の統制を狭める措置として
+//                                                                    Workflow permissions の既定・Actions による PR の承認・Environment の
+//                                                                    配備の参照の限定)を採用者の実環境の gh で読み、
 //                                                                    4値(確認済み/不一致/未確認/対象外)で docs/adoption-trial/env-check.json へ書く
 //   node scripts/gate/adoption-trial.mjs run [--keep]               基準の確認 → 場面集 → 実環境の統制の記録 → 演習の記録 → 成立判定 → 記録の出力
 //   node scripts/gate/adoption-trial.mjs verify <記録>              記録の末尾の要約値(入力と本文)を再計算し、一致を確かめる
@@ -1529,6 +1531,80 @@ function envCheck() {
           ? { status: 'mismatch', detail: `gate-g5 の実行 ${id} の成果物に ${missing.join('・')} が無い(ある成果物: ${names.join('/') || 'なし'})`, evidence }
           : confirmedWith('shipEvidence', `gate-g5 の実行 ${id} に license-scan と test-results がある(ship-evidence が gh run download で取り込む形)`, evidence);
       }
+    }
+  }
+  // 4〜6. 配備の統制を狭める措置の事実(process-compass #346 / ADR-0089。標準 第4章 G-8、フェーズ5「統制と資格情報の置き場」)。
+  //     GITHUB_TOKEN の書き込みは、どの設定でも参照(既定ブランチ・リリースのタグ)に限れない。ここで読む値は未達の経路を
+  //     狭める措置であり、G-8 の適合の判定には使わない(ADR-0070 決定3。事実として記録する)。読めなければ未確認で、通過にしない
+  const notConformance = 'G-8 の適合の判定には使わない(狭める措置の事実)';
+  if (!repo) {
+    items.workflowPermissions = noRepo();
+    items.actionsApproval = noRepo();
+  } else {
+    const api = `repos/${repo}/actions/permissions/workflow`;
+    const fetchedAt = localIso();
+    const r = ghJson(['api', api]);
+    const dwp = r.value?.default_workflow_permissions;
+    const cap = r.value?.can_approve_pull_request_reviews;
+    if (dwp !== 'read' && dwp !== 'write') items.workflowPermissions = fromFailure(r.value ? { why: 'default_workflow_permissions を応答から読めない', reason: 'unreadable' } : r, 'Workflow permissions の既定を読めない');
+    else {
+      const evidence = { defaultWorkflowPermissions: dwp, api, fetchedAt };
+      items.workflowPermissions = dwp === 'read'
+        ? confirmedWith('workflowPermissions', `既定は read。permissions を書かないワークフローは書き込みを得ない。permissions を明示した昇格は止めない(既定であり上限ではない)。${notConformance}`, evidence)
+        : { status: 'mismatch', detail: `既定が write(permissive)。permissions を書かないワークフローも書き込みを得る。Settings → Actions → Workflow permissions を read にする。${notConformance}`, evidence };
+    }
+    if (typeof cap !== 'boolean') items.actionsApproval = fromFailure(r.value ? { why: 'can_approve_pull_request_reviews を応答から読めない', reason: 'unreadable' } : r, 'Actions による PR の承認の可否を読めない');
+    else {
+      const evidence = { canApprovePullRequestReviews: cap, api, fetchedAt };
+      items.actionsApproval = cap === false
+        ? confirmedWith('actionsApproval', `Actions は PR を承認できない(GITHUB_TOKEN による承認を止める)。${notConformance}`, evidence)
+        : { status: 'mismatch', detail: `Actions が PR を承認できる。書き込みの権限を持つ者は、自分のブランチのワークフローで自分の PR を承認させられる(承認者が github-actions の名義になる)。「Allow GitHub Actions to create and approve pull requests」を無効にする。${notConformance}`, evidence };
+    }
+  }
+  if (!repo) items.environments = noRepo();
+  else {
+    const api = `repos/${repo}/environments`;
+    const fetchedAt = localIso();
+    const r = ghJson(['api', api]);
+    const list = Array.isArray(r.value?.environments) ? r.value.environments : null;
+    if (!list) items.environments = fromFailure(r.value ? { why: 'environments を応答から読めない', reason: 'unreadable' } : r, 'Environment の一覧を読めない');
+    else if (!list.length) {
+      const evidence = { environmentNames: [], environmentIds: [], api, fetchedAt };
+      // 委任のマージを有効にする前に delegated-merge を作り、既定ブランチに限る(README)。作らずにマージのジョブが走ると
+      // 保護の無い Environment が自動で作られ、次の env-check で「配備の参照の限定が無い」と出る
+      items.environments = { status: 'notApplicable', detail: `Environment が無い(委任のマージも配備の Environment も使っていない)。確認済みには数えない。委任のマージを有効にする前に delegated-merge を作り、配備のブランチを既定ブランチに限る。${notConformance}`, evidence };
+    } else {
+      const bad = [];
+      const facts = [];
+      let failure = null;
+      for (const e of list) {
+        const name = String(e?.name ?? '?');
+        const pol = e?.deployment_branch_policy ?? null;
+        if (typeof e?.can_admins_bypass === 'boolean') facts.push(`${name}: 管理者の迂回 ${e.can_admins_bypass ? '可' : '不可'}`);
+        if (!pol) {
+          bad.push(`${name}: 配備の参照の限定が無い(どのブランチからも参照できる)`);
+          continue;
+        }
+        if (pol.protected_branches === true) {
+          bad.push(`${name}: 保護されたブランチの全部に開いている(既定ブランチ・リリースのタグに限る形でない)`);
+          continue;
+        }
+        const b = ghJson(['api', `repos/${repo}/environments/${encodeURIComponent(name)}/deployment-branch-policies`]);
+        const policies = Array.isArray(b.value?.branch_policies) ? b.value.branch_policies : null;
+        if (!policies) {
+          failure = b.value ? { why: `${name} の branch_policies を応答から読めない`, reason: 'unreadable' } : b;
+          break;
+        }
+        const others = policies.filter((x) => (x?.type ?? 'branch') === 'branch' && x?.name !== branch).map((x) => x?.name ?? '?');
+        if (!policies.length) bad.push(`${name}: 選んだブランチとタグが空`);
+        else if (others.length) bad.push(`${name}: 既定ブランチ ${branch} 以外のブランチ ${others.join('・')} に開いている`);
+        else facts.push(`${name}: ${policies.map((x) => `${x?.type ?? 'branch'} ${x?.name}`).join('・')} に限る`);
+      }
+      const names = list.map((e) => String(e?.name ?? '?'));
+      const evidence = { environmentNames: names, environmentIds: list.map((e) => e?.id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number), api, fetchedAt };
+      if (failure) items.environments = fromFailure(failure, 'Environment の配備の参照の限定を読めない');
+      else if (bad.length) items.environments = { status: 'mismatch', detail: `${bad.join('。')}${facts.length ? `(${facts.join('。')})` : ''}。Environment は GITHUB_TOKEN の権限を限らない。${notConformance}`, evidence };
+      else items.environments = confirmedWith('environments', `${facts.join('。')}。Environment は GITHUB_TOKEN の権限を限らない(environment: を消したジョブには掛からない)。${notConformance}`, evidence);
     }
   }
   // 対象外は確認済みに数えない。全体の成否は、各項目が確認済みか対象外であること(#315 R-4)
