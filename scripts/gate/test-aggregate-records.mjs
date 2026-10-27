@@ -27,6 +27,7 @@ import {
   judgeLoginsOf,
   gateJudgementsOfCopy,
   unconfirmedVersionGaps,
+  lastReviewStates,
   machineFields,
   copyCoverage,
   formAttribution,
@@ -151,10 +152,23 @@ const config = {
     { state: 'CHANGES_REQUESTED', submitted_at: '2026-10-02T00:00:00Z', user: { login: 'suzuki' } },
     { state: 'APPROVED', submitted_at: '2026-10-02T00:00:00Z', user: { login: 'sato' } },
   ] };
-  // IMPL-0357:ng
+  // 写しの欄(承認の数)の数え方。集約の G-6 の数え方(lastReviewStates)とは別の経路
   check('承認の数: 承認者ごとの最後の状態(承認の後の変更要求は数えない)', approvalCountOfCopy(withdrew) === 1);
-  // IMPL-0357:ok
   check('承認の数: 変更要求の後に承認し直した承認者は数える', approvalCountOfCopy({ reviews: [...withdrew.reviews, { state: 'APPROVED', submitted_at: '2026-10-03T00:00:00Z', user: { login: 'suzuki' } }] }) === 2);
+}
+
+// ---------------------------------------------------------------- G-6 の承認の数え方(集約の本体が呼ぶ lastReviewStates)
+{
+  const summary = '挙動要約: 境界の値で入力を拒む挙動を確かめた。';
+  const rv = (login, state, body = summary) => ({ author: { login, is_bot: false }, state, body });
+  // IMPL-0357:ng
+  const ng = lastReviewStates([rv('suzuki', 'APPROVED'), rv('suzuki', 'CHANGES_REQUESTED', '基準2 を満たさない'), rv('sato', 'APPROVED')]);
+  check('G-6 の数え方: 承認の後に同じ人が変更要求を出した承認は数えない(取り下げ)', ng.last.get('suzuki').state === 'CHANGES_REQUESTED' && ng.withdrawn === 1 && ng.last.get('sato').state === 'APPROVED', JSON.stringify([...ng.last]));
+  const cm = lastReviewStates([rv('suzuki', 'APPROVED'), rv('suzuki', 'COMMENTED', '追記')]);
+  // IMPL-0357:ok
+  const ok = lastReviewStates([rv('suzuki', 'CHANGES_REQUESTED', '基準2 を満たさない'), rv('suzuki', 'APPROVED')]);
+  check('G-6 の数え方: 変更要求の後に承認し直した承認者は、最後の状態の承認で数える', ok.last.get('suzuki').state === 'APPROVED' && ok.last.get('suzuki').summary === true && ok.withdrawn === 0, JSON.stringify([...ok.last]));
+  check('G-6 の数え方: COMMENTED は最後の状態を変えない', cm.last.get('suzuki').state === 'APPROVED' && cm.withdrawn === 0);
 }
 
 // ---------------------------------------------------------------- 写しと PR の記録(API)の突合
