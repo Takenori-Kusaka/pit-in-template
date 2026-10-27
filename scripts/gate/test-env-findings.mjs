@@ -30,7 +30,12 @@ const confirmedItems = Object.fromEntries(
       status: 'confirmed',
       detail: '確認済み',
       // #315 の項目(旧来の保護・CODEOWNERS)が確認済みに要する識別の鍵(protected・path・blobSha)も持たせる
-      evidence: { rulesetIds: [1], protected: false, path: '.github/CODEOWNERS', blobSha: 'a'.repeat(40), pr: 3, reviewIds: [10], runId: 5, runUrl: 'https://example.com/run/5', fetchedAt: '2026-10-24T09:00:00+09:00' },
+      // #346 の項目(Workflow permissions・Actions の承認・Environment)が確認済みに要する鍵も持たせる(process-compass #321 との統合)
+      evidence: {
+        rulesetIds: [1], protected: false, path: '.github/CODEOWNERS', blobSha: 'a'.repeat(40), pr: 3, reviewIds: [10], runId: 5, runUrl: 'https://example.com/run/5', fetchedAt: '2026-10-24T09:00:00+09:00',
+        defaultWorkflowPermissions: 'read', canApprovePullRequestReviews: false,
+        environmentIds: [7], credentialScopes: ['repository-secrets', 'repository-variables'], delegatedTokenOutside: [], findings: [],
+      },
     },
   ])
 );
