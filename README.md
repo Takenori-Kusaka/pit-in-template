@@ -315,7 +315,7 @@ node scripts/gate/aggregate-evidence.mjs --period-from 2026-09-01 --period-to 20
 node scripts/gate/adoption-trial.mjs init      # 合否の基準の様式を docs/adoption-trial/criteria.md へ写す。採用者が書いてコミットする
 node scripts/gate/adoption-trial.mjs seal --manifest <リポジトリの外の注入の記録>    # 目隠しの欠陥注入を封じる
 node scripts/gate/adoption-trial.mjs tally --manifest <同>                           # 見つける者の記録(コミット済み)と突き合わせ、docs/adoption-trial/seeded-errors.json へ(コミットする)
-node scripts/gate/adoption-trial.mjs env-check --by <氏名>   # 実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物)を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json へ(コミットする)。記録用ブランチの保護・record-copy の実行・写しの到着・既定ブランチの bypass actor は所見(findings)として同じ記録へ
+node scripts/gate/adoption-trial.mjs env-check --by <氏名>   # 実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物、配備の統制を狭める措置の事実)を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json へ(コミットする)。記録用ブランチの保護・record-copy の実行・写しの到着・既定ブランチの bypass actor は所見(findings)として同じ記録へ
 node scripts/gate/adoption-trial.mjs run       # 場面集11件(一時の複製)・実環境の統制の記録・演習の記録・成立判定 → docs/adoption-trial/record-<日時(秒まで)>.md
 node scripts/gate/adoption-trial.mjs verify <記録>   # 記録の末尾の要約値を再計算し、人が書く欄の外が書き換えられていないことを確かめる
 ```
@@ -629,6 +629,23 @@ node scripts/init/generate-profile.mjs --change <migrate の入力> --dry-run   
 - `.claude/skills/pit/reference/handoff.md` も同じ基準の文を持つ。テンプレートの取り込みで書き換わるため、採用者が手で直す必要は無い。`.claude/**` を独自に改めている採用者は、(c) の説明の箇所へ同じ2文を足す
 - `CLAUDE.md` と `.claude/**` はエージェント指示資産であり、変更は AI維持管理者の承認を経る(`state:needs-platform`)
 - 判定の基準そのものは変わっていない(ADR-0053 決定1・ADR-0078 決定2 のまま)。この更新で、取り消し操作を用意しただけの操作を (c) の外とする読み方は取れなくなる
+
+### 8. process-compass #346 の更新を取り込むとき
+
+#346 は、配備・配布の資格情報の規定(標準 第4章 G-8「配備の統制と資格情報の置き場」)を、置き場の指定から満たすべき性質の規定へ改めた更新です(標準 ADR-0090)。ジョブの権限で発行されるトークン(`GITHUB_TOKEN`)は、短命であっても、この規定を満たす形に当たりません。
+
+**実環境の統制の確認(`env-check`)が読む項目が6から9へ増えました**。足した3項目は、配備の統制を狭める措置の事実です。
+
+- Workflow permissions の既定(`gh api repos/<owner>/<name>/actions/permissions/workflow` の `default_workflow_permissions`)。read なら確認済み、write なら不一致
+- Actions による PR の承認の可否(同じ応答の `can_approve_pull_request_reviews`)。不可なら確認済み、可なら不一致
+- Environment の配備の参照の限定(`environments` と各 Environment の `deployment-branch-policies`)。既定ブランチとリリースのタグに限っていれば確認済み、限定が無い・保護されたブランチの全部に開く・ほかのブランチへ開くなら不一致。Environment が1つも無ければ対象外
+
+取り込みの後の扱いは次のとおりです。
+
+- 旧い記録(6項目)は、足した3項目を持たないため「未確認(実行していない)」と読まれ、出荷の集約の項目4 と `/pit` に「未確認」と出る。実環境の `gh` で `env-check` を実行し直し、記録をコミットする。確かめる項目を増やす向き(強める向き)の変更であり、旧い記録を確認済みに読み替えることはしない
+- Actions の設定の読み取りは管理(Administration)の権限を要する。権限の無い `gh` では「未確認(権限不足で読めない)」となり、通過にしない
+- 足した3項目は G-8 の適合の判定には使わない。`GITHUB_TOKEN` の書き込みは、これらの設定のどれでも参照に限れないためである。案件がデプロイのワークフローを足すときは、標準 第4章 G-8 の2つの形(参照に限った配備の環境の秘密情報、または参照を検証する受け手が発行する短命の資格情報)のどちらかで資格情報を得る。`GITHUB_TOKEN` で配備先へ書き込む構成は未達として保証の開示へ記録する
+- テンプレートにデプロイのワークフローの雛形は足していない(意図した省略。標準 ADR-0090)
 
 ## 関連
 
