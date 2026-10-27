@@ -10,6 +10,8 @@
 //   - 旧い形の記録(確かめる項目なしを確認済みとして書いた記録)は、確認済みにも対象外にも読み替えない
 //   - 配備の統制を狭める措置の事実(Workflow permissions の既定・Actions による PR の承認・Environment の配備の参照の限定)を読む。
 //     読めなければ未確認で通過にしない。G-8 の適合の判定には使わない(process-compass #346 / ADR-0090)
+//   - Environment の項目は、タグの作成の限定と Environment の外の委任のトークン(名前だけ)を読み、一覧をページ送りで読む。
+//     判定は構造の値(evidence.findings)で照合する。突合 X-6 の変異 M5〜M8 を落とす場面を置く(#346 突合 X-5・X-6・X-7・X-13)
 // 本物の GitHub へ問い合わせません。PATH の先頭に模擬の gh を置き、固定の応答を返します。
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -70,6 +72,10 @@ const RULES_TEAM = [
   { type: 'pull_request', ruleset_id: 11, parameters: { required_approving_review_count: 1, dismiss_stale_reviews_on_push: true, require_last_push_approval: true, require_code_owner_review: false } },
 ];
 const RULES_CHECKS = [{ type: 'required_status_checks', ruleset_id: 12, parameters: { required_status_checks: [{ context: 'gate-g5' }] } }];
+// ページ送りの1頁目の鍵(env-check は per_page=100 で読み、total_count と件数を突き合わせる。#346 突合 X-13)
+const P = (api, page = 1) => `api ${api}${api.includes('?') ? '&' : '?'}per_page=100&page=${page}`;
+// Environment の判定の構造の値(説明の文ではなく値で照合する。#346 突合 X-6)
+const kinds = (item) => (item?.evidence?.findings ?? []).map((f) => `${f.environment ?? '-'}:${f.kind}`).sort();
 function ghMap(over = {}) {
   return {
     [`repo view --repo ${R} --json nameWithOwner,url`]: { stdout: { nameWithOwner: R, url: `https://github.com/${R}` } },
@@ -85,8 +91,12 @@ function ghMap(over = {}) {
     [`run list --repo ${R} --workflow gate-g5 --status success --limit 1 --json databaseId,url,createdAt`]: { stdout: [{ databaseId: 77, url: `https://github.com/${R}/actions/runs/77`, createdAt: '2026-10-01T00:00:00Z' }] },
     [`api repos/${R}/actions/runs/77/artifacts`]: { stdout: { artifacts: [{ id: 1, name: 'license-scan' }, { id: 2, name: 'test-results' }] } },
     [`api repos/${R}/actions/permissions/workflow`]: { stdout: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false } },
-    [`api repos/${R}/environments`]: { stdout: { total_count: 1, environments: [{ id: 501, name: 'delegated-merge', can_admins_bypass: false, deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
-    [`api repos/${R}/environments/delegated-merge/deployment-branch-policies`]: { stdout: { total_count: 1, branch_policies: [{ id: 9, name: 'main', type: 'branch' }] } },
+    [P(`repos/${R}/environments`)]: { stdout: { total_count: 1, environments: [{ id: 501, name: 'delegated-merge', can_admins_bypass: false, deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
+    [P(`repos/${R}/environments/delegated-merge/deployment-branch-policies`)]: { stdout: { total_count: 1, branch_policies: [{ id: 9, name: 'main', type: 'branch' }] } },
+    [P(`repos/${R}/actions/secrets`)]: { stdout: { total_count: 1, secrets: [{ name: 'OTHER_SECRET' }] } },
+    [P(`repos/${R}/actions/variables`)]: { stdout: { total_count: 1, variables: [{ name: 'DELEGATED_MERGE_ENABLED', value: 'true' }] } },
+    [P(`repos/${R}/rulesets?targets=tag&includes_parents=true`)]: { stdout: [{ id: 21, target: 'tag' }] },
+    [`api repos/${R}/rulesets/21?includes_parents=true`]: { stdout: { id: 21, target: 'tag', enforcement: 'active', bypass_actors: [], conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] } },
     '--version': { stdout: 'gh version 2.60.0 (2026-01-01)\n' },
     ...over,
   };
@@ -181,23 +191,69 @@ if (process.platform === 'win32') {
   // IMPL-0351:ng(違反の入力: 権限不足で読めない応答。未確認(権限不足)とし、通過にしない)
   const permDenied = w.run(ghMap({ [`api repos/${R}/actions/permissions/workflow`]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' } }));
   check('Actions の権限の応答が 403 なら、2項目とも未確認(権限不足で読めない)で、終了コード 1(通過にしない)', permDenied.items.workflowPermissions?.status === 'unconfirmed' && permDenied.items.workflowPermissions?.reason === 'permission' && permDenied.items.actionsApproval?.status === 'unconfirmed' && permDenied.code === 1, JSON.stringify([permDenied.items.workflowPermissions, permDenied.items.actionsApproval]));
-  const envDenied = w.run(ghMap({ [`api repos/${R}/environments`]: { code: 1, stderr: 'gh: Must have admin rights to Repository. (HTTP 403)' } }));
+  const envDenied = w.run(ghMap({ [P(`repos/${R}/environments`)]: { code: 1, stderr: 'gh: Must have admin rights to Repository. (HTTP 403)' } }));
   check('Environment の一覧が読めなければ未確認(権限不足で読めない)で、通過にしない', envDenied.items.environments?.status === 'unconfirmed' && envDenied.items.environments?.reason === 'permission' && envDenied.code === 1, JSON.stringify(envDenied.items.environments));
   const odd = w.run(ghMap({ [`api repos/${R}/actions/permissions/workflow`]: { stdout: { enabled: true } } }));
   check('応答に既定の権限の欄が無ければ未確認(読めない)で、確認済みにしない', odd.items.workflowPermissions?.status === 'unconfirmed' && odd.items.actionsApproval?.status === 'unconfirmed', JSON.stringify([odd.items.workflowPermissions, odd.items.actionsApproval]));
   const loose = w.run(ghMap({
     [`api repos/${R}/actions/permissions/workflow`]: { stdout: { default_workflow_permissions: 'write', can_approve_pull_request_reviews: true } },
-    [`api repos/${R}/environments`]: { stdout: { total_count: 2, environments: [{ id: 501, name: 'delegated-merge', deployment_branch_policy: null }, { id: 502, name: 'production', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
-    [`api repos/${R}/environments/production/deployment-branch-policies`]: { stdout: { total_count: 2, branch_policies: [{ id: 1, name: 'main', type: 'branch' }, { id: 2, name: 'feature/*', type: 'branch' }] } },
+    [P(`repos/${R}/environments`)]: { stdout: { total_count: 2, environments: [{ id: 501, name: 'delegated-merge', deployment_branch_policy: null }, { id: 502, name: 'production', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
+    [P(`repos/${R}/environments/production/deployment-branch-policies`)]: { stdout: { total_count: 2, branch_policies: [{ id: 1, name: 'main', type: 'branch' }, { id: 2, name: 'feature/*', type: 'branch' }] } },
   }));
-  check('既定 write・Actions の承認可・参照の限定の無い Environment・既定ブランチ以外へ開く Environment は「不一致」として事実を書く', loose.items.workflowPermissions?.status === 'mismatch' && loose.items.actionsApproval?.status === 'mismatch' && loose.items.environments?.status === 'mismatch' && /delegated-merge: 配備の参照の限定が無い/.test(loose.items.environments?.detail ?? '') && /feature\/\*/.test(loose.items.environments?.detail ?? ''), JSON.stringify([loose.items.workflowPermissions, loose.items.actionsApproval, loose.items.environments]));
-  const tags = w.run(ghMap({
-    [`api repos/${R}/environments`]: { stdout: { total_count: 1, environments: [{ id: 503, name: 'production', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
-    [`api repos/${R}/environments/production/deployment-branch-policies`]: { stdout: { total_count: 2, branch_policies: [{ id: 1, name: 'main', type: 'branch' }, { id: 2, name: 'v*', type: 'tag' }] } },
+  check('既定 write・Actions の承認可・参照の限定の無い Environment・既定ブランチ以外へ開く Environment は「不一致」として、判定を構造の値に残す', loose.items.workflowPermissions?.status === 'mismatch' && loose.items.actionsApproval?.status === 'mismatch' && loose.items.environments?.status === 'mismatch' && kinds(loose.items.environments).join(',') === 'delegated-merge:noPolicy,production:otherBranch', JSON.stringify([loose.items.workflowPermissions, loose.items.actionsApproval, loose.items.environments]));
+  // 突合 X-6 の変異 M7: delegated-merge の行を外し、feature/* の規則だけで不一致になることを、構造の値と判定の文で確かめる
+  const branchOnly = w.run(ghMap({
+    [P(`repos/${R}/environments`)]: { stdout: { total_count: 1, environments: [{ id: 502, name: 'production', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
+    [P(`repos/${R}/environments/production/deployment-branch-policies`)]: { stdout: { total_count: 2, branch_policies: [{ id: 1, name: 'main', type: 'branch' }, { id: 2, name: 'feature/*', type: 'branch' }] } },
   }));
-  check('既定ブランチとリリースのタグに限る Environment は確認済み', tags.items.environments?.status === 'confirmed', JSON.stringify(tags.items.environments));
-  const noEnv = w.run(ghMap({ [`api repos/${R}/environments`]: { stdout: { total_count: 0, environments: [] } } }));
-  check('Environment が無ければ「対象外」(確認済みに数えない)', noEnv.items.environments?.status === 'notApplicable' && noEnv.code === 0, JSON.stringify(noEnv.items.environments));
+  const bo = branchOnly.items.environments;
+  check('既定ブランチ以外のブランチ feature/* に開く規則だけで「不一致」(M7)', bo?.status === 'mismatch' && kinds(bo).join(',') === 'production:otherBranch' && JSON.stringify(bo?.evidence?.findings?.[0]?.value) === '["feature/*"]' && /以外のブランチ feature\/\* に開いている/.test(bo?.detail ?? ''), JSON.stringify(bo));
+  // M6: protected_branches が true の Environment
+  const protectedAll = w.run(ghMap({ [P(`repos/${R}/environments`)]: { stdout: { total_count: 1, environments: [{ id: 504, name: 'delegated-merge', deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } }] } } }));
+  check('保護されたブランチの全部に開く Environment(protected_branches: true)は「不一致」(M6)', protectedAll.items.environments?.status === 'mismatch' && kinds(protectedAll.items.environments).join(',') === 'delegated-merge:protectedBranches', JSON.stringify(protectedAll.items.environments));
+  // M8: 選んだブランチとタグが空
+  const emptyPol = w.run(ghMap({ [P(`repos/${R}/environments/delegated-merge/deployment-branch-policies`)]: { stdout: { total_count: 0, branch_policies: [] } } }));
+  check('選んだブランチとタグが空の Environment は「不一致」(M8)', emptyPol.items.environments?.status === 'mismatch' && kinds(emptyPol.items.environments).join(',') === 'delegated-merge:emptyPolicies', JSON.stringify(emptyPol.items.environments));
+
+  // タグの規則(突合 X-5): パターンとタグの作成の限定を読む
+  const tagEnv = (pattern) => ({
+    [P(`repos/${R}/environments`)]: { stdout: { total_count: 1, environments: [{ id: 503, name: 'production', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
+    [P(`repos/${R}/environments/production/deployment-branch-policies`)]: { stdout: { total_count: 2, branch_policies: [{ id: 1, name: 'main', type: 'branch' }, { id: 2, name: pattern, type: 'tag' }] } },
+  });
+  const tags = w.run(ghMap(tagEnv('v*')));
+  check('既定ブランチとリリースのタグに限り、タグの作成を迂回なしのルールセットで限っていれば確認済み(タグのルールセットの id を記録する)', tags.items.environments?.status === 'confirmed' && JSON.stringify(tags.items.environments?.evidence?.tagRulesetIds) === '[21]', JSON.stringify(tags.items.environments));
+  const tagAny = w.run(ghMap(tagEnv('*')));
+  check('任意のタグ * に開く Environment は「不一致」', tagAny.items.environments?.status === 'mismatch' && kinds(tagAny.items.environments).join(',') === 'production:tagWildcard', JSON.stringify(tagAny.items.environments));
+  const tagNoRs = w.run(ghMap({ ...tagEnv('v*'), [P(`repos/${R}/rulesets?targets=tag&includes_parents=true`)]: { stdout: [] } }));
+  check('タグの作成を限るルールセットが無ければ「不一致」', tagNoRs.items.environments?.status === 'mismatch' && kinds(tagNoRs.items.environments).join(',') === 'production:tagCreationUnrestricted', JSON.stringify(tagNoRs.items.environments));
+  const tagBypass = w.run(ghMap({ ...tagEnv('v*'), [`api repos/${R}/rulesets/21?includes_parents=true`]: { stdout: { id: 21, target: 'tag', enforcement: 'active', bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' }], conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } }, rules: [{ type: 'creation' }] } } }));
+  check('タグのルールセットに迂回の主体があれば、作成を限っていないとして「不一致」', tagBypass.items.environments?.status === 'mismatch' && kinds(tagBypass.items.environments).join(',') === 'production:tagCreationUnrestricted', JSON.stringify(tagBypass.items.environments));
+  const tagNoCreate = w.run(ghMap({ ...tagEnv('v*'), [`api repos/${R}/rulesets/21?includes_parents=true`]: { stdout: { id: 21, target: 'tag', enforcement: 'active', bypass_actors: [], conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } }, rules: [{ type: 'deletion' }] } } }));
+  check('タグのルールセットに作成の規則が無ければ「不一致」', tagNoCreate.items.environments?.status === 'mismatch' && kinds(tagNoCreate.items.environments).join(',') === 'production:tagCreationUnrestricted', JSON.stringify(tagNoCreate.items.environments));
+  const tagDenied = w.run(ghMap({ ...tagEnv('v*'), [P(`repos/${R}/rulesets?targets=tag&includes_parents=true`)]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' } }));
+  check('タグのルールセットを読めなければ未確認(権限不足で読めない)', tagDenied.items.environments?.status === 'unconfirmed' && tagDenied.items.environments?.reason === 'permission' && tagDenied.code === 1, JSON.stringify(tagDenied.items.environments));
+
+  // 委任のトークンを Environment の外に置いた構成(突合 X-7)。名前だけを読み、値は読まない
+  const noEnv = w.run(ghMap({ [P(`repos/${R}/environments`)]: { stdout: { total_count: 0, environments: [] } } }));
+  check('Environment が無く、委任のトークンが Environment の外にも無ければ「対象外」(確認済みに数えない)', noEnv.items.environments?.status === 'notApplicable' && noEnv.code === 0 && JSON.stringify(noEnv.items.environments?.evidence?.credentialScopes) === '["repository-secrets","repository-variables"]', JSON.stringify(noEnv.items.environments));
+  const repoToken = w.run(ghMap({ [P(`repos/${R}/environments`)]: { stdout: { total_count: 0, environments: [] } }, [P(`repos/${R}/actions/secrets`)]: { stdout: { total_count: 1, secrets: [{ name: 'DELEGATED_MERGE_TOKEN' }] } } }));
+  check('Environment が無くても、リポジトリの秘密情報に DELEGATED_MERGE_TOKEN があれば「不一致」', repoToken.items.environments?.status === 'mismatch' && kinds(repoToken.items.environments).join(',') === '-:delegatedTokenOutside' && JSON.stringify(repoToken.items.environments?.evidence?.delegatedTokenOutside) === '["repository-secrets:DELEGATED_MERGE_TOKEN"]' && repoToken.code === 1, JSON.stringify(repoToken.items.environments));
+  const varToken = w.run(ghMap({ [P(`repos/${R}/actions/variables`)]: { stdout: { total_count: 1, variables: [{ name: 'DELEGATED_MERGE_TOKEN', value: 'value-must-not-be-recorded' }] } } }));
+  check('Environment があっても、リポジトリの変数に DELEGATED_MERGE_TOKEN があれば「不一致」', varToken.items.environments?.status === 'mismatch' && kinds(varToken.items.environments).join(',') === '-:delegatedTokenOutside', JSON.stringify(varToken.items.environments));
+  check('秘密情報と変数は名前だけを記録し、値を記録に書かない', !JSON.stringify(varToken.record ?? {}).includes('value-must-not-be-recorded'), JSON.stringify(varToken.items.environments?.evidence));
+  const secretDenied = w.run(ghMap({ [P(`repos/${R}/environments`)]: { stdout: { total_count: 0, environments: [] } }, [P(`repos/${R}/actions/secrets`)]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' } }));
+  check('Environment が無く、リポジトリの秘密情報の名前を読めなければ、対象外にせず未確認(権限不足で読めない)', secretDenied.items.environments?.status === 'unconfirmed' && secretDenied.items.environments?.reason === 'permission' && secretDenied.code === 1, JSON.stringify(secretDenied.items.environments));
+
+  // ページ送り(突合 X-13): 31件目以降を読まずに判定しない
+  const page1 = { total_count: 101, environments: Array.from({ length: 100 }, (_, i) => ({ id: 600 + i, name: `e${i}`, deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } })) };
+  const pageMap = { [P(`repos/${R}/environments`)]: { stdout: page1 } };
+  for (let i = 0; i < 100; i++) pageMap[P(`repos/${R}/environments/e${i}/deployment-branch-policies`)] = { stdout: { total_count: 1, branch_policies: [{ id: 1, name: 'main', type: 'branch' }] } };
+  const truncated = w.run(ghMap({ ...pageMap, [P(`repos/${R}/environments`, 2)]: { stdout: { total_count: 101, environments: [] } } }));
+  check('2頁目が空で、読めた件数が total_count と合わなければ未確認(確認済みにしない)', truncated.items.environments?.status === 'unconfirmed' && /total_count 101/.test(truncated.items.environments?.detail ?? ''), JSON.stringify(truncated.items.environments).slice(0, 400));
+  const missingPage = w.run(ghMap(pageMap));
+  check('2頁目を読めなければ未確認(1頁目の100件だけで確認済みにしない)', missingPage.items.environments?.status === 'unconfirmed', JSON.stringify(missingPage.items.environments).slice(0, 400));
+  const paged = w.run(ghMap({ ...pageMap, [P(`repos/${R}/environments`, 2)]: { stdout: { total_count: 101, environments: [{ id: 999, name: 'late', deployment_branch_policy: null }] } } }));
+  check('2頁目の Environment も判定に入れる(101件目の限定の無い Environment で「不一致」)', paged.items.environments?.status === 'mismatch' && kinds(paged.items.environments).join(',') === 'late:noPolicy', JSON.stringify(paged.items.environments?.evidence?.findings));
 
   // 記録を読む側: 対象外は確認済みに数えない。旧い形の記録は未確認に倒す
   w.run(ghMap());
@@ -207,6 +263,34 @@ if (process.platform === 'win32') {
   check('記録を読む側も、9項目が確認済みなら全体を確認済みとする', env.confirmed === true && env.counts?.confirmed === 9, env.summary);
   const p = path.join(w.dir, ENV_CHECK_FILE);
   const rec = JSON.parse(fs.readFileSync(p, 'utf8'));
+  // 突合 X-6 の変異 M5: 識別の鍵(environmentIds)を欠く確認済みの Environment の記録は、読む側が未確認に倒す
+  const noIds = JSON.parse(JSON.stringify(rec));
+  delete noIds.items.environments.evidence.environmentIds;
+  fs.writeFileSync(p, JSON.stringify(noIds, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: 識別なし');
+  const m5 = readEnvCheck(TEAM, { root: w.dir });
+  const m5Item = m5.items.find((i) => i.id === 'environments');
+  check('environmentIds を欠く確認済みの Environment の記録は、未確認に倒し全体を確認済みにしない(M5)', m5.confirmed === false && m5Item?.status === 'unconfirmed', JSON.stringify(m5Item));
+  // 判定の構造の値(findings)が空でない確認済みの記録も、未確認に倒す(説明の文ではなく値で確かめる)
+  const withFinding = JSON.parse(JSON.stringify(rec));
+  withFinding.items.environments.evidence.findings = [{ environment: 'production', kind: 'otherBranch', value: ['feature/*'] }];
+  fs.writeFileSync(p, JSON.stringify(withFinding, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: findings');
+  const wf = readEnvCheck(TEAM, { root: w.dir });
+  check('判定の値 findings が空でない確認済みの Environment の記録は、未確認に倒す', wf.confirmed === false && wf.items.find((i) => i.id === 'environments')?.status === 'unconfirmed', JSON.stringify(wf.items.find((i) => i.id === 'environments')));
+  // 対象外の記録で、秘密情報と変数の名前を読んでいない(credentialScopes が無い)ものは受け入れない(突合 X-7)
+  const naNoScopes = JSON.parse(JSON.stringify(rec));
+  naNoScopes.items.environments = { status: 'notApplicable', detail: 'Environment が無い', evidence: { environmentNames: [], environmentIds: [] } };
+  fs.writeFileSync(p, JSON.stringify(naNoScopes, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: 名前を読まない対象外');
+  const nns = readEnvCheck(TEAM, { root: w.dir });
+  check('秘密情報と変数の名前を読んでいない Environment の対象外は、受け入れない', nns.confirmed === false && nns.items.find((i) => i.id === 'environments')?.reason === 'na-not-allowed', JSON.stringify(nns.items.find((i) => i.id === 'environments')));
+  fs.writeFileSync(p, JSON.stringify(rec, null, 2) + '\n');
+  w.git('add', '-A');
+  w.git('commit', '-q', '-m', 'docs: 戻す');
   rec.items.ruleset = { status: 'confirmed', notApplicable: true, detail: '構成がブランチ保護を要しない。確かめる項目なし' };
   fs.writeFileSync(p, JSON.stringify(rec, null, 2) + '\n');
   w.git('add', '-A');

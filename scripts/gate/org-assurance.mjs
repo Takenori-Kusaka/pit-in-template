@@ -1221,9 +1221,16 @@ export function envNotApplicableRefusal(id, config, record) {
       : 'バイパスの主体を対象外にできるのは、同じ記録で効いているルールセットが無い場合だけ(ルールセットの項目が「不一致」で読めた一覧が空、または旧来のブランチ保護だけで確認済み)';
   }
   if (id === 'environments') {
-    // Environment が1つも無い(読めた空の一覧)場合だけ(#346)
-    const names = record?.items?.environments?.evidence?.environmentNames;
-    return Array.isArray(names) && names.length === 0 ? null : 'Environment を対象外にできるのは、同じ記録で読めた Environment の一覧が空の場合だけ';
+    // Environment が1つも無く(読めた空の一覧)、リポジトリの秘密情報と変数の名前を読めて、委任のトークンが Environment の外に
+    // 無い場合だけ(#346 突合 X-7)。Environment が無いことだけでは、リポジトリの秘密情報に置いた委任のトークンを見逃す
+    const e = record?.items?.environments?.evidence;
+    const names = e?.environmentNames;
+    const scopes = Array.isArray(e?.credentialScopes) ? e.credentialScopes : [];
+    const read = ENV_CREDENTIAL_SCOPES.every((x) => scopes.includes(x));
+    const clean = Array.isArray(e?.delegatedTokenOutside) && e.delegatedTokenOutside.length === 0;
+    return Array.isArray(names) && names.length === 0 && read && clean
+      ? null
+      : 'Environment を対象外にできるのは、同じ記録で読めた Environment の一覧が空で、リポジトリの秘密情報と変数の名前を読めて、委任のトークンが Environment の外に無い場合だけ';
   }
   return 'この項目は対象外にできない(書く側の env-check が対象外を出さない項目)';
 }
@@ -1239,6 +1246,9 @@ export function envStatusLabel(item) {
  * 実環境で作った記録を区別できない。査察で GitHub の画面と突合できる鍵(ルールセットの id、レビューの id、実行の id と URL)を
  * 記録に要し、無い確認済みは「実環境の証拠を欠く」として未確認に倒す
  */
+/** Environment の項目で、委任のトークンの名前を読む範囲(値は読まない。#346 突合 X-7) */
+export const ENV_CREDENTIAL_SCOPES = ['repository-secrets', 'repository-variables'];
+
 export const ENV_EVIDENCE_KEYS = {
   // ルールセットの id。旧来のブランチ保護だけで効かせている構成(#315 突合 X-17)は、ルールセットの id の代わりに旧来の保護の所在
   ruleset: [['rulesetIds', (v, e) => (Array.isArray(v) && v.length > 0) || (Array.isArray(v) && typeof e?.classicProtectionUrl === 'string' && e.classicProtectionUrl.length > 0)]],
@@ -1261,8 +1271,14 @@ export const ENV_EVIDENCE_KEYS = {
   // Actions の既定の権限の応答は識別(id)を持たない。読めた値そのもの(read / write、真偽)を鍵にする(#346)
   workflowPermissions: [['defaultWorkflowPermissions', (v) => v === 'read' || v === 'write']],
   actionsApproval: [['canApprovePullRequestReviews', (v) => typeof v === 'boolean']],
-  // Environment の id(設定画面の URL とは別。API の応答の識別)
-  environments: [['environmentIds', (v) => Array.isArray(v) && v.length > 0 && v.every((x) => Number.isFinite(Number(x)) && Number(x) > 0)]],
+  // Environment の id(設定画面の URL とは別。API の応答の識別)。秘密情報と変数の名前を読んだ範囲と、Environment の外の
+  // 委任のトークンが無いこと(#346 突合 X-7)。判定の構造の値 findings が空であること(説明の文ではなく値で確かめる。X-6)
+  environments: [
+    ['environmentIds', (v) => Array.isArray(v) && v.length > 0 && v.every((x) => Number.isFinite(Number(x)) && Number(x) > 0)],
+    ['credentialScopes', (v) => Array.isArray(v) && ENV_CREDENTIAL_SCOPES.every((x) => v.includes(x))],
+    ['delegatedTokenOutside', (v) => Array.isArray(v) && v.length === 0],
+    ['findings', (v) => Array.isArray(v) && v.length === 0],
+  ],
 };
 
 /** 項目 id の確認済みに欠けている識別の鍵の一覧(空なら足りている) */
