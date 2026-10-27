@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions } from './autonomy.mjs';
+import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -30,6 +30,12 @@ const reviewerOnly = (input) => {
 
 // 欠陥の台帳の行(Sev1・Sev2 の AI 起因。第5章 5.4.6)
 const sev = (severity, aiCause, date, changeTypes = null) => ({ id: 'BUG-9', severity, aiCause, date, changeTypes });
+
+// 承認レビューの写し(record-copy.yml の形)。レビューを媒体とした G-6 の判定(標準 第4章 G-6「承認レビューを判定記録とする条件」)
+const reviewCopy = (body, pr = 45, submittedAt = '2026-08-07T01:00:00Z') => ({
+  file: `records/reviews/pr-${pr}.json`,
+  copy: { pr, head_sha: 'a'.repeat(40), reviews: [{ id: 7, user: { login: 'reviewer-a', id: 9 }, body, state: 'CHANGES_REQUESTED', commit_id: 'a'.repeat(40), submitted_at: submittedAt }] },
+});
 
 // [場面, 入力を変える関数, 該当するか(G-6 を事後へ移す委任), 満たさないはずの条件, 扱い(省略時は該当=post-hoc / 該当しない=collab)]
 const cases = [
@@ -157,6 +163,14 @@ const cases = [
   // IMPL-0285:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 差し戻し率0%の2か月継続(最小標本数以上)', (i) => (i.records.rejections = []), false, ['5.4.6']],
   ['5.4.6: 判定基準の番号を引かない差し戻しは数えない(0%の継続を切らない)', (i) => (i.records.rejections[0].cited = false), false, ['5.4.6']],
+  // レビューを媒体とした G-6 の差し戻し(写しの宣言行)も判定記録として数える(process-compass #321 の突合 F-3)
+  // IMPL-0285:ok
+  ['5.4.6: レビューを媒体とした差し戻し(宣言行が基準の番号を引く)を数える', (i) => (i.records.rejections = rejectionsFromReviewCopies([reviewCopy('G-6: 差し戻し / 基準 2 / 期限 2026-08-14\n\n境界の値のテストが無い。')])), true, []],
+  // IMPL-0285:ng
+  ['5.4.6: 宣言行が基準の番号を引かないレビューの差し戻しは数えない', (i) => (i.records.rejections = rejectionsFromReviewCopies([reviewCopy('G-6: 差し戻し')])), false, ['5.4.6']],
+  ['5.4.6: 宣言行の無いレビューは判定に数えない(本文に基準の番号があっても)', (i) => (i.records.rejections = rejectionsFromReviewCopies([reviewCopy('基準2を満たしていません。')])), false, ['5.4.6']],
+  ['5.4.6: ほかのゲートの宣言行の差し戻しは G-6 に数えない', (i) => (i.records.rejections = rejectionsFromReviewCopies([reviewCopy('G-4: 差し戻し / 基準 2')])), false, ['5.4.6']],
+  ['5.4.6: 判定の日より後のレビューの差し戻しは数えない', (i) => (i.records.rejections = rejectionsFromReviewCopies([reviewCopy('G-6: 差し戻し / 基準 2', 45, '2026-10-25T01:00:00Z')])), false, ['5.4.6']],
   // IMPL-0286:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 窓が最小標本数に満たない(判定不能)', (i) => (i.records.history.changes = i.records.history.changes.slice(0, 29)), false, ['5.4.6']],
   ['5.4.6: 範囲外の変更は母数に数えない(判定不能)', (i) => i.records.history.changes.slice(0, 3).forEach((c) => (c.files = ['src/pay.js'])), false, ['5.4.6']],
@@ -415,6 +429,48 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('判定記録: 番号を引かない差し戻しは数えない', parseRejection(gate('全体的に見直してください。')).cited === false);
   check('判定記録: 様式の例の文は番号の引用に数えない', parseRejection(gate('> 項目2を満たしていません。受入基準3に対応するテストが見つかりません。')).cited === false);
   check('判定記録: 通過の記録は差し戻しに数えない', parseRejection(gate('').replace('差し戻し |', '通過 |')) === null);
+}
+
+// G-6 の差し戻しの判定記録の4つの置き場(様式: docs/gates/・records/gates/、写し: records/reviews/・docs/records/reviews/)
+{
+  const tmpRoot = fs.mkdtempSync(path.join(ROOT, 'evidence/.rejection-test-'));
+  try {
+    const gateForm = (target, reason) =>
+      ['| 項目 | 値 |', '| --- | --- |', '| ゲート | G-6 独立レビュー |', `| 対象 | ${target} |`, '| 判定日時 | 2026-08-07 10:00 |', '| 結果 | 差し戻し |', '', '## 差し戻しの理由', '', reason].join('\n');
+    fs.mkdirSync(path.join(tmpRoot, 'docs/gates'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, 'docs/records/reviews'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'docs/gates/g6-PR-45-2026-08-07.md'), gateForm('PR #45', '基準3を満たしていません。'));
+    fs.writeFileSync(path.join(tmpRoot, 'docs/records/reviews/pr-50.json'), JSON.stringify(reviewCopy('G-6: 差し戻し / 基準 1', 50).copy));
+    fs.writeFileSync(path.join(tmpRoot, 'docs/records/reviews/pr-51.json'), JSON.stringify(reviewCopy('G-6: 差し戻し / 基準 1', 51).copy));
+    const branch = {
+      available: true,
+      // 基底ブランチと同じ名前の様式は1件に数える。記録用ブランチだけにある様式も読む
+      gates: [
+        { file: 'records/gates/g6-PR-45-2026-08-07.md', text: gateForm('PR #45', '基準3を満たしていません。') },
+        { file: 'records/gates/g6-PR-46-2026-08-08.md', text: gateForm('PR #46', '基準1を満たしていません。') },
+      ],
+      // 基底ブランチと同じ PR 番号の写しは1件に数える(記録用ブランチを優先する)
+      reviews: new Map([
+        [51, reviewCopy('G-6: 差し戻し / 基準 1', 51).copy],
+        [52, reviewCopy('G-6: 差し戻し / 基準 4', 52).copy],
+      ]),
+    };
+    const rr = readRejectionRecords({ root: tmpRoot, branch });
+    const keys = rr.rejections.map((r) => `${r.source}:${r.target}`).sort();
+    check(
+      '差し戻しの判定記録: 様式と写しを4つの置き場から読み、同じファイル名・同じ PR 番号を1件に数える',
+      keys.join() === ['form:PR #45', 'form:PR #46', 'review:PR #50', 'review:PR #51', 'review:PR #52'].sort().join() && rr.notes.length === 0,
+      keys.join(),
+    );
+    const off = readRejectionRecords({ root: tmpRoot, branch: { available: false, reason: '手元に無い' } });
+    check(
+      '差し戻しの判定記録: 記録用ブランチを読めなければ、基底ブランチだけを数え、その旨を注記に出す',
+      off.rejections.length === 3 && off.notes.length === 1 && /記録用ブランチを読めない/.test(off.notes[0]),
+      off.rejections.map((r) => r.target).join(),
+    );
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
 }
 
 console.log('');

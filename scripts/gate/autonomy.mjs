@@ -15,7 +15,9 @@
 //       2名以上へ回復した日より後の登録日で戻る。履歴を読めない(浅い取得等)場合は、判定できないものとして止める
 //   第2区分(期間ごとに集計する)
 //     - 差し戻し率: 毎月、直近2か月の窓で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
-//       分子は判定基準の番号を引いた G-6 の差し戻しの判定記録。最小標本数(30件)以上で0件の評価は、
+//       分子は判定基準の番号を引いた G-6 の差し戻しの判定記録。判定記録は様式(docs/gates/・記録用ブランチの records/gates/)と、
+//       レビューを媒体とした判定(記録用ブランチの records/reviews/ と基底ブランチの docs/records/reviews/ の写しの宣言行)の両方を読む。
+//       最小標本数(30件)以上で0件の評価は、
 //       評価の日より後の登録日まで種別を止める。最新の窓が最小標本数に満たない場合は判定不能とし、
 //       判定可能な窓が得られるまで止める(適用の条件の欠落。判定を待たずに戻る)
 //     - 手戻り率: 集計しない(降りていない)。表示し続ける
@@ -31,6 +33,7 @@ import path from 'node:path';
 import { ROOT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
+import { readRecordsBranch, parseCopy, judgementsFromCopy, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
 
 /** 準拠テンプレートが支えるレベル。L2 は上限の値としてだけ現れる */
 export const LEVELS = ['L1', 'L2', 'L3'];
@@ -46,6 +49,8 @@ export const REWORK_UNDELIVERED =
 export const DEFECT_FILE = 'docs/defect-ledger.md';
 export const HANDOVER_FILE = 'docs/handover.md';
 const GATES_DIR = 'docs/gates';
+/** 承認レビューの写しの基底ブランチの複製(出荷の PR が運ぶ。aggregate-evidence.mjs の BASE_COPIES_DIR と同じ) */
+const BASE_COPIES_DIR = 'docs/records/reviews';
 
 /** 停止の性質。downgrade は引き下げ(登録の判定で戻る)、それ以外は適用の条件の欠落(条件が戻れば戻る) */
 export const STOP_KIND = {
@@ -161,7 +166,8 @@ function changeOfTarget(changes, target) {
  *   core        { present, rows: [{ name, holders: 数, changeTypes: [..]|null, lowUntil: 回復の日|null }],
  *                 history: { available, reason? } }  運用引き継ぎ文書の履歴を読めたか
  *   history     { available, reason?, changes: [{ ref, date, pr, files: [..] }] }
- *   rejections  [{ file, date, target, cited }]  G-6 の差し戻しの判定記録。cited は判定基準の番号を引いているか
+ *   rejections  [{ file, date, target, cited, source? }]  G-6 の差し戻しの判定記録。cited は判定基準の番号を引いているか。
+ *               source は 'form'(様式)か 'review'(レビューを媒体とした判定の写し)
  *   notes       [文]  評価の時点の注記
  * records が無い場合は、すべての登録した変更種別を判定できないものとして止める
  */
@@ -388,6 +394,74 @@ export function parseRejection(text, file = null) {
   return { file, date, target: cell('対象'), cited };
 }
 
+/**
+ * 承認レビューの写しから、レビューを媒体とした G-6 の差し戻しの判定を読む(標準 第4章 G-6「承認レビューを判定記録とする条件」)。
+ * 宣言行(`G-6: 差し戻し / 基準 N`)を持つレビューだけを数える。宣言行の無いレビューは判定に数えない(様式の差し戻しと同じく、
+ * 判定記録の無い差し戻しは数えない)。cited は宣言行が満たさない基準の項目番号を引いているか。
+ * copies は [{ file, copy }]。同じ PR に複数の判定者の差し戻しがあれば、判定者ごとに数える(様式が判定者ごとに1件であるのと同じ)
+ */
+export function rejectionsFromReviewCopies(copies) {
+  const out = [];
+  for (const { file, copy } of copies ?? []) {
+    const pr = copy?.pr ?? String(file ?? '').match(/pr-(\d+)\.json$/)?.[1] ?? null;
+    for (const j of judgementsFromCopy(copy)) {
+      if (j.gate !== 'G-6' || j.result !== '差し戻し') continue;
+      const t = Date.parse(j.submittedAt ?? '');
+      out.push({ file, date: Number.isNaN(t) ? null : localDay(new Date(t)), target: pr !== null ? `PR #${pr}` : '', cited: j.criteria.length > 0, source: 'review' });
+    }
+  }
+  return out;
+}
+
+/**
+ * G-6 の差し戻しの判定記録を、4つの置き場から読む。様式は docs/gates/ と記録用ブランチの records/gates/(同じファイル名は
+ * 1件に数える。ship-evidence.yml は basename のまま複製する)。写しは記録用ブランチの records/reviews/ と基底ブランチの
+ * docs/records/reviews/(同じ PR 番号は1件に数える。記録用ブランチを優先する)。記録用ブランチを読めなければ、その旨を notes へ出す
+ */
+export function readRejectionRecords({ root = ROOT, fetch = true, branch = null } = {}) {
+  const notes = [];
+  const rejections = [];
+  const forms = new Map();
+  const dir = path.join(root, GATES_DIR);
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.md'))) forms.set(f, { file: `${GATES_DIR}/${f}`, text: fs.readFileSync(path.join(dir, f), 'utf8') });
+  }
+  let rb = branch;
+  if (!rb) {
+    try {
+      rb = readRecordsBranch({ cwd: root, fetch });
+    } catch (e) {
+      rb = { available: false, reason: `記録用ブランチを読めない(${String(e.message).split('\n')[0]})`, reviews: new Map(), gates: [] };
+    }
+  }
+  const copies = new Map();
+  const baseDir = path.join(root, BASE_COPIES_DIR);
+  if (fs.existsSync(baseDir)) {
+    for (const f of fs.readdirSync(baseDir).filter((x) => x.endsWith('.json')).sort()) {
+      const file = `${BASE_COPIES_DIR}/${f}`;
+      const { copy, prNumber } = parseCopy(file, fs.readFileSync(path.join(baseDir, f), 'utf8'));
+      if (copy) copies.set(prNumber, { file, copy });
+    }
+  }
+  if (rb?.available) {
+    for (const g of rb.gates ?? []) {
+      const base = g.file.split('/').pop();
+      if (!forms.has(base)) forms.set(base, { file: g.file, text: g.text });
+    }
+    for (const [n, copy] of rb.reviews ?? []) copies.set(n, { file: `${BRANCH_REVIEWS_DIR}/pr-${n}.json`, copy });
+  } else {
+    notes.push(
+      `記録用ブランチを読めないため(${rb?.reason ?? '理由の記録なし'})、G-6 の差し戻しの判定記録は基底ブランチ(${GATES_DIR}/・${BASE_COPIES_DIR}/)だけを数えた。出荷前のレビューを媒体とした差し戻しは数えていない(数え漏れは差し戻し率を下げ、停止の側へ倒れる)`,
+    );
+  }
+  for (const { file, text } of forms.values()) {
+    const r = parseRejection(text, file);
+    if (r) rejections.push({ ...r, source: 'form' });
+  }
+  rejections.push(...rejectionsFromReviewCopies([...copies.values()]));
+  return { rejections, notes };
+}
+
 function git(args, root) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
 }
@@ -413,9 +487,9 @@ export function readHistory({ root = ROOT, since = null, until = null } = {}) {
 
 /**
  * 判定に使う記録を読む。欠陥の台帳、運用引き継ぎ文書の節2(コア機能の理解保持者。数え方は org-assurance の
- * continuityState と同じ)、既定ブランチの履歴、G-6 の差し戻しの判定記録
+ * continuityState と同じ)、既定ブランチの履歴、G-6 の差し戻しの判定記録(様式とレビューの写し。readRejectionRecords)
  */
-export function readAutonomyRecords({ config, root = ROOT, today = null } = {}) {
+export function readAutonomyRecords({ config, root = ROOT, today = null, fetch = true } = {}) {
   const now = localDay();
   const asOf = today ?? now;
   const past = asOf < now;
@@ -478,13 +552,12 @@ export function readAutonomyRecords({ config, root = ROOT, today = null } = {}) 
   const firstFrom = earliest ? addMonths(monthStart(earliest), 1 - WINDOW_MONTHS) : latestFrom;
   const history = types.length ? readHistory({ root, since: firstFrom < latestFrom ? firstFrom : latestFrom, until: asOf }) : { available: true, changes: [] };
 
-  const rejections = [];
-  const dir = path.join(root, GATES_DIR);
-  if (fs.existsSync(dir)) {
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.md'))) {
-      const r = parseRejection(fs.readFileSync(path.join(dir, f), 'utf8'), `${GATES_DIR}/${f}`);
-      if (r) rejections.push(r);
-    }
+  // G-6 の差し戻しの判定記録(様式と、レビューを媒体とした判定の写し)。登録した種別が無ければ読まない
+  let rejections = [];
+  if (types.length) {
+    const rr = readRejectionRecords({ root, fetch });
+    rejections = rr.rejections;
+    notes.push(...rr.notes);
   }
   return { asOf, defects, core, history, rejections, notes };
 }

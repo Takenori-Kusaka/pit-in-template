@@ -365,6 +365,23 @@ export function gateJudgementsOfCopy(copy, config) {
 }
 
 /**
+ * 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版(commit_id)がマージ時の head と一致しない判定を、
+ * 確定していない版を取り込んだ変更として欠落の文にする(第4章 G-2 / IMPL-0129)。判定する席の責任者でない者の宣言行は
+ * 判定でないため見ない(judgeOk === false)。G-6 ほかのゲートはここでは見ない。judgements は gateJudgementsOfCopy の返り値に pr を足したもの
+ */
+export function unconfirmedVersionGaps(judgements) {
+  const gaps = [];
+  for (const j of judgements ?? []) {
+    if (!/^G-[234]$/.test(j.gate) || j.judgeOk === false || j.headMatch) continue;
+    gaps.push(
+      `PR #${j.pr ?? j.prNumber}: ${j.gate} の判定(レビュー ${j.reviewId ?? '(id なし)'}、@${j.login ?? '?'})の対象の版(commit_id ${String(j.commitId ?? '(無い)').slice(0, 7)})が、マージ時の head(${j.head ? j.head.slice(0, 7) : '写しに無い'})と一致しません。` +
+        '確定していない版を取り込んだ変更です(第4章 G-2)。判定者がマージした版を判定し直し、宣言行のあるレビューで記録してください'
+    );
+  }
+  return gaps;
+}
+
+/**
  * 判定の機械が出す欄(IMPL-0125)。写し・PR の記録・基底ブランチの構成からの、推定を含まない写しに限り、欄ごとに出所を併記する。
  *   j: gateJudgementsOfCopy の 1 件 / source: 写しの所在(records/reviews/pr-12.json) / pr: { createdAt, authorLogin }(PR の記録。無ければ null)
  *   instructors: { known: Map<id, name>, unresolved: [], byDefault } / d0: { version, source }(基底ブランチの構成から。無ければ null)
@@ -2062,15 +2079,8 @@ if (isMain) {
     );
   }
 
-  // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版(commit_id)がマージ時の head と一致しない判定。
-  // 確定していない版を取り込んだ変更として欠落に数える(第4章 G-2 / IMPL-0129)。判定する席の責任者でない者の宣言行は判定でないため、ここでは見ない
-  for (const j of reviewJudgements) {
-    if (!/^G-[234]$/.test(j.gate) || j.judgeOk === false || j.headMatch) continue;
-    gaps.push(
-      `PR #${j.pr}: ${j.gate} の判定(レビュー ${j.reviewId ?? '(id なし)'}、@${j.login ?? '?'})の対象の版(commit_id ${String(j.commitId ?? '(無い)').slice(0, 7)})が、マージ時の head(${j.head ? j.head.slice(0, 7) : '写しに無い'})と一致しません。` +
-        '確定していない版を取り込んだ変更です(第4章 G-2)。判定者がマージした版を判定し直し、宣言行のあるレビューで記録してください'
-    );
-  }
+  // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版がマージ時の head と一致しない判定を欠落に数える(IMPL-0129)
+  gaps.push(...unconfirmedVersionGaps(reviewJudgements));
 
   // --- 出荷の範囲の記録(第4章 G-7 基準5・9)と、写しの件数の一致 ---------------------------------------------------
   //

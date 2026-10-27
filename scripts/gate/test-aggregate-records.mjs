@@ -26,6 +26,7 @@ import {
   reconcileCopy,
   judgeLoginsOf,
   gateJudgementsOfCopy,
+  unconfirmedVersionGaps,
   machineFields,
   copyCoverage,
   formAttribution,
@@ -150,7 +151,10 @@ const config = {
     { state: 'CHANGES_REQUESTED', submitted_at: '2026-10-02T00:00:00Z', user: { login: 'suzuki' } },
     { state: 'APPROVED', submitted_at: '2026-10-02T00:00:00Z', user: { login: 'sato' } },
   ] };
+  // IMPL-0357:ng
   check('承認の数: 承認者ごとの最後の状態(承認の後の変更要求は数えない)', approvalCountOfCopy(withdrew) === 1);
+  // IMPL-0357:ok
+  check('承認の数: 変更要求の後に承認し直した承認者は数える', approvalCountOfCopy({ reviews: [...withdrew.reviews, { state: 'APPROVED', submitted_at: '2026-10-03T00:00:00Z', user: { login: 'suzuki' } }] }) === 2);
 }
 
 // ---------------------------------------------------------------- 写しと PR の記録(API)の突合
@@ -191,6 +195,27 @@ const config = {
   const jn = gateJudgementsOfCopy(copyOf(12), noAcc);
   check('G-4: 責任者のアカウントが名簿に無ければ judgeOk=null(accounts を要する旨の注記)', jn[0].judgeOk === null && /accounts/.test(jn[0].judgeNote), JSON.stringify(jn[0].judgeNote));
   check('G-4(pr-14): 注記を足した結果(通過(…))は宣言行でない', gateJudgementsOfCopy(copyOf(14), config).length === 0);
+
+  // 確定していない版を取り込んだ変更を欠落に数える(標準 第4章 G-2。G-2・G-3・G-4 を判定者本人のレビューで記録した変更)
+  const versioned = (gate, commitId, login = 'yamada') => ({
+    pr: 18,
+    merge_commit_sha: 'm'.repeat(40),
+    head_sha: 'h'.repeat(40),
+    reviews: [{ id: 2, state: 'COMMENTED', commit_id: commitId, submitted_at: '2026-10-01T00:00:00Z', user: { id: 1, login }, body: `${gate}: 通過\n確認した項目: 基準1` }],
+  });
+  const gapsOf = (copy) => unconfirmedVersionGaps(gateJudgementsOfCopy(copy, config).map((j) => ({ ...j, pr: copy.pr })));
+  // IMPL-0129:ng
+  const ngG2 = gapsOf(versioned('G-2', 'c'.repeat(40)));
+  check('版の一致: G-2 の commit_id がマージ時の head とずれた変更を、確定していない版を取り込んだ欠落に数える', ngG2.length === 1 && /確定していない版/.test(ngG2[0]) && /PR #18: G-2/.test(ngG2[0]), JSON.stringify(ngG2));
+  // IMPL-0352:ng
+  const ngG3 = gapsOf(versioned('G-3', 'c'.repeat(40)));
+  check('版の一致: G-3 の判定もずれを欠落に数える', ngG3.length === 1 && /PR #18: G-3/.test(ngG3[0]), JSON.stringify(ngG3));
+  // IMPL-0352:ok
+  check('版の一致: G-3 の commit_id がマージ時の head と一致すれば欠落に数えない', gapsOf(versioned('G-3', 'h'.repeat(40))).length === 0);
+  check('版の一致: 宣言行の無いレビューは G-3 に数えない', gateJudgementsOfCopy({ ...versioned('G-3', 'c'.repeat(40)), reviews: [{ ...versioned('G-3', 'c'.repeat(40)).reviews[0], body: '判断記録を確認しました' }] }, config).length === 0);
+  // IMPL-0129:ok
+  check('版の一致: commit_id がマージ時の head と一致すれば欠落に数えない', gapsOf(versioned('G-2', 'h'.repeat(40))).length === 0 && gapsOf(versioned('G-4', 'h'.repeat(40))).length === 0);
+  check('版の一致: 判定する席の責任者でない者の宣言行と、G-6 は、版のずれを見ない', gapsOf(versioned('G-4', 'c'.repeat(40), 'sato')).length === 0 && gapsOf(versioned('G-6', 'c'.repeat(40), 'suzuki')).length === 0);
 }
 
 // ---------------------------------------------------------------- 機械が出す欄
