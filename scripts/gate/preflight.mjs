@@ -36,11 +36,11 @@ export const INVENTORY_FILE = 'docs/adoption-inventory.md';
 export const DISPOSITIONS = ['取り込む', '置き換える', '残して並存する', '対象外とする'];
 
 /** 準拠テンプレートが持つワークフロー。これ以外のワークフローは既存の資産として一覧へ載せる */
-export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'ship-evidence.yml'];
+export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'record-copy.yml', 'ship-evidence.yml'];
 /** 準拠テンプレートの直下の配置。これ以外のファイルは、既存の製品のコードと履歴として一覧へ載せる */
 export const TEMPLATE_TOP = ['.claude', '.github', '.gitignore', '.ignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
 /** .gitignore に含めるテンプレートの行(証跡・秘匿情報・カバレッジの出力・端末ごとの状態の除外) */
-export const TEMPLATE_GITIGNORE_LINES = ['coverage/', 'evidence/', '.env', '.env.*', '*.pem', '*.key', '.claude/.self-heal'];
+export const TEMPLATE_GITIGNORE_LINES = ['coverage/', '/evidence/', '.env', '.env.*', '*.pem', '*.key', '.claude/.self-heal'];
 /**
  * 準拠テンプレート自身が持つエージェントの指示ファイル(テンプレートの git ls-files から作る。test-adoption.mjs が一致を確かめる)。
  * 入れ子の指示ファイルの点検は、これだけを除く(#315 突合 X-14。製品の scripts/CLAUDE.md などを見落とさない)
