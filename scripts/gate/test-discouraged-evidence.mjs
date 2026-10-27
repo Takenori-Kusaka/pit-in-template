@@ -71,6 +71,9 @@ function workspace(seats, recordRow) {
   git('config', 'user.email', 't@example.com');
   git('config', 'user.name', 'tester');
   git('config', 'core.autocrlf', 'false');
+  // コミットの後に git が裏で走らせる自動の保守(gc・maintenance)が .git/objects へ書き込み、後片付けの削除と競合する(CI の git 2.55 で ENOTEMPTY)
+  git('config', 'gc.auto', '0');
+  git('config', 'maintenance.auto', 'false');
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: fixture');
   const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs'], {
@@ -78,7 +81,7 @@ function workspace(seats, recordRow) {
     encoding: 'utf8',
     env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' },
   });
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, recorded: Boolean(recordRow) && d0.includes(recordRow) };
 }
 
