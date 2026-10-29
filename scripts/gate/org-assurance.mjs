@@ -1133,6 +1133,11 @@ export const ENV_CHECK_ITEMS = [
   ['bypass', 'ルールセットのバイパスの主体(bypass_actors)'],
   ['prReviews', 'PR のレビューの取得(gate-g5 が PR_REVIEWS に渡す gh api …/pulls/N/reviews)'],
   ['shipEvidence', 'ship-evidence の成果物の取得(gate-g5 の実行の license-scan・test-results)'],
+  // 配備の統制を狭める措置の事実(process-compass #346 / ADR-0090)。標準 第4章 G-8 の適合の判定には使わない。
+  // GITHUB_TOKEN の書き込みは、これらの設定では参照に限れない(未達の経路を狭めるだけ)
+  ['workflowPermissions', 'Workflow permissions の既定(GITHUB_TOKEN の既定の権限。上限ではなく出発点)'],
+  ['actionsApproval', 'Actions による PR の承認の可否(can_approve_pull_request_reviews)'],
+  ['environments', 'Environment の配備の参照の限定(delegated-merge を含む)'],
 ];
 
 /**
@@ -1215,6 +1220,18 @@ export function envNotApplicableRefusal(id, config, record) {
       ? null
       : 'バイパスの主体を対象外にできるのは、同じ記録で効いているルールセットが無い場合だけ(ルールセットの項目が「不一致」で読めた一覧が空、または旧来のブランチ保護だけで確認済み)';
   }
+  if (id === 'environments') {
+    // Environment が1つも無く(読めた空の一覧)、リポジトリの秘密情報と変数の名前を読めて、委任のトークンが Environment の外に
+    // 無い場合だけ(#346 突合 X-7)。Environment が無いことだけでは、リポジトリの秘密情報に置いた委任のトークンを見逃す
+    const e = record?.items?.environments?.evidence;
+    const names = e?.environmentNames;
+    const scopes = Array.isArray(e?.credentialScopes) ? e.credentialScopes : [];
+    const read = ENV_CREDENTIAL_SCOPES.every((x) => scopes.includes(x));
+    const clean = Array.isArray(e?.delegatedTokenOutside) && e.delegatedTokenOutside.length === 0;
+    return Array.isArray(names) && names.length === 0 && read && clean
+      ? null
+      : 'Environment を対象外にできるのは、同じ記録で読めた Environment の一覧が空で、リポジトリの秘密情報と変数の名前を読めて、委任のトークンが Environment の外に無い場合だけ';
+  }
   return 'この項目は対象外にできない(書く側の env-check が対象外を出さない項目)';
 }
 
@@ -1229,6 +1246,9 @@ export function envStatusLabel(item) {
  * 実環境で作った記録を区別できない。査察で GitHub の画面と突合できる鍵(ルールセットの id、レビューの id、実行の id と URL)を
  * 記録に要し、無い確認済みは「実環境の証拠を欠く」として未確認に倒す
  */
+/** Environment の項目で、委任のトークンの名前を読む範囲(値は読まない。#346 突合 X-7) */
+export const ENV_CREDENTIAL_SCOPES = ['repository-secrets', 'repository-variables'];
+
 export const ENV_EVIDENCE_KEYS = {
   // ルールセットの id。旧来のブランチ保護だけで効かせている構成(#315 突合 X-17)は、ルールセットの id の代わりに旧来の保護の所在
   ruleset: [['rulesetIds', (v, e) => (Array.isArray(v) && v.length > 0) || (Array.isArray(v) && typeof e?.classicProtectionUrl === 'string' && e.classicProtectionUrl.length > 0)]],
@@ -1247,6 +1267,17 @@ export const ENV_EVIDENCE_KEYS = {
   shipEvidence: [
     ['runId', (v) => Number.isFinite(Number(v)) && Number(v) > 0],
     ['runUrl', (v) => typeof v === 'string' && /^https?:\/\//.test(v)],
+  ],
+  // Actions の既定の権限の応答は識別(id)を持たない。読めた値そのもの(read / write、真偽)を鍵にする(#346)
+  workflowPermissions: [['defaultWorkflowPermissions', (v) => v === 'read' || v === 'write']],
+  actionsApproval: [['canApprovePullRequestReviews', (v) => typeof v === 'boolean']],
+  // Environment の id(設定画面の URL とは別。API の応答の識別)。秘密情報と変数の名前を読んだ範囲と、Environment の外の
+  // 委任のトークンが無いこと(#346 突合 X-7)。判定の構造の値 findings が空であること(説明の文ではなく値で確かめる。X-6)
+  environments: [
+    ['environmentIds', (v) => Array.isArray(v) && v.length > 0 && v.every((x) => Number.isFinite(Number(x)) && Number(x) > 0)],
+    ['credentialScopes', (v) => Array.isArray(v) && ENV_CREDENTIAL_SCOPES.every((x) => v.includes(x))],
+    ['delegatedTokenOutside', (v) => Array.isArray(v) && v.length === 0],
+    ['findings', (v) => Array.isArray(v) && v.length === 0],
   ],
 };
 
@@ -1271,6 +1302,9 @@ export function envEvidenceText(env) {
     if (i.id === 'codeowners' && e.path) parts.push(`CODEOWNERS ${e.path}${e.blobSha ? `(blob ${String(e.blobSha).slice(0, 12)})` : ''}`);
     if (i.id === 'bypass' && Array.isArray(e.rulesetIds) && e.rulesetIds.length) parts.push(`バイパスの主体を読んだルールセット id ${e.rulesetIds.join('・')}`);
     if (i.id === 'prReviews' && Array.isArray(e.reviewIds) && e.reviewIds.length) parts.push(`PR #${e.pr} のレビュー id ${e.reviewIds.join('・')}${e.lastSubmittedAt ? `(最後の提出 ${e.lastSubmittedAt})` : ''}`);
+    if (i.id === 'workflowPermissions' && typeof e.defaultWorkflowPermissions === 'string') parts.push(`Workflow permissions の既定 ${e.defaultWorkflowPermissions}`);
+    if (i.id === 'actionsApproval' && typeof e.canApprovePullRequestReviews === 'boolean') parts.push(`Actions による PR の承認 ${e.canApprovePullRequestReviews ? '可' : '不可'}`);
+    if (i.id === 'environments' && Array.isArray(e.environmentNames)) parts.push(`Environment ${e.environmentNames.length ? e.environmentNames.join('・') : 'なし'}${Array.isArray(e.environmentIds) && e.environmentIds.length ? `(id ${e.environmentIds.join('・')})` : ''}`);
     if (i.id === 'shipEvidence' && e.runId) parts.push(`gate-g5 の実行 ${e.runId}(${e.runUrl ?? 'URL なし'}${Array.isArray(e.artifactIds) && e.artifactIds.length ? `。成果物 id ${e.artifactIds.join('・')}` : ''})`);
   }
   const fetched = (env.items ?? []).map((i) => i.evidence?.fetchedAt).filter((v) => typeof v === 'string').sort();

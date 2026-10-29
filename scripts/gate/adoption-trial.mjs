@@ -5,7 +5,9 @@
 //   node scripts/gate/adoption-trial.mjs tally --manifest <path> [--human <json>] [--ai <json>] [--tolerance 3]
 //                                                                    封じた要約値を照合し、見つける者の記録と突き合わせて集計する
 //   node scripts/gate/adoption-trial.mjs env-check --by <氏名>       実環境の統制(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・
-//                                                                    PR のレビューの取得・ship-evidence の成果物)を採用者の実環境の gh で読み、
+//                                                                    PR のレビューの取得・ship-evidence の成果物、配備の統制を狭める措置として
+//                                                                    Workflow permissions の既定・Actions による PR の承認・Environment の
+//                                                                    配備の参照の限定)を採用者の実環境の gh で読み、
 //                                                                    4値(確認済み/不一致/未確認/対象外)で docs/adoption-trial/env-check.json へ書く。
 //                                                                    記録用ブランチ(records)の保護・record-copy の実行・写しの到着・既定ブランチの
 //                                                                    bypass actor は「所見」(findings)として同じ記録へ書く(#321 段階 2)
@@ -1373,6 +1375,176 @@ function ghJson(args) {
   }
 }
 
+/**
+ * 一覧の API をページ送りで読む(#346 突合 X-13)。既定の30件で切れた一覧を、全部として判定しない。
+ * 応答が total_count と key の配列を持てば、読めた件数が total_count と合うまで読み、合わなければ読めない(未確認)とする。
+ * 応答が配列なら、per_page に満たない頁で終える。読めなければ ghJson と同じ失敗の形を返す
+ */
+const PAGE_SIZE = 100;
+const PAGE_LIMIT = 50;
+function ghPaged(api, key) {
+  const sep = api.includes('?') ? '&' : '?';
+  const out = [];
+  let total = null;
+  for (let page = 1; page <= PAGE_LIMIT; page++) {
+    const r = ghJson(['api', `${api}${sep}per_page=${PAGE_SIZE}&page=${page}`]);
+    if (!r.value) return r;
+    if (Array.isArray(r.value)) {
+      out.push(...r.value);
+      if (r.value.length < PAGE_SIZE) return { value: out };
+      continue;
+    }
+    const list = r.value?.[key];
+    if (!Array.isArray(list)) return { value: null, why: `${api} の応答から ${key} を読めない`, reason: 'unreadable' };
+    if (!Number.isInteger(r.value.total_count)) return { value: null, why: `${api} の応答に total_count が無い(全件を読めたか確かめられない)`, reason: 'unreadable' };
+    total = r.value.total_count;
+    out.push(...list);
+    if (out.length >= total || !list.length) break;
+  }
+  if (total === null || out.length !== total) return { value: null, why: `${api} をページ送りで読めた件数 ${out.length} が total_count ${total ?? '不明'} と合わない`, reason: 'unreadable' };
+  return { value: out };
+}
+
+// 委任のマージの資格情報の名前(delegation.yml が secrets.DELEGATED_MERGE_TOKEN として読む)。Environment の外(リポジトリの
+// 秘密情報・変数)にあれば、どのブランチのワークフローからも読める(#346 突合 X-7)。名前だけを読み、値は読まない
+const DELEGATED_TOKEN_NAMES = ['DELEGATED_MERGE_TOKEN'];
+// タグの規則のうち、任意のタグに開くパターン
+const TAG_WILDCARDS = new Set(['*', '**', '**/*', 'refs/tags/*', 'refs/tags/**']);
+
+/**
+ * Environment の項目(#346 / ADR-0090 決定6、突合 X-5・X-6・X-7・X-13)。判定は構造の値 findings に残し、説明の文はその写し。
+ * findings の kind: noPolicy(参照の限定が無い)・protectedBranches(保護されたブランチの全部)・emptyPolicies(選んだ参照が空)・
+ * otherBranch(既定ブランチ以外のブランチ)・tagWildcard(任意のタグ)・tagCreationUnrestricted(タグの作成を限るルールセットが無い)・
+ * delegatedTokenOutside(委任のトークンが Environment の外)
+ */
+function envEnvironments(repo, branch, notConformance, confirmedWith, fromFailure) {
+  const api = `repos/${repo}/environments`;
+  const fetchedAt = localIso();
+  const findings = [];
+  const facts = [];
+  const failures = [];
+  // 1. リポジトリの秘密情報と変数の名前(値は読まない)。Environment の有無に依らず読む
+  const credentialScopes = [];
+  const delegatedTokenOutside = [];
+  for (const [scope, path, key] of [['repository-secrets', `repos/${repo}/actions/secrets`, 'secrets'], ['repository-variables', `repos/${repo}/actions/variables`, 'variables']]) {
+    const r = ghPaged(path, key);
+    if (!r.value) {
+      failures.push({ text: `${scope} の名前を読めない(${r.why ?? '理由不明'})`, reason: r.reason });
+      continue;
+    }
+    credentialScopes.push(scope);
+    for (const x of r.value) {
+      const name = String(x?.name ?? '');
+      if (DELEGATED_TOKEN_NAMES.includes(name)) {
+        delegatedTokenOutside.push(`${scope}:${name}`);
+        findings.push({ environment: null, kind: 'delegatedTokenOutside', value: `${scope}:${name}` });
+      }
+    }
+  }
+  // 2. Environment の一覧(ページ送り)
+  const envs = ghPaged(api, 'environments');
+  if (!envs.value) failures.push({ text: `Environment の一覧を読めない(${envs.why ?? '理由不明'})`, reason: envs.reason });
+  const list = envs.value ?? [];
+  // 3. 各 Environment の配備の参照の限定。タグの規則があれば、タグのルールセットのパターンと作成の限定も読む
+  let tagRulesets = null;
+  const tagRulesetIds = [];
+  const readTagRulesets = () => {
+    if (tagRulesets) return tagRulesets;
+    const l = ghPaged(`repos/${repo}/rulesets?targets=tag&includes_parents=true`, 'rulesets');
+    if (!l.value) return (tagRulesets = { failure: l });
+    const full = [];
+    for (const x of l.value) {
+      if (x?.target && x.target !== 'tag') continue;
+      const r = ghJson(['api', `repos/${repo}/rulesets/${x?.id}?includes_parents=true`]);
+      if (!r.value || typeof r.value !== 'object') return (tagRulesets = { failure: r });
+      if (!Array.isArray(r.value.bypass_actors)) return (tagRulesets = { failure: { why: `タグのルールセット ${x?.id} の応答に bypass_actors が無い(admin の権限でしか返らない)`, reason: 'permission' } });
+      full.push(r.value);
+      tagRulesetIds.push(Number(x?.id));
+    }
+    return (tagRulesets = { list: full });
+  };
+  for (const e of list) {
+    const name = String(e?.name ?? '?');
+    const pol = e?.deployment_branch_policy ?? null;
+    if (typeof e?.can_admins_bypass === 'boolean') facts.push(`${name}: 管理者の迂回 ${e.can_admins_bypass ? '可' : '不可'}`);
+    if (!pol) {
+      findings.push({ environment: name, kind: 'noPolicy', value: null });
+      continue;
+    }
+    if (pol.protected_branches === true) {
+      findings.push({ environment: name, kind: 'protectedBranches', value: null });
+      continue;
+    }
+    const b = ghPaged(`repos/${repo}/environments/${encodeURIComponent(name)}/deployment-branch-policies`, 'branch_policies');
+    if (!b.value) {
+      failures.push({ text: `${name} の配備の参照を読めない(${b.why ?? '理由不明'})`, reason: b.reason });
+      continue;
+    }
+    const policies = b.value;
+    if (!policies.length) {
+      findings.push({ environment: name, kind: 'emptyPolicies', value: null });
+      continue;
+    }
+    const others = policies.filter((x) => (x?.type ?? 'branch') === 'branch' && x?.name !== branch).map((x) => String(x?.name ?? '?'));
+    if (others.length) findings.push({ environment: name, kind: 'otherBranch', value: others });
+    for (const t of policies.filter((x) => x?.type === 'tag')) {
+      const pattern = String(t?.name ?? '');
+      if (TAG_WILDCARDS.has(pattern)) {
+        findings.push({ environment: name, kind: 'tagWildcard', value: pattern });
+        continue;
+      }
+      const tr = readTagRulesets();
+      if (tr.failure) {
+        failures.push({ text: `タグのルールセットを読めない(${tr.failure.why ?? '理由不明'})`, reason: tr.failure.reason });
+        continue;
+      }
+      // パターンの一致は完全一致か ~ALL で見る(パターンどうしの包含は判定しない。一致しなければ限定が無いと読む)
+      const covers = tr.list.some((rs) => {
+        const inc = rs?.conditions?.ref_name?.include ?? [];
+        const exc = rs?.conditions?.ref_name?.exclude ?? [];
+        const hit = inc.includes('~ALL') || inc.includes(`refs/tags/${pattern}`) || inc.includes(pattern);
+        const out = exc.includes(`refs/tags/${pattern}`) || exc.includes(pattern);
+        const creation = Array.isArray(rs?.rules) && rs.rules.some((x) => x?.type === 'creation');
+        return rs?.enforcement === 'active' && hit && !out && creation && rs.bypass_actors.length === 0;
+      });
+      if (!covers) findings.push({ environment: name, kind: 'tagCreationUnrestricted', value: pattern });
+    }
+    if (!others.length) facts.push(`${name}: ${policies.map((x) => `${x?.type ?? 'branch'} ${x?.name}`).join('・')} に限る`);
+  }
+  const names = list.map((e) => String(e?.name ?? '?'));
+  const evidence = {
+    environmentNames: envs.value ? names : null,
+    environmentIds: list.map((e) => e?.id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number),
+    credentialScopes,
+    delegatedTokenOutside,
+    tagRulesetIds,
+    findings,
+    api,
+    fetchedAt,
+  };
+  const text = {
+    noPolicy: (f) => `${f.environment}: 配備の参照の限定が無い(どのブランチからも参照できる)`,
+    protectedBranches: (f) => `${f.environment}: 保護されたブランチの全部に開いている(既定ブランチ・リリースのタグに限る形でない)`,
+    emptyPolicies: (f) => `${f.environment}: 選んだブランチとタグが空`,
+    otherBranch: (f) => `${f.environment}: 既定ブランチ ${branch} 以外のブランチ ${f.value.join('・')} に開いている`,
+    tagWildcard: (f) => `${f.environment}: タグの規則 ${f.value} は任意のタグに開いている`,
+    tagCreationUnrestricted: (f) => `${f.environment}: タグ ${f.value} の作成を限るルールセット(作成の規則・迂回なし・有効。パターンは完全一致か ~ALL で照合)が無い。書き込みの権限を持つ者は、どのコミットにもタグを打てる`,
+    delegatedTokenOutside: (f) => `委任のトークン ${f.value} が Environment の外にある(どのブランチのワークフローからも読める。Environment delegated-merge の秘密情報へ移す)`,
+  };
+  const scopeNote = `リポジトリの秘密情報と変数は名前だけを読み、値は読まない。組織の秘密情報は読んでいない`;
+  if (findings.length) {
+    const unread = failures.length ? `。読めなかったもの: ${failures.map((f) => f.text).join('・')}` : '';
+    return { status: 'mismatch', detail: `${findings.map((f) => text[f.kind](f)).join('。')}${facts.length ? `(${facts.join('。')})` : ''}${unread}。${scopeNote}。Environment は GITHUB_TOKEN の権限を限らない。${notConformance}`, evidence };
+  }
+  if (failures.length) return fromFailure({ why: failures.map((f) => f.text).join('・'), reason: failures.some((f) => f.reason === 'permission') ? 'permission' : 'unreadable' }, 'Environment の項目を読めない');
+  if (!list.length) {
+    // 委任のマージを有効にする前に delegated-merge を作り、既定ブランチに限る(README)。作らずにマージのジョブが走ると
+    // 保護の無い Environment が自動で作られ、次の env-check で「配備の参照の限定が無い」と出る
+    return { status: 'notApplicable', detail: `Environment が無く、委任のトークンも Environment の外に無い。確認済みには数えない。委任のマージを有効にする前に delegated-merge を作り、配備のブランチを既定ブランチに限る。${scopeNote}。${notConformance}`, evidence };
+  }
+  return confirmedWith('environments', `${facts.join('。')}。委任のトークンは Environment の外に無い。${scopeNote}。Environment は GITHUB_TOKEN の権限を限らない(environment: を消したジョブには掛からない)。${notConformance}`, evidence);
+}
+
 function envCheck() {
   const config = loadConfig();
   if (config.configured === false) {
@@ -1644,7 +1816,37 @@ function envCheck() {
       }
     }
   }
-  // 4. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
+  // 4〜6. 配備の統制を狭める措置の事実(process-compass #346 / ADR-0090。標準 第4章 G-8、フェーズ5「統制と資格情報の置き場」)。
+  //     GITHUB_TOKEN の書き込みは、どの設定でも参照(既定ブランチ・リリースのタグ)に限れない。ここで読む値は未達の経路を
+  //     狭める措置であり、G-8 の適合の判定には使わない(ADR-0071 決定3。事実として記録する)。読めなければ未確認で、通過にしない
+  const notConformance = 'G-8 の適合の判定には使わない(狭める措置の事実)';
+  if (!repo) {
+    items.workflowPermissions = noRepo();
+    items.actionsApproval = noRepo();
+  } else {
+    const api = `repos/${repo}/actions/permissions/workflow`;
+    const fetchedAt = localIso();
+    const r = ghJson(['api', api]);
+    const dwp = r.value?.default_workflow_permissions;
+    const cap = r.value?.can_approve_pull_request_reviews;
+    if (dwp !== 'read' && dwp !== 'write') items.workflowPermissions = fromFailure(r.value ? { why: 'default_workflow_permissions を応答から読めない', reason: 'unreadable' } : r, 'Workflow permissions の既定を読めない');
+    else {
+      const evidence = { defaultWorkflowPermissions: dwp, api, fetchedAt };
+      items.workflowPermissions = dwp === 'read'
+        ? confirmedWith('workflowPermissions', `既定は read。permissions を書かないワークフローは書き込みを得ない。permissions を明示した昇格は止めない(既定であり上限ではない)。${notConformance}`, evidence)
+        : { status: 'mismatch', detail: `既定が write(permissive)。permissions を書かないワークフローも書き込みを得る。Settings → Actions → Workflow permissions を read にする。${notConformance}`, evidence };
+    }
+    if (typeof cap !== 'boolean') items.actionsApproval = fromFailure(r.value ? { why: 'can_approve_pull_request_reviews を応答から読めない', reason: 'unreadable' } : r, 'Actions による PR の承認の可否を読めない');
+    else {
+      const evidence = { canApprovePullRequestReviews: cap, api, fetchedAt };
+      items.actionsApproval = cap === false
+        ? confirmedWith('actionsApproval', `Actions は PR を承認できない(GITHUB_TOKEN による承認を止める)。${notConformance}`, evidence)
+        : { status: 'mismatch', detail: `Actions が PR を承認できる。書き込みの権限を持つ者は、自分のブランチのワークフローで自分の PR を承認させられる(承認者が github-actions の名義になる)。「Allow GitHub Actions to create and approve pull requests」を無効にする。${notConformance}`, evidence };
+    }
+  }
+  if (!repo) items.environments = noRepo();
+  else items.environments = envEnvironments(repo, branch, notConformance, confirmedWith, fromFailure);
+  // 7. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
   const findings = recordsFindings({ repo, branch, latestPr });
   // 対象外は確認済みに数えない。全体の成否は、各項目が確認済みか対象外であること(#315 R-4)
   const allOk = Object.values(items).every((i) => i.status === 'confirmed' || i.status === 'notApplicable');

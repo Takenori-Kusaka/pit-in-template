@@ -270,6 +270,45 @@ export function prRecordFromCopy(copy) {
   };
 }
 
+const stripReviewComments = (s) => String(s ?? '').replace(/<!--[\s\S]*?-->/g, '');
+
+/**
+ * レビュアごとの最後の状態。COMMENTED は状態を変えない。承認の本文は、最後の承認までの連続した承認のいずれかにあれば足る。
+ * headOid を渡すと、取り込んだ PR の先頭と異なる版への承認(承認の後に更新があった)と、版を確かめられない承認を数えない
+ * (標準 第4章 G-6「承認は承認した差分に対して数える」。#296)。数えない承認は stale / unbound として数を返す。
+ * 承認者ごとの最後の状態で数える(第4章 G-6 と「承認レビューを判定記録とする条件」の条件4。IMPL-0357)。
+ * reviews は PR の記録の形(author.login・state・body・commit)。写しは reviewsOfCopy で同じ形にしてから渡す
+ */
+export function lastReviewStates(reviews, headOid = undefined) {
+  const last = new Map();
+  let withdrawn = 0;
+  let stale = 0;
+  let unbound = 0;
+  for (const r of reviews ?? []) {
+    const login = r.author?.login;
+    let state = String(r.state ?? '').toUpperCase();
+    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+    if (state === 'APPROVED' && headOid !== undefined) {
+      const b = approvalBinding(r, headOid);
+      if (b !== 'bound') {
+        if (b === 'stale') stale++;
+        else unbound++;
+        // 承認の後の更新で失効した承認として扱う(GitHub の DISMISSED と同じく、数えない)
+        state = 'DISMISSED';
+      }
+    }
+    const before = last.get(login);
+    // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(#288 第8巡 X8)
+    const body = hasBehaviorSummary(stripReviewComments(r.body));
+    // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
+    const key = body ? behaviorSummaryKey(stripReviewComments(r.body)) : before?.state === 'APPROVED' ? before.key ?? null : null;
+    if (state === 'APPROVED') last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary), key });
+    else last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
+  }
+  for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
+  return { last, withdrawn, stale, unbound };
+}
+
 /** 承認の数。承認者ごとの最後の状態(APPROVED / CHANGES_REQUESTED / DISMISSED)が承認である人の数。写しの状態をそのまま数える */
 export function approvalCountOfCopy(copy) {
   const last = new Map();
@@ -362,6 +401,23 @@ export function gateJudgementsOfCopy(copy, config) {
     out.push({ ...j, person, seatRole: who.role, judgeOk, judgeNote, headMatch: h.match, head: h.head, mergeCommit: copy?.merge_commit_sha ?? null });
   }
   return out;
+}
+
+/**
+ * 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版(commit_id)がマージ時の head と一致しない判定を、
+ * 確定していない版を取り込んだ変更として欠落の文にする(第4章 G-2 / IMPL-0129)。判定する席の責任者でない者の宣言行は
+ * 判定でないため見ない(judgeOk === false)。G-6 ほかのゲートはここでは見ない。judgements は gateJudgementsOfCopy の返り値に pr を足したもの
+ */
+export function unconfirmedVersionGaps(judgements) {
+  const gaps = [];
+  for (const j of judgements ?? []) {
+    if (!/^G-[234]$/.test(j.gate) || j.judgeOk === false || j.headMatch) continue;
+    gaps.push(
+      `PR #${j.pr ?? j.prNumber}: ${j.gate} の判定(レビュー ${j.reviewId ?? '(id なし)'}、@${j.login ?? '?'})の対象の版(commit_id ${String(j.commitId ?? '(無い)').slice(0, 7)})が、マージ時の head(${j.head ? j.head.slice(0, 7) : '写しに無い'})と一致しません。` +
+        '確定していない版を取り込んだ変更です(第4章 G-2)。判定者がマージした版を判定し直し、宣言行のあるレビューで記録してください'
+    );
+  }
+  return gaps;
 }
 
 /**
@@ -1057,40 +1113,7 @@ if (isMain) {
     return { known, unresolved, byDefault: true };
   }
 
-  /**
-   * レビュアごとの最後の状態。COMMENTED は状態を変えない。承認の本文は、最後の承認までの連続した承認のいずれかにあれば足る。
-   * headOid を渡すと、取り込んだ PR の先頭と異なる版への承認(承認の後に更新があった)と、版を確かめられない承認を数えない
-   * (標準 第4章 G-6「承認は承認した差分に対して数える」。#296)。数えない承認は stale / unbound として数を返す
-   */
-  function lastReviewStates(reviews, headOid = undefined) {
-    const last = new Map();
-    let withdrawn = 0;
-    let stale = 0;
-    let unbound = 0;
-    for (const r of reviews ?? []) {
-      const login = r.author?.login;
-      let state = String(r.state ?? '').toUpperCase();
-      if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-      if (state === 'APPROVED' && headOid !== undefined) {
-        const b = approvalBinding(r, headOid);
-        if (b !== 'bound') {
-          if (b === 'stale') stale++;
-          else unbound++;
-          // 承認の後の更新で失効した承認として扱う(GitHub の DISMISSED と同じく、数えない)
-          state = 'DISMISSED';
-        }
-      }
-      const before = last.get(login);
-      // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(#288 第8巡 X8)
-      const body = hasBehaviorSummary(dropComments(r.body));
-      // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
-      const key = body ? behaviorSummaryKey(dropComments(r.body)) : before?.state === 'APPROVED' ? before.key ?? null : null;
-      if (state === 'APPROVED') last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary), key });
-      else last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
-    }
-    for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
-    return { last, withdrawn, stale, unbound };
-  }
+  // レビュアごとの最後の状態は、本体の前の lastReviewStates(export。試験が直接呼ぶ)で数える
 
   /** 集約を実行している gh の版(読めなければ null)。一度だけ読む */
   let ghVersionCache;
@@ -2062,15 +2085,8 @@ if (isMain) {
     );
   }
 
-  // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版(commit_id)がマージ時の head と一致しない判定。
-  // 確定していない版を取り込んだ変更として欠落に数える(第4章 G-2 / IMPL-0129)。判定する席の責任者でない者の宣言行は判定でないため、ここでは見ない
-  for (const j of reviewJudgements) {
-    if (!/^G-[234]$/.test(j.gate) || j.judgeOk === false || j.headMatch) continue;
-    gaps.push(
-      `PR #${j.pr}: ${j.gate} の判定(レビュー ${j.reviewId ?? '(id なし)'}、@${j.login ?? '?'})の対象の版(commit_id ${String(j.commitId ?? '(無い)').slice(0, 7)})が、マージ時の head(${j.head ? j.head.slice(0, 7) : '写しに無い'})と一致しません。` +
-        '確定していない版を取り込んだ変更です(第4章 G-2)。判定者がマージした版を判定し直し、宣言行のあるレビューで記録してください'
-    );
-  }
+  // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版がマージ時の head と一致しない判定を欠落に数える(IMPL-0129)
+  gaps.push(...unconfirmedVersionGaps(reviewJudgements));
 
   // --- 出荷の範囲の記録(第4章 G-7 基準5・9)と、写しの件数の一致 ---------------------------------------------------
   //
