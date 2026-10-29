@@ -48,7 +48,7 @@ import { countClarifications, unmappedCriteria } from './verification-trace.mjs'
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
 import { retiredDetectionTypes } from './config.mjs';
-import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections } from '../init/generate-profile.mjs';
+import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 
 /**
@@ -762,6 +762,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
     if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
     // 氏名の確認のうち、1名の体制の自己申告と未記録の確認(追加の裁定。2名以上の名簿の記録の無い確認は契約検査が落とす)
     for (const n of nameConfirmationNotices(config)) result.notes.push(n);
+    // 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート。#318 突合 X-4)。適用されるまで出し続ける。構成は書き換えない
+    for (const t of pendingTightenings(config)) result.notes.push(t.text);
     // 委託・受託の構成で、判定の結果を受け取る者が空欄(process-compass #317 / ADR-0087 決定3)
     const slaPath = path.join(ROOT, 'docs/ai-sla.md');
     const rn = outsourcingReceiverNote(config, fs.existsSync(slaPath) ? fs.readFileSync(slaPath, 'utf8') : null);
@@ -786,7 +788,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
             ? `**コア機能の独立レビューは ${rc.core} 名**(構成 gates.g6.params.coreReviewerCount。パス: ${cp.declared ? (cp.paths.length ? cp.paths.map((g) => `\`${g}\``).join(' ') : 'なし(宣言済み)') : '**未宣言。コア機能に当たる変更を確かめられない**。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く'})。${cp.unmatched.length ? `${unmatchedCoreText(cp)}(当たるパスが無ければ未宣言として扱う)。` : ''}コア機能に触れる変更の承認者が ${rc.core} 名に満たなければ、G-5 が警告し、出荷の集約が「承認者 N 名 / 要求 ${rc.core} 名(コア機能)」として独立した人の確認を経ていない変更に数える。`
             : '') +
           (audit ? '判定記録は監査対応書式(構成 review.recordFormat: audit)。変更ごとに G-6 の判定記録を残し、「監査対応書式」の表(2人目の承認者・安全性の評価者)を埋める。PR の承認だけでは記録にならない。' : '') +
-          (safety ? '独立した安全性の評価者(実装の責任者から組織的に独立。附属書F)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
+          (safety ? '独立した安全性の評価者(実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上。標準 第1章 1.4・附属書F。AI の担い手は数えない)の記名と記録の所在を判定記録に要する(構成 independentSafetyAssessment)。独立した安全性の評価の記録をリポジトリに置くなら docs/safety/(記録の置き場。製品の変更に数えない)。文書管理システムに置くなら、その識別子を判定記録の「安全性の評価の記録の所在」に書く。' : '') +
           `読む: ${READ.gate('g6')}`
       );
     }

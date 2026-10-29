@@ -104,10 +104,11 @@ import {
   claimStatus,
   standardEdition,
   deviationCategory,
+  enforcedApprovalFindings,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
-import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings } from '../init/generate-profile.mjs';
 import { discouragedText, deviationTagHits } from './org-assurance.mjs';
 import {
   readPolicy,
@@ -660,7 +661,7 @@ if (isMain) {
     const objection = normLine(objectionRaw ?? '');
     const judge = rowValue(text, '判定者');
     // 監査対応書式(構成 review.recordFormat: audit。テンプレ4「監査対応書式」)の行。2人目の承認者は、G-6 を2名で行う体制の
-    // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織的に独立した者(附属書F)。
+    // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上の者(標準 第1章 1.4・附属書F)。段の機械の検査は未実装(process-compass #357)。
     // 様式の説明(<…>)を残したままの欄は未記入として扱う(#288 第5巡)
     const auditCell = (key) => {
       const v = rowValue(text, key, false);
@@ -1698,6 +1699,10 @@ if (isMain) {
   // 構成の整合(契約検査のうち、構成だけから確かめられる部分)。PR を経ない体制では、契約検査が走らないまま
   // 出荷へ進む場合があるため、集約の時点でも確かめる(要約値の連鎖、回答と名簿の食い違いなど)
   for (const p of configIntegrityProblems(config)) gaps.push(`構成の整合: ${p}`);
+  // 未適用の厳格化(#318 突合 X-4)。安全重要度 CL1 以上で G-6・G-7 が規則より緩いまま残る構成は欠落として数える
+  // (CL1 以上は未達のまま出荷しない)。ほかの差は保証の開示に出す
+  const tightenings = pendingTightenings(config);
+  for (const t of tightenings.filter((x) => x.blocking)) gaps.push(t.text);
   // 適用の開始のコミットが、構成の初期化の記録(changeLog[0] の init)を持つか(標準 第1章 1.10.1。ADR-0083)。
   // 持たなければ記録の欠落とする。境(configured が true になった最初のコミット)は動かさない。
   // 欠落の範囲は適用の開始のコミットなので、そのコミットを集約の範囲に含む場合に限って出す
@@ -1748,7 +1753,7 @@ if (isMain) {
   //
   // 第8章 軸C の規制業は「レビュー記録は監査対応書式で残す」。PR の承認だけでは記録にならず、変更ごとに G-6 の判定記録
   // (テンプレ4。監査対応書式の節を持つ)を要する。G-6 を2名で行う体制では「2人目の承認者」の記名を要する。
-  // 軸E の CL2 以上は「独立レビューとは別に、実装の責任者から組織的に独立した安全性の評価を重ねる」。判定記録の
+  // 軸E の CL2 以上は「独立レビューとは別に、実装の責任者から組織上の距離の段(CL2 は段2 以上、CL3 は段3 以上)の評価者による安全性の評価を重ねる」。判定記録の
   // 「安全性の評価者」の記名(名簿の人で、開発者の席の責任者・作成を指示した者・当該の判定者と別人)、または
   // 「該当なし(理由)」を要する。機械が確かめるのは記名の有無と独立までで、評価の実施と内容は確かめない(附属書F は人が行う)。
   // 構成がこれらを要しない体制では、この節は何もしない(#288 第5巡)
@@ -1787,7 +1792,7 @@ if (isMain) {
         if (safetyAssessmentRequired) {
           if (!a.safetyAssessorRowPresent || !a.safetyAssessor) {
             auditRecordGaps.push(
-              `${g.file}: 「安全性の評価者」が未記入です(構成 independentSafetyAssessment: true。第8章 軸E CL2 以上)。実装の責任者から組織的に独立した評価者の記名と記録の所在(附属書F)、または「該当なし(安全関連でない変更である理由)」を書いてください`
+              `${g.file}: 「安全性の評価者」が未記入です(構成 independentSafetyAssessment: true。第8章 軸E CL2 以上)。実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上の評価者の記名と記録の所在(標準 第1章 1.4・附属書F。AI の担い手は書かない)、または「該当なし(安全関連でない変更である理由)」を書いてください`
             );
           } else if (!/^該当なし/.test(a.safetyAssessor.normalize('NFKC'))) {
             const why = [];
@@ -2462,6 +2467,28 @@ if (isMain) {
   // 出荷判定者の席と事業決裁者の席の責任者が同一人物か。異議を書く者と、残存リスクを受容する者が同一になる(第4章 G-8)
   const objectionSelfAccepted = Boolean(whoKey('qa-gatekeeper')) && whoKey('qa-gatekeeper') === whoKey('biz-approver');
 
+  // ルールセットが強制する承認の数(.github/rulesets/<config.ruleset>.json)。構成の承認者の数を上回る強制は不適合ではないが、
+  // 上回る承認は保証の主張に数えない。その旨を項目1 に並べて出す(標準 第8章 軸E の読み方。process-compass #318 / ADR-0088 決定6)
+  const enforcedApprovals = (() => {
+    if (!config.ruleset) return null;
+    const dir = path.join(ROOT, '.github/rulesets');
+    if (!fs.existsSync(dir)) return null;
+    const rs = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        } catch {
+          return null;
+        }
+      })
+      .find((r) => r?.name === config.ruleset);
+    if (!rs) return null;
+    const f = enforcedApprovalFindings(config, rs);
+    return f.enforced === null ? null : { enforced: f.enforced, counted: f.counted, exceeds: f.enforced > f.counted };
+  })();
+
   const independence = {
     g6: g6Status,
     // G-6 に要する独立した人の承認者の数(構成 review.reviewerCount)と、監査対応書式(review.recordFormat: audit)の要否
@@ -2472,6 +2499,10 @@ if (isMain) {
       recordFormat: config.review?.recordFormat ?? 'standard',
       independentSafetyAssessment: config.gates?.g6?.params?.independentSafetyAssessment === true,
       insufficient: insufficientApproverChanges,
+      // ルールセットが強制する承認の数。構成の承認者の数を上回る分は保証の主張に数えない(#318)
+      enforced: enforcedApprovals,
+      // 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート。#318 突合 X-4)
+      pendingTightenings: tightenings.map(({ gate, from, to, blocking, text }) => ({ gate, from, to, blocking, text })),
       // コア機能の変更に要する承認者の数(第8章 軸C 高 coreReviewerCount。#288 第8巡 Z7)。構成に値が無ければ null。
       // パス(確約範囲・コア指定 + 区分の下限の規則)が未宣言なら、コア機能の変更を判定できない(undeclared)
       core: REVIEWERS_OF_CONFIG.coreDeclared
@@ -3978,6 +4009,12 @@ if (isMain) {
               : `要求 ${core.required} 名(パス: ${core.paths.map((g) => `\`${g}\``).join(' ')})。コア機能に触れる変更 ${core.coreChanges.length} 件${core.coreChanges.length ? `(${core.coreChanges.join(', ')})` : ''} / うち承認者が要求に満たない ${core.insufficient.length} 件${core.insufficient.length ? `(${core.insufficient.join(', ')}。独立した人の確認を経ていない変更に数えた)` : ''}`;
           const unmatchedNote = (core.unmatchedPaths ?? []).length ? `。追跡中のファイルに1件も当たらない宣言のパス(効いていない。当たるパスが無ければ未宣言として扱う): ${core.unmatchedPaths.map((g) => `\`${g}\``).join(' ')}` : '';
           R.push(`| コア機能の変更に要する独立した人の承認者の数(構成 gates.g6.params.coreReviewerCount。第8章 軸C「高」。全変更の要求より大きいほうが掛かる) | ${value}${unmatchedNote} | ${prev((p) => (p.independence.reviewers?.core ? `${p.independence.reviewers.core.required} 名` : '値なし'))} |`);
+        }
+        if ((rv.pendingTightenings ?? []).length) {
+          R.push(`| 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート) | ${rv.pendingTightenings.length} 件: ${rv.pendingTightenings.map((t) => `${t.gate} ${t.from} → ${t.to}${t.blocking ? '(CL1 以上。欠落に数えた)' : ''}`).join(' / ')} | ${prev((p) => `${(p.independence.reviewers?.pendingTightenings ?? []).length} 件`)} |`);
+        }
+        if (rv.enforced?.exceeds) {
+          R.push(`| ブランチ保護が強制する承認の数(ルールセット ${config.ruleset}) | ${rv.enforced.enforced} 件。構成の承認者 ${rv.enforced.counted} 名を上回る。上回る構成は不適合ではない。**上回る承認は保証の主張に数えない**(独立した人の確認に数えるのは ${rv.enforced.counted} 名まで。第8章 軸E) | ${prev((p) => (p.independence.reviewers?.enforced ? `${p.independence.reviewers.enforced.enforced} 件` : '値なし'))} |`);
         }
         if ((rv.formerRosterApprovals ?? []).length) {
           R.push(`| 名簿から外した人が在籍中に行った承認・判定を数えた変更(承認の時点の名簿へ対応づけた) | ${rv.formerRosterApprovals.length} 件: ${rv.formerRosterApprovals.join(' / ')}。外した後の承認は数えない | ${prev((p) => `${(p.independence.reviewers?.formerRosterApprovals ?? []).length} 件`)} |`);
