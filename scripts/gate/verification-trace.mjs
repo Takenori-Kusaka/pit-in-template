@@ -5,6 +5,8 @@
 //   G-7 基準1 計画したテストの数と消化(受入基準 F-NNN/AC-N とテストの対応、G-5 の実行の記録)   第4章 G-7「基準1・2 の記録」
 //   G-7 基準2 欠陥の台帳(docs/defect-ledger.md)の取り込みと、欠陥トリアージ基準の区分ごとの未解決の件数
 //   企画書の総費用の内訳(5区分 × 値・実績 / 見積り・出所)                    第6章 テンプレ6、第7章 7.7.8
+//   G-4 基準6 どのタスクにも現れない受入基準の一覧(unmappedCriteria)            第4章 G-4「受入基準とタスクの対応(基準6)」
+//   G-2・G-4 前提条件1 未確定事項の印の件数(countClarifications)                第4章 G-2「未確定事項(前提条件1)」
 //
 // 機械が数えるのは参照の有無と件数までである。参照したテストが条件や受入基準を確かめているか、計画したテストが
 // 十分かは判定しない(G-6 の独立レビュアと出荷判定者が確かめる)。
@@ -177,6 +179,109 @@ export function readAcceptanceCriteria(root = ROOT) {
 }
 
 const AC_REF = /\b(F-\d+)\s*[/#:]?\s*AC-?(\d+)\b/g;
+
+/**
+ * 実装計画の「対応する受入基準」の升から、受入基準の番号を読む(G-4 基準6。process-compass #291 / ADR-0075)。
+ * 升を区切り(`,`・`、`・空白)で語に分け、識別子の形の語だけを読む。識別子の形は 1 / AC-1 / CR-1 / F-001/AC-1 の4つ。
+ * 範囲(1〜3、1-3)は読まず、両端も対応に数えない。タスクの ID(Task-2)や文中の数を含む升は、推定を避けるため1つも読まない
+ * (対応を1つずつ書く。読めない書き方をした受入基準は一覧に出て、判定者が見る)。
+ * 別の機能の識別子(F-002/AC-1)は、この機能の受入基準に数えない。
+ */
+const ID_FORM = /^(?:(F-\d+)[/#:]?)?(?:(?:AC|CR)-?)?(\d+)$/i;
+const RANGE_FORM = /^(?:F-\d+[/#:]?)?(?:(?:AC|CR)-?)?\d+[〜~-](?:F-\d+[/#:]?)?(?:(?:AC|CR)-?)?\d+$/i;
+export function criterionNumbers(cell, feature = null) {
+  const text = nfkc(cell)
+    .replace(/\s*([/#:〜~])\s*/g, '$1')
+    .replace(/\s+-\s*|\s*-\s+/g, '-');
+  const tokens = text.split(/[,、\s]+/).filter((t) => t && !/^[—–-]$/.test(t));
+  const out = [];
+  for (const t of tokens) {
+    const m = t.match(ID_FORM);
+    if (m) {
+      if (m[1] && feature && m[1].toUpperCase() !== feature.toUpperCase()) continue;
+      out.push(Number(m[2]));
+      continue;
+    }
+    if (RANGE_FORM.test(t)) continue;
+    return [];
+  }
+  return [...new Set(out)];
+}
+
+/** 実装計画(specs/F-NNN/plan.md)の「タスク」の表の、タスクの ID と対応する受入基準の番号 */
+export function readPlanMappings(feature, { root = ROOT, text: given } = {}) {
+  const text = given ?? readText(`specs/${feature}/plan.md`, root);
+  if (text === null || text === undefined) return { plan: false, column: false, tasks: [] };
+  const t = firstTable(headingLines(text, /タスク/));
+  const col = t.header.findIndex((h) => /対応する受入基準|対応CR/.test(h));
+  if (col < 0) return { plan: true, column: false, tasks: [] };
+  const tasks = t.rows
+    .filter((r) => /^Task-\d+$/i.test(nfkc(r[0])))
+    .map((r) => ({ id: nfkc(r[0]), criteria: criterionNumbers(r[col] ?? '', feature) }));
+  return { plan: true, column: true, tasks };
+}
+
+/**
+ * G-4 基準6 の材料: 機能仕様の受入基準のうち、実装計画のどのタスクの「対応する受入基準」にも現れないものの一覧。
+ * 合否は出さない(判定者が一覧を見て判定する)。対応の内容と、タスクの束ね方は見ない。
+ * 受入基準の識別子は readAcceptanceCriteria と同じ(受入基準の表の # 列の番号 → F-NNN/AC-N)。
+ */
+export function unmappedCriteria(feature, { root = ROOT } = {}) {
+  const criteria = readAcceptanceCriteria(root).filter((a) => a.feature === feature);
+  const plan = readPlanMappings(feature, { root });
+  const mapped = new Set(plan.tasks.flatMap((t) => t.criteria));
+  let problem = null;
+  if (!plan.plan) problem = `specs/${feature}/plan.md がない`;
+  else if (!plan.column) problem = `specs/${feature}/plan.md の「タスク」の表に「対応する受入基準」の列がない`;
+  return {
+    feature,
+    criteria: criteria.map((a) => a.id),
+    tasks: plan.tasks,
+    unmapped: problem ? criteria.map((a) => a.id) : criteria.filter((a) => !mapped.has(a.n)).map((a) => a.id),
+    problem,
+  };
+}
+
+/**
+ * G-2・G-4 の前提条件1: 機能仕様に残る未確定事項の印([NEEDS CLARIFICATION])を数える。
+ * コードブロック・HTML コメント・インラインコードの中は数えない(印を説明する文を数えないため)。
+ * 閉じ方(決める / 確かめる / 前提として引き受ける)が正しいかは判定しない。
+ */
+export function countClarifications(text) {
+  if (!text) return { count: 0, lines: [] };
+  const lines = [];
+  let inFence = false;
+  let inComment = false;
+  text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
+    if (/^\s*```/.test(raw)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    let line = raw;
+    if (inComment) {
+      const end = line.indexOf('-->');
+      if (end < 0) return;
+      line = line.slice(end + 3);
+      inComment = false;
+    }
+    line = line.replace(/<!--.*?-->/g, '');
+    const open = line.indexOf('<!--');
+    if (open >= 0) {
+      line = line.slice(0, open);
+      inComment = true;
+    }
+    line = line.replace(/`[^`]*`/g, '');
+    if (/\[NEEDS CLARIFICATION\]/i.test(line)) lines.push(i + 1);
+  });
+  return { count: lines.length, lines };
+}
+
+/** 機能仕様(specs/F-NNN/spec.md)の未確定事項の件数と行 */
+export function readClarifications(feature, { root = ROOT } = {}) {
+  const text = readText(`specs/${feature}/spec.md`, root);
+  return { feature, spec: text !== null, ...countClarifications(text) };
+}
 
 /**
  * 壊してはならない品質条件の突合と、G-7 基準1 の件数。conditions は readBriefQuality の conditions

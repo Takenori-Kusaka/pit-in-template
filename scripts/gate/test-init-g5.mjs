@@ -134,6 +134,20 @@ for (const n of [1, 3]) {
   W.write('specs/F-001/plan.md', W.read('templates/07-implementation-plan.md'));
   r = W.node('scripts/gate/spec-lint.mjs');
   check(`${tag}: 様式から機能仕様・実装計画・D-0・企画書を作った直後も spec-lint が通る`, r.ok, r.out);
+  // 未確定事項(G-2・G-4 の前提条件1)と、受入基準 → タスクの対応の一覧(G-4 基準6)。process-compass #291
+  {
+    r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-2', 'specs/F-001');
+    check(`${tag}: 様式のままの機能仕様は、未確定事項の印が残るため spec-lint --gate G-2 が落ちる`, !r.ok && /未確定事項が 1 件/.test(r.out), r.out);
+    const closed = W.read('specs/F-001/spec.md').replace(/^- \[NEEDS CLARIFICATION\].*$/m, '(なし)');
+    W.write('specs/F-001/spec.md', closed);
+    r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-4', 'specs/F-001');
+    check(`${tag}: 閉じた機能仕様と様式の実装計画では、未確定事項 0 件、対応の無い受入基準なし`, r.ok && /未確定事項 0 件/.test(r.out) && /合否は出さない\): なし/.test(r.out), r.out);
+    const acRow0 = '| 3 | ユビキタス | システムは招待トークンをログへ出力してはならない |';
+    W.write('specs/F-001/spec.md', closed.replace(acRow0, `${acRow0}\n| 4 | ユビキタス | システムは招待の一覧を 50 件ずつ表示しなければならない |`));
+    r = W.node('scripts/gate/spec-lint.mjs', '--gate', 'G-4', 'specs/F-001');
+    check(`${tag}: タスクに現れない受入基準 AC-4 を一覧に出し、合否には使わない`, r.ok && /F-001\/AC-4/.test(r.out), r.out);
+    W.write('specs/F-001/spec.md', W.read('templates/01-feature-spec.md'));
+  }
   // 検査の範囲は受入基準の節(標準 第4章 G-2)。節の外の語は検出しない
   const specBase = W.read('specs/F-001/spec.md');
   const acRow = '| 3 | ユビキタス | システムは招待トークンをログへ出力してはならない |';

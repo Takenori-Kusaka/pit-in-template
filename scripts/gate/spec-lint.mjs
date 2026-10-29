@@ -22,10 +22,20 @@
 //
 // 機械の限界: 語の部分一致で検出します。言い換え、表記の違い(ひらがな書きなど)、文脈は判定しません。
 // コードブロックの中は検査しません。
+//
+// 判定の材料(--gate。process-compass #291 / ADR-0075):
+//   node scripts/gate/spec-lint.mjs --gate G-2 specs/F-NNN
+//   node scripts/gate/spec-lint.mjs --gate G-4 specs/F-NNN
+// 曖昧語の検出に加えて、次を出します。G-5 の CI は --gate を付けずに実行するため、CI の合否は変わりません。
+//   - 未確定事項の印([NEEDS CLARIFICATION])の件数と行(G-2・G-4 の前提条件1)。1件でも残れば失敗させます(判定を開始しない)
+//     (判定を開始しない)。コードブロック・HTML コメント・インラインコードの中は数えません
+//   - G-4 のときは、どのタスクの「対応する受入基準」にも現れない受入基準の一覧(G-4 基準6)。
+//     一覧は判定の材料で、合否に使いません(判定者が見て判定する)。対応の内容と束ね方は見ません
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, fail, notice } from './config.mjs';
+import { readClarifications, unmappedCriteria } from './verification-trace.mjs';
 
 /** 標準 第4章 G-2 の検出語(知識ベースへ複製したもの)。減らさない */
 const KB_FILE = path.join(ROOT, 'scripts/vendor/tailoring-kb.json');
@@ -46,7 +56,17 @@ if (args.includes('--terms')) {
   process.exit(0);
 }
 
-const explicit = args.filter((a) => !a.startsWith('--'));
+const gateAt = args.indexOf('--gate');
+const GATE = gateAt >= 0 ? String(args[gateAt + 1] ?? '').toUpperCase() : null;
+if (GATE !== null && !['G-2', 'G-4'].includes(GATE)) {
+  fail('--gate には G-2 か G-4 を渡してください(例: --gate G-4 specs/F-001)');
+  process.exit(1);
+}
+const explicit = args.filter((a, i) => !a.startsWith('--') && !(gateAt >= 0 && i === gateAt + 1));
+if (GATE && !explicit.length) {
+  fail('--gate には対象の機能仕様の置き場を渡してください(例: --gate G-4 specs/F-001)');
+  process.exit(1);
+}
 /** 既定の対象: 機能仕様の置き場 specs/F-NNN/(specs/README.md のような案内は含めない) */
 const DEFAULT_ROOT = 'specs';
 const FEATURE_DIR = /^specs\/F-\d+\//;
@@ -77,7 +97,7 @@ const files = explicit.length ? found : found.filter((f) => FEATURE_DIR.test(pat
 
 if (!files.length) {
   notice(`検査対象がありません(${explicit.length ? targets.join(', ') : '機能仕様 specs/F-NNN/'})`);
-  process.exit(0);
+  if (!GATE) process.exit(0);
 }
 
 let hits = 0;
@@ -142,4 +162,41 @@ console.log(
   `spec-lint: ${files.length} ファイルの受入基準の節 ${sections} 個を検査、${hits} 件検出、除外の印で外した行 ${exempted.length} 件` +
     (exempted.length ? '(除外した行が類に当たらないことは、G-2・G-4 の判定者が確かめます)' : '')
 );
-process.exit(hits ? 1 : 0);
+
+// 判定の材料(--gate)。未確定事項の件数と、G-4 では対応の無い受入基準の一覧
+let open = 0;
+if (GATE) {
+  const features = [...new Set(explicit.map((t) => (t.split(/[\\/]/).find((x) => /^F-\d+$/.test(x)) ?? null)).filter(Boolean))];
+  if (!features.length) {
+    fail(`--gate ${GATE}: 対象から機能の ID(F-NNN)を読めません(${explicit.join(', ')})`);
+    process.exit(1);
+  }
+  for (const f of features) {
+    const c = readClarifications(f, { root: ROOT });
+    if (!c.spec) {
+      fail(`specs/${f}/spec.md がありません`);
+      open++;
+      continue;
+    }
+    const basis = `${GATE} 前提条件1`;
+    if (c.count) {
+      open += c.count;
+      fail(
+        `specs/${f}/spec.md に未確定事項が ${c.count} 件残っています(行 ${c.lines.join(', ')})。${basis} により判定を開始しません。` +
+          '決めて本文に書く / 確かめて本文に書く / 前提として引き受け、前提の表へ移す、のいずれかで閉じてください'
+      );
+    } else {
+      console.log(`${f}: 未確定事項 0 件(${basis})`);
+    }
+    if (GATE === 'G-4') {
+      const u = unmappedCriteria(f, { root: ROOT });
+      if (u.problem) notice(`${f}: ${u.problem}。G-4 基準6 の一覧を出せません(受入基準 ${u.criteria.length} 件をすべて一覧に出します)`);
+      console.log(
+        `${f}: どのタスクの「対応する受入基準」にも現れない受入基準(G-4 基準6 の材料。合否は出さない): ` +
+          (u.unmapped.length ? u.unmapped.join(', ') : 'なし') +
+          `(受入基準 ${u.criteria.length} 件、タスク ${u.tasks.length} 件)`
+      );
+    }
+  }
+}
+process.exit(hits || open ? 1 : 0);
