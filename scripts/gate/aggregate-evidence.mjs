@@ -75,6 +75,7 @@ import {
   outagePeriods,
   aiNameBlocked,
   nameOverrides,
+  nameOverrideDetails,
   configIntegrityProblems,
   isRealDay,
   localDay,
@@ -92,6 +93,11 @@ import {
   reviewersRequiredOf,
   corePathsOf,
   touchesCore,
+  trackedFiles,
+  approvalBinding,
+  parseGhVersion,
+  unboundCauseText,
+  aiAccountCheck,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { seatSeparationFindings, outageText, rosterEditText } from '../init/generate-profile.mjs';
@@ -116,9 +122,11 @@ import {
   qaAffiliationText,
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
+import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
+import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -601,6 +609,17 @@ if (isMain) {
   const debtFile = 'docs/debt-ledger.md';
   const handoverFile = 'docs/handover.md';
 
+  /**
+   * カバレッジの結果の範囲・分母・測っていない製品のファイルの数(標準 第4章 G-5 基準3。#296)。全体で判定した結果には、
+   * 変更の未被覆が全体の被覆で薄まる旨を付ける。範囲を持たない旧い結果は、範囲を記録していないと出す
+   */
+  function coverageScopeText(c) {
+    if (!c?.scope) return '。測った範囲と分母の記録なし';
+    const parts = [`範囲 ${c.scope === 'changed' ? '変更で加えた・変えたコード' : 'コードの全体'}${c.scopeDefaulted ? '(構成に範囲が無く、既定から補った。#296 より前の構成)' : ''}`, `分母 ${c.denominator ?? '—'} 行`];
+    if (c.unmeasuredProductFiles !== undefined) parts.push(`測っていない製品のファイル ${c.unmeasuredProductFiles ?? '数えていない'} 件`);
+    if (c.scope === 'whole') parts.push('**変更の未被覆は全体の被覆で薄まる**');
+    return `。${parts.join('、')}`;
+  }
   const coverage = exists('evidence/coverage-result.json')
     ? JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/coverage-result.json'), 'utf8'))
     : { measured: false, reason: '集計ファイルがありません' };
@@ -767,7 +786,7 @@ if (isMain) {
   } else if (repoInfo.source !== 'GITHUB_REPOSITORY') {
     notice(`PR の記録を引くリポジトリ: ${repo}(${repoInfo.source} から)`);
   }
-  const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels,createdAt';
+  const PR_FIELDS = 'number,title,author,reviews,statusCheckRollup,body,mergeCommit,commits,labels,createdAt,headRefOid';
   // statusCheckRollup は、他の App が作った check run を含むと GITHUB_TOKEN では読めないことがある(GraphQL: Resource not accessible by
   // integration。2026-10-24 の通し実行で観測)。その場合は rollup 抜きで PR の記録を取り直し、gate-g5 の結果は check-runs API で
   // gate-g5 の check run だけを引く(g5FromCheckRuns)
@@ -932,7 +951,9 @@ if (isMain) {
   // コア機能の判定は、確約範囲・コア指定のパス(delegation.protectedPaths)と区分の下限の規則のパス(riskFloor.rules[].paths)による。
   // どちらも未宣言なら「判定できない」と出し、黙って全変更の数で通さない
   const coreReviewersRequired = g6AppliedStructure ? REVIEWERS_OF_CONFIG.core : 1;
-  const corePaths = corePathsOf(config);
+  // 宣言したパスが追跡中のファイルに1件も当たらなければ未宣言として扱う(#296 L-9)
+  const TRACKED_FILES = trackedFiles(ROOT, 'HEAD');
+  const corePaths = corePathsOf(config, { tracked: TRACKED_FILES });
   const coreCountApplies = g6AppliedStructure && REVIEWERS_OF_CONFIG.coreDeclared && REVIEWERS_OF_CONFIG.core > reviewersRequired;
 
   // 承認・判定の時点の名簿(#288 第8巡 Y8)。名簿から外した人が、在籍中に行った承認・判定は数える。承認は変更を取り込む前の
@@ -1009,7 +1030,7 @@ if (isMain) {
     if (tokens.length) return { known, unresolved, byDefault: false };
     // 欄が未記入。PR の作成者(人のアカウントの場合)と、開発者の席の責任者を指示者とみなす
     const login = d.author?.login ?? null;
-    if (login && !d.author?.is_bot && !aiNameReason(login, { account: true })) {
+    if (login && !d.author?.is_bot && !aiAccountCheck(config, login, false).reason) {
       const p = findPersonByAccount(config, login);
       if (p) known.set(p.id, p.name);
       else unresolved.push(`@${login}`);
@@ -1032,14 +1053,29 @@ if (isMain) {
     return { known, unresolved, byDefault: true };
   }
 
-  /** レビュアごとの最後の状態。COMMENTED は状態を変えない。承認の本文は、最後の承認までの連続した承認のいずれかにあれば足る */
-  function lastReviewStates(reviews) {
+  /**
+   * レビュアごとの最後の状態。COMMENTED は状態を変えない。承認の本文は、最後の承認までの連続した承認のいずれかにあれば足る。
+   * headOid を渡すと、取り込んだ PR の先頭と異なる版への承認(承認の後に更新があった)と、版を確かめられない承認を数えない
+   * (標準 第4章 G-6「承認は承認した差分に対して数える」。#296)。数えない承認は stale / unbound として数を返す
+   */
+  function lastReviewStates(reviews, headOid = undefined) {
     const last = new Map();
     let withdrawn = 0;
+    let stale = 0;
+    let unbound = 0;
     for (const r of reviews ?? []) {
       const login = r.author?.login;
-      const state = String(r.state ?? '').toUpperCase();
+      let state = String(r.state ?? '').toUpperCase();
       if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+      if (state === 'APPROVED' && headOid !== undefined) {
+        const b = approvalBinding(r, headOid);
+        if (b !== 'bound') {
+          if (b === 'stale') stale++;
+          else unbound++;
+          // 承認の後の更新で失効した承認として扱う(GitHub の DISMISSED と同じく、数えない)
+          state = 'DISMISSED';
+        }
+      }
       const before = last.get(login);
       // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(#288 第8巡 X8)
       const body = hasBehaviorSummary(dropComments(r.body));
@@ -1049,20 +1085,35 @@ if (isMain) {
       else last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
     }
     for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
-    return { last, withdrawn };
+    return { last, withdrawn, stale, unbound };
+  }
+
+  /** 集約を実行している gh の版(読めなければ null)。一度だけ読む */
+  let ghVersionCache;
+  function ghVersionNow() {
+    if (ghVersionCache === undefined) {
+      try {
+        ghVersionCache = parseGhVersion(execFileSync('gh', ['--version'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+      } catch {
+        ghVersionCache = null;
+      }
+    }
+    return ghVersionCache;
   }
 
   /** 承認者として名簿の人へ対応づける。組織上の任命権者(appointer)は確認者ではないため、対応づけない */
   const reviewerPerson = (p) => (p && p.appointer !== true ? p : null);
-  const isAiLogin = (login, bot) => bot || Boolean(aiNameReason(login ?? '', { account: true }));
+  // 名簿で本人以外が確認したアカウントは、語の一致を上書きする(#296)。is_bot は上書きしない
+  const isAiLogin = (login, bot) => Boolean(aiAccountCheck(config, login ?? '', bot).reason);
+  const accountOverridden = (login, bot) => aiAccountCheck(config, login ?? '', bot).overridden;
 
   /**
    * 独立した人の確認に数えるかを判定する。
    * reviews: PR のレビュー(PR を経ていないコミットでは空)。refers: G-6 の判定記録の「対象」が当該の変更を指すか
    */
-  function independentConfirmation(ins, reviews, refers, { direct = false, files = null, at = null } = {}) {
+  function independentConfirmation(ins, reviews, refers, { direct = false, files = null, at = null, headOid = undefined } = {}) {
     // コア機能の変更か(構成のコア機能のパスに当たるか)。未宣言なら null(判定できない)。要求する承認者の数は、コアなら大きいほう
-    const core = coreCountApplies ? touchesCore(config, files ?? []) : null;
+    const core = coreCountApplies ? touchesCore(config, files ?? [], { tracked: TRACKED_FILES }) : null;
     const required = core?.hit ? coreReviewersRequired : reviewersRequired;
     const about = {
       instructors: [...ins.known.values()],
@@ -1073,8 +1124,11 @@ if (isMain) {
       formerApprovers: [],
     };
     const none = (reason, extra = {}) => ({ counted: false, reason, reasonText: UNCONFIRMED[reason], by: [], byLogins: [], ...about, ...extra });
-    const { last, withdrawn } = lastReviewStates(reviews);
+    const { last, withdrawn, stale, unbound } = lastReviewStates(reviews, headOid);
     about.withdrawnApprovals = withdrawn;
+    // 承認の後の更新で数えなかった承認と、承認した版を確かめられず数えなかった承認(#296)
+    about.staleApprovals = stale;
+    about.unboundApprovals = unbound;
     const records = g6RecordsFor(refers);
     const candidates = [];
     let ai = 0;
@@ -1162,6 +1216,8 @@ if (isMain) {
       reasonText: null,
       by: byNames,
       byLogins: summarized.map((c) => c.login).filter(Boolean),
+      // 名簿のアカウントの確認(本人以外の記名)で、語の一致を上書きして数えた承認者(#296)
+      overriddenLogins: summarized.map((c) => c.login).filter((l) => l && accountOverridden(l, false)),
       source: summarized.some((c) => c.source === 'review') ? 'review' : 'gate-record',
       summarySource: summarized.some((c) => c.summary === 'review') ? 'review' : 'gate-record',
       // 承認した者に、独立レビュアの席の責任者が含まれるか(件数として別に出す。欠落にはしない)
@@ -1171,10 +1227,10 @@ if (isMain) {
   }
 
   /** 開発者の席の責任者(人)の承認があるか(最後の状態が承認)。G-6 を事後へ移す委任で、開発者の席が協働の場合に要る */
-  function developerApproved(reviews) {
+  function developerApproved(reviews, headOid = undefined) {
     const devKey = whoKey('dev-verifier');
     if (!devKey) return false;
-    const { last } = lastReviewStates(reviews);
+    const { last } = lastReviewStates(reviews, headOid);
     return [...last].some(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot) && findPersonByAccount(config, login)?.id === devKey);
   }
 
@@ -1191,7 +1247,7 @@ if (isMain) {
   // docs/safety/ は独立した安全性の評価の記録(附属書F。CL2 以上の監査対応書式の「安全性の評価の記録の所在」)の置き場。記録を
   // リポジトリに置く組織が、記録のコミットを製品の変更に数えられないようにする(#288 第8巡 W8)。文書管理システム(DHF など)を
   // 所在にする組織は、この置き場を使わず、判定記録の所在の欄に文書管理システムの識別子を書く
-  const RECORD_PATHS = ['docs/gates/**', 'docs/records/**', 'evidence/**', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
+  const RECORD_PATHS = ['docs/gates/**', 'docs/records/**', 'evidence/**', 'docs/self-heal/**', 'docs/self-heal-log.tsv', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
 
   /**
    * 内容を見て対象外にするファイル。パスだけで対象外にすると、構成の手での書き換えと、指示資産の
@@ -1302,8 +1358,11 @@ if (isMain) {
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
     const prFiles = git(['diff', '--name-only', `${hash}^1`, hash]).split('\n').filter(Boolean);
     const recordOnly = prFiles.length > 0 && notRecordReasons(hash, prFiles).length === 0;
-    const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^` });
-    const { last } = lastReviewStates(reviews);
+    // 承認は、取り込んだ PR の先頭の版に対するものだけを数える(#296)。PR の記録に先頭が無ければ、版を確かめられない。
+    // PR の記録(gh)が無く写しで対応づけた PR は、写しの head(record-copy.yml の head_sha)を先頭とする(#321 との統合)
+    const headOid = api ? (api.headRefOid ?? null) : (headOfCopy(copyEntry?.copy) ?? null);
+    const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid });
+    const { last } = lastReviewStates(reviews, headOid);
     const humanApprovers = [...last].filter(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot)).map(([login]) => login);
     // PR の変更に属するコミット(マージコミットと構成要素)
     const own = [...commitPr].filter(([, x]) => x.number === n).map(([h]) => h);
@@ -1343,13 +1402,16 @@ if (isMain) {
       instructedBy: [...independent.instructors, ...independent.unresolvedInstructors],
       instructedBySource: independent.instructorsByDefault ? 'default' : 'declared',
       specs: [...new Set(own.flatMap((h) => trailerOf.get(h)?.specs ?? []))],
-      developerApproved: developerApproved(reviews),
+      developerApproved: developerApproved(reviews, headOid),
       g6: {
         approver: humanApprovers[0] ?? null,
         approvers: humanApprovers,
         approvals: humanApprovers.length,
         // 承認の後に変更要求を出し、承認を取り下げたレビュア
         withdrawnApprovals: independent.withdrawnApprovals ?? 0,
+        // 承認の後に PR が更新され、数えなかった承認(stale)と、承認した版を確かめられず数えなかった承認(unbound)。#296
+        staleApprovals: independent.staleApprovals ?? 0,
+        unboundApprovals: independent.unboundApprovals ?? 0,
         // 承認者の同一性と挙動要約を確かめたうえで、独立した人の確認に数えたか。数えない理由は independent にある
         independentHuman: independent.counted,
         notCountedReason: independent.counted ? null : NOT_COUNTED_CODE[independent.reason],
@@ -1422,57 +1484,7 @@ if (isMain) {
   // 規模の基準値の超過は、失敗でなく規模の確認と区分の下限 R2 で扱う。その根拠(基準値が妥当か)は、超過の分布と、
   // 超過した変更の確認の実態でしか較正できない。ここでは出荷の範囲の PR について、規模の分布・size:over の件数・
   // 「読み切れたか」の内訳・超過 PR の判定完了時間を、生の値で出す。基準値は各 PR の変更の起点の構成で判定している
-  const sizeObservation = (() => {
-    const bucket = (v, edges) => {
-      for (let i = 0; i < edges.length; i++) if (v <= edges[i]) return i;
-      return edges.length;
-    };
-    const LINE_EDGES = [100, 400, 1000];
-    const FILE_EDGES = [5, 15, 30];
-    const lineLabels = ['100 行以下', '101〜400 行', '401〜1000 行', '1001 行以上'];
-    const fileLabels = ['5 以下', '6〜15', '16〜30', '31 以上'];
-    const lineDist = [0, 0, 0, 0];
-    const fileDist = [0, 0, 0, 0];
-    const att = { yes: 0, no: 0, unanswered: 0, absent: 0 };
-    const overPrs = [];
-    const unreadable = [];
-    const undetermined = [];
-    let measured = 0;
-    for (const p of prs) {
-      if (!p.size) {
-        unreadable.push(p.number);
-        continue;
-      }
-      measured++;
-      lineDist[bucket(p.size.lines, LINE_EDGES)]++;
-      fileDist[bucket(p.size.files, FILE_EDGES)]++;
-      if (p.size.over === null) {
-        undetermined.push(p.number);
-        continue;
-      }
-      if (!p.size.over) continue;
-      overPrs.push(p);
-      if (!p.sizeAttestation) att.absent++;
-      else if (p.sizeAttestation.readAll === 'yes') att.yes++;
-      else if (p.sizeAttestation.readAll === 'no') att.no++;
-      else att.unanswered++;
-    }
-    const minutes = overPrs.map((p) => p.reviewMinutes).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-    const median = minutes.length ? minutes[Math.floor((minutes.length - 1) / 2)] : null;
-    return {
-      total: prs.length,
-      measured,
-      unreadable,
-      undetermined,
-      lineDist: lineLabels.map((l, i) => ({ range: l, count: lineDist[i] })),
-      fileDist: fileLabels.map((l, i) => ({ range: l, count: fileDist[i] })),
-      over: overPrs.length,
-      overPrs: overPrs.map((p) => ({ number: p.number, lines: p.size.lines, files: p.size.files, readAll: p.sizeAttestation?.readAll ?? null, attested: Boolean(p.sizeAttestation), riskClass: p.riskClass, reviewMinutes: p.reviewMinutes })),
-      attestation: att,
-      reviewMinutes: { n: minutes.length, median, max: minutes.length ? minutes.at(-1) : null },
-      testLines: prs.reduce((n, p) => n + (p.size?.testLines ?? 0), 0),
-    };
-  })();
+  const sizeObservation = summarizeSizeObservation(prs);
 
   // --- PR を経ていないコミット(標準 第3章 3.8.1) --------------------------------
   //
@@ -2477,6 +2489,7 @@ if (isMain) {
             applies: coreCountApplies,
             pathsDeclared: corePaths.declared,
             paths: corePaths.paths,
+            unmatchedPaths: corePaths.unmatched,
             coreChanges: changeUnits.filter((c) => c.independent?.core?.hit).map((c) => c.label),
             insufficient: changeUnits.filter((c) => c.independent?.reason === 'insufficientApprovers' && c.independent?.core?.hit).map((c) => c.label),
             undeclaredChanges: corePaths.declared ? 0 : changesTotal,
@@ -2501,6 +2514,8 @@ if (isMain) {
     objectionSelfAccepted,
     rosterPresent: roster.length > 0,
     nameOverrides: nameOverrides(config),
+    // 上書きの内訳。self は自己申告の氏名(1名の体制の本人の記名)、unrecorded は未記録の確認(追加の裁定)
+    nameOverrideDetails: nameOverrideDetails(config),
     changes: {
       total: changesTotal,
       withoutIndependentHuman,
@@ -2514,9 +2529,16 @@ if (isMain) {
       instructorsByDefault: count(confirmedUnits, (c) => c.independent.instructorsByDefault),
       // 数えた変更のうち、承認した者に独立レビュアの席の責任者が含まれる件数と、含まれない件数(欠落にはしない)
       byReviewerSeat: count(confirmedUnits, (c) => c.independent.byReviewerSeat),
+      // アカウント名の確認済みの上書きで数えた承認の件数(承認者の数で数える。#296)
+      overriddenApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.overriddenLogins?.length ?? 0), 0),
       notByReviewerSeat: count(confirmedUnits, (c) => !c.independent.byReviewerSeat),
       // 承認の後に同じ人が変更要求を出し、取り下げた承認を持つ PR の件数
       withdrawnApprovals: count(prs, (p) => (p.g6.withdrawnApprovals ?? 0) > 0),
+      // 承認の後に PR が更新され、その承認を数えなかった変更と、承認した版を確かめられず数えなかった変更(#296)
+      staleApprovals: count(prs, (p) => (p.g6.staleApprovals ?? 0) > 0),
+      unboundApprovals: count(prs, (p) => (p.g6.unboundApprovals ?? 0) > 0),
+      // 承認した版を確かめられない承認があるとき、gh の版(2.30.0 より前はレビューの commit.oid を返さない。突合 X-7)
+      ...(prs.some((p) => (p.g6.unboundApprovals ?? 0) > 0) ? { ghVersion: ghVersionNow(), unboundCause: unboundCauseText(ghVersionNow()) } : {}),
     },
     accountsRegistered: roster.some((p) => Array.isArray(p?.accounts) && p.accounts.length > 0),
     // R1 の変更を、独立した人の確認を経ないまま出荷する場合の例外承認(変更ごと)
@@ -2672,7 +2694,7 @@ if (isMain) {
     coverage: !coverage.measured
       ? `${UNMEASURED}(${coverage.reason})`
       : g5Aggregate?.effective.has('test')
-        ? `実施(${coverage.pct}% / 下限 ${coverage.threshold}%)`
+        ? `実施(${coverage.pct ?? '—'}% / 下限 ${coverage.threshold}%${coverageScopeText(coverage)})`
         : `未実施(測定 ${coverage.pct}% はあるが、ジョブ test を集約 gate-g5 が合否に使っていない)`,
     staticAnalysis: phase('lint', 'static-analysis'),
     dependencyAudit: phase('audit', 'static-analysis'),
@@ -2812,6 +2834,8 @@ if (isMain) {
         '記載の欠落です。「壊してはならない品質条件(識別子)」の表で条件ごとに識別子を振り、受入基準とテストから参照させます'
     );
   }
+  // 企画書のカバレッジの測る範囲の行(#296 で足した行)。G-1 を通過済みの企画書に無ければ記載の欠落(突合 X-4)
+  if (briefScopeRowState(exists('docs/project-brief.md') ? fs.readFileSync(path.join(ROOT, 'docs/project-brief.md'), 'utf8') : null, gateRecordList) === 'gap') gaps.push(BRIEF_SCOPE_GAP_TEXT);
   // G-7 基準2: 欠陥の台帳。台帳が無い出荷は、基準2 を確かめられないため記載の欠落
   if (!period && isActive('g7')) {
     if (!defects.present) {
@@ -3870,35 +3894,6 @@ if (isMain) {
   }
 
   /** 規模の観測(7項目に数えない観測)。生の値を出し、評価の語・基準値の提案を足さない。値の更新は人の判断(第6章 較正) */
-  function renderSizeObservation(o) {
-    const R = ['### 観測: 変更規模と規模の確認(7項目に数えない。基準値へは自動で反映しない)', ''];
-    if (!o.total) {
-      R.push('出荷の範囲に PR を経た変更はありません。');
-      R.push('');
-      return R;
-    }
-    R.push(
-      `出荷の範囲の PR ${o.total} 件のうち、規模を測れたもの ${o.measured} 件${o.unreadable.length ? `。**読めなかったもの ${o.unreadable.length} 件(#${o.unreadable.join(', #')})**。マージコミットの差分を読めないため、規模を空として扱わず、ここに出している` : ''}。` +
-        `算定は製品のコードのファイルごとの max(追加, 削除)の合計で、テスト・fixture・snapshot(出荷の範囲で ${o.testLines} 行)は別に数えます。基準値は各 PR の変更の起点の構成で判定しています。`
-    );
-    if (o.undetermined.length) R.push(`- **超過か判定できなかった PR ${o.undetermined.length} 件(#${o.undetermined.join(', #')})**。変更の起点の構成を読めないため、超過なしとは扱わない`);
-    R.push('');
-    R.push('| 区間(行数) | 件数 | 区間(ファイル数) | 件数 |');
-    R.push('| --- | --- | --- | --- |');
-    for (let i = 0; i < o.lineDist.length; i++) R.push(`| ${o.lineDist[i].range} | ${o.lineDist[i].count} | ${o.fileDist[i].range} | ${o.fileDist[i].count} |`);
-    R.push('');
-    const a = o.attestation;
-    R.push(`- size:over の件数: ${o.over}`);
-    R.push(`- 規模の確認の「読み切れたか」: はい ${a.yes} / いいえ ${a.no} / 欄なしまたは未回答(担保水準の宣言で保証の所在だけを記入したものを含む) ${a.unanswered} / 規模の確認の節なし ${a.absent}`);
-    R.push(
-      `- 超過 PR の判定完了時間(作成から最後の承認まで。上側の近似): ${o.reviewMinutes.n ? `${o.reviewMinutes.n} 件で中央値 ${o.reviewMinutes.median} 分、最大 ${o.reviewMinutes.max} 分` : '取れなかった(PR の作成日時または承認の日時が記録に無い)'}`
-    );
-    if (o.overPrs.length) R.push(`- 超過 PR: ${o.overPrs.map((p) => `#${p.number}(${p.lines} 行 / ${p.files} ファイル。区分 ${p.riskClass ?? '未記入'})`).join('、')}`);
-    R.push('- 差し戻された PR(マージされなかったもの)は、この集約が見る範囲(マージ済みの変更)に無い。差し戻しの件数は PR の記録(GitHub)で確かめる');
-    R.push('');
-    return R;
-  }
-
   function renderAssurance(external) {
     const R = [];
     R.push('## 保証の開示');
@@ -3937,7 +3932,8 @@ if (isMain) {
             : !core.pathsDeclared
               ? `**要求 ${core.required} 名。コア機能のパスが未宣言のため、どの変更がコア機能に当たるかを確かめられない**(変更 ${core.undeclaredChanges} 件はすべて全変更の要求 ${rv.required} 名で数えた。/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則(riskFloor.rules)のパスを置く。委任を適用しない案件でも宣言できる)`
               : `要求 ${core.required} 名(パス: ${core.paths.map((g) => `\`${g}\``).join(' ')})。コア機能に触れる変更 ${core.coreChanges.length} 件${core.coreChanges.length ? `(${core.coreChanges.join(', ')})` : ''} / うち承認者が要求に満たない ${core.insufficient.length} 件${core.insufficient.length ? `(${core.insufficient.join(', ')}。独立した人の確認を経ていない変更に数えた)` : ''}`;
-          R.push(`| コア機能の変更に要する独立した人の承認者の数(構成 gates.g6.params.coreReviewerCount。第8章 軸C「高」。全変更の要求より大きいほうが掛かる) | ${value} | ${prev((p) => (p.independence.reviewers?.core ? `${p.independence.reviewers.core.required} 名` : '値なし'))} |`);
+          const unmatchedNote = (core.unmatchedPaths ?? []).length ? `。追跡中のファイルに1件も当たらない宣言のパス(効いていない。当たるパスが無ければ未宣言として扱う): ${core.unmatchedPaths.map((g) => `\`${g}\``).join(' ')}` : '';
+          R.push(`| コア機能の変更に要する独立した人の承認者の数(構成 gates.g6.params.coreReviewerCount。第8章 軸C「高」。全変更の要求より大きいほうが掛かる) | ${value}${unmatchedNote} | ${prev((p) => (p.independence.reviewers?.core ? `${p.independence.reviewers.core.required} 名` : '値なし'))} |`);
         }
         if ((rv.formerRosterApprovals ?? []).length) {
           R.push(`| 名簿から外した人が在籍中に行った承認・判定を数えた変更(承認の時点の名簿へ対応づけた) | ${rv.formerRosterApprovals.length} 件: ${rv.formerRosterApprovals.join(' / ')}。外した後の承認は数えない | ${prev((p) => `${(p.independence.reviewers?.formerRosterApprovals ?? []).length} 件`)} |`);
@@ -3991,6 +3987,15 @@ if (isMain) {
     R.push(
       `| 独立した人の確認に数えた変更のうち、承認した者に独立レビュアの席の責任者を含む | 含む ${ch.byReviewerSeat ?? 0} 件 / 含まない ${ch.notByReviewerSeat ?? 0} 件 | ${prev((p) => (p.independence.changes.byReviewerSeat === undefined ? '値なし' : `含む ${p.independence.changes.byReviewerSeat} 件 / 含まない ${p.independence.changes.notByReviewerSeat} 件`))} |`
     );
+    if (ch.overriddenApprovals) {
+      R.push(`| アカウント名の機械検査(AI を示す語)を、名簿の確認(本人以外の記名)で上書きして数えた承認 | ${ch.overriddenApprovals} 件 | ${prev((p) => p.independence.changes.overriddenApprovals ?? '値なし')} |`);
+    }
+    if (ch.staleApprovals) {
+      R.push(`| 承認の後に PR が更新された(承認した版と取り込んだ版が異なる承認は数えていない) | ${ch.staleApprovals} 件 | ${prev((p) => p.independence.changes.staleApprovals ?? '値なし')} |`);
+    }
+    if (ch.unboundApprovals) {
+      R.push(`| 承認した版を記録から確かめられない(その承認は数えていない${ch.unboundCause ? `。${ch.unboundCause}` : ''}) | ${ch.unboundApprovals} 件 | ${prev((p) => p.independence.changes.unboundApprovals ?? '値なし')} |`);
+    }
     if (ch.withdrawnApprovals) {
       R.push(`| 承認の後に同じ人が変更要求を出した(取り下げた承認は数えていない) | ${ch.withdrawnApprovals} 件 | ${prev((p) => p.independence.changes.withdrawnApprovals ?? '値なし')} |`);
     }
@@ -4071,11 +4076,17 @@ if (isMain) {
     }
     if (external && A.independence.nameOverrides.length) {
       R.push('');
-      R.push(`名義の機械検査を人が上書きした記録: ${A.independence.nameOverrides.length} 件(内容は組織の内側の開示にある)`);
+      const selfCount = (A.independence.nameOverrideDetails ?? []).filter((d) => d.how === 'self' || d.how === 'unrecorded').length;
+      R.push(`名義の機械検査を人が上書きした記録: ${A.independence.nameOverrides.length} 件${selfCount ? `(うち自己申告・未記録の確認 ${selfCount} 件。1名の体制)` : ''}(内容は組織の内側の開示にある)`);
     } else {
+      const how = new Map((A.independence.nameOverrideDetails ?? []).map((d) => [d.name, d.how]));
       for (const n of A.independence.nameOverrides) {
         R.push('');
-        R.push(`名義の機械検査を人が上書きした: ${n}`);
+        const h = how.get(n);
+        R.push(
+          `名義の機械検査を人が上書きした: ${n}` +
+            (h === 'self' ? '(自己申告の氏名。1名の体制で、本人の記名による確認)' : h === 'unrecorded' ? '(未記録の確認。1名の体制のため効かせている。変化点の記録が無い)' : '')
+        );
       }
     }
     if (!A.independence.rosterPresent) {
@@ -4537,7 +4548,7 @@ if (isMain) {
 
   R.push('## 記録');
   R.push('');
-  R.push(`- カバレッジ: ${coverage.measured ? `${coverage.pct}%(下限 ${coverage.threshold}%)` : `未測定(${coverage.reason})`}`);
+  R.push(`- カバレッジ: ${coverage.measured ? `${coverage.pct ?? '—'}%(下限 ${coverage.threshold}%${coverageScopeText(coverage)})` : `未測定(${coverage.reason})`}`);
   R.push(
     `- ゲート判定記録: 当該出荷の範囲で追加 ${records.length} 件(リポジトリの全体 ${gateRecords.length} 件)。承認レビューの写しによる判定 ${copyJudgementsInRange.length} 件、写しの G-6 の承認 ${copyG6InRange.length} 件、記録用ブランチの様式 ${branchFormsInRange.length} 件`
   );

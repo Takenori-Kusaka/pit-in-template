@@ -29,6 +29,7 @@ import {
   ruleDeciderProblems,
   ruleApprovalProblems,
   changeTypeProblems,
+  aiAccountCheck,
 } from './config.mjs';
 
 /** G-5 の必須ステータスチェックの名前(ゲート契約で固定) */
@@ -270,7 +271,7 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
         if (r.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) last.set(r.login, { state, bot: Boolean(r.isBot) });
       }
       const approved = [...last].some(
-        ([login, v]) => v.state === 'APPROVED' && !v.bot && !aiNameReason(login, { account: true }) && devKey && findPersonByAccount(cfg, login)?.id === devKey
+        ([login, v]) => v.state === 'APPROVED' && !aiAccountCheck(cfg, login, v.bot).reason && devKey && findPersonByAccount(cfg, login)?.id === devKey
       );
       put(
         '開発者の席',

@@ -107,6 +107,8 @@ import {
   assuranceOf,
   sizeLimitsOf,
   corePathsOf,
+  trackedFiles,
+  unmatchedCoreText,
   DEFAULT_MAX_CHANGED_LINES,
   DEFAULT_MAX_CHANGED_FILES,
   personKey,
@@ -228,16 +230,36 @@ const basename = (f) => f.split('/').pop();
 /** スラッシュを含まないパターンは、どの階層のファイル名にも当てる */
 const matchAny = (globs, f) => globs.some((g) => (g.includes('/') ? matchGlob(g, f) : matchGlob(g, basename(f))));
 /**
- * 文書・記録の置き場(NON_PRODUCT のうち、コードを置く場所ではないもの)。ここへコードの拡張子のファイルを置いても、製品のコードとして数える。
+ * 文書・記録の置き場(NON_PRODUCT のうち、コードを置く場所ではないもの)。ここに置いたファイルは、文書・データの拡張子
+ * (DOC_DATA_EXTENSIONS)のものを除き、製品のコードとして数える(process-compass #296)。拡張子の無いファイルは、先頭の行が
+ * shebang(#!)なら製品のコードとして数える。中身を読めないときは、製品のコードとして数える(数え漏らす側へ倒さない)。
  * 強制層・構成(.claude・.github・scripts/gate・scripts/init・scripts/vendor・adapters)は、設計上スクリプトを置くため含めない
  */
 export const DOC_ONLY_DIRS = ['docs/**', 'specs/**', 'context/**', 'templates/**', 'evidence/**', 'profiles/**'];
+/** 文書・データ・画像の拡張子。文書の置き場で、これ以外の拡張子のファイルは製品のコードとして数える */
+export const DOC_DATA_EXTENSIONS =
+  /\.(md|mdx|markdown|txt|text|rst|adoc|asciidoc|org|tex|json|jsonc|json5|ya?ml|toml|csv|tsv|xml|html?|css|svg|png|jpe?g|gif|webp|bmp|ico|pdf|drawio|puml|plantuml|mmd|dot|ini|cfg|conf|properties|log|lock|diff|patch|bib|odt|docx?|xlsx?|pptx?|key|numbers|pages|eps|ai|psd|mp4|mov|webm|mp3|wav|zip|gz|tgz)$/i;
+/** 文書の置き場に置く、拡張子の無い文書の名前 */
+const DOC_NAMES = /(^|\/)(LICENSE([-.][\w.-]+)?|NOTICE|CODEOWNERS|AUTHORS|CONTRIBUTORS|CHANGELOG|README|COPYING|\.gitkeep|\.keep|\.gitignore|\.gitattributes)$/;
+/** @deprecated 文書の置き場の判定は DOC_DATA_EXTENSIONS の否定へ反転した(#296)。他のスクリプトからの参照のために残す */
 export const CODE_EXTENSIONS = /\.(m?[jt]sx?|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|sh|ps1|sql|lua|dart|ex|exs|vue|svelte)$/i;
 /** 規模の別集計(テスト・fixture・snapshot)が基準行数のこの倍を超えたら、別集計の側も size:over とする */
 export const TEST_OVER_FACTOR = 5;
-/** 文書・記録・強制層か。*.md はどの階層でも文書として扱う。文書の置き場でも、コードの拡張子のファイルは製品として数える */
-export const isNonProduct = (f) => {
-  if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f)) && CODE_EXTENSIONS.test(f)) return false;
+const hasExtension = (f) => /\.[^./]+$/.test(f.split('/').pop().replace(/^\./, ''));
+/**
+ * 文書の置き場に置いたファイルが製品のコードか。文書・データの拡張子なら文書。拡張子が無ければ、先頭の行の shebang で判定する。
+ * head は (path) => 先頭の文字列 | null。渡さない、または読めないときは製品のコードとして数える
+ */
+export function docDirFileIsCode(f, head = null) {
+  if (DOC_NAMES.test(f)) return false;
+  if (hasExtension(f)) return !DOC_DATA_EXTENSIONS.test(f);
+  const text = typeof head === 'function' ? head(f) : null;
+  if (text === null || text === undefined) return true;
+  return /^#!/.test(String(text));
+}
+/** 文書・記録・強制層か。*.md はどの階層でも文書として扱う。文書の置き場でも、文書・データの拡張子以外のファイルは製品として数える */
+export const isNonProduct = (f, head = null) => {
+  if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f)) && !/\.md$/i.test(f) && docDirFileIsCode(f, head)) return false;
   return NON_PRODUCT.some((g) => (g === '*.md' ? /\.md$/i.test(f) : matchGlob(g, f)));
 };
 /**
@@ -245,8 +267,8 @@ export const isNonProduct = (f) => {
  * リポジトリの直下にある散文(*.md)と、強制層・構成のファイル。置き場の外(src/ など製品のディレクトリ)に置いた *.md は数える。
  * 製品のディレクトリへ *.md を置いて、算定と区分の下限 R2 から外す経路を塞ぐ(#289 D-10)。同時変更の判定(isNonProduct)は変えない
  */
-export const isExcludedFromSize = (f) => {
-  if (!isNonProduct(f)) return false;
+export const isExcludedFromSize = (f, head = null) => {
+  if (!isNonProduct(f, head)) return false;
   if (!/\.md$/i.test(f)) return true;
   if (!f.includes('/')) return true;
   if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f))) return true;
@@ -323,7 +345,7 @@ export function removalProblems(nc, { config }) {
 export const isLock = (f) => LOCK_FILES.includes(basename(f));
 export const isSetupFile = (f) => matchAny(SETUP_FILES, f);
 /** 製品のコードか(文書・記録・強制層・閾値の設定・ロックファイル・基盤のファイル以外)。thresholdGlobs はアダプタの分を足したもの */
-export const isProductCode = (f, thresholdGlobs = THRESHOLD_FILES) => !isNonProduct(f) && !matchAny(thresholdGlobs, f) && !isLock(f) && !isSetupFile(f);
+export const isProductCode = (f, thresholdGlobs = THRESHOLD_FILES, head = null) => !isNonProduct(f, head) && !matchAny(thresholdGlobs, f) && !isLock(f) && !isSetupFile(f);
 
 /** .gitattributes の本文から、linguist-generated の対象のパターンを読む */
 export function generatedPatterns(text) {
@@ -541,12 +563,12 @@ export function instructorsOf(config, body, author) {
  * G-6 の判定記録(docs/gates/)は PR の時点では基底に無いことが多いため、ここでは読まない(集約が読む)。
  * reviews が無い(読めない)ときは readable: false を返し、呼び出し側がその旨を出す
  */
-export function approverFindings(config, pr, files = null) {
+export function approverFindings(config, pr, files = null, tracked = null) {
   const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
   const counts = reviewersRequiredOf(config);
   // コア機能の変更(構成のコア機能のパス = 確約範囲・コア指定 + 区分の下限の規則のパス)は coreReviewerCount と reviewerCount の大きいほう(#288 第8巡 Z7)。
   // パスが未宣言なら、コア機能かどうかを確かめられない(core.declared が偽)。黙って全変更の数で通さず、呼び出し側がその旨を出す
-  const coreOf = counts.coreDeclared && counts.core > counts.all && Array.isArray(files) ? touchesCore(config, files) : null;
+  const coreOf = counts.coreDeclared && counts.core > counts.all && Array.isArray(files) ? touchesCore(config, files, { tracked }) : null;
   const core = counts.coreDeclared && counts.core > counts.all ? { configured: counts.core, declared: Boolean(coreOf), hit: coreOf?.hit ?? null, files: coreOf?.files ?? [], paths: coreOf?.paths ?? [] } : null;
   const required = core?.hit ? counts.core : counts.all;
   if (!g6Active) return { applies: false, required, core };
@@ -693,17 +715,19 @@ export function sizeAttestationProblems(att, { config, assuranceValid }) {
  *   - 変更したパスが、確約範囲・コア指定のパスに触れない
  * PR の検査と、出荷の集約(マージ済みの変更の判定)が同じ条件を使う
  */
-export function effectiveSizeLimits(cfg, { assurance, risk, floor, touched }) {
+export function effectiveSizeLimits(cfg, { assurance, risk, floor, touched, tracked = null }) {
   const lim = sizeLimitsOf(cfg);
   let maxLines = lim.lines;
   let maxFiles = lim.files;
   const notes = [];
   let nullApplied = false;
   if (lim.nullLines || lim.nullFiles) {
-    const core = corePathsOf(cfg);
+    // 宣言したパスが追跡中のファイルに1件も当たらなければ、未宣言として扱う(#296 L-9)
+    const core = corePathsOf(cfg, { tracked });
     const blockers = [];
     if (assurance.level !== 'L2') blockers.push(assurance.problems.length ? `担保水準の宣言が成立しない(${assurance.problems.join('、')})` : `担保水準が ${assurance.declared} である(基準なしは L2 の宣言と根拠が実在するときだけ)`);
-    if (!core.paths.length) blockers.push('確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)が宣言されていない。コア外の変更かを確かめられない');
+    if (!core.paths.length) blockers.push(core.unmatched.length ? `確約範囲・コア指定のパスが、追跡中のファイルに1件も当たらない(${core.unmatched.join(' ')})。未宣言として扱い、コア外の変更かを確かめられない` : '確約範囲・コア指定のパス(delegation.protectedPaths か riskFloor.rules のパス)が宣言されていない。コア外の変更かを確かめられない');
+    else if (core.unmatched.length) notes.push(unmatchedCoreText(core));
     if (risk !== 'R3') blockers.push(`リスク区分が R3 でない(記載: ${risk ?? '未記入'})`);
     if (floor !== 'R3') blockers.push(`区分の下限が ${floor} である`);
     if ((touched ?? []).some((f) => core.paths.some((g) => matchGlob(g, f)))) blockers.push('確約範囲またはコア指定のパスに触れる');
@@ -717,13 +741,15 @@ export function effectiveSizeLimits(cfg, { assurance, risk, floor, touched }) {
 }
 
 /** 変更規模の算定の対象を分ける(製品のコード・別集計のテスト・除外)。PR の検査と、出荷の集約の規模の観測が同じ読み方を使う(#295) */
-export function classifySize(all, ws, { atBase, genPatterns, isTestPath }) {
+export function classifySize(all, ws, { atBase, atHead = null, genPatterns, isTestPath }) {
   const excluded = [];
   const counted = [];
   const testCounted = [];
+  // 文書の置き場の拡張子の無いファイルは、変更後の版の先頭の行(shebang)で判定する(#296)
+  const head = atHead ? (f) => { const t = atHead(f); return t === null ? null : t.slice(0, 200); } : null;
   for (const e of all) {
     const f = e.path;
-    if (isExcludedFromSize(f)) continue;
+    if (isExcludedFromSize(f, head)) continue;
     if (matchAny(THRESHOLD_FILES, f)) continue;
     if (isLock(f)) {
       excluded.push(`${f}(ロックファイル)`);
@@ -766,6 +792,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
   const extra = Array.isArray(config?.task?.nonProductPaths) ? config.task.nonProductPaths.filter((g) => typeof g === 'string' && g.trim()) : [];
   const { excluded, counted, testCounted } = classifySize(all, ws, {
     atBase,
+    atHead: (file) => git(['show', `${commit}:${file}`]),
     genPatterns: generatedPatterns(atBase('.gitattributes')),
     isTestPath: (f) => [...TEST_PATTERNS, ...extra].some((g) => matchGlob(g, f)),
   });
@@ -787,9 +814,16 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
   const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
   const day = (git(['show', '-s', '--format=%cs', commit]) ?? '').trim() || undefined;
   const assurance = assuranceOf(config, { exists: (p) => atBase(p) !== null, ...(day ? { today: day } : {}) });
-  const eff = effectiveSizeLimits(config, { assurance, risk, floor: riskFloorOf(config.riskFloor?.rules, changes).floor, touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])) });
+  const eff = effectiveSizeLimits(config, { assurance, risk, floor: riskFloorOf(config.riskFloor?.rules, changes).floor, touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), tracked: (() => { const t = git(['ls-tree', '-r', '-z', '--name-only', commit]); return t === null ? null : t.split('\0').filter(Boolean); })() });
   out.limits = { lines: eff.maxLines, files: eff.maxFiles };
-  out.over = Boolean((eff.maxLines && (lines > eff.maxLines || testLines > eff.maxLines * TEST_OVER_FACTOR)) || (eff.maxFiles && counted.length > eff.maxFiles));
+  // 超過の理由の内訳(行・ファイル・別集計)と、別集計の基準行数に対する倍率(EV-0084 の差し替え条件の観測。#296)
+  out.overReasons = {
+    lines: Boolean(eff.maxLines && lines > eff.maxLines),
+    files: Boolean(eff.maxFiles && counted.length > eff.maxFiles),
+    test: Boolean(eff.maxLines && testLines > eff.maxLines * TEST_OVER_FACTOR),
+  };
+  out.testRatio = eff.maxLines ? Math.round((testLines / eff.maxLines) * 100) / 100 : null;
+  out.over = out.overReasons.lines || out.overReasons.files || out.overReasons.test;
   return out;
 }
 
@@ -857,7 +891,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   const genPatterns = generatedPatterns(atPolicy('.gitattributes'));
   const extraNonProduct = Array.isArray(limitsFrom.task?.nonProductPaths) ? limitsFrom.task.nonProductPaths.filter((g) => typeof g === 'string' && g.trim()) : [];
   const isTestPath = (f) => [...TEST_PATTERNS, ...extraNonProduct].some((g) => matchGlob(g, f));
-  const { excluded, counted, testCounted } = classifySize(all, ws, { atBase, genPatterns, isTestPath });
+  const { excluded, counted, testCounted } = classifySize(all, ws, { atBase, atHead, genPatterns, isTestPath });
   // 区分の下限の規則と変更の種類。size:over の下限(7)と、基準なし(null)の適用条件の両方が使う
   const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
   const assurance = assuranceOf(limitsFrom, { exists: (p) => atPolicy(p) !== null });
@@ -867,6 +901,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
     risk: declaredRisk,
     floor: riskFloorOf(limitsFrom.riskFloor?.rules, changes).floor,
     touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])),
+    tracked: trackedFiles(root, 'HEAD'),
   });
   const { maxLines, maxFiles } = eff;
   const lines = counted.reduce((n, c) => n + c.lines, 0);
@@ -937,7 +972,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   // --- 3. 閾値・除外設定と製品のコードの同時変更 ---
   const thresholdChanges = [];
   const initial = [];
-  const product = all.filter((e) => !isNonProduct(e.path) && !matchAny(THRESHOLD_FILES, e.path) && !isLock(e.path)).map((e) => e.path);
+  const product = all.filter((e) => !isNonProduct(e.path, atHead) && !matchAny(THRESHOLD_FILES, e.path) && !isLock(e.path)).map((e) => e.path);
   const stack = (policyConfig ?? baseConfig ?? headConfig).adapters?.stack ?? null;
   const baseAdapter = stack ? json(atPolicy(`adapters/${stack}.json`)) : null;
   const thresholdGlobs = [...THRESHOLD_FILES, ...(Array.isArray(baseAdapter?.thresholdFiles) ? baseAdapter.thresholdFiles : [])];
@@ -1113,7 +1148,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
   // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
-  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
+  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, 'HEAD'));
   if (result.approvers.applies) {
     const a = result.approvers;
     const coreText = a.core

@@ -28,7 +28,7 @@ check('初期: 契機が無ければ 0 件', base.count === 0, ids(base));
 
 const p1 = recalibrationState(cfg([{ kind: 'performer', date: '2026-10-05' }]), { today: '2026-10-11', recordsText: '' });
 check('performer の変更(generatedAt が新しくても)で RC-01〜08 が出る', ids(p1) === ALL, ids(p1));
-check('能力に依らない RC-09〜11 は数えない', p1.notDependent.join(',') === 'RC-09,RC-10,RC-11' && !p1.pending.some((p) => /RC-(09|10|11)/.test(p.id)), ids(p1));
+check('能力に依らない RC-09〜12 は数えない', p1.notDependent.join(',') === 'RC-09,RC-10,RC-11,RC-12' && !p1.pending.some((p) => /RC-(09|10|11|12)/.test(p.id)), ids(p1));
 
 const same = recalibrationState(cfg([{ kind: 'performer', date: '2026-10-01' }]), { today: '2026-10-02', recordsText: '' });
 check('最初の記録と同じ日の performer の変更も拾う', ids(same) === ALL, ids(same));

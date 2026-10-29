@@ -1,6 +1,7 @@
 // 構成ファイルとアダプタの読み込み。ゲートのスクリプトが共通で使う。
 // 依存パッケージなし。
 
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -170,24 +171,114 @@ export function personName(config, ref) {
   return findPerson(config, ref)?.name ?? normName(ref);
 }
 
+/** 名簿の体制の内の人(外部の確認者・任命権者を除く)の数。氏名の確認で本人の記名を受け付けるかに使う */
+export function insiderCount(config) {
+  return (Array.isArray(config?.people) ? config.people : []).filter((p) => p && p.external !== true).length;
+}
+
+/**
+ * 氏名の確認(nameConfirmed)の記録。変化点の記録(changeLog[].nameConfirmations の { id } と decidedBy)のうち、AI の名義でない
+ * 名簿の人が記名したもの。キーは名簿の id、値は { decidedBy, date, self }。self は確認された本人の記名(自己申告)。
+ * 本人の記名を有効に数えるのは、体制の内の人が1名の名簿に限る(nameConfirmationState。process-compass #296 裁定 8 の付記と追加の裁定)
+ */
+export function confirmedNames(config) {
+  const out = new Map();
+  for (const e of config?.changeLog ?? []) {
+    for (const c of Array.isArray(e?.nameConfirmations) ? e.nameConfirmations : []) {
+      if (!c?.id || !e.decidedBy) continue;
+      const by = findPerson(config, e.decidedBy)?.id ?? null;
+      if (!by) continue;
+      const self = by === c.id;
+      // 本人以外の記名は、AI を示す語を含まない名義に限る。本人の記名は、確認される氏名そのものが語を含むため、語では落とさない
+      if (!self && aiNameReason(e.decidedBy)) continue;
+      const prev = out.get(c.id);
+      // 本人以外の記名があれば、それを優先する
+      if (!prev || (prev.self && !self)) out.set(c.id, { decidedBy: e.decidedBy, date: e.date ?? null, self });
+    }
+  }
+  return out;
+}
+
+/**
+ * 名簿の人の氏名の確認の状態。nameConfirmed: true でなければ null。
+ *   'other'       本人以外が記名した記録がある(効く)
+ *   'self'        本人が記名した記録がある。体制の内の人が1名の名簿でだけ効き、自己申告の氏名として開示する
+ *   'unrecorded'  記録が無い(#296 より前に書いた確認を含む)。体制の内の人が1名の名簿では効かせ、未記録として出す
+ *   'invalid'     2名以上の名簿で、本人以外の記名の記録が無い(効かない。契約検査が落とす)
+ */
+export function nameConfirmationState(config, person) {
+  if (person?.nameConfirmed !== true || !person.id) return null;
+  const rec = confirmedNames(config).get(person.id);
+  if (rec && !rec.self) return 'other';
+  const single = insiderCount(config) === 1;
+  if (!single) return 'invalid';
+  return rec ? 'self' : 'unrecorded';
+}
+
+/** 名簿の人の氏名の確認が効くか */
+export function nameConfirmedValid(config, person) {
+  const st = nameConfirmationState(config, person);
+  return st === 'other' || st === 'self' || st === 'unrecorded';
+}
+
+const RECORD_NAME_CONFIRMATION = '/process-change(種別 accountable)で、名簿をそのまま渡し、決定した者の記名(decidedBy)と理由を付けて記録します';
+
+/** 名簿の nameConfirmed のうち、2名以上の名簿で本人以外の記名の記録が無い確認(契約検査が落とす) */
+export function nameConfirmationProblems(config) {
+  const out = [];
+  for (const p of config?.people ?? []) {
+    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    if (nameConfirmationState(config, p) === 'invalid') {
+      out.push(
+        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、本人以外が記名した変化点の記録がありません。体制の内の人が2名以上の名簿では、この確認は効かず、名義は AI の名義として拒否されます。` +
+          `${RECORD_NAME_CONFIRMATION}。記名するのは本人以外の名簿の人です(#296 より前に書いた確認も、記名し直します)`
+      );
+    }
+  }
+  return out;
+}
+
+/** 落とさないが知らせる氏名の確認(体制の内の人が1名の名簿の、自己申告の確認と記録の無い確認)。/pit と契約検査の注記へ出す */
+export function nameConfirmationNotices(config) {
+  const out = [];
+  for (const p of config?.people ?? []) {
+    if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    const st = nameConfirmationState(config, p);
+    if (st === 'unrecorded') {
+      out.push(`人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、変化点の記録がありません(未記録の確認)。1名の体制のため効かせていますが、記録してください: ${RECORD_NAME_CONFIRMATION}`);
+    } else if (st === 'self') {
+      out.push(`人の名簿 ${p.name} の氏名は、本人の記名による確認です(自己申告の氏名。1名の体制のため受け付けています)。2人目が名簿に加わったら、本人以外が記名し直します`);
+    }
+  }
+  return out;
+}
+
+/** 名義の機械検査を上書きした確認の内訳。{ name, how }。how は 'other' / 'self'(自己申告)/ 'unrecorded'(未記録) */
+export function nameOverrideDetails(config) {
+  const roster = Array.isArray(config?.people) ? config.people : [];
+  return roster
+    .filter((p) => aiNameReason(p?.name) && nameConfirmedValid(config, p))
+    .map((p) => ({ name: normName(p.name), how: nameConfirmationState(config, p) }));
+}
+
 /**
  * 記名として受け付けない理由を返す。受け付ける場合は null。
  *
- * AI を示す語に当たった名義は、既定では拒否する。名簿の該当者に、人が確認した旨
- * (nameConfirmed: true)がある場合に限り通す。通した名義は nameOverrides が返し、出力へ表示する。
+ * AI を示す語に当たった名義は、既定では拒否する。名簿の該当者に、人が確認した旨(nameConfirmed: true)があり、
+ * その確認を本人以外が記名した記録がある場合(体制の内の人が1名の名簿では、本人の記名と未記録も)に限り通す(nameConfirmedValid)。通した名義は nameOverrides が返し、出力へ表示する。
  * 担い手の識別と同じ文字列と、名簿に無い名義の拒否は、上書きできない(nameProblems)
  */
 export function aiNameBlocked(config, name) {
   const person = findPerson(config, name);
   const why = aiNameReason(person?.name ?? name);
   if (!why) return null;
-  return person?.nameConfirmed === true ? null : why;
+  return nameConfirmedValid(config, person) ? null : why;
 }
 
-/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧) */
+/** 名義の機械検査を、人が上書きした名簿の人(氏名の一覧。効いている確認に限る。内訳は nameOverrideDetails) */
 export function nameOverrides(config) {
   const roster = Array.isArray(config.people) ? config.people : [];
-  return roster.filter((p) => p?.nameConfirmed === true && aiNameReason(p.name)).map((p) => normName(p.name));
+  return roster.filter((p) => nameConfirmedValid(config, p) && aiNameReason(p.name)).map((p) => normName(p.name));
 }
 
 /** 担い手の識別に使われている文字列の一覧。責任者の欄へ同じ文字列を書く経路を塞ぐ */
@@ -264,6 +355,13 @@ export function rosterProblems(config) {
       );
     }
     if (p.nameConfirmed !== undefined && typeof p.nameConfirmed !== 'boolean') out.push(`${at}: nameConfirmed は true / false で書く`);
+    if (p.accountsConfirmed !== undefined) {
+      if (!Array.isArray(p.accountsConfirmed) || p.accountsConfirmed.some((c) => typeof c !== 'string' || !accountKey(c))) out.push(`${at}: accountsConfirmed はアカウント名の配列で書く`);
+      else {
+        const own = new Set((Array.isArray(p.accounts) ? p.accounts : []).map(accountKey));
+        for (const c of p.accountsConfirmed) if (!own.has(accountKey(c))) out.push(`${at}: accountsConfirmed の "${c}" は、この人の accounts に無い`);
+      }
+    }
     if (performers.has(n)) out.push(`${at}: "${n}" は担い手の識別(performer)と同じ文字列である`);
     if (p.external !== undefined && typeof p.external !== 'boolean') out.push(`${at}: external は true / false で書く`);
     // 組織上の任命権者(第3章 3.13.3)。体制の外の人として記載する。実際に任命の権限を持つかは、機械で確かめない
@@ -283,7 +381,15 @@ export function rosterProblems(config) {
             continue;
           }
           const bot = aiNameReason(a, { account: true });
-          if (bot) out.push(`${at}: アカウント "${a}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない`);
+          // 人が確認したアカウント(accountsConfirmed)は、AI を示す語に当たっても名簿に置ける。ただし [bot] の表記は上書きしない。
+          // 確認は名簿の変更として、本人以外が記名した変化点の記録を要する(accountConfirmationProblems。#296)
+          const confirmed = Array.isArray(p.accountsConfirmed) && p.accountsConfirmed.some((c) => accountKey(c) === key) && !/\[bot\]$/i.test(a.trim());
+          if (bot && !confirmed) {
+            out.push(
+              `${at}: アカウント "${a}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない` +
+                '(同じ語を含む実在の人のアカウントは、本人以外の記名で accountsConfirmed へ書く)'
+            );
+          }
           if (accounts.has(key)) out.push(`${at}: アカウント "${a}" が重複している。1つのアカウントは1人に対応づける`);
           accounts.add(key);
         }
@@ -1135,12 +1241,37 @@ export function behaviorSummaryKey(text) {
 //   - 確約範囲・コア指定のパス(delegation.protectedPaths。委任を適用しない案件でも種別 mode で宣言できる)
 //   - 区分の下限の規則のパス(riskFloor.rules[].paths。下限 R1・R2 のいずれも。kinds は見ない)
 // どちらも無い構成では「未宣言」であり、コア機能の変更を判定できない(黙って通さず、未宣言と表示する)
-export function corePathsOf(config) {
+// 宣言したパスが追跡中のファイルに1件も当たらなければ、そのパスは効いていない(誤記・移動の取り残し)。
+// tracked(追跡中のファイルの一覧)を渡すと、当たるパスだけを数え、当たらないパスを unmatched に出す。
+// 当たるパスが1件も無ければ「未宣言」とする(宣言が空振りしているのを、宣言済みとして扱わない。#296 L-9)。
+// tracked を渡さない呼び出し(一覧を得られない場面)は、従来どおり宣言の有無だけで判定する
+export function corePathsOf(config, { tracked = null } = {}) {
   const fromProtected = Array.isArray(config?.delegation?.protectedPaths) ? config.delegation.protectedPaths.filter((p) => typeof p === 'string' && p.trim()) : null;
   const fromFloor = (Array.isArray(config?.riskFloor?.rules) ? config.riskFloor.rules : []).flatMap((r) => (Array.isArray(r?.paths) ? r.paths.filter((p) => typeof p === 'string' && p.trim()) : []));
-  const declared = fromProtected !== null || fromFloor.length > 0;
-  const paths = [...new Set([...(fromProtected ?? []), ...fromFloor])];
-  return { declared, paths, sources: { protectedPaths: fromProtected, riskFloorRules: (config?.riskFloor?.rules ?? []).length } };
+  const declaredPaths = [...new Set([...(fromProtected ?? []), ...fromFloor])];
+  const sources = { protectedPaths: fromProtected, riskFloorRules: (config?.riskFloor?.rules ?? []).length };
+  if (!Array.isArray(tracked)) {
+    const declared = fromProtected !== null || fromFloor.length > 0;
+    return { declared, paths: declaredPaths, declaredPaths, unmatched: [], trackedChecked: false, sources };
+  }
+  const paths = declaredPaths.filter((g) => tracked.some((f) => matchGlob(g, f)));
+  const unmatched = declaredPaths.filter((g) => !paths.includes(g));
+  return { declared: paths.length > 0, paths, declaredPaths, unmatched, trackedChecked: true, sources };
+}
+/** 追跡中のファイルの一覧(rev を渡せばその版の一覧)。得られなければ null */
+export function trackedFiles(root = ROOT, rev = null) {
+  try {
+    const out = rev
+      ? execFileSync('git', ['ls-tree', '-r', '-z', '--name-only', rev], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 })
+      : execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 });
+    return out.split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+/** 当たらないパスの表示(空なら空文字) */
+export function unmatchedCoreText(core) {
+  return core?.unmatched?.length ? `追跡中のファイルに1件も当たらない宣言のパス(効いていない): ${core.unmatched.map((g) => `\`${g}\``).join(' ')}` : '';
 }
 /** G-6 に要する独立した人の承認者の数。全変更の数(review.reviewerCount)と、コア機能の変更の数(gates.g6.params.coreReviewerCount)。大きいほうが掛かる */
 export function reviewersRequiredOf(config) {
@@ -1150,11 +1281,11 @@ export function reviewersRequiredOf(config) {
   return { all, core, coreDeclared: Number.isFinite(coreParam) && coreParam > 0, coreParam: Number.isFinite(coreParam) ? coreParam : null };
 }
 /** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
-export function touchesCore(config, files) {
-  const core = corePathsOf(config);
+export function touchesCore(config, files, { tracked = null } = {}) {
+  const core = corePathsOf(config, { tracked });
   if (!core.declared) return null;
   const hit = (files ?? []).filter((f) => core.paths.some((g) => matchGlob(g, f)));
-  return { hit: hit.length > 0, files: hit, paths: core.paths };
+  return { hit: hit.length > 0, files: hit, paths: core.paths, unmatched: core.unmatched };
 }
 
 // ---------------------------------------------------------------- 規模の基準値と担保水準の宣言(#295 / ADR-0058)
@@ -1539,4 +1670,104 @@ export function hasTarget(adapter) {
     return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------- 承認と承認した版(標準 第4章 G-6。process-compass #296)
+//
+// 承認は、承認した差分に対して数える。差分を変える更新の後は数えない。差分が同一であることを機械で確かめられない
+// 更新は、差分を変える更新として扱う。ここでは、承認したコミット(レビューの commit)と、取り込んだ PR の先頭のコミットを
+// 比べる。異なれば、承認の後に更新があった(差分の同一を確かめていない)として数えない。承認の版が記録に無ければ、
+// 確かめられないとして数えない。
+
+/** 承認が取り込んだ版に対するものか。'bound'(同じ版)/ 'stale'(承認の後に更新があった)/ 'unknown'(承認の版を確かめられない) */
+export function approvalBinding(review, headOid) {
+  // 写しから起こしたレビュー(reviewsOfCopy)は commitId に承認の版を持つ(#321 との統合)
+  const oid = review?.commit?.oid ?? review?.commit_id ?? review?.commitId ?? null;
+  if (!headOid || !oid) return 'unknown';
+  return String(oid).toLowerCase() === String(headOid).toLowerCase() ? 'bound' : 'stale';
+}
+
+/**
+ * gh がレビューの承認した版(reviews[].commit.oid)を返す最初の版。cli/cli の api/query_builder.go の prReviews の断片が
+ * v2.30.0 から commit{oid} を含む(v2.20.0 には無い。2026-10-23 に確かめた。process-compass #296 突合 X-7)
+ */
+export const GH_MIN_REVIEW_COMMIT = '2.30.0';
+/** `gh --version` の出力から版を読む。読めなければ null */
+export function parseGhVersion(text) {
+  return String(text ?? '').match(/gh version (\d+\.\d+\.\d+)/)?.[1] ?? null;
+}
+/** 版 v が min より前か。v が null なら null(判定できない) */
+export function versionBelow(v, min) {
+  if (!v) return null;
+  const a = v.split('.').map(Number);
+  const b = min.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  return false;
+}
+/** 承認した版を確かめられない承認(unknown)の原因の文。gh の版が古い・読めない場合に、その旨を返す。問題が無ければ null */
+export function unboundCauseText(ghVersion) {
+  const below = versionBelow(ghVersion, GH_MIN_REVIEW_COMMIT);
+  if (below === false) return null;
+  return below === null
+    ? `gh の版を読めません。gh ${GH_MIN_REVIEW_COMMIT} より前の gh はレビューの承認した版(commit.oid)を返さず、すべての承認が「確かめられない」になります。gh --version を確かめてください`
+    : `gh ${ghVersion} は ${GH_MIN_REVIEW_COMMIT} より前の版で、レビューの承認した版(commit.oid)を返しません。すべての承認が「確かめられない」として数えられません。gh を ${GH_MIN_REVIEW_COMMIT} 以上へ上げてください`;
+}
+
+// ---------------------------------------------------------------- アカウント名の確認済みの上書き(#296)
+//
+// アカウント名が AI を示す語(Devin・Kiro・Cline など)に当たる実在の人のアカウントは、機械の検査では AI と区別できない。
+// 名簿の人の accountsConfirmed に書いたアカウントを、人のアカウントとして扱う。ただし、確認は名簿の変更として、
+// そのアカウントの本人以外が記名した変化点の記録(changeLog[].accountConfirmations と decidedBy)に限る。
+// 本人の記名・AI の名義・記録の無い確認は効かない。[bot] の表記と、ホスティングが bot と返す名義(is_bot)は上書きしない。
+// 上書きで数えた承認の件数は、出荷の証跡の集約が保証の開示へ出す。名簿の記載が正しいかは監査の観点6 で確かめる
+
+/** 変化点の記録から、有効なアカウントの確認(本人以外の記名)を引く。キーは accountKey、値は { id, decidedBy, date } */
+export function confirmedAccounts(config) {
+  const out = new Map();
+  for (const e of config?.changeLog ?? []) {
+    for (const c of Array.isArray(e?.accountConfirmations) ? e.accountConfirmations : []) {
+      const key = accountKey(c?.account);
+      if (!key || !c?.id || !e.decidedBy) continue;
+      if (aiNameReason(e.decidedBy)) continue;
+      const by = personKey(config, e.decidedBy);
+      if (!by || by === c.id) continue;
+      out.set(key, { id: c.id, decidedBy: e.decidedBy, date: e.date ?? null });
+    }
+  }
+  return out;
+}
+
+/** 名簿の accountsConfirmed のうち、本人以外の記名の記録が無い確認(契約検査が落とす) */
+export function accountConfirmationProblems(config) {
+  const valid = confirmedAccounts(config);
+  const out = [];
+  for (const p of config?.people ?? []) {
+    for (const a of Array.isArray(p?.accountsConfirmed) ? p.accountsConfirmed : []) {
+      const v = valid.get(accountKey(a));
+      if (!v || v.id !== p.id) {
+        out.push(
+          `人の名簿 ${p.name} のアカウント "${a}" の確認(accountsConfirmed)に、本人以外が記名した変化点の記録がありません。` +
+            '確認は /process-change(種別 accountable)で、本人以外の決定した者の記名(decidedBy)を付けて行います'
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * アカウントが AI・bot の名義か。理由を返す(人のアカウントなら null)。bot はホスティングが返す is_bot。
+ * 名簿で本人以外が確認したアカウントは、語の一致を上書きする(overridden: true を返す呼び出しは aiAccountCheck)
+ */
+export function aiAccountCheck(config, login, bot = false) {
+  if (bot) return { reason: 'bot の表記を含む(ホスティングの bot)', overridden: false };
+  const reason = aiNameReason(login ?? '', { account: true });
+  if (!reason) return { reason: null, overridden: false };
+  if (/\[bot\]$/i.test(String(login ?? '').trim())) return { reason, overridden: false };
+  const key = accountKey(login);
+  const person = findPersonByAccount(config, login);
+  const listed = Boolean(person) && (Array.isArray(person.accountsConfirmed) ? person.accountsConfirmed : []).some((c) => accountKey(c) === key);
+  const v = confirmedAccounts(config).get(key);
+  if (listed && v && v.id === person.id) return { reason: null, overridden: true, by: v.decidedBy };
+  return { reason, overridden: false };
 }

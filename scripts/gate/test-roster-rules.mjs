@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster } from './config.mjs';
+import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
 import { buildConfig, deciderProblems, seatSeparationFindings } from '../init/generate-profile.mjs';
 
 let failures = 0;
@@ -150,6 +150,72 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('同: D-0 表1 の決定者(事業決裁者の席の責任者)の記名なら受け付ける', deciderProblems(ext, report, '山田 太郎', ext).length === 0, JSON.stringify(deciderProblems(ext, report, '山田 太郎', ext)));
   check('体制の内の人が責任者である独立レビュアの席: 席の責任者の記名で受け付ける(従来どおり)', deciderProblems(two, report, '佐藤 花子', two).length === 0, JSON.stringify(deciderProblems(two, report, '佐藤 花子', two)));
 }
+
+// ---------------------------------------------------------------- アカウント名の確認済みの上書き(#296 L-9)
+// AI を示す語に当たる実在の人のアカウントは、本人以外が記名した名簿の変更(変化点の記録)でだけ人として扱う
+{
+  const devin = { id: 'd', name: 'Devin Smith', accounts: ['devin-smith'], accountsConfirmed: ['devin-smith'], nameConfirmed: true };
+  const other = { id: 'y', name: '山田 太郎', accounts: ['yamada'] };
+  const base = { people: [devin, other] };
+  const byOther = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: '山田 太郎', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  const bySelf = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Devin Smith', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  const byAi = { ...base, changeLog: [{ date: '2026-10-20', decidedBy: 'Claude', accountConfirmations: [{ id: 'd', account: 'devin-smith' }] }] };
+  check('上書き: 記録が無ければ AI の名義として扱う', aiAccountCheck(base, 'devin-smith').reason !== null && !aiAccountCheck(base, 'devin-smith').overridden);
+  check('上書き: 記録が無い accountsConfirmed は契約検査が落とす', accountConfirmationProblems(base).length === 1, JSON.stringify(accountConfirmationProblems(base)));
+  const ok = aiAccountCheck(byOther, 'devin-smith');
+  check('上書き: 本人以外が記名した名簿の変更があれば、人のアカウントとして扱う(上書きした旨を返す)', ok.reason === null && ok.overridden === true && ok.by === '山田 太郎', JSON.stringify(ok));
+  check('上書き: 本人以外の記名があれば契約検査は落とさない', accountConfirmationProblems(byOther).length === 0, JSON.stringify(accountConfirmationProblems(byOther)));
+  check('上書き: 本人の記名では効かない', aiAccountCheck(bySelf, 'devin-smith').reason !== null && confirmedAccounts(bySelf).size === 0 && accountConfirmationProblems(bySelf).length === 1);
+  check('上書き: AI の名義の記名では効かない', aiAccountCheck(byAi, 'devin-smith').reason !== null && confirmedAccounts(byAi).size === 0);
+  check('上書き: [bot] の表記は上書きしない', aiAccountCheck(byOther, 'devin-smith[bot]').reason !== null);
+  check('上書き: ホスティングが bot と返す名義は上書きしない', aiAccountCheck(byOther, 'devin-smith', true).reason !== null);
+  check('上書き: 名簿の accountsConfirmed に無ければ、記録があっても効かない', aiAccountCheck({ ...byOther, people: [{ ...devin, accountsConfirmed: [] }, other] }, 'devin-smith').reason !== null);
+  const rp = rosterProblems({ ...byOther, people: [{ ...devin, accountsConfirmed: ['someone-else'] }, other] });
+  check('名簿: accountsConfirmed は本人の accounts に無いアカウントを書けない', rp.some((m) => /accounts に無い/.test(m)), JSON.stringify(rp));
+}
+
+// ---------------------------------------------------------------- 氏名の確認(nameConfirmed。#296 裁定 8 の付記)
+// AI を示す語に当たる実在の氏名も、本人以外が記名した名簿の変更(変化点の記録)でだけ通す
+{
+  const devin = { id: 'd', name: 'Devin Smith', nameConfirmed: true };
+  const other = { id: 'y', name: '山田 太郎' };
+  const base = { people: [devin, other] };
+  const rec = (decidedBy) => ({ ...base, changeLog: [{ date: '2026-10-20', decidedBy, nameConfirmations: [{ id: 'd' }] }] });
+  check('氏名の確認: 記録が無ければ AI の名義として拒否し、契約検査が落とす', aiNameBlocked(base, 'Devin Smith') !== null && nameConfirmationProblems(base).length === 1 && nameOverrides(base).length === 0);
+  check('氏名の確認: 本人以外の記名があれば通し、上書きとして表示する', aiNameBlocked(rec('山田 太郎'), 'Devin Smith') === null && nameConfirmationProblems(rec('山田 太郎')).length === 0 && nameOverrides(rec('山田 太郎'))[0] === 'Devin Smith');
+  check('氏名の確認: 本人の記名では効かない', aiNameBlocked(rec('Devin Smith'), 'Devin Smith') !== null && nameConfirmationProblems(rec('Devin Smith')).length === 1);
+  check('氏名の確認: AI の名義の記名では効かない', aiNameBlocked(rec('Claude'), 'Devin Smith') !== null);
+  check('氏名の確認: 記録があっても名簿の nameConfirmed が無ければ効かない', aiNameBlocked({ ...rec('山田 太郎'), people: [{ id: 'd', name: 'Devin Smith' }, other] }, 'Devin Smith') !== null);
+  // 体制の内の人が1名の名簿(追加の裁定): 本人の記名を受け付け、自己申告の氏名として出す。記録の無い確認は落とさず、未記録として知らせる
+  const solo = { people: [devin, { id: 'x', name: '外部 確認', external: true }] };
+  const soloSelf = { ...solo, changeLog: [{ date: '2026-10-20', decidedBy: 'Devin Smith', nameConfirmations: [{ id: 'd' }] }] };
+  check('1名の体制: 本人の記名の確認を受け付け、自己申告として開示する', aiNameBlocked(soloSelf, 'Devin Smith') === null && nameConfirmationState(soloSelf, devin) === 'self' && nameConfirmationProblems(soloSelf).length === 0 && nameOverrideDetails(soloSelf)[0]?.how === 'self' && /自己申告/.test(nameConfirmationNotices(soloSelf)[0] ?? ''));
+  check('1名の体制: 記録の無い確認は落とさず効かせ、未記録として記録する手順を知らせる', aiNameBlocked(solo, 'Devin Smith') === null && nameConfirmationProblems(solo).length === 0 && /未記録/.test(nameConfirmationNotices(solo)[0] ?? '') && /\/process-change/.test(nameConfirmationNotices(solo)[0] ?? ''));
+  check('2名以上の体制: 本人の記名の記録は効かず、契約検査が落とす(記録する手順を出す)', nameConfirmationState(rec('Devin Smith'), devin) === 'invalid' && /\/process-change/.test(nameConfirmationProblems(rec('Devin Smith'))[0] ?? ''));
+  check('2名以上の体制: 本人以外の記名は自己申告として扱わない', nameConfirmationState(rec('山田 太郎'), devin) === 'other' && nameConfirmationNotices(rec('山田 太郎')).length === 0);
+  const { diffConfig } = await import('../init/generate-profile.mjs');
+  const soloBefore = { configured: true, gates: {}, seats: [], people: solo.people };
+  check('1名の体制: 未記録の確認は、次の変化点で記名して記録する項目になる', diffConfig(soloBefore, soloBefore).nameConfirmItems.length === 1);
+  check('1名の体制: 本人の記名の記録がある確認は、再び項目にしない', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, changeLog: soloSelf.changeLog }).nameConfirmItems.length === 0);
+  check('2人目が加わると、本人の記名だけの確認は本人以外の記名を要する項目になる', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, people: [devin, other], changeLog: soloSelf.changeLog }).nameConfirmItems.length === 1);
+  const before = { configured: true, gates: {}, people: [{ id: 'd', name: 'Devin Smith' }, other], seats: [] };
+  const after = { ...before, people: [devin, other] };
+  const rep = diffConfig(before, after);
+  check('氏名の確認: 名簿へ nameConfirmed を足す変更は、本人以外の記名を要する項目になる', rep.nameConfirmItems?.length === 1 && rep.nameConfirmItems[0].id === 'd', JSON.stringify(rep.nameConfirmItems));
+  check('氏名の確認: 既に有効な記録がある確認は、再び項目にしない', diffConfig({ ...rec('山田 太郎'), configured: true, gates: {}, seats: [] }, { ...rec('山田 太郎'), configured: true, gates: {}, seats: [] }).nameConfirmItems.length === 0);
+  check('氏名の確認: #296 より前に書いた確認(記録なし)は、次の変化点で項目になる', diffConfig({ ...before, people: [devin, other] }, { ...before, people: [devin, other] }).nameConfirmItems.length === 1);
+}
+
+// ---------------------------------------------------------------- gh の版(#296 突合 X-7)
+check('gh の版: gh --version の出力を読む', parseGhVersion('gh version 2.45.0 (2024-03-04)\nhttps://github.com/cli/cli/releases/tag/v2.45.0') === '2.45.0');
+check('gh の版: 2.30.0 より前は commit.oid を返さない旨を出す', versionBelow('2.20.2', '2.30.0') === true && /2\.30\.0/.test(unboundCauseText('2.20.2') ?? ''));
+check('gh の版: 2.30.0 以上は原因の文を出さない', unboundCauseText('2.30.0') === null && unboundCauseText('2.61.1') === null);
+check('gh の版: 読めなければ確かめるよう出す', /読めません/.test(unboundCauseText(null) ?? ''));
+
+// ---------------------------------------------------------------- 承認した版(#296 L-2)
+check('承認した版: 先頭のコミットと同じなら数える', approvalBinding({ commit: { oid: 'ABC' } }, 'abc') === 'bound');
+check('承認した版: 承認の後に更新があれば数えない(stale)', approvalBinding({ commit_id: 'abc' }, 'def') === 'stale');
+check('承認した版: 版を確かめられなければ数えない(unknown)', approvalBinding({}, 'def') === 'unknown' && approvalBinding({ commit: { oid: 'abc' } }, null) === 'unknown');
 
 console.log('');
 if (failures) {
