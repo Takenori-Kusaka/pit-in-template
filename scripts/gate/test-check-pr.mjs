@@ -408,6 +408,96 @@ scenario('変更要求: 項目番号と期限の両方がある(宣言行の形)
 scenario('変更要求: 項目番号だけ(期限が無い)→ 理由の無い差し戻しとして出す', { reviews: [CR('suzuki', '基準3 を満たさない。試験を足して再提出する')] }, () => write('src/a.js', lines(24)), passes(noticed(/review:changes-requested-without-reason: @suzuki\(期限なし\)/)));
 scenario('変更要求: 期限だけ(項目番号が無い)→ 理由の無い差し戻しとして出す', { reviews: [CR('suzuki', '直して再提出。期限: 2026-11-05')] }, () => write('src/a.js', lines(24)), passes(noticed(/review:changes-requested-without-reason: @suzuki\(項目番号なし\)/)));
 scenario('変更要求: 理由の無い変更要求のあと承認し直した(最後の状態が承認)→ 対象外', { reviews: [CR('suzuki', '直してください'), rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(notNoticed(/review:changes-requested-without-reason/)));
+// ---------------------------------------------------------------- スタックの上の層(基準値は既定ブランチから読む。process-compass #294 / ADR-0078)
+// 下の層のブランチで基準値を緩め、台帳に上の層の例外承認の行を足す。上の層の PR の基底は下の層のブランチになる。
+// --policy-base(既定ブランチ)を渡すと、まだ既定ブランチへ入っていない下の層の基準値と台帳を読まない
+{
+  git('switch', '-q', 'main');
+  git('switch', '-q', '-C', 'stack-lower', 'main');
+  write('process.config.json', { ...JSON.parse(read('process.config.json')), task: { ...config.task, maxChangedLines: 5000 } });
+  write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-090', 990));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'lower: 基準値を緩める');
+  git('switch', '-q', '-C', 'stack-upper', 'stack-lower');
+  write('src/stacked.js', lines(450, 's'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'upper: 製品のコード');
+  const pr = { number: 991, title: 'feat: x', body: BODY(), author: 'yamada' };
+  const rows = [
+    ['スタック: 既定ブランチから読むと、下の層で緩めた基準値で上の層を判定しない(size:over を出す)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
+      return r.size?.sizeOver === true && r.policy?.ref === 'main' && r.policy.sameAsBase === false && r.notices.some((x) => /既定ブランチ\(main\)の先端から読む/.test(x));
+    }],
+    ['スタック: 既定ブランチを渡さない(手元)と、基底(下の層)の基準値で判定する(差を確かめる対照)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', pr });
+      return r.size?.sizeOver === false && r.policy?.sameAsBase === true;
+    }],
+    ['スタック: 下の層の台帳に足した例外承認の行は、既定ブランチから読むと数えない', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr: { ...pr, number: 990 } });
+      return r.size?.sizeOver === true && !r.size.exceptionApproved;
+    }],
+    ['スタック: 差分は PR の基底から取る(下の層の変更を上の層の差分に数えない)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'main', pr });
+      return r.size?.lines === 450 && r.thresholds.changed.length === 0;
+    }],
+    ['スタック: 既定ブランチを解決できなければ失敗する(黙って基底から読まない)', () => {
+      const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'origin/no-such-branch', pr });
+      return r.errors.some((e) => /既定ブランチ origin\/no-such-branch を解決できません/.test(e));
+    }],
+  ];
+  // 下の層で区分の下限の規則を外し、上の層の停止の申し立ての解除の記録を足す(process-compass #294 突合 X-11)
+  git('switch', '-q', '-C', 'stack-lower2', 'main');
+  {
+    const cfg = JSON.parse(read('process.config.json'));
+    delete cfg.riskFloor;
+    write('process.config.json', cfg);
+  }
+  write('docs/gates/stop-stack-993.md', release(993, '佐藤 花子'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'lower2: 区分の下限の規則を外し、解除の記録を足す');
+  git('switch', '-q', '-C', 'stack-upper2', 'stack-lower2');
+  write('src/auth/stacked.js', lines(10, 'a'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'upper2: 認証のコード');
+  const pr2 = { number: 993, title: 'feat: y', body: BODY(), author: 'yamada', labels: STOP };
+  const authHit = (r) => Boolean(r.riskFloor?.hits.some((h) => h.id === 'auth'));
+  rows.push(
+    ['スタック: 下の層で外した区分の下限の規則は、既定ブランチから読むと効かない(R1 の下限が残る)', () => (git('switch', '-q', 'stack-upper2'), authHit(analyzePr({ root: TMP, base: 'stack-lower2', policyBase: 'main', pr: pr2 })))],
+    ['スタック: 区分の下限の規則の対照(既定ブランチを渡さないと、下の層の規則で下限が外れる)', () => (git('switch', '-q', 'stack-upper2'), !authHit(analyzePr({ root: TMP, base: 'stack-lower2', pr: pr2 })))],
+    ['スタック: 下の層に足した停止の申し立ての解除の記録は、既定ブランチから読むと数えない', () => {
+      git('switch', '-q', 'stack-upper2');
+      const r = analyzePr({ root: TMP, base: 'stack-lower2', policyBase: 'main', pr: pr2 });
+      return r.stop?.requested === true && !r.stop.released && r.errors.some((e) => /停止の申し立て/.test(e));
+    }],
+    ['スタック: 停止の解除の記録の対照(既定ブランチを渡さないと、下の層の解除で通る)', () => {
+      git('switch', '-q', 'stack-upper2');
+      const r = analyzePr({ root: TMP, base: 'stack-lower2', pr: pr2 });
+      return r.stop?.requested === true && r.stop.released === true;
+    }],
+  );
+  // 既定ブランチの構成が未設定で、PR の基底(下の層)が設定済み → PR の側の構成へ戻らず失敗する(突合 X-10)
+  git('switch', '-q', '-C', 'unconfigured-default', 'main');
+  git('rm', '-q', 'process.config.json');
+  git('commit', '-q', '-m', '構成を外した既定ブランチ');
+  rows.push(['スタック: 既定ブランチに構成が無く、基底に構成がある場合は失敗する(PR の側の構成へ戻らない)', () => {
+    git('switch', '-q', 'stack-upper');
+    const r = analyzePr({ root: TMP, base: 'stack-lower', policyBase: 'unconfigured-default', pr });
+    return r.errors.some((e) => /構成\(process\.config\.json\)が未設定ですが、PR の基底 stack-lower は設定済み/.test(e));
+  }]);
+  git('switch', '-q', 'stack-upper');
+  for (const [name, fn] of rows) {
+    let ok = false;
+    try {
+      ok = fn();
+    } catch {
+      ok = false;
+    }
+    if (!ok) failures++;
+    n++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
+  }
+  git('switch', '-q', 'main');
+}
 
 // ---------------------------------------------------------------- マージ済みの変更の規模(出荷の集約が使う。measureCommitSize)
 {
@@ -459,6 +549,7 @@ const defs = [
   ['ワークフロー: PR の本文の編集(edited)で再実行する', /^\s*pull_request:[^\n]*\r?\n(?:\s*#[^\n]*\n)*\s*types: \[[^\]]*\bedited\b[^\]]*\]/m.test(wf)],
   ['ワークフロー: ラベルの付け外し(labeled / unlabeled)で再実行する(停止の申し立て)', /types: \[[^\]]*\blabeled\b[^\]]*\bunlabeled\b[^\]]*\]/.test(wf)],
   ['ワークフロー: ラベルとラベルの履歴を環境変数で渡す', /PR_LABELS: \$\{\{ toJSON\(github\.event\.pull_request\.labels\.\*\.name\) \}\}/.test(wf) && /PR_LABEL_EVENTS:/.test(wf)],
+  ['ワークフロー: 基準値・台帳を既定ブランチから読む(--policy-base に github.event.repository.default_branch を渡し、取得する)', /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/.test(wf) && /check-pr\.mjs[^\n]*--policy-base "origin\/\$\{DEFAULT_BRANCH\}"/.test(wf) && /refs\/heads\/\$\{DEFAULT_BRANCH\}:refs\/remotes\/origin\/\$\{DEFAULT_BRANCH\}/.test(wf)],
   ['ワークフロー: PR のレビューの一覧を環境変数で渡す(G-6 の承認者の数)', /pulls\/\$\{PR_NUMBER\}\/reviews/.test(wf) && /PR_REVIEWS: \$\{\{ steps\.reviews\.outputs\.reviews \}\}/.test(wf)],
 ];
 for (const [name, ok] of defs) {
