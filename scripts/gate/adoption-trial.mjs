@@ -4,8 +4,9 @@
 //   node scripts/gate/adoption-trial.mjs seal --manifest <path>     欠陥注入の記録(注入した者だけが持つ)の要約値を封じる
 //   node scripts/gate/adoption-trial.mjs tally --manifest <path> [--human <json>] [--ai <json>] [--tolerance 3]
 //                                                                    封じた要約値を照合し、見つける者の記録と突き合わせて集計する
-//   node scripts/gate/adoption-trial.mjs env-check --by <氏名>       実環境の統制(ルールセットの適用・PR のレビューの取得・ship-evidence の
-//                                                                    成果物)を採用者の実環境の gh で読み、docs/adoption-trial/env-check.json へ書く。
+//   node scripts/gate/adoption-trial.mjs env-check --by <氏名>       実環境の統制(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・
+//                                                                    PR のレビューの取得・ship-evidence の成果物)を採用者の実環境の gh で読み、
+//                                                                    4値(確認済み/不一致/未確認/対象外)で docs/adoption-trial/env-check.json へ書く。
 //                                                                    記録用ブランチ(records)の保護・record-copy の実行・写しの到着・既定ブランチの
 //                                                                    bypass actor は「所見」(findings)として同じ記録へ書く(#321 段階 2)
 //   node scripts/gate/adoption-trial.mjs run [--keep]               基準の確認 → 場面集 → 実環境の統制の記録 → 演習の記録 → 成立判定 → 記録の出力
@@ -55,8 +56,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText } from './config.mjs';
-import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText } from './org-assurance.mjs';
+import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES } from './config.mjs';
+import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 
 export const TRIAL_DIR = 'docs/adoption-trial';
@@ -1034,7 +1035,7 @@ function run() {
   judge.push({
     item: envItem.label,
     criterion: envItem.rowPresent ? envItem.value : '(基準の行なし。様式を templates/adoption-trial-criteria.md から更新する)',
-    result: env.confirmed ? `確認済み(${String(env.record.checkedAt).slice(0, 10)} ${env.record.checkedBy})` : `**未確認**(${env.items.filter((i) => i.status !== 'confirmed').map((i) => i.label.split('(')[0]).join('・') || env.problems.join('。')})`,
+    result: env.confirmed ? `確認済み(${String(env.record.checkedAt).slice(0, 10)} ${env.record.checkedBy})` : `**未確認**(${env.items.filter((i) => i.status !== 'confirmed' && i.status !== 'notApplicable').map((i) => i.label.split('(')[0]).join('・') || env.problems.join('。')})`,
     pass: envItem.rowPresent && isFilledValue(envItem.value) ? env.confirmed : null,
   });
 
@@ -1114,7 +1115,7 @@ function run() {
   L.push('');
   L.push('| 項目 | 結果 | 詳細 |');
   L.push('| --- | --- | --- |');
-  for (const i of env.items) L.push(`| ${i.label} | ${i.status === 'confirmed' ? '確認済み' : i.status === 'mismatch' ? '**構成と一致しない**' : '**未確認**'} | ${String(i.detail).replace(/\|/g, '/')} |`);
+  for (const i of env.items) L.push(`| ${i.label} | ${i.status === 'confirmed' || i.status === 'notApplicable' ? envStatusLabel(i) : `**${envStatusLabel(i)}**`} | ${String(i.detail).replace(/\|/g, '/')} |`);
   // 記録用ブランチの所見(確認済みの判定に入れない。一致しない所見は保護の欠落または強制層の縮小。#54)
   for (const f of env.findings ?? []) L.push(`| 所見: ${f.label} | ${f.status === 'mismatch' ? '**一致しない**' : FINDING_STATUS_LABEL[f.status] ?? f.status} | ${String(f.detail).replace(/\|/g, '/')} |`);
   L.push('');
@@ -1180,7 +1181,7 @@ function run() {
   L.push('| 人と組織の挙動(記名の質、申し立ての使われ方、評価の運用)は未確認 | 同上 | <人が書く> | <YYYY-MM-DD> | 内部監査 観点14・20、申し立てと解除の記録 |');
   const notStopped = sc.scenes.filter((s) => s.result !== '止まった');
   L.push(`| 場面集で止まらなかった場面${notStopped.length ? `(${notStopped.map((s) => `#${s.id}`).join(', ')})` : '(なし)'} | 手で代える手順を置いた範囲 | <人が書く> | <YYYY-MM-DD> | 手で代えた記録 |`);
-  if (!env.confirmed) L.push(`| 実環境の統制が未確認(${env.items.filter((i) => i.status !== 'confirmed').map((i) => i.label.split('(')[0]).join('・') || '記録の問題'}) | 実環境で確かめるまで | <人が書く> | <YYYY-MM-DD> | env-check の記録(${ENV_CHECK_FILE}) |`);
+  if (!env.confirmed) L.push(`| 実環境の統制が未確認(${env.items.filter((i) => i.status !== 'confirmed' && i.status !== 'notApplicable').map((i) => i.label.split('(')[0]).join('・') || '記録の問題'}) | 実環境で確かめるまで | <人が書く> | <YYYY-MM-DD> | env-check の記録(${ENV_CHECK_FILE}) |`);
   L.push('<!-- human-fields end -->');
   L.push('');
   L.push('- 受容者・期限と節0 の欄は人が書く。AI は推測で埋めない');
@@ -1348,20 +1349,27 @@ function recordsFindings({ repo, branch, latestPr }) {
   return f;
 }
 
-/** gh を呼び、JSON として読む。読めなければ { value: null, why } */
+/**
+ * gh を呼び、JSON として読む。読めなければ { value: null, why, reason, http }。
+ * reason は未確認の理由(#315 R-4): 権限不足(HTTP 401・403、admin の権限を要する旨の応答)は permission、それ以外の失敗は unreadable。
+ * http は gh の出力の「(HTTP NNN)」から読む(404 の意味は API ごとに違うため、呼ぶ側で解く)
+ */
 function ghJson(args) {
   let raw;
   try {
     raw = execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
   } catch (e) {
-    const err = String(e.stderr || e.message || '').split('\n').find((l) => l.trim()) ?? 'gh を実行できない';
-    return { value: null, why: `gh を実行できない、または失敗した(${err.slice(0, 120)})` };
+    const text = String(e.stderr || e.message || '');
+    const err = text.split('\n').find((l) => l.trim()) ?? 'gh を実行できない';
+    const http = Number(text.match(/\(HTTP (\d{3})\)/)?.[1] ?? 0) || null;
+    const permission = http === 401 || http === 403 || /Must have admin rights|Resource not accessible by (?:integration|personal access token)|requires? (?:admin|authentication)/i.test(text);
+    return { value: null, why: `gh を実行できない、または失敗した(${err.slice(0, 120)})`, reason: permission ? 'permission' : 'unreadable', http, message: err };
   }
-  if (!String(raw ?? '').trim()) return { value: null, why: 'gh の出力が空(模擬の gh、または対象が無い)。読めない' };
+  if (!String(raw ?? '').trim()) return { value: null, why: 'gh の出力が空(模擬の gh、または対象が無い)。読めない', reason: 'unreadable', http: null };
   try {
-    return { value: JSON.parse(raw), why: null };
+    return { value: JSON.parse(raw), why: null, reason: null, http: 200 };
   } catch {
-    return { value: null, why: 'gh の出力を JSON として読めない(模擬の gh、または未認証)' };
+    return { value: null, why: 'gh の出力を JSON として読めない(模擬の gh、または未認証)', reason: 'unreadable', http: null };
   }
 }
 
@@ -1383,6 +1391,7 @@ function envCheck() {
   const want = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
   const ruleset = config.ruleset ?? null;
   const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
+  const ownerReview = ruleset === 'regulated' || ruleset === 'safety';
   // 対象のリポジトリ。--repo > GITHUB_REPOSITORY > gh repo view > git remote。実環境の識別として、API が返す URL も記録する
   let repo = arg('--repo', process.env.GITHUB_REPOSITORY || null);
   let repoUrl = null;
@@ -1399,7 +1408,7 @@ function envCheck() {
   const confirmedWith = (id, detail, evidence) => {
     const missing = envEvidenceMissing(id, evidence);
     return missing.length
-      ? { status: 'unconfirmed', detail: `応答に実環境の識別(${missing.join('・')})が無く、確認済みにしない(識別を返さない gh、または模擬)。読めた内容: ${detail}`, evidence }
+      ? { status: 'unconfirmed', reason: 'no-evidence', detail: `応答に実環境の識別(${missing.join('・')})が無く、確認済みにしない(識別を返さない gh、または模擬)。読めた内容: ${detail}`, evidence }
       : { status: 'confirmed', detail, evidence };
   };
   let branch = arg('--branch', null);
@@ -1408,59 +1417,196 @@ function envCheck() {
     branch = v.value?.defaultBranchRef?.name ?? (git(['rev-parse', '--verify', '--quiet', 'refs/heads/main']) !== null ? 'main' : 'master');
   }
   const items = {};
-  const unconfirmed = (why) => ({ status: 'unconfirmed', detail: why });
+  // 未確認は理由を伴う(#315 R-4)。reason: permission(権限不足で読めない)/ unreadable / not-run / no-subject / no-evidence
+  const unconfirmed = (why, reason = 'unreadable') => ({ status: 'unconfirmed', reason, detail: why });
+  const fromFailure = (r, fallback) => unconfirmed(r.why ?? fallback, r.reason ?? 'unreadable');
+  const noRepo = () => unconfirmed('対象のリポジトリ(owner/name)を特定できない(--repo で指定する)', 'not-run');
 
-  // 1. ルールセットの適用。既定ブランチに効いている規則(rules/branches/<branch>)を読む
-  if (!repo) items.ruleset = unconfirmed('対象のリポジトリ(owner/name)を特定できない(--repo で指定する)');
-  else if (!g6Active || !ruleset) items.ruleset = { status: 'confirmed', notApplicable: true, detail: `構成がブランチ保護を要しない(G-6 ${g6Active ? '有効' : '無効'}。ルールセット ${ruleset ?? 'なし'})。確かめる項目なし` };
+  // 1. ルールセットの適用。既定ブランチに効いている規則(rules/branches/<branch>)を読む。
+  //    必須チェック gate-g5 は G-6 の状態に依らず確かめる(#315 R-4。checks-only の構成で確かめる項目が無かった穴を塞ぐ。
+  //    附属書H 項目4 と第4章 G-5 の必須チェック)。承認の規則は G-6 が有効な構成でだけ確かめる
+  let effectiveRulesetIds = [];
+  // 旧来のブランチ保護と合わせて読み直すための、ルールセットの側の読めた内容(#315 突合 X-17)
+  let rsRead = null;
+  if (!repo) items.ruleset = noRepo();
   else {
     const api = `repos/${repo}/rules/branches/${branch}`;
     const fetchedAt = localIso();
     const r = ghJson(['api', api]);
-    if (!Array.isArray(r.value)) items.ruleset = unconfirmed(r.why ?? 'ルールセットの一覧を読めない');
-    else if (!r.value.length) items.ruleset = unconfirmed(`既定ブランチ ${branch} に効いているルールセットが無い(.github/rulesets/${ruleset}.json を人が適用する)`);
-    else {
+    if (!Array.isArray(r.value)) items.ruleset = fromFailure(r, 'ルールセットの一覧を読めない');
+    // 読めた空の一覧は「不一致」(読めなかった場合と区別する。#315 R-4)
+    else if (!r.value.length) {
+      items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)`, evidence: { rulesetIds: [], api, fetchedAt } };
+      rsRead = { pr: null, checks: [], rulesetIds: [], api, fetchedAt };
+    } else {
       const pr = r.value.find((x) => x?.type === 'pull_request')?.parameters ?? null;
       const checks = r.value.filter((x) => x?.type === 'required_status_checks').flatMap((x) => x?.parameters?.required_status_checks ?? []).map((c) => c?.context).filter(Boolean);
       const bad = [];
-      if (!pr) bad.push('pull_request の規則が無い');
-      else {
-        if (!(Number(pr.required_approving_review_count) >= want)) bad.push(`要求する承認の数 ${pr.required_approving_review_count ?? '未設定'} < 構成 ${want}`);
-        // 承認は承認した差分に対して数える(標準 第4章 G-6。#296)。team を含むすべてのルールセットで、push での古い承認の失効と、
-        // 最後の push の後の承認を確かめる(要件⑦。標準 附属書I と フェーズ5 の準拠テンプレートの頁で同じ一覧)
-        if (pr.dismiss_stale_reviews_on_push !== true) bad.push('push で古い承認を無効にする設定(dismiss_stale_reviews_on_push)が無効');
-        if (pr.require_last_push_approval !== true) bad.push('最後の push の後の承認(require_last_push_approval)が無効');
-        if (ruleset === 'regulated' || ruleset === 'safety') {
-          if (pr.require_code_owner_review !== true) bad.push('コードオーナーの承認(require_code_owner_review)が無効');
+      if (g6Active) {
+        if (!pr) bad.push('pull_request の規則が無い');
+        else {
+          if (!(Number(pr.required_approving_review_count) >= want)) bad.push(`要求する承認の数 ${pr.required_approving_review_count ?? '未設定'} < 構成 ${want}`);
+          // 承認は承認した差分に対して数える(標準 第4章 G-6。#296)。team を含むすべてのルールセットで、push での古い承認の失効と、
+          // 最後の push の後の承認を確かめる(要件⑦。標準 附属書I と フェーズ5 の準拠テンプレートの頁で同じ一覧)
+          if (pr.dismiss_stale_reviews_on_push !== true) bad.push('push で古い承認を無効にする設定(dismiss_stale_reviews_on_push)が無効');
+          if (pr.require_last_push_approval !== true) bad.push('最後の push の後の承認(require_last_push_approval)が無効');
+          if (ownerReview && pr.require_code_owner_review !== true) bad.push('コードオーナーの承認(require_code_owner_review)が無効');
         }
       }
       if (!checks.includes('gate-g5')) bad.push('必須チェックに gate-g5 が無い');
       // 実環境の識別: 応答の各規則が属するルールセットの id(GitHub の設定画面の Rulesets の URL の末尾と一致する)
       const rulesetIds = [...new Set(r.value.map((x) => x?.ruleset_id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number))];
+      effectiveRulesetIds = rulesetIds;
+      rsRead = { pr, checks, rulesetIds, api, fetchedAt };
       const evidence = { rulesetIds, api, fetchedAt };
+      const what = g6Active
+        ? `承認 ${pr?.required_approving_review_count} 名・push での古い承認の失効・最後の push の後の承認${ownerReview ? '・コードオーナー' : ''}・必須チェック ${checks.join('/')}`
+        : `必須チェック ${checks.join('/')}(G-6 が無効の構成のため、承認の規則は確かめない)`;
       items.ruleset = bad.length
-        ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset}。承認 ${want} 名)と一致しない: ${bad.join('。')}`, evidence }
-        : confirmedWith('ruleset', `ブランチ ${branch} に承認 ${pr.required_approving_review_count} 名・push での古い承認の失効・最後の push の後の承認${ruleset === 'regulated' || ruleset === 'safety' ? '・コードオーナー' : ''}・必須チェック ${checks.join('/')} が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
+        ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset ?? 'ルールセットなし'}。G-6 ${g6Active ? `有効・承認 ${want} 名` : '無効'})と一致しない: ${bad.join('。')}`, evidence }
+        : confirmedWith('ruleset', `ブランチ ${branch} に${what}が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
     }
+  }
+
+  // 1b. 旧来のブランチ保護との重なり(#315 R-4)。旧来の保護とルールセットは重ねて効き、厳しい方が勝つ。重なりは不一致にせず、
+  //     何が効いているかを記録に書く。保護が無い(404 Branch not protected)は確認済み(重なりなし)。読むには admin の権限が要る
+  let classicRead = null;
+  if (!repo) items.classicProtection = noRepo();
+  else {
+    const api = `repos/${repo}/branches/${branch}/protection`;
+    const fetchedAt = localIso();
+    const r = ghJson(['api', api]);
+    if (r.value && typeof r.value === 'object') {
+      const checks = [...(r.value.required_status_checks?.contexts ?? []), ...(r.value.required_status_checks?.checks ?? []).map((c) => c?.context)].filter(Boolean);
+      const reviews = r.value.required_pull_request_reviews ?? null;
+      const parts = [
+        `必須チェック ${checks.length ? checks.join('/') : 'なし'}`,
+        `承認 ${reviews ? `${reviews.required_approving_review_count ?? 0} 名` : 'なし'}`,
+        `管理者にも適用 ${r.value.enforce_admins?.enabled === true ? 'する' : 'しない'}`,
+      ];
+      items.classicProtection = confirmedWith('classicProtection', `旧来のブランチ保護がルールセットと重なっている(${parts.join('・')})。重なりは厳しい方が勝つ。緩める根拠には使わない`, { protected: true, url: typeof r.value.url === 'string' ? r.value.url : null, api, fetchedAt });
+      classicRead = { checks, reviews, enforceAdmins: r.value.enforce_admins?.enabled === true, url: typeof r.value.url === 'string' ? r.value.url : api };
+    } else if (r.http === 404 && /not protected/i.test(r.message ?? '')) {
+      items.classicProtection = confirmedWith('classicProtection', `ブランチ ${branch} に旧来のブランチ保護は無い(重なりなし。統制はルールセットだけ)`, { protected: false, api, fetchedAt });
+    } else items.classicProtection = fromFailure(r, '旧来のブランチ保護を読めない');
+  }
+
+  // 1b'. 旧来のブランチ保護だけで(またはルールセットと合わせて)gate-g5 と承認の規則を効かせている構成(#315 突合 X-17)。
+  //     ルールセットと旧来の保護は重ねて効くため、規則ごとにどちらかが満たせば効いていると読み、ルールセットの項目を確認済みにする。
+  //     ただし旧来の保護が管理者に適用されない(enforce_admins が無効)なら、管理者が規則を通らずにマージできる経路が残る
+  //     (ルールセットのバイパスの主体と同じ扱い)ため、旧来の保護を数えない
+  let rulesetViaClassic = false;
+  if (items.ruleset?.status === 'mismatch' && rsRead && classicRead) {
+    const cr = classicRead.reviews ?? null;
+    const pr = rsRead.pr ?? {};
+    const both = {
+      checks: [...new Set([...rsRead.checks, ...classicRead.checks])],
+      approvals: Math.max(Number(pr.required_approving_review_count ?? 0) || 0, Number(cr?.required_approving_review_count ?? 0) || 0),
+      dismissStale: pr.dismiss_stale_reviews_on_push === true || cr?.dismiss_stale_reviews === true,
+      lastPush: pr.require_last_push_approval === true || cr?.require_last_push_approval === true,
+      codeOwner: pr.require_code_owner_review === true || cr?.require_code_owner_reviews === true,
+    };
+    const bad = [];
+    if (!classicRead.enforceAdmins) bad.push('旧来のブランチ保護が管理者に適用されない(enforce_admins が無効。管理者が規則を通らずにマージできるため、旧来の保護を数えない)');
+    if (!both.checks.includes('gate-g5')) bad.push('ルールセットにも旧来の保護にも、必須チェック gate-g5 が無い');
+    if (g6Active) {
+      if (!(both.approvals >= want)) bad.push(`要求する承認の数 ${both.approvals} < 構成 ${want}`);
+      if (!both.dismissStale) bad.push('push で古い承認を無効にする設定が無効');
+      if (!both.lastPush) bad.push('最後の push の後の承認が無効');
+      if (ownerReview && !both.codeOwner) bad.push('コードオーナーの承認が無効');
+    }
+    if (!bad.length) {
+      rulesetViaClassic = true;
+      items.ruleset = confirmedWith(
+        'ruleset',
+        `ブランチ ${branch} に、旧来のブランチ保護${rsRead.rulesetIds.length ? 'とルールセットを合わせて' : 'で'}必須チェック ${both.checks.join('/')}${g6Active ? `・承認 ${both.approvals} 名・push での古い承認の失効・最後の push の後の承認${ownerReview ? '・コードオーナー' : ''}` : ''}が効いている(旧来の保護は管理者にも適用。テンプレートの統制の手段はルールセットで、資産の一覧で「置き換える」とすることを勧める)`,
+        { rulesetIds: rsRead.rulesetIds, classicProtectionUrl: classicRead.url, api: rsRead.api, fetchedAt: rsRead.fetchedAt },
+      );
+    } else items.ruleset = { ...items.ruleset, detail: `${items.ruleset.detail}。旧来のブランチ保護と合わせても満たさない: ${bad.join('。')}` };
+  }
+
+  // 1c. 効いている CODEOWNERS の所在と codeowners/errors(#315 R-4)。GitHub は .github/・根・docs/ の順に最初の1つだけを使う
+  if (!repo) items.codeowners = noRepo();
+  else {
+    const fetchedAt = localIso();
+    let found = null;
+    let readFailure = null;
+    for (const place of CODEOWNERS_PLACES) {
+      const r = ghJson(['api', `repos/${repo}/contents/${place}?ref=${encodeURIComponent(branch)}`]);
+      if (r.value && typeof r.value === 'object' && !Array.isArray(r.value)) {
+        found = { path: place, blobSha: typeof r.value.sha === 'string' ? r.value.sha : null, content: typeof r.value.content === 'string' ? Buffer.from(r.value.content, 'base64').toString('utf8') : '' };
+        break;
+      }
+      if (r.http !== 404) {
+        readFailure = r;
+        break;
+      }
+    }
+    if (readFailure) items.codeowners = fromFailure(readFailure, 'CODEOWNERS を読めない');
+    else if (!found) {
+      items.codeowners = ownerReview
+        ? { status: 'mismatch', detail: `既定ブランチ ${branch} に CODEOWNERS が無い(ルールセット ${ruleset} はコードオーナーの承認を要する)` }
+        : { status: 'notApplicable', detail: `既定ブランチ ${branch} に CODEOWNERS が無く、構成(ルールセット ${ruleset ?? 'なし'})もコードオーナーの承認を要しない。確認済みには数えない` };
+    } else {
+      const api = `repos/${repo}/codeowners/errors?ref=${encodeURIComponent(branch)}`;
+      const e = ghJson(['api', api]);
+      const errors = Array.isArray(e.value?.errors) ? e.value.errors : null;
+      const owner = found.content.split('\n').filter((l) => !/^\s*#/.test(l) && /@OWNER\b/.test(l)).length;
+      const local = codeownersState(ROOT);
+      const others = local.places.filter((p) => p !== found.path);
+      const evidence = { path: found.path, blobSha: found.blobSha, errorCount: errors ? errors.length : null, api, fetchedAt };
+      if (!errors) items.codeowners = fromFailure(e, 'codeowners/errors を読めない');
+      else if (errors.length || owner)
+        items.codeowners = { status: 'mismatch', detail: `効いている CODEOWNERS(${found.path})に${errors.length ? ` 誤り ${errors.length} 件(${errors.slice(0, 3).map((x) => `${x?.line ?? '?'} 行: ${x?.kind ?? x?.message ?? '不明'}`).join('・')})` : ''}${owner ? ` 置き換えていない @OWNER ${owner} 行` : ''}がある`, evidence };
+      else items.codeowners = confirmedWith('codeowners', `効いている CODEOWNERS は ${found.path}(codeowners/errors は 0 件)${others.length ? `。手元には ${others.join('・')} もあるが GitHub は使わない` : ''}`, evidence);
+    }
+  }
+
+  // 1d. ルールセットのバイパスの主体(#315 R-4)。テンプレートのルールセットはバイパスの主体を持たない。主体があれば、gate-g5 と
+  //     承認の規則を通らずにマージできる経路がある。bypass_actors は admin の権限でしか返らない(無ければ権限不足で読めない)
+  if (!repo) items.bypass = noRepo();
+  else if (!effectiveRulesetIds.length) items.bypass = (items.ruleset?.status === 'mismatch' && items.ruleset?.evidence?.rulesetIds?.length === 0) || (rulesetViaClassic && items.ruleset?.status === 'confirmed')
+    ? { status: 'notApplicable', detail: rulesetViaClassic ? '効いているルールセットが無い(統制は旧来のブランチ保護で、管理者にも適用されている)。確認済みには数えない' : '効いているルールセットが無い(ルールセットの項目で不一致)。確認済みには数えない' }
+    : unconfirmed(`ルールセットを読めないため、バイパスの主体を確かめられない(${items.ruleset?.detail ?? ''})`, items.ruleset?.reason ?? 'unreadable');
+  else {
+    const fetchedAt = localIso();
+    const actors = [];
+    let failure = null;
+    for (const id of effectiveRulesetIds) {
+      const r = ghJson(['api', `repos/${repo}/rulesets/${id}`]);
+      if (!r.value || typeof r.value !== 'object') {
+        failure = r;
+        break;
+      }
+      if (!Array.isArray(r.value.bypass_actors)) {
+        failure = { why: `ルールセット ${id} の応答に bypass_actors が無い(admin の権限でしか返らない)`, reason: 'permission' };
+        break;
+      }
+      for (const a of r.value.bypass_actors) actors.push(`${a?.actor_type ?? '?'}#${a?.actor_id ?? '-'}(${a?.bypass_mode ?? '?'}。ルールセット ${id})`);
+    }
+    const evidence = { rulesetIds: effectiveRulesetIds, actors, api: `repos/${repo}/rulesets/<id>`, fetchedAt };
+    if (failure) items.bypass = fromFailure(failure, 'バイパスの主体を読めない');
+    else if (actors.length) items.bypass = { status: 'mismatch', detail: `バイパスの主体がある: ${actors.join('・')}。テンプレートのルールセットは主体を持たない。置くなら例外として記録し、主体の操作を出荷の集約で確かめる`, evidence };
+    else items.bypass = confirmedWith('bypass', `効いているルールセット ${effectiveRulesetIds.join('・')} にバイパスの主体は無い`, evidence);
   }
 
   // 2. PR のレビューの取得(gate-g5 のワークフローと同じ API)
   let latestPr = null;
-  if (!repo) items.prReviews = unconfirmed('対象のリポジトリを特定できない');
+  if (!repo) items.prReviews = noRepo();
   else {
     let pr = arg('--pr', null);
     if (!pr) {
       const l = ghJson(['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '1', '--json', 'number']);
       pr = Array.isArray(l.value) && l.value[0]?.number ? String(l.value[0].number) : null;
-      if (!pr) items.prReviews = unconfirmed(l.why ? `PR の一覧を読めない(${l.why})` : 'マージ済みの PR が無い(最初の PR の後に確かめる。--pr N で指定できる)');
+      if (!pr) items.prReviews = l.why ? unconfirmed(`PR の一覧を読めない(${l.why})`, l.reason ?? 'unreadable') : unconfirmed('マージ済みの PR が無い(最初の PR の後に確かめる。--pr N で指定できる)', 'no-subject');
     }
     latestPr = pr;
     if (pr) {
       const api = `repos/${repo}/pulls/${pr}/reviews`;
       const fetchedAt = localIso();
       const r = ghJson(['api', api]);
-      if (!Array.isArray(r.value)) items.prReviews = unconfirmed(r.why ?? 'レビューを読めない');
-      else if (!r.value.length) items.prReviews = unconfirmed(`PR #${pr} のレビューが 0 件(承認のある PR で確かめる。--pr N)`);
+      if (!Array.isArray(r.value)) items.prReviews = fromFailure(r, 'レビューを読めない');
+      else if (!r.value.length) items.prReviews = unconfirmed(`PR #${pr} のレビューが 0 件(承認のある PR で確かめる。--pr N)`, 'no-subject');
       else {
         const shaped = r.value.filter((x) => x && typeof x === 'object' && x.user?.login && x.state);
         // 実環境の識別: レビューの id(PR の画面のレビューのリンク #pullrequestreview-<id> と一致する)と最後の提出時刻(サーバの時刻)
@@ -1475,32 +1621,33 @@ function envCheck() {
   }
 
   // 3. ship-evidence が取り込む gate-g5 の成果物
-  if (!repo) items.shipEvidence = unconfirmed('対象のリポジトリを特定できない');
+  if (!repo) items.shipEvidence = noRepo();
   else {
     const fetchedAt = localIso();
     const runs = ghJson(['run', 'list', '--repo', repo, '--workflow', 'gate-g5', '--status', 'success', '--limit', '1', '--json', 'databaseId,url,createdAt']);
     const first = Array.isArray(runs.value) && runs.value[0] && typeof runs.value[0] === 'object' ? runs.value[0] : null;
     const id = first?.databaseId ? first.databaseId : null;
-    if (!id) items.shipEvidence = unconfirmed(runs.why ? `gate-g5 の実行の一覧を読めない(${runs.why})` : 'gate-g5 の成功した実行が無い(最初の PR の後に確かめる)');
+    if (!id) items.shipEvidence = runs.why ? unconfirmed(`gate-g5 の実行の一覧を読めない(${runs.why})`, runs.reason ?? 'unreadable') : unconfirmed('gate-g5 の成功した実行が無い(最初の PR の後に確かめる)', 'no-subject');
     else {
       const api = `repos/${repo}/actions/runs/${id}/artifacts`;
       const a = ghJson(['api', api]);
       const names = Array.isArray(a.value?.artifacts) ? a.value.artifacts.map((x) => x?.name).filter(Boolean) : null;
-      if (!names) items.shipEvidence = unconfirmed(a.why ?? `gate-g5 の実行 ${id} の成果物を読めない`);
+      if (!names) items.shipEvidence = fromFailure(a, `gate-g5 の実行 ${id} の成果物を読めない`);
       else {
         const missing = ['license-scan', 'test-results'].filter((n) => !names.includes(n));
         // 実環境の識別: 実行の id と URL(Actions の画面の URL と一致する)、実行の作成時刻(サーバの時刻)、成果物の id
         const artifactIds = a.value.artifacts.map((x) => x?.id).filter((v) => Number.isFinite(Number(v)) && Number(v) > 0).map(Number);
         const evidence = { runId: Number(id), runUrl: typeof first.url === 'string' ? first.url : null, runCreatedAt: typeof first.createdAt === 'string' ? first.createdAt : null, artifactIds, api, fetchedAt };
         items.shipEvidence = missing.length
-          ? unconfirmed(`gate-g5 の実行 ${id} の成果物に ${missing.join('・')} が無い(ある成果物: ${names.join('/') || 'なし'})`)
+          ? { status: 'mismatch', detail: `gate-g5 の実行 ${id} の成果物に ${missing.join('・')} が無い(ある成果物: ${names.join('/') || 'なし'})`, evidence }
           : confirmedWith('shipEvidence', `gate-g5 の実行 ${id} に license-scan と test-results がある(ship-evidence が gh run download で取り込む形)`, evidence);
       }
     }
   }
   // 4. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
   const findings = recordsFindings({ repo, branch, latestPr });
-  const allOk = Object.values(items).every((i) => i.status === 'confirmed');
+  // 対象外は確認済みに数えない。全体の成否は、各項目が確認済みか対象外であること(#315 R-4)
+  const allOk = Object.values(items).every((i) => i.status === 'confirmed' || i.status === 'notApplicable');
   // gh の版。2.30.0 より前の gh はレビューの承認した版(commit.oid)を返さず、集約がすべての承認を数えない(突合 X-7)
   let ghVersion = null;
   try {
@@ -1521,12 +1668,13 @@ function envCheck() {
     config: { reviewerCount: want, ruleset, g6: config.gates?.g6?.state ?? null },
     items,
     findings,
-    note: '実環境の gh で読んだ結果。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる。findings は記録用ブランチ(records)の所見で、確認済みの判定に入れない(人が読む。mismatch は強制層の縮小または保護の欠落)',
+    integrationId: '未確認(必須チェックの発行元 integration_id の固定は、実走で確かめてから規定にする。#315 R-4)',
+    note: '実環境の gh で読んだ結果。結果は確認済み / 不一致 / 未確認(理由)/ 対象外の4値で、対象外は確認済みに数えない(#315 R-4)。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる。findings は記録用ブランチ(records)の所見で、確認済みの判定に入れない(人が読む。mismatch は強制層の縮小または保護の欠落)',
   };
   writeText(ENV_CHECK_FILE, JSON.stringify(record, null, 2) + '\n');
   for (const [id, it] of Object.entries(items)) {
-    const line = `${ENV_ITEM_LABEL[id]}: ${it.status === 'confirmed' ? '確認済み' : it.status === 'mismatch' ? '構成と一致しない' : '未確認(読めない)'}(${it.detail})`;
-    if (it.status === 'confirmed') notice(line);
+    const line = `${ENV_ITEM_LABEL[id]}: ${envStatusLabel(it)}(${it.detail})`;
+    if (it.status === 'confirmed' || it.status === 'notApplicable') notice(line);
     else warn(line);
   }
   for (const [id, it] of Object.entries(findings)) {

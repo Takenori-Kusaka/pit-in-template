@@ -1127,7 +1127,7 @@ function continuityNotes(config) {
   const env = readEnvCheck(config);
   if (!env.confirmed) {
     notes.push(
-      `実環境の統制の確認(ルールセットの適用・PR のレビューの取得・ship-evidence の成果物): ${env.summary}。` +
+      `実環境の統制の確認(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・PR のレビューの取得・ship-evidence の成果物。確認済み / 不一致 / 未確認 / 対象外の4値。対象外は確認済みに数えない): ${env.summary}。` +
         `${seatText(config, 'qa-gatekeeper')}または採用者が、実環境の gh で \`node scripts/gate/adoption-trial.mjs env-check --by <氏名>\` を実行し、記録 ${'docs/adoption-trial/env-check.json'} をコミットする。模擬の gh では「読めない」と出て未確認のまま残る(読む: ${READ.artifact('adoption-trial')})`
     );
   }
