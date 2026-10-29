@@ -71,6 +71,10 @@ export const CHANGE_KINDS = {
   outage: null,
   settings: null,
   notice: null,
+  // 従う本標準の版の切り替え(標準 第1章 1.10.3)と、適用の終了(同 1.10.4)。体制の変化点に数えない。
+  // どちらも適用の開始を動かさない(同 1.10.1)。process-compass #313 / ADR-0083
+  edition: null,
+  end: null,
 };
 
 /** 変化点に数えない種別の表示名 */
@@ -79,7 +83,117 @@ export const KIND_NOTE = {
   outage: 'AI が使えない期間(変化点に数えない)',
   settings: '個別の値の変更(変化点に数えない)',
   notice: '即時通知の記録(変化点に数えない)',
+  edition: '従う本標準の版の切り替え(変化点に数えない。適用の開始を動かさない)',
+  end: '適用の終了(変化点に数えない)',
 };
+
+// ---------------------------------------------------------------- 本標準の版・適用の終了・主張の名(標準 第1章 1.10。process-compass #313 / ADR-0083)
+//
+// 版は、標準の保守者が発行したものだけを指す(「第N版」、要求事項を変えない改訂は「第N版 修正M」)。
+// 発行していない状態は作業中の版で、適用の表明に限りコミットとともに名指せる。2つの適合の主張は発行した版を要する。構成の standard.edition が
+// 無い旧い構成と null の構成は、作業中の版に従うものとして読む(後方互換。欄を足さない)
+
+/** 版の書式。第N版、または 第N版 修正M */
+export const EDITION_PATTERN = /^第([1-9][0-9]*)版( 修正([1-9][0-9]*))?$/;
+/** 発行していない状態の表示 */
+export const WORKING_DRAFT = '作業中の版(未発行)';
+
+/** 構成が従う版。発行した版でなければ null(作業中の版) */
+export function standardEdition(config) {
+  const e = config?.standard?.edition ?? null;
+  return typeof e === 'string' && EDITION_PATTERN.test(e) ? e : null;
+}
+
+/**
+ * 作業中の版の表示。複製した知識ベースの source(edition が null のとき)から、最後に発行した版(basedOn)と
+ * 生成元のコミットを添える。作業中の版は、適用の表明に限り、コミットとともに名指せる(標準 第1章 1.10.3。ADR-0083 X-4)
+ */
+export function workingDraftLabel(kbSource) {
+  const after = kbSource?.basedOn ? `${kbSource.basedOn}の後` : '未発行';
+  const commit = typeof kbSource?.commit === 'string' && /^[0-9a-f]{7,40}$/.test(kbSource.commit) ? `。標準のコミット ${kbSource.commit.slice(0, 12)}` : '';
+  return `作業中の版(${after}${commit})`;
+}
+
+/** 版の表示。作業中の版は「作業中の版(未発行。標準のコミット …)」 */
+export function editionLabel(config, kbSource = null) {
+  return standardEdition(config) ?? (kbSource ? workingDraftLabel(kbSource) : WORKING_DRAFT);
+}
+
+/** 適用の終了の理由の区分(標準 第1章 1.10.4) */
+export const END_REASONS = {
+  closed: '案件の完了・中止',
+  'operation-ended': '運用の終了',
+  withdrawn: '採用の取り下げ',
+};
+
+/** 適用の終了の記録。最後の end の記録を返す。無ければ null(適用を続けているものとして扱う) */
+export function applicationEnd(config) {
+  const log = Array.isArray(config?.changeLog) ? config.changeLog : [];
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === 'end') {
+      return { index: i, date: String(e.date ?? '').slice(0, 10), reason: e.end?.reason ?? null, reasonLabel: END_REASONS[e.end?.reason] ?? '理由の区分なし', decidedBy: e.decidedBy ?? null };
+    }
+  }
+  return null;
+}
+
+/**
+ * 逸脱の閉じた列挙(標準 第1章 1.10.2)。本標準が条項で条件と代償措置を定めて認めた離脱に限る。
+ * 構成の deviations[] には、条件と代償措置を定めていない兼務(1〜2名の体制で成立しない兼務禁止)も入る。
+ * 構成の形は変えず(旧い構成の要約値を保つため)、読むときにこの列挙で分ける
+ */
+export const CLOSED_DEVIATIONS = [
+  { id: 'D-1', label: '開発ライン × 出荷判定者の兼務', clause: '第3章 3.5.2', match: (d) => d?.gate === 'g7' },
+];
+
+/** 構成の deviations[] を、閉じた列挙の逸脱(listed)と、列挙に無い離脱(unlisted)に分ける */
+export function classifyDeviations(config) {
+  const listed = [];
+  const unlisted = [];
+  for (const d of config?.deviations ?? []) {
+    const hit = CLOSED_DEVIATIONS.find((c) => c.match(d));
+    if (hit) listed.push({ ...d, closedListId: hit.id, clause: hit.clause });
+    else unlisted.push(d);
+  }
+  return { listed, unlisted };
+}
+
+/**
+ * 構成だけから決まる、述べられる表明と主張(標準 第1章 1.10.2・1.10.3・1.10.4)。
+ * 記録の欠落は出荷の証跡の集約が数えるため、ここでは判定しない(「記録の欠落が無い範囲に限る」と添える)。
+ * 表明・主張の文そのものは出力しない(IMPL-0120。降りていない)
+ */
+export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {}) {
+  const edition = standardEdition(config);
+  const ended = applicationEnd(config);
+  const { listed, unlisted } = classifyDeviations(config);
+  const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
+  const blockers = [];
+  // 作業中の版は、適用の表明に限り、コミットとともに名指せる。2つの適合の主張は発行した版を要する(第1章 1.10.2・1.10.3)
+  if (!edition) blockers.push(`従う版が作業中の版です。適用の表明は作業中の版をコミットとともに名指せますが、適合の主張と逸脱を伴う適合の主張は発行した版を要します(第1章 1.10.3)`);
+  if (ended && !ignoreEnd) blockers.push(`適用を終えています(${ended.date}。${ended.reasonLabel})。現在形の適用の表明をしません(第1章 1.10.4)`);
+  if (unmet.length) blockers.push(`未達のゲートがあります(${unmet.join(' / ')})。適合の主張を述べられません`);
+  if (unlisted.length) blockers.push(`逸脱の閉じた列挙に無い離脱があります(${unlisted.map((d) => d.label).join(' / ')})。適合の主張を述べられません`);
+  let name;
+  if (ended && !ignoreEnd) name = null;
+  else if (!edition || unmet.length || unlisted.length) name = '適用の表明';
+  else if (listed.length) name = '逸脱を伴う適合の主張';
+  else name = '適合の主張';
+  return { edition, editionLabel: editionLabel(config, kbSource), ended, unmet, listed, unlisted, blockers, name };
+}
+
+/**
+ * 適用の開始のコミット(configured が true になった最初のコミット)の構成が、構成の初期化の記録
+ * (changeLog[0] の init)を持つか(標準 第1章 1.10.1)。持たなければ問題の文を返す。境は動かさない
+ */
+export function initRecordProblem(configAtInit) {
+  const first = Array.isArray(configAtInit?.changeLog) ? configAtInit.changeLog[0] : undefined;
+  if (first?.kind === 'init') return null;
+  return first
+    ? `適用の開始のコミットの構成の changeLog[0] が、構成の初期化の記録(種別 init)ではありません(種別 "${first.kind}")`
+    : '適用の開始のコミットの構成に、構成の初期化の記録(changeLog[0] の種別 init)がありません';
+}
 
 /** AI が使えない期間の扱い(D-0 節12「AI が使えないときの扱い」と同じ語彙) */
 export const OUTAGE_HANDLING = { human: '人へ戻した', stop: '止めた' };
@@ -1786,4 +1900,29 @@ export function aiAccountCheck(config, login, bot = false) {
   const v = confirmedAccounts(config).get(key);
   if (listed && v && v.id === person.id) return { reason: null, overridden: true, by: v.decidedBy };
   return { reason, overridden: false };
+}
+
+/**
+ * 適用の開始のコミット。process.config.json の configured が true になった最初のコミット(標準 第1章 1.10.1)。
+ * changeLog は読まずに境を決める(changeLog[0] は切り詰め・書き換えができ、境を後から動かせるため。ADR-0083)。
+ * 返す config は、そのコミットの構成。初期化の記録の有無は initRecordProblem で確かめる
+ */
+export function findInitCommit(cwd = ROOT) {
+  let hashes = [];
+  try {
+    hashes = execFileSync('git', ['log', '--reverse', '--format=%H', '--', 'process.config.json'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n')
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+  for (const h of hashes) {
+    try {
+      const c = JSON.parse(execFileSync('git', ['show', `${h}:process.config.json`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+      if (c?.configured === true) return { hash: h, config: c };
+    } catch {
+      // 読めない版は飛ばす
+    }
+  }
+  return null;
 }

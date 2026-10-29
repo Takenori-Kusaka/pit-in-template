@@ -36,6 +36,8 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `ruleApprovedBy` | 委任の規則の追加・拡大を承認した者。**AI維持管理者の席の責任者に限る**(`kinds/mode.md`) |
 | `sgRecord` | ステージを前へ戻す変更で、SG の判定記録の所在(`docs/gates/` 配下の実在する .md) |
 | `notice` | 即時通知の記録 `{ "to", "at" }`(`kinds/notice.md`) |
+| `edition` | 種別 `edition` の切り替える版(`第N版` / `第N版 修正M`)。複製した知識ベースの版に限る(`kinds/edition.md`) |
+| `endReason` | 種別 `end` の理由の区分(`closed` / `operation-ended` / `withdrawn`。`kinds/end.md`) |
 | `invalidatedChecks` | 無効になった確認と、やり直しの要否(`reference/direction.md`) |
 | `recheckDue` | 失効した適合性確認・例外の、再確認の期日 |
 | `d0Version` | D-0 の新しい版。省略すると末尾の数字を1つ進める(`1.2` → `1.3`)。人が先に frontmatter の版を上げていれば、その版を使う。**版を下げる指定は拒否**。版を上げるとき、frontmatter の `approver` と `approved_at` は、この変化点の決定者と日付から書かれる |

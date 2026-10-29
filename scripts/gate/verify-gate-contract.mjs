@@ -31,6 +31,10 @@ import {
   SEAT_CEILING,
   MODE_LABEL,
   CHANGE_KINDS,
+  EDITION_PATTERN,
+  END_REASONS,
+  findInitCommit,
+  initRecordProblem,
   modeRank,
   qualificationProblems,
   classifyDelegation,
@@ -283,9 +287,9 @@ for (const d of config.deviations ?? []) {
   if (!d.reason) problems.push(`deviations の ${id} に reason がありません`);
   if (!d.resolveWhen) problems.push(`deviations の ${id} に解消の時点(resolveWhen)がありません`);
   if (!d.gate) {
-    // 兼務の逸脱(1〜2名の体制)。代償措置は定められていない。記録と表示を求める(第3章 3.5)
+    // 成立しない兼務禁止(列挙に無い離脱。1〜2名の体制)。代償措置は定められていない。記録と表示を求める(第3章 3.5)
     if (config.answers?.['q-team-size'] !== 'size-1-2') {
-      problems.push(`deviations の ${id}: 兼務を逸脱として記録できるのは 1〜2名の体制に限ります(第3章 3.5)`);
+      problems.push(`deviations の ${id}: 成立しない兼務禁止(列挙に無い離脱)を記録できるのは 1〜2名の体制に限ります(第3章 3.5、第1章 1.10.2)`);
     }
     continue;
   }
@@ -486,9 +490,9 @@ if (!Array.isArray(config.seats)) {
   }
   for (const v of sep.deviated) {
     if (!(config.deviations ?? []).some((d) => d.separationId === v.id)) {
-      problems.push(`兼務 ${v.pair} は 1〜2名の体制で成立しない組ですが、deviations[] に逸脱の記録がありません。/process-change で構成を再生成してください(第3章 3.5)`);
+      problems.push(`兼務 ${v.pair} は 1〜2名の体制で成立しない組ですが、deviations[] に記録(列挙に無い離脱)がありません。/process-change で構成を再生成してください(第3章 3.5)`);
     } else {
-      notes.push(`兼務を逸脱として記録しています: ${v.pair}。D-0 体制図へ記録し、表示し続けます`);
+      notes.push(`成立しない兼務禁止(列挙に無い離脱。逸脱ではない)として記録しています: ${v.pair}。D-0 体制図へ記録し、表示し続けます。この兼務がある範囲では、適合の主張を述べられません(第1章 1.10.2)`);
     }
   }
   for (const v of sep.notIndependent) {
@@ -541,10 +545,44 @@ if (!Array.isArray(config.seats)) {
       if (e.kind === 'outage' && !(e.outage?.from && e.outage.handling in OUTAGE_HANDLING)) {
         problems.push(`changeLog[${i}]: AI が使えない期間の記録に、開始日またはその間の扱い(人へ戻した / 止めた)がありません`);
       }
+      // 版の切り替えと適用の終了は、記名の自然人の決定である(標準 第1章 1.10.3・1.10.4)
+      if (e.kind === 'edition' && !(EDITION_PATTERN.test(e.edition?.to ?? '') && e.decidedBy && e.reason)) {
+        problems.push(`changeLog[${i}]: 版の切り替えの記録に、切り替えた版(第N版 / 第N版 修正M)、決定した者、理由のいずれかがありません(第1章 1.10.3)`);
+      }
+      if (e.kind === 'end' && !(e.end?.reason in END_REASONS && e.decidedBy)) {
+        problems.push(`changeLog[${i}]: 適用の終了の記録に、理由の区分(${Object.keys(END_REASONS).join(' / ')})または決定した者がありません(第1章 1.10.4)`);
+      }
       if (e.notice?.to && aiNameBlocked(config, e.notice.to)) {
         problems.push(`changeLog[${i}]: 通知先 "${e.notice.to}" は ${aiNameBlocked(config, e.notice.to)}。AI の名義の記名を受け付けません`);
       }
     });
+    // 従う本標準の版(第1章 1.10.3)。欄の無い旧い構成と null は作業中の版として読む
+    if (config.standard !== undefined && config.standard !== null) {
+      const ed = config.standard?.edition;
+      if (ed !== null && ed !== undefined && !EDITION_PATTERN.test(String(ed))) problems.push(`standard.edition "${ed}" は、第N版 / 第N版 修正M か null(作業中の版)で書きます(第1章 1.10.3)`);
+    }
+    // 適用の開始のコミット(configured が true になった最初のコミット)が、構成の初期化の記録を持つか(第1章 1.10.1)。
+    // 履歴の記録の欠落であり、直せないため失敗にしない。出荷の証跡の集約が、範囲に含む出荷で記録の欠落として出す
+    // 境のコミットが検査の範囲(PR の差分、または手元で既定ブランチにまだ入っていない変更)にあれば、欠けを作る時点なので失敗にする。
+    // 既定ブランチに入った過去の欠けは直せないため、注記に留める(ADR-0083 X-13)
+    const init = findInitCommit(ROOT);
+    const initProblem = init ? initRecordProblem(init.config) : null;
+    if (initProblem) {
+      const gitOk = (...a) => {
+        try {
+          execFileSync('git', a, { cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'] });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const baseRef = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : null;
+      const baseExists = baseRef && gitOk('rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`);
+      const inScope = baseExists ? !gitOk('merge-base', '--is-ancestor', init.hash, baseRef) : gitOk('merge-base', '--is-ancestor', 'HEAD', init.hash);
+      const msg = `${initProblem}(${init.hash.slice(0, 12)})。記録の欠落です。適用の開始の境は動かしません(第1章 1.10.1)`;
+      if (inScope) problems.push(`${msg}。適用の開始のコミットが検査の範囲にあります。同じコミットに changeLog の init を書いてください`);
+      else notes.push(msg);
+    }
     // 即時通知(第3章 3.13.6)の記録が済んでいない変化点。出荷判定の証跡の集約が、記録の欠落として扱う
     for (const n of pendingNotices(config)) {
       notes.push(

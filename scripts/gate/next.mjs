@@ -647,6 +647,18 @@ export function computeNext({ fetch = true, network = true } = {}) {
       );
     }
   }
+  // 従う本標準の版の欄(第8章「調整は宣言を伴う」要求事項4。標準 #313 / ADR-0083 X-15)。要求事項4 を足す前の D-0 には欄が無い。
+  // 欄が無い・空欄のあいだは宣言の記載の欠け(記録の欠落)。段階を止めない。旧い構成の移行は標準 #315
+  if (fs.existsSync(d0) && config.configured !== false) {
+    const line = fs.readFileSync(d0, 'utf8').split('\n').find((l) => /^- 従う本標準の版:/.test(l));
+    const value = line ? line.replace(/^- 従う本標準の版:\s*/, '').trim() : '';
+    if (!line || !value || /^<.*>$/.test(value)) {
+      result.notes.push(
+        `D-0 冒頭の「従う本標準の版」が${line ? '空欄' : '無い'}。テーラリングの宣言の要求事項4(第8章)の欠けで、記録の欠落に当たる(段階は止めない)。` +
+          `構成の standard.edition(${config.standard?.edition ?? '作業中の版'})と同じ版を、人が書いて PR で入れる。欄が無い D-0 は templates/00-d0-governance.md の冒頭の行を写す`
+      );
+    }
+  }
   // 前提の台帳(テンプレ10)。全ゲート共通の通過条件の入力であり、最初のゲートの材料と同じ時点で作る。
   // 前提の崩れを理由に判定を止めない(第7章 7.10.1)ため、段階を止めない
   const ledgerStep = !projectBlocked && !fs.existsSync(path.join(ROOT, 'docs/assumptions.md'))
