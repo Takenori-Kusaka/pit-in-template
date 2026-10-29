@@ -48,7 +48,7 @@ import { countClarifications, unmappedCriteria } from './verification-trace.mjs'
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
 import { retiredDetectionTypes } from './config.mjs';
-import { MAILBOX, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes } from '../init/generate-profile.mjs';
+import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 
 /**
@@ -99,7 +99,7 @@ function seatOf(config, roleId) {
   return {
     role: roleId,
     name: `${role?.name ?? roleId}(${who})`,
-    labels: MAILBOX[roleId]?.inbox ?? [],
+    labels: mailboxFor(config)[roleId]?.inbox ?? [],
   };
 }
 
@@ -703,7 +703,20 @@ export function computeNext({ fetch = true, network = true } = {}) {
   }
 
   // 技術判断者 = AI運用担当者(基準集合の範囲の起案と承認を別の自然人で行えない。標準 第3章 3.12.3 の要求事項10)。段階を止めない
-  if (config.configured !== false) for (const n of seatPairingNotes(config)) result.notes.push(n);
+  // 非推奨の兼務は D-0 節2 の記録の有無で出し分ける(記録のある兼務は出さない。突合 X-6)
+  const d0Path = path.join(ROOT, 'docs/D-0-governance.md');
+  const d0Text = fs.existsSync(d0Path) ? fs.readFileSync(d0Path, 'utf8') : undefined;
+  if (config.configured !== false) for (const n of seatPairingNotes(config, { d0: d0Text })) result.notes.push(n);
+  // 旧い生成区間(氏名の確認の列を足す前)とだけ一致する D-0 は受け付けるが、再生成を勧める(突合 X-8。期限は置かない)
+  if (config.configured !== false && d0Text) {
+    const legacy = d0LegacyOnlySections(d0Text, config);
+    if (legacy.length) {
+      result.notes.push(
+        `D-0 の${legacy.join('・')}の生成区間が旧い生成(氏名の確認の列の無い形)です。一致として受け付けますが、` +
+          '`node scripts/init/generate-profile.mjs --answers process.config.json` で再生成すると、表5-2 の氏名の確認の列が出ます'
+      );
+    }
+  }
 
   // 企画書のカバレッジの測る範囲の行(#296 で足した行)。G-1 を通過済みの企画書に無ければ欠落として出す(突合 X-4)
   if (config.configured !== false) {
@@ -880,8 +893,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
         roles: [
           { role: 'dev-verifier', action: `/implement で ${t.id} を続け、Draft PR を出す` },
           ...(isGateActive(config, 'g6')
-            ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})` }]
-            : []),
+            ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})。判定記録の後に \`state:ready-to-merge\` を付ける` }]
+            : [{ role: 'qa-gatekeeper', action: 'PR が `state:dev-done` になったら受ける(この構成では G-6 が省略・未達)。PR に G-6 の省略・未達を開示したうえで扱い、`state:ready-to-merge` は使わない(第5章 Label Mailbox 4.3.1)' }]),
         ],
       });
       continue;
