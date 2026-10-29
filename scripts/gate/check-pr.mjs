@@ -29,7 +29,7 @@
 //      根拠が実在すれば、保証の所在の記入だけでよい。基準値は null(基準なし)を取れる。null が効くのは、L2 の宣言と根拠が
 //      実在し、R3 で、確約範囲・コア指定のパスに触れない変更だけである。基底の構成が未設定の初回(chore/process-init)は判定しない。
 //      基底ブランチの台帳に有効な例外承認の行がある PR は、従来どおり規模の確認を要さない(過去の記録を壊さない)
-//   3. 閾値・除外設定と製品のコードの同時変更(禁止事項6): 基底に既にある閾値・除外設定のファイルと、製品の
+//   3. 閾値・除外設定と製品のコードの同時変更(第4章 G-5「基準値と除外設定の変更」): 基底に既にある閾値・除外設定のファイルと、製品の
 //      コードが、同じ PR でともに変わった場合だけ失敗させる。閾値だけの PR と、初回の設定(基底に無いファイル、
 //      基底の構成が未設定)は通す
 //   3b. 統制の設定の陰性の確認(標準 第4章 G-5 / ADR-0073・ADR-0074): 閾値・除外設定(3 と同じ)、ルールセット・フック・権限・
@@ -166,7 +166,7 @@ export const LOCK_FILES = [
 ];
 
 /**
- * 閾値・除外設定のファイル(禁止事項6)。アダプタの thresholdFiles を足す。構成(process.config.json の
+ * 閾値・除外設定のファイル(第4章 G-5「基準値と除外設定の変更」)。アダプタの thresholdFiles を足す。構成(process.config.json の
  * ci・task・guard)とアダプタの定義は、ファイルの種類によらず閾値として扱う(下の thresholdChanges)
  */
 export const THRESHOLD_FILES = [
@@ -995,7 +995,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   result.thresholds = { changed: thresholdChanges, initial, product: productCode.length };
   if (thresholdChanges.length && productCode.length) {
     result.errors.push(
-      `閾値・除外設定と製品のコードが同じ PR で変わっています(禁止事項6)。閾値・除外設定: ${thresholdChanges.slice(0, 5).join(', ')} / 製品のコード: ${productCode.slice(0, 5).join(', ')}${productCode.length > 5 ? ` ほか ${productCode.length - 5} 件` : ''}。` +
+      `閾値・除外設定と製品のコードが同じ PR で変わっています(第4章 G-5「基準値と除外設定の変更」)。閾値・除外設定: ${thresholdChanges.slice(0, 5).join(', ')} / 製品のコード: ${productCode.slice(0, 5).join(', ')}${productCode.length > 5 ? ` ほか ${productCode.length - 5} 件` : ''}。` +
         '閾値・除外設定の変更を別の PR に分ける'
     );
   } else if (thresholdChanges.length) {
