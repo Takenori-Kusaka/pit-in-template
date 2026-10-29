@@ -20,22 +20,24 @@ function check(name, ok, detail = '') {
 }
 
 const wf = fs.readFileSync(path.join(ROOT, G5_WORKFLOW), 'utf8');
-const NEEDS = 'needs: [config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan, pr-rules]';
+const NEEDS = 'needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules]';
 check('テンプレートのワークフローに、集約の needs の行がある(試験の目印)', wf.includes(NEEDS));
 
 // 1. テンプレートのワークフローそのもの
 {
   const f = aggregateFindings(wf);
+  // IMPL-0142:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('テンプレートの gate-g5.yml は不備 0 件', f.problems.length === 0, f.problems.join(' / '));
-  check('集約の needs を 8 件読む', f.needs.length === 8, JSON.stringify(f.needs));
-  check('基準6(このテンプレートの CI に無い)を注意として出す', f.notes.some((n) => /基準6/.test(n)));
+  check('集約の needs を 9 件読む', f.needs.length === 9, JSON.stringify(f.needs));
+  check('基準6 のうち確かめていない部分(アンカー・逆引用符・分量の上限)を注意として出す', f.notes.some((n) => /基準6.*分量の上限/.test(n)));
 }
 
 // 2. needs から 5 つのジョブを外す(秘匿情報の検査を含む。品質保証の委員が実行して確かめた場面)
 {
   const f = aggregateFindings(wf.replace(NEEDS, 'needs: [config, contract, pr-rules]'));
   const crit = (n) => f.problems.some((p) => new RegExp(`G-5 基準${n}\\(`).test(p));
-  check('needs から外すと、基準1・2・3・4・5・7 の不備が出る', [1, 2, 3, 4, 5, 7].every(crit), f.problems.join(' / '));
+  // IMPL-0142:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('needs から外すと、基準1・2・3・4・5・6・7 の不備が出る', [1, 2, 3, 4, 5, 6, 7].every(crit), f.problems.join(' / '));
   check('秘匿情報の検査を外した不備が「第8章の調整だけ」を案内する', f.problems.some((p) => /基準7.*第8章の調整だけ/.test(p)));
 }
 
@@ -47,9 +49,9 @@ check('テンプレートのワークフローに、集約の needs の行があ
 
 // 4. needs の箇条の書き方も読む
 {
-  const list = wf.replace(NEEDS, 'needs:\n      - config\n      - contract\n      - test\n      - static-analysis\n      - spec-lint\n      - ip-clearance\n      - secret-scan\n      - pr-rules');
+  const list = wf.replace(NEEDS, 'needs:\n      - config\n      - contract\n      - test\n      - static-analysis\n      - spec-lint\n      - context-format\n      - ip-clearance\n      - secret-scan\n      - pr-rules');
   const f = aggregateFindings(list);
-  check('needs を箇条で書いても読む(不備 0 件)', f.problems.length === 0 && f.needs.length === 8, f.problems.join(' / '));
+  check('needs を箇条で書いても読む(不備 0 件)', f.problems.length === 0 && f.needs.length === 9, f.problems.join(' / '));
   check('needsOf は 1 語の needs を読む', JSON.stringify(needsOf('    needs: config\n')) === '["config"]');
 }
 
@@ -91,7 +93,9 @@ check('テンプレートのワークフローに、集約の needs の行があ
   const full = aggregateFindings(wf);
   const cut = aggregateFindings(wf.replace(NEEDS, 'needs: [config, contract, pr-rules]'));
   const st = (o) => machineCheckStatus({ adapter, hasTarget: true, noRecord: '記録なし', ...o });
+  // IMPL-0147:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('項目4: 集約が使うジョブは「実施」', /^実施/.test(st({ aggregate: full, name: 'secretScan', job: 'secret-scan' })));
+  // IMPL-0147:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('項目4: コマンドがあっても集約が使わなければ「未実施」', /^未実施\(ジョブ secret-scan を集約 gate-g5 が合否に使っていない\)/.test(st({ aggregate: cut, name: 'secretScan', job: 'secret-scan' })));
   check('項目4: コマンドが無ければ「未実施(コマンドが未設定)」', st({ aggregate: full, name: 'lint', job: 'static-analysis' }) === '未実施(コマンドが未設定)');
   check('項目4: 集約の定義が無ければ「未実施」', /^未実施\(集約 gate-g5 の定義/.test(st({ aggregate: null, name: 'test', job: 'test' })));

@@ -104,10 +104,12 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const c12 = copyOf(12);
   const [j] = judgementsFromCopy(c12);
   const h = headMatches(c12, j);
+  // IMPL-0129:ok(違反と適合の対。標準の実装マーク。process-compass #314 の規約を #321 との統合で当てる)
   check('head の一致: 通過の commit_id == head_sha_at_merge', h.match === true && h.head === c12.head_sha_at_merge, JSON.stringify(h));
   const c13 = copyOf(13);
   const [j13] = judgementsFromCopy(c13);
   const h13 = headMatches(c13, j13);
+  // IMPL-0129:ng(違反と適合の対。標準の実装マーク。process-compass #314 の規約を #321 との統合で当てる)
   check('head の不一致: レビューの後に push があった(確定していない版を取り込んだ)', h13.match === false && h13.head === c13.head_sha_at_merge, JSON.stringify(h13));
   const noHead = { ...c12 };
   delete noHead.head_sha_at_merge;

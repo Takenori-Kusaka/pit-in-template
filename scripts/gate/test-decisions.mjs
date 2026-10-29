@@ -43,12 +43,14 @@ const D = (f) => `${DECISIONS_DIR}/${f}`;
 const A = (f) => `${ARCHIVE_DIR}/${f}`;
 
 // ---------------------------------------------------------------- 通る場面
+// IMPL-0139:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('置き場が空(README だけ)', { [D('README.md')]: '# 判断記録\n\n状態: 置き換え(→ ADR-0009)\n' }, (r) => [...passes(r), ...(r.total === 0 ? [] : [`README を数えた(${r.total} 件)`])]);
 scenario('採用だけ', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) }, passes);
 scenario('一部置き換え: 両側が互いを指し、旧い側は置き場に残る', {
   [D('0001-a.md')]: adr({ num: '0001', state: '一部置き換え(→ ADR-0002 の決定1)' }),
   [D('0002-b.md')]: adr({ num: '0002', state: '採用(2026-10-02)', replaces: 'ADR-0001 の決定2' }),
 }, passes);
+// IMPL-0131:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('全部の置き換え: 旧い側は保管領域へ移してある', {
   [A('0001-a.md')]: adr({ num: '0001', state: '置き換え(→ ADR-0002)' }),
   [D('0002-b.md')]: adr({ num: '0002', state: '採用(2026-10-02)', replaces: 'ADR-0001(全部)' }),
@@ -73,6 +75,7 @@ scenario('新しい側だけが旧い側を指す(旧い側の状態が採用の
   [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-08-01)' }),
   [D('0002-b.md')]: adr({ num: '0002', state: '採用', replaces: 'ADR-0001 の決定7' }),
 }, failsWith(/置き換えた ADR-0001 の状態の行が ADR-0002 を指していない/));
+// IMPL-0131:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('全部を置き換えたのに、旧い側が置き場に残っている', {
   [D('0001-a.md')]: adr({ num: '0001', state: '置き換え(→ ADR-0002)' }),
   [D('0002-b.md')]: adr({ num: '0002', state: '採用', replaces: 'ADR-0001(全部)' }),
@@ -105,7 +108,10 @@ scenario('番号の重複(置き場と保管領域)', {
     parseDecision(adr({ num: '0006', state: '採用(2026-07-01)' }), D('0006-f.md')),
   ];
   const ids = overdueDecisions(list, '2026-10-23').map((d) => d.id);
-  check('期限を過ぎて採用のまま・期限の前の継続だけの判断記録を出し、継続・廃止・期限前・期限なしは出さない', JSON.stringify(ids) === JSON.stringify(['ADR-0001', 'ADR-0005']), JSON.stringify(ids));
+  // IMPL-0140:ng(違反の入力: 期限を過ぎて採用のまま・期限の前の継続だけ。標準の実装マーク。process-compass #314)
+  check('期限を過ぎて採用のまま・期限の前の継続だけの判断記録を出す', ids.includes('ADR-0001') && ids.includes('ADR-0005'), JSON.stringify(ids));
+  // IMPL-0140:ok(適合の入力: 期限の後の継続・廃止・期限前・期限なし)
+  check('期限の後の継続・廃止・期限前・期限なしの判断記録は出さない', ['ADR-0002', 'ADR-0003', 'ADR-0004', 'ADR-0006'].every((id) => !ids.includes(id)) && ids.length === 2, JSON.stringify(ids));
 }
 
 // ---------------------------------------------------------------- 件数の表示(出荷判定の証跡の集約)
@@ -116,6 +122,7 @@ scenario('番号の重複(置き場と保管領域)', {
     parseDecision(adr({ num: '0003', state: '廃止' }), A('0003-c.md')),
   ]);
   const line = countsLine(r);
+  // IMPL-0139:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('件数の表示は状態ごとで、README を数えない旨を添える', /採用 1 件 \/ 一部置き換え 1 件 \/ 置き換え 0 件 \/ 廃止 1 件/.test(line) && /README を数えない/.test(line), line);
 }
 

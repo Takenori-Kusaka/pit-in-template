@@ -1,8 +1,8 @@
 // CLAUDE.md の構成依存部分が process.config.json と一致するかと、常駐の規則の節があるかを検査する。
 //
 //   node scripts/gate/check-process-rules.mjs
-//   node scripts/gate/check-process-rules.mjs --write-resident   常駐の規則の節の一覧を、いまの CLAUDE.md から作り直す
-//                                                               (テンプレートの CLAUDE.md の節を変えたときだけ使う)
+//   node scripts/gate/check-process-rules.mjs --write-resident   常駐の規則の一覧へ、いまの CLAUDE.md の節と規則を追加する
+//                                                               (追加だけ。テンプレートの CLAUDE.md の規則を足したときだけ使う)
 //
 // エージェントが起動時に読む文書は CLAUDE.md です。この文書が構成から乖離すると、
 // 標準の規定も案件の構成も実行主体へ届きません(ADR-0035)。
@@ -10,14 +10,16 @@
 //
 // 区間の外には、標準の規定を常駐させています(規則の索引)。既存のリポジトリへ持ち込むとき、既存の CLAUDE.md を残して
 // 区間の目印だけを足すと、常駐の規則が無いまま区間の検査が通ります。この経路を塞ぐため、常駐の規則の節の一覧
-// (claude-md-resident.json)にある節が CLAUDE.md にあることを確かめます(process-compass #306)。
-// 確かめるのは、節の見出しと、その下に本文があることまでです。節の中の個々の行の有無は確かめません。
+// (claude-md-resident.json)にある節と規則が CLAUDE.md にあることを確かめます(process-compass #306)。
+// 規則は、規則ごとの核の文言を、同じ節の行と正規化して照合します(process-compass #314 / ADR-0084 決定2)。
+// 案件が行の前後へ書き足すこと・並べ替えることは妨げません。一覧から規則を除くのは強制層の縮小です(state:needs-platform)。
+// 除いた規則(omit)の各項目に、理由(reason)と承認した者(approvedBy。AI の名義でない)が無ければ落とします(#314 の突合 X-12)。
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, aiNameBlocked } from './config.mjs';
 import { renderProcessRules, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
-import { RESIDENT_FILE, buildManifest, loadManifest, missingResident } from './claude-md-resident.mjs';
+import { RESIDENT_FILE, buildManifest, loadManifest, missingResident, omitProblems } from './claude-md-resident.mjs';
 
 const config = loadConfig();
 const FILE = path.join(ROOT, 'CLAUDE.md');
@@ -30,9 +32,14 @@ if (!fs.existsSync(FILE)) {
 const text = fs.readFileSync(FILE, 'utf8');
 
 if (process.argv.includes('--write-resident')) {
-  const manifest = buildManifest(text);
+  const previous = loadManifest();
+  const manifest = buildManifest(text, previous);
   fs.writeFileSync(RESIDENT_FILE, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`常駐の規則の節の一覧を書きました: ${path.relative(ROOT, RESIDENT_FILE)}(${manifest.sections.length} 節)`);
+  const added = manifest.rules.length - (previous?.rules?.length ?? 0);
+  console.log(
+    `常駐の規則の一覧へ追加しました: ${path.relative(ROOT, RESIDENT_FILE)}(${manifest.sections.length} 節、規則 ${manifest.rules.length} 件。うち追加 ${added} 件)。` +
+      '追加だけです。一覧から規則を除くのは強制層の縮小であり、state:needs-platform を経て omit へ理由つきで移します'
+  );
   process.exit(0);
 }
 
@@ -75,15 +82,31 @@ if (!manifest) {
   );
   process.exit(1);
 }
-const { absent, empty } = missingResident(text, manifest);
-if (absent.length > 0 || empty.length > 0) {
+const omitIssues = omitProblems(manifest, (name) => aiNameBlocked(config, name));
+if (omitIssues.length > 0) {
+  fail(`常駐の規則の一覧の omit に、不備が ${omitIssues.length} 件あります`);
+  for (const p of omitIssues) console.log(`  ${p}`);
+  console.log('');
+  console.log('一覧から規則を除くのは強制層の縮小です。state:needs-platform を経て、AI維持管理者(人)が承認し、');
+  console.log('omit の項目へ reason(除く理由)と approvedBy(承認した者の氏名)を書きます。AI の名義の承認は受け付けません。');
+  process.exit(1);
+}
+const { absent, empty, rules } = missingResident(text, manifest);
+const ruleCount = manifest.rules?.length ?? 0;
+if (absent.length > 0 || empty.length > 0 || rules.length > 0) {
   fail(
-    `CLAUDE.md に、常駐の規則の節が ${absent.length + empty.length} 件ありません` +
-      `(見出しが無い ${absent.length} 件、見出しだけで本文が無い ${empty.length} 件。一覧は ${manifest.sections.length} 節)`
+    `CLAUDE.md に、常駐の規則の節が ${absent.length + empty.length} 件、規則が ${rules.length} 件ありません` +
+      `(見出しが無い ${absent.length} 件、見出しだけで本文が無い ${empty.length} 件。一覧は ${manifest.sections.length} 節、規則 ${ruleCount} 件)`
   );
   console.log('');
   for (const s of absent) console.log(`  見出しが無い: ${'#'.repeat(s.level)} ${s.heading}`);
   for (const s of empty) console.log(`  本文が無い: ${'#'.repeat(s.level)} ${s.heading}`);
+  for (const r of rules) console.log(`  規則が無い: ${r.id}(節「${r.section}」): ${r.core}`);
+  if (rules.length > 0) {
+    console.log('');
+    console.log('規則の照合は、核の文言(上の文)が同じ節のいずれかの行に含まれるかを見ます。前後への書き足しと並べ替えは妨げません。');
+    console.log('核の文言を変える(否定を除く等)ことは標準の規定の書き換えです。規則を外すなら state:needs-platform を経て、一覧の omit へ理由つきで移します。');
+  }
   console.log('');
   console.log('CLAUDE.md は規則の索引です。構成依存部分(目印の区間)の外に、標準の規定を常駐させています。');
   console.log('区間の目印だけを足した CLAUDE.md では、規則が実行主体へ届きません。');
@@ -97,5 +120,5 @@ if (config.configured === false) {
 } else {
   notice('CLAUDE.md の構成依存部分は構成と一致しています');
 }
-notice(`CLAUDE.md に、常駐の規則の節が揃っています(${manifest.sections.length} 節。節の中の個々の行は確かめていません)`);
+notice(`CLAUDE.md に、常駐の規則が揃っています(${manifest.sections.length} 節、規則 ${ruleCount} 件。核の文言を正規化して照合)`);
 process.exit(0);

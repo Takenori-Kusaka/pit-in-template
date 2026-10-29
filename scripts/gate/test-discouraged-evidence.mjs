@@ -88,6 +88,7 @@ function workspace(seats, recordRow) {
 {
   const r = workspace(SHARED, null);
   const lines = r.out.split('\n').filter((l) => PATTERN.test(l));
+  // IMPL-0298:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('記録が無ければ、集約が非推奨の兼務を記載の欠落として出す', lines.length === 1, r.out);
   check('欠落があるとき、集約は失敗する(G-7 を通過できない)', r.status === 1 && /出荷判定\(G-7\)は通過できません/.test(r.out), r.out);
   check('欠落の文が、写す元(templates/00-d0-governance.md の節2)を示す', lines.some((l) => /templates\/00-d0-governance\.md の節2/.test(l)), lines.join('\n'));
@@ -96,6 +97,7 @@ function workspace(seats, recordRow) {
   const r = workspace(SHARED, RECORD_ROW);
   check('試験の前提: D-0 の記録の表へ行を書き込めた', r.recorded);
   check('記録のある構成でも集約は最後まで走る(試験の前提)', /を出力しました/.test(r.out), r.out);
+  // IMPL-0298:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('組・責任者・理由のある行があれば、非推奨の兼務の欠落は出ない', !r.out.split('\n').some((l) => PATTERN.test(l)), r.out);
 }
 {
