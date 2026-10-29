@@ -541,6 +541,31 @@ function cmd(command, reason, extra = {}) {
 
 // ---------------------------------------------------------------- 状態の導出
 
+/** 委託・受託の構成(軸D)の開発形態の値 */
+const OUTSOURCING_FORMS = ['outsourcer', 'vendor'];
+/** 様式 08 で、判定の結果を受け取る者を書く行(節の番号に依らず行を探す。旧い様式では第2節にある) */
+const RECEIVER_ROWS = ['判定の結果を受け取る者(発注側)', '判定の結果を受け取る者(受注側)'];
+
+/**
+ * 委託・受託の構成で、判定の結果を受け取る者が様式 08(docs/ai-sla.md 第9節)に無い・空欄・雛形の記入例のままなら、注記の文を返す。
+ * それ以外は null。段階を止めない(注記。合否に使わない)。値は構成へ写さず、様式の1か所を読む(process-compass #317 / ADR-0087 決定3)
+ */
+export function outsourcingReceiverNote(config, slaText) {
+  if (!OUTSOURCING_FORMS.includes(config?.answers?.['q-dev-form'])) return null;
+  const blank = [];
+  for (const row of RECEIVER_ROWS) {
+    const line = (slaText ?? '').split('\n').find((l) => l.startsWith(`| ${row} |`));
+    const cell = line ? (line.split('|')[2] ?? '').trim() : '';
+    if (!cell || cell.startsWith('<')) blank.push(row);
+  }
+  if (!blank.length) return null;
+  return (
+    (slaText == null ? '委託・受託の構成だが、docs/ai-sla.md が無い。' : `docs/ai-sla.md の「${blank.join('」「')}」が空欄(雛形の記入例のまま)。`) +
+    '判定の結果を相手の組織へ渡す先が決まっていない。締結時に当事者が決めて記入する(AI が氏名を推測で埋めない)。' +
+    `読む: ${READ.artifact('08-ai-sla')}`
+  );
+}
+
 /**
  * fetch: 記録用ブランチが手元に無いときに origin から 1 回 fetch するか。network: 写しの PR 本文を gh api で補うか。
  * --brief(セッションの開始時)と --offline では、どちらも行わない
@@ -737,6 +762,10 @@ export function computeNext({ fetch = true, network = true } = {}) {
     if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
     // 氏名の確認のうち、1名の体制の自己申告と未記録の確認(追加の裁定。2名以上の名簿の記録の無い確認は契約検査が落とす)
     for (const n of nameConfirmationNotices(config)) result.notes.push(n);
+    // 委託・受託の構成で、判定の結果を受け取る者が空欄(process-compass #317 / ADR-0087 決定3)
+    const slaPath = path.join(ROOT, 'docs/ai-sla.md');
+    const rn = outsourcingReceiverNote(config, fs.existsSync(slaPath) ? fs.readFileSync(slaPath, 'utf8') : null);
+    if (rn) result.notes.push(rn);
   }
 
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と
