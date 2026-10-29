@@ -1,5 +1,5 @@
 name: 技術判断の検討
-description: あとから変えにくい決定。決定したら ADR を起票する
+description: 設計上の選択(標準 第2章 2.6「判断記録の範囲」)。決定したら ADR を起票する
 labels: [adr]
 body:
   - type: markdown
@@ -28,7 +28,7 @@ body:
     id: reversibility
     attributes:
       label: 可逆性
-      description: 後から変えられるか。変えるとしたら何が必要か
+      description: 戻せる選択か(はい / いいえ)。いいえなら、戻せなくなるもの。戻せることを理由に判断記録を省きません
     validations:
       required: true
 

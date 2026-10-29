@@ -1,12 +1,12 @@
 # 成果物テンプレート
 
-ピットイン方式の成果物12種と、標準の様式番号を持たない補助の様式2種です。使うときは写して、`docs/` `specs/` `context/` の該当箇所へ置きます。
+ピットイン方式の成果物13種と、標準の様式番号を持たない補助の様式2種です。使うときは写して、`docs/` `specs/` `context/` の該当箇所へ置きます。
 
 | # | テンプレート | 置き場 | 必須の条件 | 関係するゲート |
 | --- | --- | --- | --- | --- |
 | 0 | [体制図(D-0)](./00-d0-governance.md) | `docs/D-0-governance.md` | **常に必須**(規模によらない) | G-1 の前提条件 |
 | 1 | [機能仕様](./01-feature-spec.md) | `specs/F-NNN/spec.md` | **常に必須** | G-2 / G-4 |
-| 2 | [判断記録(ADR)](./02-adr.md) | `context/decisions/NNNN-*.md` | 設計上の選択を伴った場合 | G-3、G-6(コア機能で添付) |
+| 2 | [判断記録(ADR)](./02-adr.md) | `context/decisions/NNNN-*.md`(全部を置き換えたもの・廃止したものは `context/_archive/decisions/`) | 設計上の選択を伴った場合(標準 第2章 2.6「判断記録の範囲」) | G-3 の判定の材料、G-6(コア機能で添付) |
 | 3 | [技術負債台帳](./03-debt-ledger.md) | `docs/debt-ledger.md` | 妥協・仮実装を受容した場合 | G-5 / G-7 |
 | 4 | [ゲート判定記録](./04-gate-record.md) | `docs/gates/*.md` | **常に必須**(有効なゲートすべて) | 全ゲート |
 | 5 | [運用引き継ぎ文書](./05-handover.md) | `docs/handover.md` | G-7 が有効なら必須 | G-7 |
@@ -16,6 +16,7 @@
 | 9 | [安全リスクアセスメント](./09-safety-risk-assessment.md) | `docs/safety-risk-assessment.md` | 下の4条件のいずれか | G-1 の前提条件 |
 | 10 | [前提の台帳](./10-assumption-ledger.md) | `docs/assumptions.md` | **常に必須** | 全ゲートの通過条件 |
 | 11 | [品質保証の方針と受容の基準(層1)](./11-quality-assurance-policy.md) | `docs/quality-assurance-policy.md` | 組織として品質を保証すると主張する場合(組織に1つ。案件ごとに作らない) | G-1 / G-7 / G-8 |
+| 12 | [プロダクトの原則](./12-product-principles.md) | `context/standards/principles.md` | 置くことは義務ではない。置いた場合は技術判断者が記名する | G-3 基準2 の突合先(判定の対象ではない) |
 | — | [欠陥の台帳](./defect-ledger.md) | `docs/defect-ledger.md` | G-7 が有効なら必須(既知の欠陥が無くても置く) | G-7 基準2 |
 | — | [導入前の検証: 合否の基準](./adoption-trial-criteria.md) | `docs/adoption-trial/criteria.md` | 採用を判断する前(標準 附属書I I.11) | — |
 
