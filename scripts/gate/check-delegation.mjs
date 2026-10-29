@@ -269,7 +269,7 @@ if (!result.eligible) {
   mergeNote = '実行しない(判定だけを行った)';
 } else if (!enabled || !token) {
   mergeNote =
-    '無効(組織がリポジトリの変数 DELEGATED_MERGE_ENABLED と、専用のトークンのシークレット DELEGATED_MERGE_TOKEN で有効化していない)。協働として人の承認を待つ';
+    '無効(組織がリポジトリの変数 DELEGATED_MERGE_ENABLED と、専用のトークン(Environment delegated-merge の秘密情報 DELEGATED_MERGE_TOKEN)で有効化していない)。協働として人の承認を待つ';
 } else {
   const record =
     `${recordText(result.rule)}\n\n` +
@@ -322,6 +322,9 @@ if (!result.eligible) {
 const text = render(result, { number, merge: mergeNote });
 console.log(text);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
+
+// 判定の結果をワークフローの後続のジョブへ渡す(delegation.yml の merge は eligible のときだけ動く)
+if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `eligible=${result.eligible ? 'true' : 'false'}\n`);
 
 if (has('--status')) {
   postStatus(
