@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "8fa53f76de21d611031ee1712f42682cc8a03dda"
+    "commit": "a7f377d137d95e486abedd6cddef286ce47ff589"
   },
   "questions": [
     {
@@ -853,7 +853,7 @@
             "id": "ai-usage"
           },
           "action": "note",
-          "note": "認可済みツールの範囲でAI協調ループを構成する。自律度はL1(人が全承認)から開始し、実績に応じて引き上げる"
+          "note": "認可済みツールの範囲でAI協調ループを構成する。自律度はL1(人が全承認)から開始し、第5章 5.4.5 の判定を経て引き上げる"
         }
       ],
       "reason": "ツール制約がある組織では、解禁条件つきの段階的な自律度引き上げが現実的",
@@ -1548,6 +1548,12 @@
       "range": "G-5 基準3 以外の定量条件",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#新規に変更した範囲へ限定する適用-g-5-基準3-以外の定量条件"
+    },
+    {
+      "title": "登録した変更種別での停止",
+      "range": "5.5.4 で登録した変更種別",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#登録した変更種別での停止適用-554-で登録した変更種別"
     },
     {
       "title": "5.5.4 委任の条件",

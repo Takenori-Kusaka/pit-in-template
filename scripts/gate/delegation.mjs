@@ -16,6 +16,10 @@
 // G-6 を事後へ移す変更で、開発者の席がその変更について協働である(開発者の席の規則に当たらない)場合は、
 // 開発者の席の人による検証が変更ごとに要る(第5章 5.5.6)。機械がマージを実行する条件に、開発者の席の
 // 責任者(人)の承認(レビュアごとの最後の状態が承認)を加える。
+// 第5章 5.4.6(登録した変更種別の停止)も判定する。変更が当たる規則の変更種別が、検知の記録から止まって
+// いれば(AI 起因・原因を特定できない Sev1・Sev2、理解保持者数1名以下、差し戻し率0%の継続、判定不能、
+// 自律レベルの上限が L3 未満)、委任に該当しない。記録は呼び出し側が読んで渡す(autonomy.mjs)。
+// 記録を渡さない呼び出しは、判定できないものとして該当しない。
 // 条件4(取り消しの実績)と条件6(事後の抜き取り)は、登録時と事後の人の判断であり、
 // ここでは判定しない。判定していない条件は、出力(notJudged)へ必ず載せる。
 
@@ -31,6 +35,7 @@ import {
   changeTypeProblems,
   aiAccountCheck,
 } from './config.mjs';
+import { autonomyState, stopsText } from './autonomy.mjs';
 
 /** G-5 の必須ステータスチェックの名前(ゲート契約で固定) */
 export const REQUIRED_CHECK = 'gate-g5';
@@ -151,8 +156,10 @@ export function classifyForSeat(config, files, seatRole, changedLines = null) {
  *   commits  [{ sha, message }]                               PR のコミット
  *   checks   [{ name, status, conclusion }]                   PR の先頭のコミットのチェック
  *   reviews  [{ login, state, isBot }]                        PR のレビュー(時系列)。開発者の席が協働の場合に使う
+ *   records  検知の記録(autonomy.mjs の readAutonomyRecords の返り値の形)。autonomy を渡した場合は使わない
+ *   autonomy autonomyState の返り値(呼び出し側で導いた場合)
  */
-export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [], checks = [], reviews = [] }) {
+export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [], checks = [], reviews = [], records = null, autonomy = null }) {
   const conditions = [];
   const put = (id, label, problems) => conditions.push({ id, label, ok: problems.length === 0, problems });
 
@@ -211,6 +218,19 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
   const risk = riskClassOf(pr.body);
   if (risk !== 'R3') c2.push(`PR のリスク区分が R3 と記録されていない(記録: ${risk ?? '未記入'})`);
   put('条件2', '承認済みの1つの規則の範囲に入り、強制層に触れず、リスク区分が R3 である', [...new Set(c2)]);
+
+  // 第5章 5.4.6。規則の変更種別が、検知の記録から止まっていないか。止まった種別の変更は協働で扱う
+  let autonomyType = null;
+  if (actingRule) {
+    const typeId = String((cfg.delegation?.rules ?? []).find((r) => r.id === actingRule)?.changeType ?? '').trim();
+    const state = autonomy ?? autonomyState(cfg, records);
+    autonomyType = state.types.find((t) => t.id === typeId) ?? null;
+    put(
+      '5.4.6',
+      '規則の変更種別が、AI自律レベルの引き下げ・適用の条件の欠落で止まっていない(L3 を適用できる)',
+      !autonomyType ? [`変更種別 "${typeId}" の自律レベルを導けない`] : autonomyType.stops.length ? [`変更種別 "${typeId}" を止めている(${stopsText(autonomyType)})`] : []
+    );
+  }
 
   // G-6 の判定の時点を事後へ移せるのは、独立レビュアの席の規則にも該当する変更だけである。
   // 開発者の席の規則にだけ該当する変更は、独立レビュアが人として事前に承認する(現在のルールセットのままマージする)。
@@ -303,6 +323,8 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
     // G-6 を事後へ移す変更で、開発者の席が協働か(開発者の席の責任者の承認を要する)
     developerSeatCollab,
     riskClass: risk,
+    // 変更が当たる規則の変更種別の、現在のレベルと停止(第5章 5.4.6)
+    autonomy: autonomyType,
     conditions,
     reasons: conditions.flatMap((c) => c.problems.map((p) => `${c.id}: ${p}`)),
     notJudged,

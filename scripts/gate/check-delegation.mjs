@@ -20,6 +20,8 @@
 // G-6 を事後へ移す変更で、開発者の席がその変更について協働である場合は、開発者の席の責任者(人)の承認が
 // あるときだけマージする(第5章 5.5.6)。承認の後の判定し直しは、ワークフローの手動実行(PR の番号を指定)による。
 //
+// 第5章 5.4.6 の停止(登録した変更種別の引き下げと、適用の条件の欠落)は、基底ブランチの作業ツリーの記録
+// (欠陥の台帳、運用引き継ぎ文書、既定ブランチの履歴、G-6 の判定記録)から導く(autonomy.mjs)。
 // 条件4(取り消しの実績)と条件6(事後の抜き取り)は、ここでは判定しない。判定していない条件は出力へ載せる。
 // 条件5(確約範囲とコア指定)は、構成にパス(delegation.protectedPaths)のキーが無ければ、判定できないものとして
 // 該当しない。空の配列は「確約範囲・コア指定なし」の宣言として通す。
@@ -31,6 +33,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { loadConfig, ROOT, fail, notice, warn } from './config.mjs';
 import { judgeDelegatedMerge, trailerValues, recordText } from './delegation.mjs';
+import { readAutonomyRecords } from './autonomy.mjs';
 
 const STATUS_CONTEXT = 'delegation-eligibility';
 const MAX_COMMITS = 250; // GitHub の API が返すコミットの上限。超える PR は判定できない
@@ -111,7 +114,10 @@ function render(result, { number = null, merge = null } = {}) {
 const inputPath = arg('--input');
 if (inputPath) {
   const input = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
-  const result = judgeDelegatedMerge({ ...input, config: input.config ?? loadConfig() });
+  const config = input.config ?? loadConfig();
+  // 検知の記録(第5章 5.4.6)。入力に無ければ、手元の作業ツリーから読む
+  const records = input.records ?? readAutonomyRecords({ config, root: ROOT });
+  const result = judgeDelegatedMerge({ ...input, config, records });
   if (has('--json')) console.log(JSON.stringify(result, null, 2));
   else console.log(render(result, { number: input.pr?.number }));
   process.exit(result.eligible ? 0 : 1);
@@ -249,7 +255,9 @@ const pr = {
   truncated: commits.length >= MAX_COMMITS || files.length >= MAX_FILES || (prData.changed_files ?? files.length) !== files.length,
 };
 
-const result = judgeDelegatedMerge({ config, pr, files, commits, checks, reviews });
+// 検知の記録(第5章 5.4.6)は、基底ブランチの作業ツリーから読む。履歴の全体を要する(浅い取得では判定できない)
+const records = readAutonomyRecords({ config, root: ROOT });
+const result = judgeDelegatedMerge({ config, pr, files, commits, checks, reviews, records });
 
 // ---------------------------------------------------------------- マージの実行(既定で無効)
 

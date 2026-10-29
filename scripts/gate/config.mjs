@@ -930,6 +930,9 @@ export const NEVER_DELEGATED = [
   'scripts/vendor/**',
   'docs/gates/**',
   'docs/D-0-governance.md',
+  // 第5章 5.4.6 の停止を導く元の記録。委任された変更が自らの停止を解けないようにする(process-compass #311 X-1)
+  'docs/defect-ledger.md',
+  'docs/handover.md',
 ];
 
 /**
@@ -972,9 +975,22 @@ export const CHANGE_TYPE_BASIS = [
  */
 export const CHANGE_TYPE_DETECTION = [
   ['rejectionRate', '差し戻し率'],
-  ['duplicationRate', '重複率'],
   ['reworkRate', '手戻り率'],
 ];
+
+/**
+ * 検知条件から外した欄(process-compass ADR-0081)。旧い構成に残っていても読まない。登録の要件にも数えない。
+ * 残っている種別を、次の一手の注記へ出す(消すかどうかは /process-change で人が決める)
+ */
+export const RETIRED_DETECTION = ['duplicationRate']; // retired-ok: 外した旧い欄の名を、読まずに警告するために持つ
+
+/** 外した検知条件の欄が残っている変更種別の ID */
+export function retiredDetectionTypes(config) {
+  const list = Array.isArray(config?.delegation?.changeTypes) ? config.delegation.changeTypes : [];
+  return list
+    .filter((t) => t?.basis?.detection && typeof t.basis.detection === 'object' && RETIRED_DETECTION.some((k) => k in t.basis.detection))
+    .map((t) => String(t.id ?? '').trim());
+}
 
 /** 登録の根拠のうち、記入が無いものを [キー, 名前] の配列で返す */
 function missingBasis(basis) {
@@ -1023,7 +1039,7 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     if (missing.length) {
       out.push(
         `${at}: 変更種別 "${id}" に、登録の根拠(basis)がない(${missing.map(([k, label]) => `${k}: ${label}`).join(' / ')})。` +
-          '3点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・重複率・手戻り率)ごとに算出の所在を書く。' +
+          '3点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・手戻り率)ごとに算出の所在を書く。' +
           '様式の文言(<…>)、「—」「未定」「なし」などは記入として扱わない。' +
           '機械が確かめるのは記入の有無だけであり、内容は登録する者が判定する'
       );
