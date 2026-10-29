@@ -5,7 +5,8 @@
 //
 // テンプレートの全ファイルを一時のディレクトリへ写し、1名と3名で初期化して、次を確かめます。
 //   - spec-lint(引数なし = CI と同じ範囲)が通る。様式から作る機能仕様・実装計画・D-0・企画書を置いた後も通る
-//   - 契約検査(verify-gate-contract)と生成区間の検査(check-process-rules)が通る
+//   - 契約検査(verify-gate-contract)と生成区間の検査(check-process-rules)が通る。集約の needs から基準を実装するジョブを外すと、契約検査が落ちる
+//   - フックの保護と権限設定の遮断が、事業ステージ(1名は S0)に依らず有効である(#290)
 //   - 既存の CLAUDE.md に区間の目印だけを足した状態(常駐の規則が無い)では、check-process-rules が落ちる。
 //     既存の内容を残してテンプレートの節を含めれば通る。常駐の規則の節の一覧は、テンプレートの CLAUDE.md と一致する
 //   - node の基盤(package.json の test と coverage、秘匿情報の検査の設定、テストの置き場)が作られ、既存のファイルを書き換えない
@@ -109,9 +110,15 @@ for (const n of [1, 3]) {
     check(`${tag}: 既存の package.json を書き換えない`, JSON.parse(W.read('package.json')).name === 'kept');
     check(`${tag}: 既存のファイルを変更しなかったことを出力に出す`, /既にあるため変更せず: package\.json/.test(init.out), init.out);
   }
-  // 保管領域の読み込みの拒否は、ステージ(1名は S0 で guard 無効、3名は S1)に依らず残る(標準 第3章 3.11.4 要求事項7)
+  // 保管領域の読み込みの拒否は、ステージ(1名は S0、3名は S1)に依らず残る(標準 第3章 3.11.4 要求事項7)
   const deny = JSON.parse(W.read('.claude/settings.json')).permissions?.deny ?? [];
   check(`${tag}: 権限設定が保管領域(context/_archive/)の読み込みを拒否する`, deny.includes('Read(./context/_archive/**)'), JSON.stringify(deny));
+  // 強制層は事業ステージで外さない(標準 第8章 軸B、ADR-0050 決定1。#290 / ADR-0074)。1名は S0(PoC)、3名は S1
+  const guard = JSON.parse(W.read('.claude/guard.json'));
+  check(`${tag}: フックの保護(guard.enabled)がステージに依らず有効`, guard.enabled === true, JSON.stringify({ enabled: guard.enabled }));
+  for (const rule of ['Edit(./.github/workflows/**)', 'Edit(./scripts/gate/**)', 'Edit(./.claude/settings.json)', 'Bash(gh pr merge:*)']) {
+    check(`${tag}: 権限設定が ${rule} を拒否する(ステージに依らない)`, deny.includes(rule), JSON.stringify(deny));
+  }
   check(`${tag}: 秘匿情報の検査の設定(.secretlintrc.json)がある`, W.exists('.secretlintrc.json'));
   check(`${tag}: テストの置き場(tests/)がある`, W.exists('tests/README.md'));
   check(`${tag}: ロックファイルを npm install で作る案内が出る`, /npm install/.test(init.out), init.out);
@@ -155,6 +162,21 @@ for (const n of [1, 3]) {
   // 契約検査と生成区間
   r = W.node('scripts/gate/verify-gate-contract.mjs');
   check(`${tag}: verify-gate-contract が通る`, r.ok, r.out);
+  // 集約(gate-g5)の needs から G-5 の基準を実装するジョブを外すと、契約検査が落ちる(標準 第4章 G-5「判定基準を実装する検査と集約」。#290)
+  {
+    const wfPath = '.github/workflows/gate-g5.yml';
+    const wfText = W.read(wfPath);
+    const cut = wfText.replace(/needs: \[config, contract, test, static-analysis, spec-lint, ip-clearance, secret-scan, pr-rules\]/, 'needs: [config, contract, pr-rules]');
+    check(`${tag}: 集約の needs を書き換える試験の目印がある`, cut !== wfText);
+    W.write(wfPath, cut);
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(
+      `${tag}: 集約の needs から 5 つのジョブ(秘匿情報の検査を含む)を外すと、契約検査が落ちる`,
+      !r.ok && /基準7\(秘匿情報の混入検査\)/.test(r.out) && /基準1\(全テスト\)/.test(r.out) && /基準4\(曖昧語チェック\)/.test(r.out),
+      r.out
+    );
+    W.write(wfPath, wfText);
+  }
   r = W.node('scripts/gate/check-process-rules.mjs');
   check(`${tag}: check-process-rules が通る`, r.ok, r.out);
 

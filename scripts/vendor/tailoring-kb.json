@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "5cd4770e320987d977c3f6a2d4aeabd16dbe8a31"
+    "commit": "59136e57db711a03de0d7013e1365655a62db5e6"
   },
   "questions": [
     {
@@ -988,7 +988,7 @@
             "id": "role-delegation"
           },
           "action": "note",
-          "note": "仕様承認の委譲は必要に応じて行う"
+          "note": "仕様承認を機能責任者へ委譲してよい(許容。第3章 3.6。委譲は担当表に記録する)"
         }
       ],
       "reason": "分離の最低条件は満たせる規模。責任の所在を名前で明示することが形骸化の予防になる",
@@ -1042,7 +1042,7 @@
           "action": "set",
           "param": "enabled",
           "value": true,
-          "note": "機能責任者へ仕様承認を積極的に委譲する(価値責任者の帯域を守る)"
+          "note": "機能責任者へ仕様承認を委譲することを推奨する(推奨。価値責任者の帯域を守る)"
         }
       ],
       "reason": "規模が大きいほど判定者の帯域がボトルネックになる。分離と委譲で承認の滞留を防ぐ",
