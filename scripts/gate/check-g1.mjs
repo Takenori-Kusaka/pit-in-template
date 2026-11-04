@@ -13,6 +13,7 @@ import { readBriefQuality } from './verification-trace.mjs';
 import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
+import { briefEvidenceProblems } from './customer-voice.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -119,6 +120,17 @@ for (const [section, key] of REQUIRED_ROWS) {
 for (const p of briefThresholdProblems(text, readGateRecords(), isFilledValue)) {
   if (p.state === 'gap') warn(briefThresholdMessage(p));
   else problems.push(briefThresholdMessage(p));
+}
+
+// 観点3 の裏づけの出所の区分(標準 第6章 テンプレ6 観点3、ADR-0091。process-compass #411)。G-1 を通過済みの企画書は遡って失敗させず注意にする
+{
+  const g1Passed = readGateRecords().some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+  const ev = briefEvidenceProblems(text);
+  if (ev.missing) warn('観点3 の裏づけの表(裏づけ / 出所の区分 / 観測の記録への到達先)がありません(旧い様式)。templates/06-project-brief.md の観点3 から表を写してください(標準 第6章 テンプレ6 観点3)');
+  for (const p of ev.problems) {
+    if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません。次の改訂で直す)`);
+    else problems.push(`${p}(標準 第6章 テンプレ6 観点3、ADR-0091)`);
+  }
 }
 
 // 壊してはならない品質条件の識別子(QC-NN)と、総費用の内訳(5区分)。標準 第6章 テンプレ6、第4章 G-7

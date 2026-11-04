@@ -10,6 +10,8 @@ import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, warn, chainStarted, structureDeciderSeat, structureDeciderLabel, personName, resolveSigner } from './config.mjs';
 import { d0SectionProblems, d0GovernanceProblems, d0OptionalSectionProblems, D0_VERSION_FORMAT } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState } from './org-assurance.mjs';
+import { d0VerificationProblems } from './customer-voice.mjs';
+import { readGateRecords } from './config.mjs';
 
 const config = loadConfig();
 const D0 = path.join(ROOT, 'docs/D-0-governance.md');
@@ -111,6 +113,23 @@ else for (const p of generated) warn(`${p}(旧い構成のため注意にとど�
   }
   if (chainStarted(config)) problems.push(...opt.problems);
   else for (const p of opt.problems) warn(`${p}(旧い構成のため注意にとどめています)`);
+}
+
+// 表1 の「市場・顧客仮説の検証の実施」の行と、決定・同意の列(標準 第6章 D-0「表1 の列の決まり」、ADR-0091。process-compass #411)。
+// G-1 を通過済みの案件は遡って失敗させず注意にする。決定・同意の列の照合できない記載は、失敗にせず注意に出す(役割名の語彙が閉じていないため)
+{
+  const g1Passed = readGateRecords().some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+  const v = d0VerificationProblems(text, config);
+  for (const p of v.problems) {
+    if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません。次の改訂で直す)`);
+    else problems.push(p);
+  }
+  if (v.unmatched.length) {
+    notice(
+      `D-0 節3 の「決定」「同意」の列に、席・会議体の名と照合できない記載があります(${v.unmatched.join(' / ')})。` +
+        '決定権を委ねられていない担当(営業・企画・調査の委託先・受注側の担当者など)を書いていないかを人が確かめます(標準 第6章 D-0「表1 の列の決まり」、附属書H 観点24)。機械は失敗にしません'
+    );
+  }
 }
 
 // 案件 ID(frontmatter の project_id)と構成(projectId)の一致(#288 第6巡 P)。生成側が様式の初期値を構成の値で埋める。
