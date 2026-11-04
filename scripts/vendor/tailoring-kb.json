@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "e265754d9b105a76db89e717433a2257434da8e0",
+    "commit": "8fbe65d19360db41a85c7a7e6e036005aefb7efc",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1739,6 +1739,12 @@
       "range": "能力依存として登録した定数",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#31212-能力依存の定数の再評価適用-能力依存として登録した定数"
+    },
+    {
+      "title": "3.12.13 AI の採点者の較正",
+      "range": "AI の採点を用いる評価",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#31213-ai-の採点者の較正適用-ai-の採点を用いる評価"
     },
     {
       "title": "外部の確認者を高リスクの変更へ集中させる",
