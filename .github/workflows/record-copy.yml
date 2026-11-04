@@ -79,7 +79,7 @@ jobs:
           mkdir -p /tmp/record-copy
           # レビューはページを跨いで全件取る。推定を含まない写しにするため、欄を選ぶ以外の加工をしない(user.type は API の値をそのまま写す)
           gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-            --jq '[.[] | {id, state, commit_id, submitted_at, user: {id: .user.id, login: .user.login, type: .user.type}, body}]' \
+            --jq '[.[] | {id, state, commit_id, submitted_at, author_association, user: {id: .user.id, login: .user.login, type: .user.type}, body}]' \
             | jq -s 'add // []' > /tmp/record-copy/reviews.json
           # レビューの本文を書き手以外が編集したか(editor)。効力を持つ記録のレビュー(宣言行 例外承認・停止の解除)は、
           # 書き手以外が編集したものを数えない(process-compass #380 / ADR-0106 / EV-0220)。GraphQL で引けたレビューにだけ edited_by を足す

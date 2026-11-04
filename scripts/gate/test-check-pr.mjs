@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -714,6 +714,28 @@ for (const [name, ok] of defs) {
   console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
 }
 
+// ---------------------------------------------------------------- 承認者の照合の穴(process-compass #429 品質監査 F-4・F-5)
+{
+  const cfg = { gates: { g6: { state: 'required' } }, review: { reviewerCount: 1 }, people: [{ id: 'p1', name: '山田 太郎', accounts: ['yamada'] }, { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] }] };
+  const rv = (extra = {}) => [{ author: { login: 'suzuki' }, state: 'APPROVED', body: '招待の期限切れで 410 を返すことを確かめた', ...extra }];
+  const body = (instr) => `## 作成を指示した者
+
+${instr}
+`;
+  const ok = approverFindings(cfg, { body: body('山田 太郎'), author: 'yamada', reviews: rv({ author_association: 'COLLABORATOR' }) });
+  const ng = approverFindings(cfg, { body: body('山田 太郎'), author: 'yamada', reviews: rv({ author_association: 'NONE' }) });
+  const unres = approverFindings(cfg, { body: body('@yamada-old'), author: 'yamada', reviews: rv() });
+  // IMPL-0425:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  // IMPL-0425:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  for (const [name, pass] of [
+    ['承認者: 書き込みの権限を持つ関係(COLLABORATOR)の承認は数える', ok.counted === 1],
+    ['承認者: 書き込みの権限を持たない関係(NONE。名簿のログイン名を他人が取得した疑い)の承認は数えない', ng.counted === 0 && ng.notCounted.some((x) => /NONE/.test(x))],
+    ['承認者: 作成を指示した者を名簿と対応づけられなければ、承認を数えない(出荷の集約と同じ)', unres.counted === 0 && unres.notCounted.some((x) => /対応づけられず/.test(x))],
+  ]) {
+    if (!pass) failures++;
+    console.log(`${pass ? 'ok  ' : 'NG  '} ${name}`);
+  }
+}
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('');
 if (failures) {

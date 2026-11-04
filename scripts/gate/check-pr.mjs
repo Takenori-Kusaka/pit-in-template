@@ -120,6 +120,7 @@ import {
   DEFAULT_MAX_CHANGED_FILES,
   personKey,
   RULE_APPROVER_SEAT,
+  hasWriteAssociation,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -462,7 +463,7 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
   const matched = [];
   const rejected = [];
   const backing = {};
-  const { git = null, policyRef = null, reviews = null, head = null, headLedgerText = null, hosting = null, instructorIds = [] } = ctx;
+  const { git = null, policyRef = null, reviews = null, head = null, headLedgerText = null, hosting = null, instructorIds = [], instructorUnresolved = [] } = ctx;
   if (!ledgerText && !headLedgerText) return { matched, rejected, backing, reason: '基底ブランチに技術負債台帳(docs/debt-ledger.md)がありません' };
   if (!prNumber) return { matched, rejected, backing, reason: 'PR の番号が分からないため、例外承認の行と対応づけられません' };
   const refers = (text) => new RegExp(`PR\\s*#\\s*${prNumber}(?!\\d)`).test(String(text ?? ''));
@@ -489,6 +490,8 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
     }
     if (!isFilledValue(r.content) || (r.reason !== null && !isFilledValue(r.reason))) why.push('理由(内容・受容した理由)が未記入');
     if (!isFilledValue(r.due) || !dueDayOf(r.due)) why.push('期限(返却の目安)が未記入、または日付として解釈できない');
+    // 名簿に対応づかない指示者がいると、承認した者が指示した者と別の人かを確かめられない(出荷の集約と揃える。#429)
+    if (instructorUnresolved.length) why.push(`作成を指示した者 ${instructorUnresolved.join(' / ')} を名簿と対応づけられない`);
     if (!why.length) {
       // 帰属の裏づけ。(A) 承認した者本人のレビュー → (B) 行を入れた PR(基底ブランチの行だけ)
       const signer = resolveSigner(config, r.approver);
@@ -642,10 +645,26 @@ export function riskConfirmerOf(body) {
 
 /** 作成を指示した者(PR の本文の節)。未記入なら PR の作成者のアカウント */
 export function instructorsOf(config, body, author) {
+  return instructorTokensOf(config, body, author).resolved;
+}
+
+/**
+ * 作成を指示した者の欄の記載を、名簿の人へ対応づけたもの(resolved)と、対応づかなかった記載(unresolved)に分ける。
+ * 対応づかない記載を黙って落とすと、旧いログイン名や誤記を書いた PR で、指示した者本人の承認が PR の時点で数えられる
+ * (出荷の集約は対応づかない指示者を「確かめられない」として数えない。PR の時点でも数えない側に揃える。ただし既定値は、集約が開発者の席の責任者を足すのに対し、PR の時点は作成者だけである。process-compass #429)
+ */
+export function instructorTokensOf(config, body, author) {
   const section = String(body ?? '').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*作成を指示した者.*$/m)[1]?.split(/^(?:##\s|---\s*$)/m)[0] ?? '';
   const tokens = section.split(/[\n,、，/／]/).map((t) => t.replace(/^[\s\-*・]+/, '').trim()).filter(Boolean);
   const list = tokens.length ? tokens : author ? [`@${String(author).replace(/^@/, '')}`] : [];
-  return list.map((t) => (t.startsWith('@') ? findPersonByAccount(config, t) : resolveSigner(config, t))).filter(Boolean);
+  const resolved = [];
+  const unresolved = [];
+  for (const t of list) {
+    const p = t.startsWith('@') ? findPersonByAccount(config, t) : resolveSigner(config, t);
+    if (p) resolved.push(p);
+    else if (!(tokens.length === 0 && aiNameBlocked(config, t.replace(/^@/, '')))) unresolved.push(t);
+  }
+  return { resolved, unresolved, byDefault: tokens.length === 0 };
 }
 
 /**
@@ -664,11 +683,17 @@ export function approverFindings(config, pr, files = null, tracked = null) {
   const required = core?.hit ? counts.core : counts.all;
   if (!g6Active) return { applies: false, required, core };
   if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core };
-  const instructors = instructorsOf(config, pr.body, pr.author);
+  const instructorInfo = instructorTokensOf(config, pr.body, pr.author);
+  const instructors = instructorInfo.resolved;
   const last = new Map();
   for (const r of pr.reviews) {
     const login = r?.author?.login;
-    const state = String(r?.state ?? '').toUpperCase();
+    let state = String(r?.state ?? '').toUpperCase();
+    // 書き込みの権限を持たない関係のアカウントの承認(名簿のログイン名を他人が取得した疑い)は数えない(#429)
+    if (state === 'APPROVED' && hasWriteAssociation(r) === false) {
+      last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false, untrusted: String(r.author_association ?? r.authorAssociation) });
+      continue;
+    }
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
     const before = last.get(login);
     // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(集約と同じ。#288 第8巡 X8)
@@ -681,7 +706,15 @@ export function approverFindings(config, pr, files = null, tracked = null) {
   const counted = [];
   const notCounted = [];
   for (const [login, v] of last) {
+    if (v.untrusted) {
+      notCounted.push(`@${login}(リポジトリとの関係が ${v.untrusted}。書き込みの権限を持たないアカウントの承認。名簿のログイン名を他人が取得した疑い)`);
+      continue;
+    }
     if (!v.approved) continue;
+    if (instructorInfo.unresolved.length) {
+      notCounted.push(`@${login}(作成を指示した者 ${instructorInfo.unresolved.join(' / ')} を名簿と対応づけられず、承認者と別の人かを確かめられない)`);
+      continue;
+    }
     if (v.bot || aiNameBlocked(config, login)) {
       notCounted.push(`@${login}(AI・bot のアカウント。検出の層)`);
       continue;
@@ -1038,6 +1071,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
       headLedgerText: atHead('docs/debt-ledger.md'),
       hosting: prHosting,
       instructorIds: instructorsOf(limitsFrom, pr.body, pr.author).map((i) => i.id),
+      instructorUnresolved: instructorTokensOf(limitsFrom, pr.body, pr.author).unresolved,
     });
     size.exception = ex;
     if (ex.matched.length) {
@@ -1048,7 +1082,9 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
       if (ex.rejected.length) result.notices.push(`size:over: 台帳の例外承認の行は有効でない(${ex.rejected.join(' / ')})。規模の超過は例外承認でなく規模の確認で扱う`);
       const problems = sizeAttestationProblems(att, { config: limitsFrom, assuranceValid: assurance.valid });
       // 実施者の名簿照合。作成を指示した者以外の人が名簿にいる体制では、名簿外の実施者を失敗にする(1名体制は警告)
-      const instr = instructorsOf(limitsFrom, pr.body, pr.author);
+      const instrInfo = instructorTokensOf(limitsFrom, pr.body, pr.author);
+      const instr = instrInfo.resolved;
+      if (instrInfo.unresolved.length) result.warnings.push(`規模の確認: 作成を指示した者 ${instrInfo.unresolved.join(' / ')} を名簿と対応づけられず、実施者が指示した者と別の人かを確かめられない(#429)`);
       const roster = Array.isArray(limitsFrom.people) ? limitsFrom.people : [];
       const others = roster.filter((p) => p?.appointer !== true && !instr.some((i) => i.id === p.id));
       const performer = isFilledValue(att.performer) ? (resolveSigner(limitsFrom, att.performer.replace(/^@/, '')) ?? findPersonByAccount(limitsFrom, att.performer)) : null;
@@ -1229,11 +1265,14 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   }
   if (risk === 'R1' || risk === 'R2') {
     const confirmer = riskConfirmerOf(pr.body);
-    const instructors = instructorsOf(rulesConfig, pr.body, pr.author);
+    const instructorInfo = instructorTokensOf(rulesConfig, pr.body, pr.author);
+    const instructors = instructorInfo.resolved;
     const roster = Array.isArray(rulesConfig.people) ? rulesConfig.people : [];
     const others = roster.filter((p) => p?.appointer !== true && !instructors.some((i) => i.id === p.id));
     const why = [];
     let person = null;
+    // 名簿に対応づかない指示者がいると、確定した者が指示した者と別の人かを確かめられない(出荷の集約と揃える。#429)
+    if (instructorInfo.unresolved.length) why.push(`作成を指示した者 ${instructorInfo.unresolved.join(' / ')} を名簿と対応づけられず、確定した者と別の人かを確かめられない`);
     if (!confirmer) why.push('「リスク区分」の節に「確定した者: <氏名>」が無い');
     else if (aiNameBlocked(rulesConfig, confirmer)) why.push(`確定した者 "${confirmer}" が AI の名義である`);
     else if (!(person = resolveSigner(rulesConfig, confirmer.replace(/^@/, '')) ?? findPersonByAccount(rulesConfig, confirmer))) why.push(`確定した者 "${confirmer}" が人の名簿(people[])の人へ対応づかない`);

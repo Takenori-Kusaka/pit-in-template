@@ -198,7 +198,14 @@ export function classifyDeviations(config) {
 export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {}) {
   const edition = standardEdition(config);
   const ended = applicationEnd(config);
-  const { listed, unlisted } = classifyDeviations(config);
+  const { listed, unlisted: declaredUnlisted } = classifyDeviations(config);
+  // AI の担い手の名義を名簿の人と共有する構成、または申告していない構成(第1章 1.10.2、第3章 3.5.3。process-compass #429)。
+  // 名義の申告の欄(seats[].performerAccount)は #430 で降ろす。それまでは、担い手を宣言した席はすべて未申告として離脱に数える
+  const aiSeats = (Array.isArray(config?.seats) ? config.seats : []).filter((s) => s?.performer);
+  const undeclaredSeats = aiSeats.filter((s) => s?.performerAccount?.kind !== 'dedicated');
+  const unlisted = undeclaredSeats.length
+    ? [...declaredUnlisted, { label: `AI の担い手の名義の共有・未申告(${undeclaredSeats.map((s) => s.role).join('・')})`, derived: 'performer-account' }]
+    : declaredUnlisted;
   const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
   const blockers = [];
   // 作業中の版は、適用の表明に限り、コミットとともに名指せる。2つの適合の主張は発行した版を要する(第1章 1.10.2・1.10.3)
@@ -595,6 +602,19 @@ export function rosterProblems(config) {
 /** アカウント名を比べるためのキー(大文字と小文字を区別しない。先頭の @ は落とす) */
 export function accountKey(account) {
   return typeof account === 'string' ? account.normalize('NFKC').trim().replace(/^@/, '').toLowerCase() : '';
+}
+
+/**
+ * レビューの書き手のリポジトリとの関係(GitHub の author_association)が、書き込みの権限を持つ者の値か。
+ * 値が無ければ(古い写し・手元の実行)null を返し、呼び出し側は判定に使わない。名簿のログイン名を、改名・削除の後に
+ * 他人が取得した場合、その者の承認は書き込みの権限を持たない関係(NONE・CONTRIBUTOR など)として現れる
+ * (標準 第4章「アカウントと人の対応表」。process-compass #429 / ADR-0108)
+ */
+export const WRITE_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+export function hasWriteAssociation(review) {
+  const v = review?.author_association ?? review?.authorAssociation ?? null;
+  if (v === null || v === undefined || v === '') return null;
+  return WRITE_ASSOCIATIONS.includes(String(v).toUpperCase());
 }
 
 /** アカウントから名簿の人を引く。対応づかなければ null */
@@ -2166,6 +2186,8 @@ export function templateImplements(root = ROOT) {
  */
 export const TEMPLATE_HOOKS = [
   { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|NotebookEdit', command: 'node .claude/hooks/guard-write.mjs', timeout: 15, required: true },
+  // ホスティングへの書き込みの操作の遮断(抑止の層。標準 第3章 3.5.3、ADR-0107。process-compass #429)。分離ではないため、登録の欠けを契約の不備にしない
+  { event: 'PreToolUse', matcher: 'Bash', command: 'node .claude/hooks/guard-bash.mjs', timeout: 15, required: false },
   { event: 'SessionStart', matcher: null, command: 'node scripts/gate/next.mjs --brief', timeout: 15, required: false },
 ];
 

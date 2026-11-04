@@ -11,10 +11,10 @@
 //       コミットで、author が記名者のアカウントのものに限る
 // 確かめられない記録は数えない。PR の時点の検査(check-pr.mjs)と出荷の証跡の集約(aggregate-evidence.mjs)が同じ関数を使う。
 //
-// 限界: 名簿の照合はログイン名で行う(people[].accounts。数値の識別子での照合は process-compass #429)。AI の担い手が記名者の
-// 認証情報で動く構成では、AI の操作と本人の操作を区別できない(#429)。レビューの本文が提出の後に編集されたかは確かめない(EV-0220)
+// 限界: 名簿の照合はログイン名で行う(people[].accounts。数値の識別子での照合は process-compass #430)。AI の担い手が記名者の
+// 認証情報で動く構成では、AI の操作と本人の操作を区別できない(名義の申告は #430)。レビューの本文が提出の後に編集されたかは確かめない(EV-0220)
 import { execFileSync } from 'node:child_process';
-import { accountKey, aiNameBlocked, findPersonByAccount } from './config.mjs';
+import { accountKey, aiNameBlocked, findPersonByAccount, hasWriteAssociation } from './config.mjs';
 
 /** 例外承認の宣言行(レビューの本文の1行目)。`例外承認: D-012` */
 export const EXCEPTION_DECLARATION = /^例外承認\s*[::]\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$/;
@@ -46,6 +46,7 @@ export function normalizeReviews(raw) {
       submittedAt: r?.submittedAt ?? r?.submitted_at ?? null,
       commitId: r?.commitId ?? r?.commit_id ?? r?.commit?.oid ?? null,
       // 本文を編集した者(GraphQL の editor)。null は編集なし。欄が無ければ undefined(編集の記録を読めない)
+      association: r?.author_association ?? r?.authorAssociation ?? null,
       editedBy: r && 'editedBy' in r ? r.editedBy : r && 'edited_by' in r ? r.edited_by : r && 'editor' in r ? (r.editor?.login ?? null) : undefined,
     };
   });
@@ -68,6 +69,7 @@ function reviewerCheck(config, r, { author = null, head = null } = {}) {
   if (r.state === 'DISMISSED') return { why: '取り下げられたレビュー' };
   if (!r.login) return { why: '書き手のアカウントが読めない' };
   if (r.isBot || aiNameBlocked(config, r.login)) return { why: `書き手 @${r.login} が AI・bot の名義` };
+  if (hasWriteAssociation({ author_association: r.association }) === false) return { why: `書き手 @${r.login} のリポジトリとの関係が ${r.association}(書き込みの権限を持たない。名簿のログイン名を他人が取得した疑い)` };
   const person = findPersonByAccount(config, r.login);
   if (!person || person.appointer === true) return { why: `書き手 @${r.login} が人の名簿(people[].accounts)の人へ対応づかない` };
   if (author && accountKey(author) === accountKey(r.login)) return { why: `書き手 @${r.login} が PR の作成者である(作成者と記名者が同じアカウントでは、本人の操作か AI の操作かを区別できない)` };

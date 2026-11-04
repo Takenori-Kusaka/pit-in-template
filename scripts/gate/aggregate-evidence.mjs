@@ -70,6 +70,7 @@ import {
   personName,
   findPerson,
   findPersonByAccount,
+  hasWriteAssociation,
   accountKey,
   pendingNotices,
   outagePeriods,
@@ -241,6 +242,8 @@ export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
     const api = Array.isArray(apiReviews) ? apiReviews.find((a) => a?.author?.login === login) : null;
     const isBot = r?.user?.type !== undefined ? String(r.user.type) === 'Bot' : Boolean(api?.author?.is_bot);
     let state = String(r?.state ?? '').toUpperCase();
+    // 書き込みの権限を持たない関係のアカウントの承認(名簿のログイン名を他人が取得した疑い)は数えない(#429)
+    if (state === 'APPROVED' && hasWriteAssociation(r) === false) state = 'UNTRUSTED';
     if (state === 'APPROVED' && head && r?.commit_id && r.commit_id !== head) {
       stale.push({ login, reviewId: r.id ?? null, commitId: r.commit_id });
       state = 'STALE';
@@ -252,6 +255,7 @@ export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
       body: r?.body ?? '',
       submittedAt: r?.submitted_at ?? null,
       commitId: r?.commit_id ?? null,
+      author_association: r?.author_association ?? null,
       // 本文を編集した者(record-copy.yml が GraphQL の editor から写す。#380)。写しに欄が無ければ写さない(編集の記録を読めない)
       ...(r && 'edited_by' in r ? { editedBy: r.edited_by } : {}),
     });
@@ -1392,7 +1396,7 @@ if (isMain) {
     // G-6 の承認は、写しがあれば写しから読む(無ければ PR の記録)。写しと PR の記録の両方が読めるときは突合し、本文の編集・
     // dismiss・ログイン名の変化を所見に出す。写しの承認のうち commit_id がマージ時の head と違うものは、失効した承認として数えない
     const fromCopy = copyEntry ? reviewsOfCopy(copyEntry.copy, { apiReviews: api?.reviews ?? null }) : null;
-    const reviews = fromCopy ? fromCopy.reviews : (api?.reviews ?? []);
+    const reviews = fromCopy ? fromCopy.reviews : (api?.reviews ?? []).map((r) => (String(r?.state ?? '').toUpperCase() === 'APPROVED' && hasWriteAssociation(r) === false ? { ...r, state: 'UNTRUSTED' } : r));
     const copyFindings = copyEntry && Array.isArray(api?.reviews) ? reconcileCopy(copyEntry.copy, api.reviews, { pr: n }) : [];
     // 変更したファイル(コア機能の判定と、記録だけの PR の識別に使う。第1の親との差分。マージコミットの方式でも読める)と、
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)

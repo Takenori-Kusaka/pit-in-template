@@ -76,6 +76,7 @@ check('A: レビューを読めない → 数えない', !backing(null).backed);
 check('A: 本文を書き手以外が編集した(他人のレビューの1行目を宣言行に書き換えた) → 数えない', !backing([review({ edited_by: 'yamada' })]).backed && /書き手以外/.test(backing([review({ edited_by: 'yamada' })]).why.join('')));
 check('A: 本文を書き手本人が編集した → 数える', backing([review({ edited_by: 'suzuki' })]).backed);
 check('A: 編集の記録(editor)を読めない → 数えない', !backing([(({ edited_by, ...r }) => r)(review())]).backed);
+check('A: 書き手のリポジトリとの関係が NONE(名簿のログイン名を他人が取得した疑い) → 数えない(IMPL-0425)', !backing([review({ author_association: 'NONE' })]).backed && backing([review({ author_association: 'COLLABORATOR' })]).backed);
 
 // ---------------------------------------------------------------- (A) 停止の解除のレビュー
 const stopBody = '停止の解除: 解除\n\n| 欄 | 記載 |\n| --- | --- |\n| 申し立てた者 | 山田 太郎 |\n| 解除の理由 | 原因を除いた |\n| 申し立てた者の見解を退けたか | 退けていない |\n| 上申先と日付(退けた場合) | 該当なし |\n';
@@ -189,6 +190,32 @@ check('固定のホスティング: 未知のコミットは null', fixedHosting
   check('ルールセット: bypass actor を足した形を出す', defaultBranchRulesetProblems({ ...base, bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' }] }).length === 1);
   check('ルールセット: 承認の件数を 0 にした形を出す', defaultBranchRulesetProblems({ ...base, rules: base.rules.map((r) => (r.type === 'pull_request' ? { ...r, parameters: { ...r.parameters, required_approving_review_count: 0 } } : r)) }).length === 1);
   check('ルールセット: 既定ブランチを対象としないもの(records)は見ない', !defaultBranchRulesetProblems({ name: 'records', conditions: { ref_name: { include: ['refs/heads/records'] } }, bypass_actors: [{ actor_id: 1 }] }).length);
+}
+
+{
+  // 担い手の名義の共有・未申告を、述べられる名の列挙に無い離脱に数える(第1章 1.10.2。IMPL-0430)
+  const { claimStatus } = await import('./config.mjs');
+  const withAi = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1', performer: { model: 'm', instructions: 'v1', permissions: 'p' } }] });
+  const noAi = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1' }] });
+  const dedicated = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1', performer: { model: 'm' }, performerAccount: { kind: 'dedicated' } }] });
+  // IMPL-0430:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('名義: 担い手を宣言した席で名義が未申告なら、列挙に無い離脱として「適用の表明」まで', withAi.unlisted.some((d) => d.derived === 'performer-account') && withAi.name === '適用の表明', JSON.stringify(withAi.unlisted));
+  // IMPL-0430:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('名義: 担い手を宣言していない構成と、専用と申告した構成は、この離脱を持たない', !noAi.unlisted.some((d) => d.derived) && !dedicated.unlisted.some((d) => d.derived));
+}
+{
+  // 出荷の集約が写しから読む承認(IMPL-0425)。関係の値の無い古い写しは判定に使わない
+  const { reviewsOfCopy } = await import('./aggregate-evidence.mjs');
+  const copy = {
+    head_sha: 'h1',
+    reviews: [
+      { id: 1, user: { login: 'x', type: 'User' }, state: 'APPROVED', commit_id: 'h1', author_association: 'NONE' },
+      { id: 2, user: { login: 'y', type: 'User' }, state: 'APPROVED', commit_id: 'h1', author_association: 'MEMBER' },
+      { id: 3, user: { login: 'z', type: 'User' }, state: 'APPROVED', commit_id: 'h1' },
+    ],
+  };
+  const st = reviewsOfCopy(copy).reviews.map((r) => r.state);
+  check('集約: 写しの承認のうち、関係が NONE のものを数えない(UNTRUSTED)。関係の値の無い写しは従来どおり', JSON.stringify(st) === '["UNTRUSTED","APPROVED","APPROVED"]', JSON.stringify(st));
 }
 
 console.log(failures ? `\n効力を持つ記録の帰属の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\n効力を持つ記録の帰属の試験: ${checks} 件が期待と一致しました`);

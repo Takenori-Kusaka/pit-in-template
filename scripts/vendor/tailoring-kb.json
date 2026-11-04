@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "236b5bf63f125d87b1e8e05976c68dce06c06687",
+    "commit": "099499f72f4b4aed8d6761d481d673205985117a",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1727,6 +1727,12 @@
       "range": "確認側の担い手に AI を置く場合",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#入力の分離適用-確認側の担い手に-ai-を置く場合"
+    },
+    {
+      "title": "人と AI の担い手の名義",
+      "range": "AI の担い手がホスティングを操作する構成",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/#人と-ai-の担い手の名義適用-ai-の担い手がホスティングを操作する構成"
     },
     {
       "title": "B-3 設計審査会",

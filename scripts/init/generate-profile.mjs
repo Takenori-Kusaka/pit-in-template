@@ -5521,10 +5521,20 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
   // 例外承認・停止の解除の宣言行のレビューを、AI の担い手が出さない(標準 第4章「判定記録を基底ブランチへ入れる操作」、
   // ADR-0106。process-compass #380 / IMPL-0417)。レビューは記名者本人のアカウントの操作として帰属の裏づけに数えるため、
   // 担い手が記名者の認証情報で動く構成では、担い手がレビューを出すと帰属が崩れる。standardBash から移した。
-  // ステージと guard.enabled に依らず残す。gh api で直接レビューを作る経路は止めない(読み取りの gh api と区別できない)。
+  // ステージと guard.enabled に依らず残す。gh api で直接レビューを作る経路は、前方一致で表せる形をここで、それ以外を Bash のフック(guard-bash.mjs。#429)で拒否する。
   // 常駐の規則が残りを受ける
   const standardReview = [
-    "Bash(gh pr review:*)"
+    "Bash(gh pr review:*)",
+    // 認証情報そのものの読み出しと、前方一致で表せる書き込みの形の gh api(標準 第3章 3.5.3、ADR-0107。process-compass #429)。-f・-F・--input による POST と GraphQL の mutation は .claude/hooks/guard-bash.mjs が拒否する(どちらも抑止の層)
+    "Bash(gh auth token:*)",
+    "Bash(gh api -X POST:*)",
+    "Bash(gh api --method POST:*)",
+    "Bash(gh api -X PUT:*)",
+    "Bash(gh api --method PUT:*)",
+    "Bash(gh api -X PATCH:*)",
+    "Bash(gh api --method PATCH:*)",
+    "Bash(gh api -X DELETE:*)",
+    "Bash(gh api --method DELETE:*)"
   ];
 
   const standardCategoryAB = [
