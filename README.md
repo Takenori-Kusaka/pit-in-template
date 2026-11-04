@@ -139,9 +139,9 @@ gh variable set RECORDS_SIGNED --body true                                      
 2. ブランチ `ship/<日付>` に、`records/reviews/*.json` を `docs/records/reviews/` へ、`records/gates/*.md` を `docs/gates/` へ複製し(追加だけ。既存のファイルは上書きしない)、品質レポート(保証の開示を含む)を `docs/evidence/<日付>-<範囲>.md` へ置いて push し、PR を開く URL(題名と本文を入力済み)を実行の要約と成果物 `ship-pr` に出す
 3. **出荷判定者がその URL から PR を開きます**。ワークフローは PR を開きません。GitHub の既定の設定では `GITHUB_TOKEN` は PR を作れず(「GitHub Actions is not permitted to create or approve pull requests」。これを許す設定は機械の承認も許すため採らない)、作れる設定でも `GITHUB_TOKEN` で開いた PR は gate-g5 と verify を起動しません(GitHub の仕様)。人が開いた PR では両方が自動で起動します。再検査だけなら、`ship-evidence` の手動実行で `verify_pr` に PR の番号を渡します(結果は PR のコメントに出る)
 4. PR の上で同じ集約が再実行され、複製が `records` ブランチと一致することが検査されます(写しは id・commit_id・submitted_at・user.id・body、様式は内容。不一致は失敗)
-5. **出荷判定者本人が承認してマージします**(`.github/CODEOWNERS` の `docs/gates/`・`docs/records/` の所有者)。この承認は取り込みの操作であり、判定は `records/gates/` の様式で成立しています。記名者以外の承認が付く体制では、その承認は取り込みの事務です(標準 第4章「判定記録を基底ブランチへ入れる操作」)
+5. **PR を開いた人以外の人が、verify の結果を確かめて承認し、マージします**(GitHub では PR の作成者は自分の PR を承認できません)。この承認は転記の確認であり、判定ではありません。判定は `records/gates/` の様式で成立しています(標準 第4章「判定記録を基底ブランチへ入れる操作」)
 
-例外承認の台帳(`docs/debt-ledger.md`)と停止の申し立ての解除の記録は、この経路に乗せず、現行どおり基底ブランチへ先に入れます(記録だけの PR が 1 本残る。承認者は記名者本人。`.github/rulesets/README.md`「記録だけの PR にも承認 1 件が残る」)。
+例外承認の台帳(`docs/debt-ledger.md`)の行と停止の申し立ての解除は、この経路に乗せません。効力を持つ記録として、対象の PR の上の記名者本人のレビュー(宣言行つき)で裏づけるか、記名者本人が作成者または承認者となる PR で基底ブランチへ先に入れます(`.github/rulesets/README.md`「記録だけの PR に残る承認」)。名前の一致だけでは数えません。
 
 ### 4. 体制が変わったら
 

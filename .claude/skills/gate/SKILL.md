@@ -79,7 +79,7 @@ git show origin/main:templates/04-gate-record.md > records/gates/<ゲート>-<�
 
 様式は、**判定者本人が記録用ブランチ `records` へ直接 push します**(`reference/recording.md`「様式の届け方」)。PR も、他者の承認も要りません。`records-signed.json` を適用する構成では署名コミット(`git commit -S`)で push します。基底ブランチへは、出荷判定(G-7)の PR(`ship-evidence.yml` が push する `ship/<日付>` から出荷判定者が開く)が `records/gates/` を `docs/gates/` へ複製して運びます。承認レビューの写しは、マージを契機にワークフロー `record-copy.yml` が `records` へ置きます。人は何もしません。
 
-例外承認の台帳(`docs/debt-ledger.md`)と停止の申し立ての解除の記録は、現行どおり**基底ブランチへ先に**入れます(記録だけの PR が 1 本残る。承認者は記名者本人。`reference/recording.md`「記録だけの PR の届け方」)。
+例外承認の台帳(`docs/debt-ledger.md`)の行と停止の申し立ての解除は、効力を持つ記録です。対象の PR の上の記名者本人のレビュー(宣言行 `例外承認: <行の ID>` / `停止の解除: 解除`)で裏づけます。対象が PR でない場合と認証情報を共有する体制では、記名者本人が作成者または承認者となる PR で基底ブランチへ先に入れます(`reference/recording.md`「効力を持つ記録の届け方」)。名前の一致だけでは数えません。
 
 ### 7. 次の一手を示す
 
@@ -99,8 +99,8 @@ node scripts/gate/next.mjs
 
 ## 参照
 
-- 共通の欄の書き方、機械が出す欄と人が書く欄、受け皿、様式の届け方、記録だけの PR の届け方: `reference/recording.md`
-- 記録用ブランチ、出荷の PR、記録だけの PR に残る承認: `.github/rulesets/README.md`
+- 共通の欄の書き方、機械が出す欄と人が書く欄、受け皿、様式の届け方、効力を持つ記録の届け方: `reference/recording.md`
+- 記録用ブランチ、出荷の PR、記録だけの PR に残る承認(転記の確認と帰属の確認): `.github/rulesets/README.md`
 - 基準を満たさないまま進めるときの経路: `reference/exception-paths.md`
 - 様式: `templates/04-gate-record.md`(補助ファイル: `.claude/skills/artifact/artifacts/04-gate-record.md`)
 - [第4章 ゲートと判定基準](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/)

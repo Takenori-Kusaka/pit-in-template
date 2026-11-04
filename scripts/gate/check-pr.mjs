@@ -124,6 +124,16 @@ import {
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
 import { stageOf } from './verification-trace.mjs';
+import {
+  exceptionReviewBacking,
+  stopReviewCandidates,
+  stopReleaseTextOfReview,
+  introducedBacking,
+  lastCommitOfRow,
+  lastCommitOfFile,
+  ghHosting,
+  fixedHosting,
+} from './material-attribution.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -440,17 +450,28 @@ export function specFindings(pr, { exists }) {
 }
 
 /**
- * 基底ブランチの台帳から、この PR を対象とする有効な例外承認の行を探す(出荷判定の証跡の集約と同じ条件のうち、
- * PR の時点で確かめられるもの)。作成を指示した者の全員との照合は、出荷判定の証跡の集約が行う
+ * この PR を対象とする有効な例外承認の行を探す(出荷判定の証跡の集約と同じ条件のうち、PR の時点で確かめられるもの)。
+ * 作成を指示した者の全員との照合は、出荷判定の証跡の集約が行う。
+ *
+ * 行の帰属(標準 第4章「判定記録を基底ブランチへ入れる操作」。process-compass #380 / ADR-0106 / IMPL-0413・IMPL-0414):
+ * 名前の一致だけでは数えない。(A) 対象の PR の上の、承認した者本人のレビュー(宣言行 `例外承認: <行の ID>`)か、
+ * (B) 基底ブランチの行は、行を入れた PR の作成者・承認者に承認した者本人のアカウントがあること(material-attribution.mjs)。
+ * (A) で裏づけた行は、PR の先頭の台帳(headLedgerText)にある行でもよい。ctx を渡さない呼び出しは帰属を確かめられず、行を数えない
  */
-export function exceptionFor(ledgerText, prNumber, config, prAuthor) {
+export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
   const matched = [];
   const rejected = [];
-  if (!ledgerText) return { matched, rejected, reason: '基底ブランチに技術負債台帳(docs/debt-ledger.md)がありません' };
-  if (!prNumber) return { matched, rejected, reason: 'PR の番号が分からないため、例外承認の行と対応づけられません' };
+  const backing = {};
+  const { git = null, policyRef = null, reviews = null, head = null, headLedgerText = null, hosting = null, instructorIds = [] } = ctx;
+  if (!ledgerText && !headLedgerText) return { matched, rejected, backing, reason: '基底ブランチに技術負債台帳(docs/debt-ledger.md)がありません' };
+  if (!prNumber) return { matched, rejected, backing, reason: 'PR の番号が分からないため、例外承認の行と対応づけられません' };
   const refers = (text) => new RegExp(`PR\\s*#\\s*${prNumber}(?!\\d)`).test(String(text ?? ''));
   const author = prAuthor ? findPersonByAccount(config, prAuthor) : null;
-  for (const r of parseLedger(ledgerText)) {
+  const baseRows = ledgerText ? parseLedger(ledgerText) : [];
+  const baseIds = new Set(baseRows.map((r) => r.id));
+  // PR の中で足した行(基底に無い ID)は、(A) のレビューで裏づけたときだけ数える
+  const headOnly = headLedgerText ? parseLedger(headLedgerText).filter((r) => !baseIds.has(r.id)).map((r) => ({ ...r, inHead: true })) : [];
+  for (const r of [...baseRows, ...headOnly]) {
     if (r.kind !== '例外') continue;
     if (r.target === null) {
       if (refers(r.text)) rejected.push(`${r.id}: 台帳に「対象」の欄が無い(旧い様式)`);
@@ -468,10 +489,23 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor) {
     }
     if (!isFilledValue(r.content) || (r.reason !== null && !isFilledValue(r.reason))) why.push('理由(内容・受容した理由)が未記入');
     if (!isFilledValue(r.due) || !dueDayOf(r.due)) why.push('期限(返却の目安)が未記入、または日付として解釈できない');
+    if (!why.length) {
+      // 帰属の裏づけ。(A) 承認した者本人のレビュー → (B) 行を入れた PR(基底ブランチの行だけ)
+      const signer = resolveSigner(config, r.approver);
+      const a = exceptionReviewBacking(config, r, signer, { reviews, author: prAuthor, head, instructorIds });
+      if (a.backed) backing[r.id] = `対象の PR の上の承認した者本人のレビュー(@${a.review.login}、${a.review.submittedAt ?? '提出日時なし'})`;
+      else if (r.inHead) why.push(`PR の中で足した行で、承認した者本人のレビューが無い(${a.why.join(' / ')})`);
+      else {
+        const sha = git && policyRef ? lastCommitOfRow(git, policyRef, 'docs/debt-ledger.md', r.id) : null;
+        const b = introducedBacking(config, signer, sha && hosting ? hosting.prOfCommit(sha) : null, { what: '台帳の行' });
+        if (b.backed) backing[r.id] = b.note;
+        else why.push(`帰属を確かめられない(名前の一致だけでは数えない): ${b.why}。対象の PR の上で、承認した者本人が宣言行「例外承認: ${r.id}」のレビューを出す`);
+      }
+    }
     if (why.length) rejected.push(`${r.id}: ${why.join('、')}`);
     else matched.push(r.id);
   }
-  return { matched, rejected, reason: null };
+  return { matched, rejected, backing, reason: null };
 }
 
 /**
@@ -487,7 +521,7 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor) {
  * 限界: ラベルの履歴(pr.labelEvents)を渡せない場合、ラベルを外した PR は申し立てを検出できない(ワークフローは
  * GitHub の issue の events から履歴を渡す)。記録の記述が事実と合うか、異常の内容の妥当性は判定しない
  */
-export function stopFindings({ git, base, pr = {}, config = {} }) {
+export function stopFindings({ git, base, pr = {}, config = {}, hosting = null }) {
   const name = (l) => (typeof l === 'string' ? l : (l?.name ?? null));
   const labels = (Array.isArray(pr.labels) ? pr.labels : []).map(name).filter(Boolean);
   const events = Array.isArray(pr.labelEvents) ? pr.labelEvents.filter((e) => name(e?.label) === STOP_LABEL) : null;
@@ -500,10 +534,23 @@ export function stopFindings({ git, base, pr = {}, config = {} }) {
   const policy = readPolicy(config, { text: policyText ?? null });
   const files = (git(['ls-tree', '--name-only', base, 'docs/gates/']) ?? '').split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.md'));
   const refers = (text) => Boolean(pr.number) && new RegExp(`PR\\s*#\\s*${pr.number}(?!\\d)`).test(String(text ?? ''));
+  // 解除の記録の帰属(process-compass #380 / ADR-0106 / IMPL-0413・IMPL-0414)。基底ブランチの記録は、記録を入れた PR の作成者・
+  // 承認者に解除した者本人のアカウントがあるときだけ数える。対象の PR の上の解除した者本人のレビュー(宣言行 `停止の解除: 解除`)も受け付ける
   const releases = files
     .map((f) => parseStopRelease(config, policy, f, git(['show', `${base}:${f}`])))
-    .filter((r) => r && refers(r.target));
-  const fresh = releases.filter((r) => !sinceDay || (r.day && r.day >= sinceDay));
+    .filter((r) => r && refers(r.target))
+    .map((r) => {
+      if (!r.valid) return r;
+      const sha = lastCommitOfFile(git, base, r.file);
+      const b = introducedBacking(config, resolveSigner(config, r.judge), sha && hosting ? hosting.prOfCommit(sha) : null, { what: '解除の記録' });
+      return b.backed ? { ...r, notes: [...r.notes, `帰属: ${b.note}`] } : { ...r, valid: false, problems: [...r.problems, `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}`] };
+    });
+  const byReview = stopReviewCandidates(config, { reviews: pr.reviews ?? null, author: pr.author ?? null, head: pr.head ?? null, labeledAt: lastLabeled });
+  for (const c of byReview.candidates) {
+    const r = parseStopRelease(config, policy, `PR #${pr.number} のレビュー ${c.review.id ?? '(id なし)'}`, stopReleaseTextOfReview(c.review, c.person, pr.number));
+    if (r) releases.push({ ...r, review: c.review.id ?? null });
+  }
+  const fresh = releases.filter((r) => r.review != null || !sinceDay || (r.day && r.day >= sinceDay));
   const valid = fresh.filter((r) => r.valid);
   const how = labeledNow ? `ラベル ${STOP_LABEL} が付いている` : `ラベル ${STOP_LABEL} を付けた履歴がある(${sinceDay}。ラベルを外しただけでは解除にならない)`;
   if (valid.length) {
@@ -513,20 +560,21 @@ export function stopFindings({ git, base, pr = {}, config = {} }) {
       released: true,
       releases,
       message:
-        `停止の申し立て: ${how}。基底ブランチの解除の記録 ${r.file}(解除 ${r.judge}、${r.day})により保留を解く` +
+        `停止の申し立て: ${how}。${r.review != null ? '' : '基底ブランチの'}解除の記録 ${r.file}(解除 ${r.judge}、${r.day})により保留を解く` +
         `${r.declined ? `。申し立てた者の見解を退けた解除(上申: ${r.escalation})` : ''}${r.selfReleased ? '。申し立てた者と解除した者が同一(その旨を記録に残す)' : ''}` +
         `${r.notes.length ? `。${r.notes.join('。')}` : ''}${labeledNow ? `。ラベル ${STOP_LABEL} は外してよい` : ''}`,
     };
   }
-  const rejected = releases.map((r) => `${r.file}: ${!fresh.includes(r) ? `ラベルを付けた日(${sinceDay})より前の記録` : r.problems.join('、')}`);
+  const rejected = [...releases.map((r) => `${r.file}: ${!fresh.includes(r) ? `ラベルを付けた日(${sinceDay})より前の記録` : r.problems.join('、')}`), ...byReview.rejected.filter((x) => !/読めない/.test(x))];
   return {
     requested: true,
     released: false,
     releases,
     message:
-      `停止の申し立て: ${how}。対象のマージを保留する(標準 第7章 7.11)。解除は、層1 の項目4「停止の申し立ての解除」の権限者が、` +
-      `解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」、対象 \`PR #${pr.number ?? '<番号>'}\`、解除の理由、申し立てた者、見解を退けたか、退けた場合は上申先と日付)を` +
-      `基底ブランチへ先に入れて行う。同じ PR で足した記録は数えない。AI の名義の解除を受け付けない` +
+      `停止の申し立て: ${how}。対象のマージを保留する(標準 第7章 7.11)。解除は、層1 の項目4「停止の申し立ての解除」の権限者本人が、` +
+      `この PR の上で宣言行「停止の解除: 解除」のレビュー(本文の表に、申し立てた者・解除の理由・申し立てた者の見解を退けたか・退けた場合は上申先と日付)を出して行う。` +
+      `対象が PR でない場合などは、解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」、対象 \`PR #${pr.number ?? '<番号>'}\`)を、権限者本人が作成者または承認者となる PR で基底ブランチへ先に入れる。` +
+      `同じ PR で足した記録は数えない。名前の一致だけでは解除に数えない。AI の名義の解除を受け付けない` +
       `${rejected.length ? `。成立しない解除の記録: ${rejected.join(' / ')}` : ''}${policy.present ? '' : '。層1 が無いため、事業決裁者の席の責任者を権限者として照合する'}`,
   };
 }
@@ -890,6 +938,10 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   }
   const atPolicy = policyPoint === mergeBase ? atBase : (file) => git(['show', `${policyPoint}:${file}`]);
   result.policy = { ref: policyRef, sameAsBase: policyPoint === mergeBase };
+  // 効力を持つ記録の帰属を確かめるための、PR の先頭のコミットとホスティングの記録(process-compass #380)。
+  // 先頭はワークフローが PR_HEAD_SHA で渡す(checkout はマージのコミットを取り出すため)。手元の実行は HEAD
+  const prHead = pr.head ?? ((git(['rev-parse', 'HEAD']) ?? '').trim() || null);
+  const prHosting = pr.hosting?.commits ? fixedHosting(pr.hosting.commits) : (pr.hostingLookup ?? null);
   if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})の先端から読む`);
   const atHead = (file) => {
     const p = path.join(root, file);
@@ -978,11 +1030,19 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   if (size.over.length) {
     size.sizeOver = true;
     // 既存の台帳の例外承認の行は有効のまま(過去の記録を壊さない)。新しい超過は、台帳でなく規模の確認で扱う
-    const ex = exceptionFor(atPolicy('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author);
+    const ex = exceptionFor(atPolicy('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author, {
+      git,
+      policyRef: policyPoint,
+      reviews: pr.reviews ?? null,
+      head: prHead,
+      headLedgerText: atHead('docs/debt-ledger.md'),
+      hosting: prHosting,
+      instructorIds: instructorsOf(limitsFrom, pr.body, pr.author).map((i) => i.id),
+    });
     size.exception = ex;
     if (ex.matched.length) {
       size.exceptionApproved = true;
-      result.notices.push(`size:over: ${size.over.join('、')}。基底ブランチの台帳の例外承認(${ex.matched.join(', ')})が有効なため、規模の確認は要さない。判定完了時間と変更規模を記録し、較正の母集団に含める`);
+      result.notices.push(`size:over: ${size.over.join('、')}。台帳の例外承認(${ex.matched.map((id) => `${id}。帰属: ${ex.backing?.[id] ?? '—'}`).join(' / ')})が有効なため、規模の確認は要さない。判定完了時間と変更規模を記録し、較正の母集団に含める`);
     } else {
       const att = sizeAttestationOf(pr.body);
       if (ex.rejected.length) result.notices.push(`size:over: 台帳の例外承認の行は有効でない(${ex.rejected.join(' / ')})。規模の超過は例外承認でなく規模の確認で扱う`);
@@ -1240,7 +1300,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   }
 
   // --- 6. 停止の申し立て(標準 第7章 7.11) ---
-  result.stop = stopFindings({ git, base: policyRef, pr, config: policyConfigured ? policyConfig : headConfig });
+  result.stop = stopFindings({ git, base: policyRef, pr: { ...pr, head: prHead }, config: policyConfigured ? policyConfig : headConfig, hosting: prHosting });
   if (result.stop.requested) {
     if (result.stop.released) result.notices.push(result.stop.message);
     else result.errors.push(result.stop.message);
@@ -1391,7 +1451,10 @@ if (isMain) {
         labelEvents: parseJsonEnv('PR_LABEL_EVENTS'),
         // G-6 の承認者の数(検査8)。レビューの一覧(JSON)。無ければ「読めない」として出す
         reviews: parseJsonEnv('PR_REVIEWS') ?? undefined,
+        // 効力を持つ記録の帰属(#380)。PR の先頭のコミットと、記録を入れた PR の作成者・承認者を引くリポジトリ
+        head: process.env.PR_HEAD_SHA || undefined,
       };
+  if (!pr.hosting && process.env.GITHUB_REPOSITORY && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) pr.hostingLookup = ghHosting(process.env.GITHUB_REPOSITORY);
   const r = analyzePr({ base, policyBase, pr });
   if (argv.includes('--json')) {
     console.log(JSON.stringify(r, null, 2));

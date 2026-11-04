@@ -30,7 +30,8 @@
     "deny": [
       "Read(./context/_archive/**)",
       "Bash(npx -y @nanonets/graft@0.12.1 build --deep:*)",
-      "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)"
+      "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)",
+      "Bash(gh pr review:*)"
     ],
     "ask": [
       "Bash(npm publish:*)",

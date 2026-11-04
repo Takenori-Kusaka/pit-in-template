@@ -69,13 +69,16 @@ git('commit', '-q', '-m', 'chore: base');
 
 let failures = 0;
 let n = 0;
+// 効力を持つ記録(台帳の行・解除の記録)を基底ブランチへ入れた PR の記録(ホスティングの代役。process-compass #380)。
+// 既定は、記名者(鈴木 一郎・佐藤 花子)本人の承認で入った記録として扱う。帰属の照合そのものの試験は test-material-attribution.mjs
+const BACKED = { prOfCommit: () => ({ number: 1, author: 'tester', approvers: ['suzuki', 'sato'] }) };
 function scenario(name, pr, mutate, expect) {
   n++;
   git('switch', '-q', '-C', `pr-${n}`, 'main');
   mutate();
   git('add', '-A');
   git('commit', '-q', '--allow-empty', '-m', `change ${n}`);
-  const r = analyzePr({ root: TMP, base: 'main', pr: { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', ...pr } });
+  const r = analyzePr({ root: TMP, base: 'main', pr: { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, ...(typeof pr === 'function' ? pr() : pr) } });
   const problems = expect(r);
   const ok = !problems.length;
   if (!ok) failures++;
@@ -493,6 +496,38 @@ scenario('停止の申し立て: 層1 が無ければ事業決裁者の席の責
 scenario('停止の申し立て: ラベルを外しただけでは解けない(履歴から検出する)', { labels: [], labelEvents: [{ event: 'labeled', label: 'state:stop-requested', at: '2026-10-03T00:00:00Z' }, { event: 'unlabeled', label: 'state:stop-requested', at: '2026-10-03T01:00:00Z' }] }, () => write('docs/x.md', 'x\n'), failsWith(/ラベルを外しただけでは解除にならない/));
 scenario('停止の申し立て: PR の中で足した解除の記録は数えない', { labels: STOP }, () => write(`docs/gates/stop-${stopNo + 5}.md`, release(100 + stopNo + 5, '佐藤 花子')), failsWith(/対象のマージを保留する/));
 
+// ---------------------------------------------------------------- 効力を持つ記録の帰属(process-compass #380 / ADR-0106)
+// 単体の試験は test-material-attribution.mjs(IMPL-0414)。ここは PR の時点の検査へ組み込んだ形を確かめる(IMPL-0413)。
+// レビューの対象のコミットは、場面のコミットの後の先頭(PR の情報を関数で渡し、analyzePr を呼ぶ時点に読む)
+const reviewed = (login, body) => ({ reviews: [{ id: 1, author: { login }, state: 'COMMENTED', body, submitted_at: '2099-01-01T00:00:00Z', commit_id: git('rev-parse', 'HEAD').trim(), edited_by: null }] });
+// ラベルを付けた履歴(解除のレビューは、ラベルの後に出したものに限る)
+const LABELED = [{ event: 'labeled', label: 'state:stop-requested', at: '2098-12-31T00:00:00Z' }];
+const baseRelease = () => onBase(() => write(`docs/gates/stop-attr-${n + 1}.md`, release(100 + n + 1, '佐藤 花子')));
+const RELEASE_BODY = '停止の解除: 解除\n\n| 欄 | 記載 |\n| --- | --- |\n| 申し立てた者 | 山田 太郎 |\n| 解除の理由 | 原因を除いた |\n| 申し立てた者の見解を退けたか | 退けていない |\n| 上申先と日付(退けた場合) | 該当なし |\n';
+// 基底の解除の記録が名前だけで書かれ、記録を入れた PR に解除した者本人の操作が無い(名前を借りる経路。#380 品質監査 F-1・F-3)
+baseRelease();
+// IMPL-0413:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('帰属: 基底ブランチの解除の記録を入れた PR に、解除した者本人の作成・承認が無ければ数えない', { labels: STOP, hostingLookup: { prOfCommit: () => ({ number: 2, author: 'yamada', approvers: ['suzuki'] }) } }, () => write('docs/x.md', 'x\n'), failsWith(/帰属を確かめられない/));
+baseRelease();
+scenario('帰属: ホスティングの記録を読めなければ、基底ブランチの解除の記録を数えない', { labels: STOP, hostingLookup: null }, () => write('docs/x.md', 'x\n'), failsWith(/ホスティングから読めない/));
+// IMPL-0413:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('帰属: 対象の PR の上の、権限者本人の解除のレビューで保留を解く(基底ブランチの記録なし)', () => ({ labels: STOP, labelEvents: LABELED, hostingLookup: null, ...reviewed('sato', RELEASE_BODY) }), () => write('docs/x.md', 'x\n'), passes((r) => (r.stop?.released ? [] : ['保留を解いていない'])));
+scenario('帰属: 権限者でない人の解除のレビューは数えない', () => ({ labels: STOP, labelEvents: LABELED, hostingLookup: null, ...reviewed('suzuki', RELEASE_BODY) }), () => write('docs/x.md', 'x\n'), failsWith(/対象のマージを保留する/));
+scenario('帰属: 作成者本人の解除のレビューは数えない', () => ({ labels: STOP, labelEvents: LABELED, hostingLookup: null, author: 'sato', ...reviewed('sato', RELEASE_BODY) }), () => write('docs/x.md', 'x\n'), failsWith(/対象のマージを保留する/));
+// 例外承認の行(規模の超過に効く)。PR の中で足した行は、承認した者本人のレビューがあれば数える
+const BIG_BODY = BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: 鈴木 一郎'));
+scenario('帰属: PR の中で足した例外承認の行を、承認した者本人のレビューで数える', () => ({ number: 777, body: BIG_BODY, hostingLookup: null, ...reviewed('suzuki', '例外承認: D-777') }), () => {
+  write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-777', 777));
+  write('src/big.js', lines(450, 'x'));
+}, passes((r) => (r.size.exception?.matched.includes('D-777') ? [] : [`例外承認の行に対応づいていない: ${JSON.stringify(r.size.exception?.rejected)}`])));
+scenario('帰属: PR の中で足した例外承認の行は、承認した者本人のレビューが無ければ数えない', { number: 778, body: BIG_BODY, hostingLookup: null }, () => {
+  write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-778', 778));
+  write('src/big.js', lines(450, 'x'));
+}, (r) => (r.size.exception?.matched.includes('D-778') ? ['数えてはならない行を数えた'] : r.size.exception?.rejected.some((x) => /承認した者本人のレビューが無い/.test(x)) ? [] : [`理由が出ていない: ${JSON.stringify(r.size.exception?.rejected)}`]));
+scenario('帰属: 基底ブランチの例外承認の行を入れた PR に承認した者本人が無ければ数えない(名前を借りる経路)', { number: 7, hostingLookup: { prOfCommit: () => ({ number: 3, author: 'yamada', approvers: ['sato'] }) } }, () => {
+  write('src/big.js', lines(450, 'x'));
+}, (r) => (r.size.exception?.matched.includes('D-001') ? ['数えてはならない行を数えた'] : r.size.exception?.rejected.some((x) => /帰属を確かめられない/.test(x)) ? [] : [`理由が出ていない: ${JSON.stringify(r.size.exception?.rejected)}`]));
+
 // ---------------------------------------------------------------- G-6 の承認者の数(第8章 軸C・軸E。#288 第5巡)
 // 基底の構成に G-6(有効)と review.reviewerCount: 2 を置く。合否にはしない(警告と通知)
 onBase(() =>
@@ -580,7 +615,7 @@ scenario('変更要求: 理由の無い変更要求のあと承認し直した(�
   write('src/auth/stacked.js', lines(10, 'a'));
   git('add', '-A');
   git('commit', '-q', '-m', 'upper2: 認証のコード');
-  const pr2 = { number: 993, title: 'feat: y', body: BODY(), author: 'yamada', labels: STOP };
+  const pr2 = { number: 993, title: 'feat: y', body: BODY(), author: 'yamada', labels: STOP, hostingLookup: BACKED };
   const authHit = (r) => Boolean(r.riskFloor?.hits.some((h) => h.id === 'auth'));
   rows.push(
     ['スタック: 下の層で外した区分の下限の規則は、既定ブランチから読むと効かない(R1 の下限が残る)', () => (git('switch', '-q', 'stack-upper2'), authHit(analyzePr({ root: TMP, base: 'stack-lower2', policyBase: 'main', pr: pr2 })))],

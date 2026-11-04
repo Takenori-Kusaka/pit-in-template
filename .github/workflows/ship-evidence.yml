@@ -30,8 +30,9 @@
 #   (c) その PR 上で、同じ集約を再実行し、PR の中の複製が `records` ブランチと一致することを検査する(verify ジョブ)。
 #       JSON は id・commit_id・submitted_at・user.id・body(と pr・merge_commit_sha・head_sha)の一致、md は内容の一致。不一致は失敗
 #
-# 出荷の PR の承認者は、出荷判定者本人です(CODEOWNERS の docs/gates/・docs/records/ の所有者)。記録だけの PR に残る承認 1 件は
-# 記名者本人の操作であり、記名者以外の承認が付く場合はその承認は取り込みの事務です(標準 第4章「判定記録を基底ブランチへ入れる操作」)。
+# 出荷の PR は、開いた人以外の人が承認します(GitHub では PR の作成者は自分の PR を承認できません)。この承認は転記の確認であり、
+# 承認者は verify の結果を確かめます。判定ではありません(標準 第4章「判定記録を基底ブランチへ入れる操作」、ADR-0106)。
+# safety・regulated の構成はコード所有者の承認を課すため、docs/gates/ の所有者(既定は出荷判定者の席)以外の人が PR を開きます。
 # 既定ブランチのルールセットは緩めません。bypass actor を足さず、`exempt` を使いません(D7)。
 #
 # **出荷の PR を開くのは出荷判定者(人)です。ワークフローは PR を開きません**。理由は 2 つ(2026-10-24 の通し実行で確定)。
@@ -242,10 +243,10 @@ jobs:
             printf '## 変更の概要\n\n'
             printf '出荷の範囲 `%s` の判定記録(様式)と承認レビューの写しを記録用ブランチ `%s` から複製し、保証の開示を置く(ship-evidence の実行 %s が push したブランチ `%s`)。追加だけで、既存のファイルは上書きしていない。\n\n' "$range" "$RECORDS_BRANCH" "${{ github.run_id }}" "$branch"
             printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件)\n\n' "$out" "$added" "$skipped"
-            printf '承認者は出荷判定者本人(CODEOWNERS の docs/gates/・docs/records/ の所有者)。記名者以外の承認が付く場合、その承認は取り込みの事務であり判定ではない(標準 第4章「判定記録を基底ブランチへ入れる操作」)。この PR を開いた人の操作で gate-g5 と ship-evidence の verify が起動する。\n\n'
+            printf '承認するのは、この PR を開いた人以外の人。承認は転記の確認であり判定ではない。承認者は verify の結果(複製が記録用ブランチと一致すること)を確かめる(標準 第4章「判定記録を基底ブランチへ入れる操作」)。この PR を開いた人の操作で gate-g5 と ship-evidence の verify が起動する。\n\n'
             printf '## 検証方法と結果\n\n- verify ジョブが同じ集約を再実行し、複製が `%s` と一致することを検査する(人は結果を読む)\n\n' "$RECORDS_BRANCH"
             printf '## AI 関与範囲\n\n- 生成: なし(ワークフローの機械の複製)\n- 人の確認: 出荷判定者\n\n'
-            printf '## 作成を指示した者\n\n@%s(ship-evidence を起動した人。機械の複製であり、出荷判定者が承認する)\n\n' "${{ github.actor }}"
+            printf '## 作成を指示した者\n\n@%s(ship-evidence を起動した人。機械の複製であり、この PR を開いた人以外の人が転記の確認として承認する)\n\n' "${{ github.actor }}"
             printf '## リスク区分\n\nR3\n\n'
             printf '<!-- ship-evidence from=%s to=%s out=%s -->\n' "${from}" "${to}" "$out"
           } > /tmp/pr-body.md
@@ -386,7 +387,7 @@ jobs:
                 elif [ "$SHIP" = "true" ]; then
                   fail "$p: 記録用ブランチに無い判定記録を出荷の PR で足している"
                 else
-                  note "$p: 記録用ブランチに無い判定記録(停止の解除・例外承認・SG のように基底ブランチへ先に入れる記録。承認者は記名者本人)"
+                  note "$p: 記録用ブランチに無い判定記録(停止の解除・例外承認・SG のように基底ブランチへ先に入れる記録。記名者本人の操作で帰属を裏づける)"
                 fi ;;
               docs/evidence/*.md)
                 # 集約の出力は実行の時刻を含むため、内容の一致は検査しない。出荷の PR では上の再実行が通ることを検査している

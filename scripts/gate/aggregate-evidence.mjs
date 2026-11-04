@@ -133,6 +133,7 @@ import {
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits } from './check-pr.mjs';
+import { exceptionReviewBacking, introducedBacking, lastCommitOfRow, lastCommitOfFile, ghHosting } from './material-attribution.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
@@ -244,7 +245,16 @@ export function reviewsOfCopy(copy, { apiReviews = null } = {}) {
       stale.push({ login, reviewId: r.id ?? null, commitId: r.commit_id });
       state = 'STALE';
     }
-    reviews.push({ id: r?.id ?? null, author: { login, id: r?.user?.id ?? null, is_bot: isBot }, state, body: r?.body ?? '', submittedAt: r?.submitted_at ?? null, commitId: r?.commit_id ?? null });
+    reviews.push({
+      id: r?.id ?? null,
+      author: { login, id: r?.user?.id ?? null, is_bot: isBot },
+      state,
+      body: r?.body ?? '',
+      submittedAt: r?.submitted_at ?? null,
+      commitId: r?.commit_id ?? null,
+      // 本文を編集した者(record-copy.yml が GraphQL の editor から写す。#380)。写しに欄が無ければ写さない(編集の記録を読めない)
+      ...(r && 'edited_by' in r ? { editedBy: r.edited_by } : {}),
+    });
   }
   return { reviews, stale, head };
 }
@@ -486,7 +496,7 @@ export function copyCoverage(prNumbers, copies) {
  * 様式の帰属の裏づけ(IMPL-0128 / 第4章「判定記録を基底ブランチへ入れる操作」)。
  *   approvers: 様式を基底へ運んだ PR の承認者(人のアカウント。最後の状態が承認)。PR を経ていなければ null
  *   記名者本人の承認レビュー > 署名コミット > author の login・email(弱い裏づけ) > 名前だけ(自己申告)
- * 記名者以外の承認者は、取り込みの事務として clerical に出す(判定ではない。欠落にも数えない)
+ * 記名者以外の承認者は、転記の確認・帰属の確認として clerical に出す(判定ではない。欠落にも数えない。ADR-0106)
  */
 export function formAttribution(gateRecord, { judgeName = null, person = null, approvers = null } = {}) {
   const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a));
@@ -1275,6 +1285,8 @@ if (isMain) {
   // docs/safety/ は独立した安全性の評価の記録(附属書F。CL2 以上の監査対応書式の「安全性の評価の記録の所在」)の置き場。記録を
   // リポジトリに置く組織が、記録のコミットを製品の変更に数えられないようにする(#288 第8巡 W8)。文書管理システム(DHF など)を
   // 所在にする組織は、この置き場を使わず、判定記録の所在の欄に文書管理システムの識別子を書く
+  // 記録だけのコミット(Risk・Verification のトレーラを要しないコミット)の判定に使う一覧。効力を持つ記録の帰属の要求の範囲ではない
+  // (帰属は記録の種別ごとに照合する: 台帳の行は ledgerRowUnbacked、停止の解除は stopReleases と stopFindings。#380 / ADR-0106)
   const RECORD_PATHS = ['docs/gates/**', 'docs/records/**', 'evidence/**', 'docs/self-heal/**', 'docs/self-heal-log.tsv', 'docs/adoption-trial/**', 'docs/drills/**', 'docs/safety/**', 'docs/exit-rehearsal.json', 'docs/debt-ledger.md', 'docs/D-0-governance.md', 'docs/quality-assurance-policy.md', 'PROCESS-PROFILE.md'];
 
   /**
@@ -1449,11 +1461,56 @@ if (isMain) {
         reviewerSummarySource: independent.counted ? independent.summarySource : null,
       },
       commits: own.map((h) => h.slice(0, 8)),
+      // 効力を持つ記録の帰属(#380)。対象の PR の上のレビュー、PR の先頭、作成者
+      material: {
+        reviews,
+        head: headOid,
+        author: d?.author?.login ?? null,
+        // PR のコミットの作成者(gh pr view の commits[].authors[])。写しで対応づけた PR では読めない(null)
+        commitAuthors: Array.isArray(api?.commits) ? api.commits.flatMap((c) => (Array.isArray(c?.authors) && c.authors.length ? c.authors.map((a) => a?.login ?? null) : [null])) : null,
+      },
     });
   }
   prs.sort((a, b) => a.number - b.number);
   const prByNumber = new Map(prs.map((p) => [p.number, p]));
   const anyPrByNumber = new Map([...prs, ...recordPrs].map((p) => [p.number, p]));
+
+  // 効力を持つ記録(台帳の行・停止の解除の記録)を基底ブランチへ入れた変更の記録(作成者・承認者)。出荷の範囲の PR は
+  // 集約が読んだ記録から、範囲の外のコミットはホスティング(gh)から引く(process-compass #380 / ADR-0106 / IMPL-0414)
+  const remoteHosting = repo ? ghHosting(repo) : null;
+  const materialHosting = {
+    prOfCommit(sha) {
+      if (!sha) return null;
+      const m = commitPr.get(sha);
+      const p = m?.role === 'merge' ? anyPrByNumber.get(m.number) : null;
+      if (p) return { number: p.number, author: p.material?.author ?? null, approvers: p.g6.approvers, commitAuthors: p.material?.commitAuthors ?? null };
+      return remoteHosting ? remoteHosting.prOfCommit(sha) : null;
+    },
+  };
+  const gitText = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  };
+  /**
+   * 台帳の行の帰属(第4章「判定記録を基底ブランチへ入れる操作」/ IMPL-0413・IMPL-0414)。名前の一致だけでは数えない。
+   * (A) 対象の PR の上の承認した者本人のレビュー(宣言行 `例外承認: <ID>`)、(B) 行を入れた PR の作成者・承認者。
+   * 裏づければ null、裏づけなければ理由の文
+   */
+  // 帰属の確認者を置けない体制(名簿に記名者以外の人がいない)で、自己申告として数えた効力を持つ記録。保証の開示の項目1 へ出す
+  const materialSelfAttested = [];
+  function ledgerRowUnbacked(r, signer, { material = null, instructorIds = [] } = {}) {
+    if (material) {
+      const a = exceptionReviewBacking(config, r, signer, { reviews: material.reviews, author: material.author, head: material.head, instructorIds });
+      if (a.backed) return null;
+    }
+    const sha = lastCommitOfRow(gitText, 'HEAD', debtFile, r.id);
+    const b = introducedBacking(config, signer, sha ? materialHosting.prOfCommit(sha) : null, { what: '台帳の行' });
+    if (b.selfAttested && !materialSelfAttested.some((x) => x.file === `${debtFile} ${r.id}`)) materialSelfAttested.push({ file: `${debtFile} ${r.id}`, judge: signer?.name ?? r.approver, how: b.how, note: b.note, pr: null });
+    return b.backed ? null : `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}。対象の PR の上で承認した者本人が宣言行「例外承認: ${r.id}」のレビューを出すか、承認した者本人が作成者または承認者となる PR で行を入れる`;
+  }
 
   // --- 判定者本人のレビューによる G-2・G-3・G-4 の記録(第4章 G-2 / IMPL-0129)と、機械が出す欄(IMPL-0125) -----------
   //
@@ -1643,7 +1700,7 @@ if (isMain) {
   //   5. 作成を指示した者が、全員名簿の人へ対応づく。1人でも対応づかない場合は、承認した者と別の人かを
   //      確かめられないため、対応づけない(K73。PR を経ないコミットの、名簿に無い Author を含む)
   // 承認した者が例外承認の権限を持つかは、機械では確かめない(内部監査で確かめる)
-  function exceptionMatch(refers, ins) {
+  function exceptionMatch(refers, ins, material = null) {
     const matched = [];
     const rejected = [];
     for (const r of ledgerRows ?? []) {
@@ -1678,6 +1735,10 @@ if (isMain) {
       if (ins.unresolved.length && !why.includes('承認した者が、作成を指示した者である')) {
         why.push(`作成を指示した者を名簿と対応づけられない(${ins.unresolved.join(' / ')})`);
       }
+      if (!why.length) {
+        const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver), { material, instructorIds: [...ins.known.keys()] });
+        if (u) why.push(u);
+      }
       if (why.length) rejected.push(`${r.id}: ${why.join('、')}`);
       else matched.push(`${debtFile} ${r.id}`);
     }
@@ -1702,6 +1763,10 @@ if (isMain) {
     }
     if (!filled(r.content) || (r.reason !== null && !filled(r.reason))) why.push('理由(内容・受容した理由)が未記入');
     if (!filled(r.due) || !dueDayOf(r.due)) why.push(`期限(返却の目安)が未記入、または日付として解釈できない(${r.due || '未記入'})`);
+    if (!why.length) {
+      const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver));
+      if (u) why.push(u);
+    }
     const label = `${r.id}(${t.gate} ${t.subject})`;
     if (why.length) gateExceptions.rejected.push(`${label}: ${why.join('、')}`);
     else gateExceptions.matched.push(label);
@@ -1753,7 +1818,7 @@ if (isMain) {
 
   for (const p of prs) {
     const needs = exceptionNeeded(p.g6.independent.counted, p.g6PostHoc, p.riskClass);
-    const ex = needs ? exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors }) : { matched: [], rejected: [] };
+    const ex = needs ? exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors }, p.material) : { matched: [], rejected: [] };
     p.exceptionRecords = ex.matched;
     p.exceptionRejected = ex.rejected;
     if (!needs || ex.matched.length) continue;
@@ -1881,7 +1946,7 @@ if (isMain) {
   // 基底の台帳に有効な例外承認の行がある PR は、従来どおり対象外とする。基準値は変更の起点(マージ時点)の構成で判定している
   for (const p of prs) {
     if (!p.size?.over) continue;
-    const exs = exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors });
+    const exs = exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors }, p.material);
     if (exs.matched.length) continue;
     const a = p.sizeAttestation;
     const why = [];
@@ -2198,8 +2263,10 @@ if (isMain) {
   // --- 記録の帰属(IMPL-0128 / 第4章「判定記録を基底ブランチへ入れる操作」) --------------------------------------------
   //
   // 記名者本人の裏づけ(記名者本人の承認レビュー、署名コミット、author の login・email)の無い様式は、記名が自己申告である。
-  // 件数で保証の開示の項目1 に出し、欠落には数えない。記録だけの PR に記名者以外の承認が付いていれば、取り込みの事務として開示する
+  // 件数で保証の開示の項目1 に出し、欠落には数えない。記録だけの PR に記名者以外の承認が付いていれば、転記の確認・帰属の確認として開示する(判定ではない。ADR-0106)
   const attribution = { backed: [], selfAttested: [], clerical: [] };
+  // 効力を持つ記録(台帳の行・停止の解除の記録)のうち、自己申告として数えたもの(#380)
+  for (const m of materialSelfAttested) attribution.selfAttested.push(m);
   const attributeForm = (gateRecord, approvers, prNumber) => {
     const judgeName = judgeOfForm(gateRecord.text);
     const person = judgeName ? resolveSigner(config, judgeName) : null;
@@ -2304,7 +2371,15 @@ if (isMain) {
   const stopReleases = gateRecordList
     .map((r) => parseStopRelease(config, policy, r.file, fs.readFileSync(path.join(ROOT, r.file), 'utf8')))
     .filter(Boolean)
-    .filter((r) => !recordsInRange || recordsInRange.has(r.file));
+    .filter((r) => !recordsInRange || recordsInRange.has(r.file))
+    .map((r) => {
+      // 解除の記録の帰属(#380 / IMPL-0414)。記録を入れた PR の作成者・承認者に、解除した者本人のアカウントがあるか
+      if (!r.valid) return r;
+      const sha = lastCommitOfFile(gitText, 'HEAD', r.file);
+      const b = introducedBacking(config, resolveSigner(config, r.judge), sha ? materialHosting.prOfCommit(sha) : null, { what: '解除の記録' });
+      if (b.selfAttested) attribution.selfAttested.push({ file: r.file, judge: r.judge, how: b.how, note: b.note, pr: null });
+      return b.backed ? r : { ...r, valid: false, problems: [...r.problems, `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}`] };
+    });
   for (const r of stopReleases) {
     if (!r.valid) gaps.push(`${r.file}: 停止の申し立ての解除の記録として成立していません(${r.problems.join('。')})。第7章 7.11`);
   }
@@ -2987,7 +3062,7 @@ if (isMain) {
       const labelEvents = Array.isArray(events)
         ? events.filter((e) => e?.event === 'labeled' || e?.event === 'unlabeled').map((e) => ({ event: e.event, label: e.label?.name ?? e.label, at: e.created_at ?? e.at }))
         : null;
-      const r = stopFindings({ git: gitOrNull, base: endRef, pr: { number: p.number, labels: p.labels ?? [], labelEvents }, config });
+      const r = stopFindings({ git: gitOrNull, base: endRef, pr: { number: p.number, labels: p.labels ?? [], labelEvents, reviews: p.material?.reviews ?? null, head: p.material?.head ?? null, author: p.material?.author ?? null }, config, hosting: materialHosting });
       if (r.requested) {
         p.stop = { released: r.released, message: r.message };
         if (!r.released) stopHolds.push({ target: `PR #${p.number}`, message: r.message });
@@ -3000,7 +3075,9 @@ if (isMain) {
         if (!`${i.title ?? ''}\n${i.body ?? ''}`.includes(to)) continue;
         const released = gateRecordList
           .map((g) => parseStopRelease(config, policy, g.file, fs.readFileSync(path.join(ROOT, g.file), 'utf8')))
-          .filter((x) => x && x.valid && String(x.target ?? '').includes(to));
+          .filter((x) => x && x.valid && String(x.target ?? '').includes(to))
+          // 解除の記録の帰属(#380 / IMPL-0414)
+          .filter((x) => introducedBacking(config, resolveSigner(config, x.judge), materialHosting.prOfCommit(lastCommitOfFile(gitText, 'HEAD', x.file)), { what: '解除の記録' }).backed);
         if (!released.length) stopHolds.push({ target: `リリース ${to}(Issue #${i.number})`, message: `リリース ${to} を対象とする停止の申し立て(Issue #${i.number})に、成立した解除の記録(対象に ${to} を書いた解除の記録)が無い。PR の段階の解除は、リリースの申し立てを解かない` });
       }
     }
@@ -4257,7 +4334,7 @@ if (isMain) {
         `| 記名が自己申告の記録(記名者本人の承認レビュー・署名コミット・author の裏づけが無い様式。欠落にしない) | ${rc.attribution.selfAttested.length} 件${listOf(rc.attribution.selfAttested.map((x) => `${x.file}(${x.note})`), 3)} / 裏づけあり ${rc.attribution.backed} 件 | ${prevRc((r) => `${r.attribution.selfAttested.length} 件`)} |`
       );
       R.push(
-        `| 記名者以外の承認が付いた記録の PR(取り込みの事務。判定ではない) | ${rc.attribution.clerical.length} 件${listOf(rc.attribution.clerical.map((x) => `${x.file}(PR #${x.pr}。承認者 ${x.approvers.map((a) => `@${a}`).join('・')}、記名者 ${x.judge ?? '未記入'})`), 3)} | ${prevRc((r) => `${r.attribution.clerical.length} 件`)} |`
+        `| 記名者以外の承認が付いた記録の PR(転記の確認・帰属の確認。判定ではない) | ${rc.attribution.clerical.length} 件${listOf(rc.attribution.clerical.map((x) => `${x.file}(PR #${x.pr}。承認者 ${x.approvers.map((a) => `@${a}`).join('・')}、記名者 ${x.judge ?? '未記入'})`), 3)} | ${prevRc((r) => `${r.attribution.clerical.length} 件`)} |`
       );
       if (rc.recordPrs.length) {
         R.push(`| 記録だけの PR(変更したファイルのすべてが記録の置き場。変更の件数に数えていない) | ${rc.recordPrs.length} 件(${rc.recordPrs.map((p) => `#${p.number}`).join(', ')}) | ${prevRc((r) => `${(r.recordPrs ?? []).length} 件`)} |`);

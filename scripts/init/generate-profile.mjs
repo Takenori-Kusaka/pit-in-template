@@ -5518,6 +5518,15 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)"
   ];
 
+  // 例外承認・停止の解除の宣言行のレビューを、AI の担い手が出さない(標準 第4章「判定記録を基底ブランチへ入れる操作」、
+  // ADR-0106。process-compass #380 / IMPL-0417)。レビューは記名者本人のアカウントの操作として帰属の裏づけに数えるため、
+  // 担い手が記名者の認証情報で動く構成では、担い手がレビューを出すと帰属が崩れる。standardBash から移した。
+  // ステージと guard.enabled に依らず残す。gh api で直接レビューを作る経路は止めない(読み取りの gh api と区別できない)。
+  // 常駐の規則が残りを受ける
+  const standardReview = [
+    "Bash(gh pr review:*)"
+  ];
+
   const standardCategoryAB = [
     "Edit(./.claude/settings.json)",
     "Edit(./.claude/guard.json)",
@@ -5537,7 +5546,6 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
   const standardBash = [
     "Bash(git push --force:*)",
     "Bash(git push -f:*)",
-    "Bash(gh pr review:*)",
     "Bash(gh pr merge:*)",
     "Bash(gh api repos/*/rulesets:*)"
   ];
@@ -5547,6 +5555,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     ...standardSecrets,
     ...standardArchive,
     ...standardExternal,
+    ...standardReview,
     ...standardCategoryAB,
     ...standardCategoryC,
     ...standardBash
@@ -5578,6 +5587,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
       ...standardSecrets,
       ...standardArchive,
       ...standardExternal,
+      ...standardReview,
       ...customDenyRules
     ];
 
@@ -5602,6 +5612,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
       ...standardSecrets,
       ...standardArchive,
       ...standardExternal,
+      ...standardReview,
       ...standardCategoryAB,
       ...standardCategoryC,
       ...standardBash,

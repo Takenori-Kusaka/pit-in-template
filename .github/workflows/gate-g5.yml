@@ -14,6 +14,10 @@ on:
     # labeled / unlabeled: 停止の申し立て(ラベル state:stop-requested。標準 第7章 7.11)を付けた時点で保留し、
     # 外したときにも解除の記録があるかを確かめ直す
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  # 例外承認・停止の解除は、対象の PR の上の記名者本人のレビュー(宣言行つき)でも受け付ける(標準 第4章「判定記録を基底ブランチへ
+  # 入れる操作」。process-compass #380 / ADR-0106)。pull_request_review では起動しない(github.base_ref が空になり、
+  # 基底との比較を前提とするジョブが飛ばされたまま gate-g5 が通過しうるため)。レビューを出した後は、このワークフローの
+  # 最後の実行を再実行する。PR のレビューの手順は実行のたびに API から読み直す
   # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
   # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
   # 既定ブランチの名前が main でない場合は、ここを改める(このファイルは強制層であり、変更は AI維持管理者の承認を要する)
@@ -100,6 +104,8 @@ jobs:
       - run: node scripts/gate/test-customer-voice.mjs
       # モデルの導入の記録・正解の目録・AI の採点者の較正の記録の検査(process-compass #426)
       - run: node scripts/gate/test-model-adoption.mjs
+      # 効力を持つ記録(例外承認の台帳の行・停止の解除の記録)の帰属(process-compass #380 / IMPL-0413・IMPL-0414)
+      - run: node scripts/gate/test-material-attribution.mjs
       # 従う本標準の版・適用の終了・適用の開始の境・述べられる主張の名を、一時の置き場で通しで試験する(process-compass #313)
       - run: node scripts/gate/test-edition-end.mjs
       # 判断記録の状態と置き換えの両側の参照、状態に応じた置き場(標準 第6章 テンプレ2「置き換えと廃止」、第4章 G-3「記載の検査」。process-compass #289)
@@ -281,8 +287,10 @@ jobs:
 
   # PR 単位の検査(#286): トレーラ Spec、変更規模の上限、閾値・除外設定と製品のコードの同時変更(禁止事項6)。
   # 既存のテストの変更(削除・期待値の変更)は、G-6 の材料として PR へ一覧を出す(失敗にはしない)。
-  # 規模の基準値と、台帳の既存の例外承認の行は、基底ブランチの構成と台帳から読む。同じ PR で足した例外承認の行は数えない。超過は失敗にせず、規模の確認を要する(#295)。
-  # 停止の申し立て(ラベル state:stop-requested)が付いた PR は、基底ブランチに解除の記録が入るまで失敗させる(#288)。
+  # 規模の基準値と、台帳の既存の例外承認の行は、基底ブランチの構成と台帳から読む。同じ PR で足した例外承認の行は、承認した者本人の
+  # レビュー(宣言行 例外承認: 行の ID)で帰属を裏づけたものだけを数える(#380)。超過は失敗にせず、規模の確認を要する(#295)。
+  # 停止の申し立て(ラベル state:stop-requested)が付いた PR は、権限者本人の解除のレビューか、基底ブランチの解除の記録(権限者本人の
+  # 操作で帰属を裏づけたもの)があるまで失敗させる(#288・#380)。
   # PR の題名と本文は環境変数で渡す(シェルへ展開しない)
   pr-rules:
     name: pr-rules
@@ -327,8 +335,17 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           rv=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
-            --jq '.[] | {state, body, submitted_at, author: {login: .user.login, is_bot: (.user.type == "Bot")}}' \
+            --jq '.[] | {id, state, body, submitted_at, commit_id, author: {login: .user.login, id: .user.id, is_bot: (.user.type == "Bot")}}' \
             | jq -s -c . 2>/dev/null) || rv=''
+          # レビューの本文を書き手以外が編集したか(editor)。効力を持つ記録のレビュー(宣言行 例外承認・停止の解除)は、
+          # 書き手以外が編集したものを数えない(process-compass #380 / ADR-0106 / EV-0220)。GraphQL で引けたレビューにだけ edited_by を足す
+          # (引けないレビューは edited_by が無く、検査は「編集の記録を読めない」として宣言行のレビューを数えない)
+          ed=$(gh api graphql -F owner="${REPO%%/*}" -F name="${REPO#*/}" -F number="${PR_NUMBER}" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100){nodes{databaseId editor{login}}}}}}' \
+            --jq '[.data.repository.pullRequest.reviews.nodes[] | {key: (.databaseId | tostring), value: (.editor.login // "")}] | from_entries' 2>/dev/null) || ed=''
+          if [ -n "$rv" ] && [ -n "$ed" ]; then
+            rv=$(printf '%s' "$rv" | jq -c --argjson ed "$ed" 'map((.id | tostring) as $k | if ($ed | has($k)) then . + {edited_by: (if $ed[$k] == "" then null else $ed[$k] end)} else . end)') || rv=''
+          fi
           { echo 'reviews<<PIT_IN_REVIEWS'; echo "${rv}"; echo 'PIT_IN_REVIEWS'; } >> "$GITHUB_OUTPUT"
       - name: PR の検査
         env:
@@ -341,6 +358,8 @@ jobs:
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_LABEL_EVENTS: ${{ steps.label-events.outputs.events }}
           PR_REVIEWS: ${{ steps.reviews.outputs.reviews }}
+          # レビューの対象のコミットと照合する PR の先頭(checkout はマージのコミットを取り出すため、別に渡す。#380)
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: node scripts/gate/check-pr.mjs --base "origin/${BASE_REF}" --policy-base "origin/${DEFAULT_BRANCH}" --report evidence/pr-checks.md --comment
       - uses: actions/upload-artifact@v4

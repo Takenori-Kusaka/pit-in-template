@@ -81,6 +81,16 @@ jobs:
           gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
             --jq '[.[] | {id, state, commit_id, submitted_at, user: {id: .user.id, login: .user.login, type: .user.type}, body}]' \
             | jq -s 'add // []' > /tmp/record-copy/reviews.json
+          # レビューの本文を書き手以外が編集したか(editor)。効力を持つ記録のレビュー(宣言行 例外承認・停止の解除)は、
+          # 書き手以外が編集したものを数えない(process-compass #380 / ADR-0106 / EV-0220)。GraphQL で引けたレビューにだけ edited_by を足す
+          # (引けないレビューは edited_by が無く、検査は「編集の記録を読めない」として宣言行のレビューを数えない)
+          ed=$(gh api graphql -F owner="${REPO%%/*}" -F name="${REPO#*/}" -F number="$PR" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100){nodes{databaseId editor{login}}}}}}' \
+            --jq '[.data.repository.pullRequest.reviews.nodes[] | {key: (.databaseId | tostring), value: (.editor.login // "")}] | from_entries' 2>/dev/null) || ed=''
+          if [ -n "$ed" ]; then
+            jq --argjson ed "$ed" 'map((.id | tostring) as $k | if ($ed | has($k)) then . + {edited_by: (if $ed[$k] == "" then null else $ed[$k] end)} else . end)' /tmp/record-copy/reviews.json > /tmp/record-copy/reviews2.json
+            mv /tmp/record-copy/reviews2.json /tmp/record-copy/reviews.json
+          fi
           jq -n \
             --arg repo "$REPO" \
             --argjson pr "$PR" \
