@@ -145,6 +145,10 @@ for (const n of [1, 3]) {
   // 保管領域の読み込みの拒否は、ステージ(1名は S0、3名は S1)に依らず残る(標準 第3章 3.11.4 要求事項7)
   const deny = JSON.parse(W.read('.claude/settings.json')).permissions?.deny ?? [];
   check(`${tag}: 権限設定が保管領域(context/_archive/)の読み込みを拒否する`, deny.includes('Read(./context/_archive/**)'), JSON.stringify(deny));
+  // 組織の管理外への送信を既定で止める(標準 第5章 5.8.6、ADR-0103 決定2。process-compass #425)
+  const settingsAfter = JSON.parse(W.read('.claude/settings.json'));
+  check(`${tag}: 道具の利用統計を既定で送らない(env の DO_NOT_TRACK)`, settingsAfter.env?.DO_NOT_TRACK === '1', JSON.stringify(settingsAfter.env));
+  check(`${tag}: ソース・パス・シンボルを LLM の提供者へ送る graft のコマンドを拒否する`, ['build --deep', 'blast --name'].every((c) => deny.includes(`Bash(npx -y @nanonets/graft@0.12.1 ${c}:*)`)), JSON.stringify(deny));
   // 強制層は事業ステージで外さない(標準 第8章 軸B、ADR-0050 決定1。#290 / ADR-0074)。1名は S0(PoC)、3名は S1
   const guard = JSON.parse(W.read('.claude/guard.json'));
   check(`${tag}: フックの保護(guard.enabled)がステージに依らず有効`, guard.enabled === true, JSON.stringify({ enabled: guard.enabled }));

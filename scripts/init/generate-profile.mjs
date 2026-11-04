@@ -5479,6 +5479,10 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
   const settingsObj = JSON.parse(settingsSource);
   // 既存の settings.json が permissions を持たない持ち込みでも、遮断の書き込みを飛ばさない(process-compass #315)
   if (!settingsObj.permissions || typeof settingsObj.permissions !== 'object') settingsObj.permissions = {};
+  // 道具の利用統計を既定で送らない(DO_NOT_TRACK。標準 第5章 5.8.6、ADR-0103 決定2。process-compass #425)。
+  // 採用者が値を変えた場合は残す(送ると決めるのは組織の判断であり、/process-change ではなく AI維持管理者の承認による強制層の変更)
+  if (!settingsObj.env || typeof settingsObj.env !== 'object') settingsObj.env = {};
+  if (settingsObj.env.DO_NOT_TRACK === undefined) settingsObj.env.DO_NOT_TRACK = '1';
 
   // 1. 最小限の保護パターン（Category A & B）
   const baseProtectedPatterns = [
@@ -5505,6 +5509,13 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
   // 全部を置き換えた判断記録・廃止した判断記録も、ここへ移して読み込みから外す(第6章 テンプレ2「置き換えと廃止」)
   const standardArchive = [
     "Read(./context/_archive/**)"
+  ];
+
+  // 組織の管理外への送信を既定で止める(標準 第5章 5.8.6・5.5.1 の取り消せない操作、ADR-0103 決定2。process-compass #425)。
+  // コードの探索の道具(graft)のうち、ソース・パス・シンボルを LLM の提供者へ送るコマンドを拒否する。ステージと guard.enabled に依らず残す
+  const standardExternal = [
+    "Bash(npx -y @nanonets/graft@0.12.1 build --deep:*)",
+    "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)"
   ];
 
   const standardCategoryAB = [
@@ -5535,6 +5546,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
   const allStandardRules = [
     ...standardSecrets,
     ...standardArchive,
+    ...standardExternal,
     ...standardCategoryAB,
     ...standardCategoryC,
     ...standardBash
@@ -5565,6 +5577,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     settingsObj.permissions.deny = [
       ...standardSecrets,
       ...standardArchive,
+      ...standardExternal,
       ...customDenyRules
     ];
 
@@ -5588,6 +5601,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     settingsObj.permissions.deny = [
       ...standardSecrets,
       ...standardArchive,
+      ...standardExternal,
       ...standardCategoryAB,
       ...standardCategoryC,
       ...standardBash,

@@ -31,7 +31,9 @@ npx -y @nanonets/graft@0.12.1 build
 
 - 2 回目以降はどのコマンドも差分だけを取り込む
 - `graft ask` が「graft/ is empty」を返したら、この build を実行する
-- 匿名の利用統計を止めるなら `npx -y @nanonets/graft@0.12.1 telemetry disable`(端末単位で 1 回)
+- **利用統計(既定で送る。送り先は提供者の集計サーバー)は送らない**。このテンプレートは `.claude/settings.json` の `env` に `DO_NOT_TRACK=1` を置き、エージェントのセッションの中では止めている。端末で直接実行するときも `DO_NOT_TRACK=1` を付けるか、`npx -y @nanonets/graft@0.12.1 telemetry disable`(OS のユーザーのホーム `~/.graft/` に書く)を実行する。送るかどうかは組織が決める(標準 第5章 5.8.6、ADR-0103 決定2)
+- **`build --deep` と `blast --name` は使わない**(`.claude/settings.json` の deny)。どちらも、ファイルのパス・ソースの本文・シンボル名を、設定した LLM の提供者へ送る。組織の管理外への送信であり、接続の経路と決裁は標準 第3章 3.12.2・第5章 5.5.1 による
+- 0.12.1 は、1日1回 npm レジストリへ更新の確認を行い、利用統計の設定では止まらない(上流で修正済み・未リリース)。取得(`npx -y`)と同じ宛先であり、依存は取得の時点の最新版に解決される。組織のネットワークの許可(標準 第5章 5.8.6)で扱う。調べた内容: process-compass `research/425-delivery/`
 - **`graft init` は実行しない。** `.claude/settings.json` へ hook 5 本(プロンプト毎・ツール毎・停止時の
   バックグラウンド同期)と statusLine を書き込む。さらに既定では `~/.claude/settings.json` と `~/.claude.json`
   にも hook と MCP サーバーを登録し、この端末で開く**すべてのリポジトリ**へ波及する

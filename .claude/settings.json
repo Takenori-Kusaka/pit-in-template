@@ -1,5 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "DO_NOT_TRACK": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -25,7 +28,9 @@
       "Bash(npx -y @nanonets/graft@0.12.1 build:*)"
     ],
     "deny": [
-      "Read(./context/_archive/**)"
+      "Read(./context/_archive/**)",
+      "Bash(npx -y @nanonets/graft@0.12.1 build --deep:*)",
+      "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)"
     ],
     "ask": [
       "Bash(npm publish:*)",
