@@ -484,12 +484,18 @@ export function checkAuthority(config, policy, re, signer, { fallbackSeat = null
   const notes = [];
   if (!isFilledValue(signer)) return { ok: false, problems: ['記名が無い'], notes, role: null };
   problems.push(...nameProblems(config, signer, { requireRoster, checkRoster: requireRoster }));
-  const row = (policy?.authority ?? []).find((r) => re.test(nfkc(r.target)));
+  // 帰属を確かめられない層1(policy.attribution.backed が偽。material-attribution.mjs の policyAttribution。#428 / IMPL-0415)は、
+  // 項目4 を権限者の照合に使わず、層1 が無い場合と同じく fallbackSeat の席の責任者と照合する。fallbackSeat の無い照合(D-0 節15 の
+  // 受容)では、事業決裁者の席の責任者と照合する(層1 が無い場合の「照合しない」へ倒すと、帰属を確かめられない層1 を置くだけで
+  // 照合が外れ、層1 が有効なまま受容の記名を誰でも書ける)
+  const unattributed = Boolean(policy?.present && policy.attribution && policy.attribution.backed === false);
+  const row = unattributed ? null : (policy?.authority ?? []).find((r) => re.test(nfkc(r.target)));
   const role = row && isFilledValue(row.role) ? row.role : null;
   let seatId = role ? seatOfRole(role) : null;
   if (!role) {
-    seatId = fallbackSeat;
-    if (fallbackSeat) notes.push(`層1 の項目4 に受容者の記載が無い${policy?.present ? '' : '(層1 なし)'}ため、${SEAT_LABEL[fallbackSeat] ?? fallbackSeat}の席の責任者を権限者とみなした`);
+    seatId = unattributed ? (fallbackSeat ?? 'biz-approver') : fallbackSeat;
+    if (unattributed) notes.push(`帰属を確かめられない層1 のため、項目4 を使わず、${SEAT_LABEL[seatId] ?? seatId}の席の責任者を権限者とみなした(層1 が無い場合と同じ扱い)`);
+    else if (fallbackSeat) notes.push(`層1 の項目4 に受容者の記載が無い${policy?.present ? '' : '(層1 なし)'}ため、${SEAT_LABEL[fallbackSeat] ?? fallbackSeat}の席の責任者を権限者とみなした`);
   }
   if (seatId) {
     const acc = (config.seats ?? []).find((s) => s.role === seatId)?.accountable;
@@ -630,7 +636,7 @@ export function discouragedText(p, { recorded = null } = {}) {
   );
 }
 
-export function continuityState(config, policy, { root = ROOT, day = null } = {}) {
+export function continuityState(config, policy, { root = ROOT, day = null, acceptanceBacking = null } = {}) {
   const d0 = readText(D0_FILE, root);
   const seats = config.seats ?? [];
   const aiSeats = seats.filter((s) => s.performer);
@@ -906,7 +912,8 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
   if (!cycle.trainer) cycleNotices.push('育成の担当(役割)が空欄。後継不在の受容を更新できない');
 
   // 受容の記録(D-0 節15)と照合する
-  const acceptRows = tableRows(sectionLines(d0, /15\.\s*組織継続の状態の受容/)).filter((r) => r.some((c) => isFilledValue(c)));
+  const acceptLines = sectionLines(d0, /15\.\s*組織継続の状態の受容/);
+  const acceptRows = tableRows(acceptLines).filter((r) => r.some((c) => isFilledValue(c)));
   const acceptances = acceptRows.map((r) => {
     const [state, subject, by, until, version] = r;
     const why = [];
@@ -918,7 +925,18 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
     why.push(...auth.problems);
     // 育成の担当が空欄の層1 では、後継不在の受容を更新できない(テンプレ11「確認の周期と後継」の空欄の扱い)
     if (nfkc(state) === '後継不在の席' && !cycle.trainer) why.push('層1 の育成の担当(役割)が空欄のため、後継不在の受容を受け付けない');
-    return { state: nfkc(state), subject, by, until, version, valid: !why.length, why, notes: auth.notes };
+    // 受容の記名の帰属(#428 突合 M-1)。期限内の受容は単一障害点の記載の欠落を外す効力を持つため、受容の行を今の形で入れた変更の
+    // 作成者・承認者に受容した者のアカウントがあるかを、呼び出し側(出荷の集約)が渡す acceptanceBacking で確かめる。期限を過ぎた受容は
+    // 効力を持たない(欠落のまま)ため確かめない。渡さない呼び出し(next・単体の実行など手元の道具)は名前で照合する
+    const notes = [...auth.notes];
+    let attribution = null;
+    if (!why.length && acceptanceBacking && (!day || until >= day)) {
+      const line = acceptLines.find((l) => l.trimStart().startsWith('|') && [state, subject, by, until].every((v) => !isFilledValue(v) || l.includes(String(v).trim()))) ?? null;
+      attribution = acceptanceBacking({ state: nfkc(state), subject, by, until, line });
+      if (!attribution?.backed) why.push(`受容の記名の帰属を確かめられない(名前の一致だけでは数えない): ${attribution?.why ?? '受容の行を入れた変更の記録を読めない'}`);
+      else notes.push(`帰属: ${attribution.note}`);
+    }
+    return { state: nfkc(state), subject, by, until, version, valid: !why.length, why, notes, attribution };
   });
   const expired = [];
   for (const item of spof) {

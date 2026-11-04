@@ -41,6 +41,11 @@
 // 出荷の範囲の PR とリリースの未解除の停止の申し立てを保留(集約の失敗)にします。G-7 基準1・2 の件数と、品質条件と
 // 受入基準・テストの参照の突合(参照の無い条件は項目5)を出します。読み方は verification-trace.mjs。AI の層は、附属書H H.4 の
 // 条件2〜5 の確認の記録(seats[].qualification.conditions)が無いか古い場合に「条件未確認」として検出の層に数えません。
+//
+// 効力を持つ記録のうち層1・D-0 の決定の記名・前倒しで要る SG の判定記録(#428 / IMPL-0415): 層1 を最後に変えた PR に層1 の記名者の
+// 操作が無ければ「帰属を確かめられない層1」として項目4 を権限者の照合に使わず(事業決裁者の席へ戻す。成立条件1 は変えない)、
+// 範囲の中の変化点の記録のうち決定者の記名を要するものと、sgRecord が指す SG の判定記録を、記録を入れた PR の作成者・承認者に
+// 照合して、裏づけの無いものを記載の欠落にします(material-attribution.mjs)。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -145,7 +150,22 @@ import {
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup } from './check-pr.mjs';
-import { exceptionReviewBacking, introducedBacking, lastCommitOfRow, lastCommitOfFile, ghHosting } from './material-attribution.mjs';
+import {
+  exceptionReviewBacking,
+  introducedBacking,
+  lastCommitOfRow,
+  lastCommitOfFile,
+  ghHosting,
+  policyAttribution,
+  withPolicyAttribution,
+  policyUnattributedText,
+  decisionNeedsAttribution,
+  signatureIndexOf,
+  commitOfChangeLogEntry,
+  sgRecordPath,
+  idMigrationRoster,
+  lastCommitOfLine,
+} from './material-attribution.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
@@ -2502,7 +2522,14 @@ if (isMain) {
   }
 
   // 層1(品質保証の方針と受容の基準。テンプレ11)。保証の主張の成立条件1・5・6 と、G-8 の照合の材料(#288)
-  const policy = readPolicy(config, { today: localDay() });
+  // 層1 の帰属(第4章「判定記録を基底ブランチへ入れる操作」。#428 / IMPL-0415)。層1 を最後に変えた PR の作成者・承認者に、
+  // 層1 の記名者のアカウントがあるか。確かめられない層1 は、項目4 の権限者の照合(checkAuthority)に使わず、事業決裁者の席の
+  // 責任者へ戻す(層1 が無い場合と同じ扱い)。項目4 の各行の受容者の記名は、層1 の記名者の記名で一体として扱う
+  const policyRead = readPolicy(config, { today: localDay() });
+  const policyAtt = policyAttribution(config, policyRead, { git: gitText, rev: 'HEAD', hosting: materialHosting });
+  if (policyAtt?.backed) noteShared(POLICY_FILE, policyAtt.signer, policyAtt);
+  if (policyAtt?.selfAttested) attribution.selfAttested.push({ file: POLICY_FILE, judge: policyAtt.signer, how: policyAtt.how, note: policyAtt.note, pr: null, ...(policyAtt.sharedAccount ? { sharedAccount: true } : {}) });
+  const policy = withPolicyAttribution(policyRead, policyAtt);
 
   // G-8 の受容の基準との照合と上申(標準 第4章 G-8「受容の基準との照合と上申」)。照らした層1 の版と、上申の欄は
   // 必須である。異議を「異議あり」と書いた記録を通過(受容)にした場合は、上申の届け先と日付を要する。
@@ -3208,7 +3235,18 @@ if (isMain) {
 
   // 組織継続の側の状態(依存先の一覧・単一障害点の一覧。第3章 3.12.11 / 附属書H H.6)。判定の日は出荷の終点の日付。
   // 期限を過ぎた受容は、状態が解消していなければ記載の欠落である(第4章 G-7 基準9)
-  const continuity = continuityState(config, policy, { day: releaseDay });
+  // D-0 節15 の受容の記名の帰属(#428 突合 M-1)。受容の行を今の形で入れたコミット(git log -S)の PR の作成者・承認者に、受容した者の
+  // アカウントがあるか。節15 は生成区間の外(人が書く欄)のため、生成区間の再生成では行の最後の変更が変わらない
+  const continuity = continuityState(config, policy, {
+    day: releaseDay,
+    acceptanceBacking: ({ by, line }) => {
+      const sha = lastCommitOfLine(gitText, 'HEAD', 'docs/D-0-governance.md', line);
+      const b = introducedBacking(config, resolveSigner(config, by), sha ? materialHosting.prOfCommit(sha) : null, { what: 'D-0 節15 の受容の行' });
+      if (b.backed) noteShared(`docs/D-0-governance.md 節15(${by})`, by, b);
+      if (b.selfAttested) attribution.selfAttested.push({ file: `docs/D-0-governance.md 節15`, judge: by, how: b.how, note: b.note, pr: null, ...(b.sharedAccount ? { sharedAccount: true } : {}) });
+      return b;
+    },
+  });
   for (const item of continuity.expired) {
     gaps.push(
       `組織継続の状態「${item.state}: ${item.subject}」の受容の期限(${item.acceptance.until})が、判定の日(${releaseDay})を過ぎています。` +
@@ -3617,6 +3655,68 @@ if (isMain) {
     changeLogPresent: Array.isArray(config.changeLog),
   };
 
+  // D-0 の決定の記名と、前倒しで要る SG の判定記録の帰属(第4章「判定記録を基底ブランチへ入れる操作」。#428 / IMPL-0415)。
+  // 範囲の中の変化点の記録のうち、決定者の記名を要するもの(緩める向き・任免・名簿の変更)は記録を入れたコミットの PR を、
+  // 事業ステージを前へ戻す変化点は sgRecord が指す SG の判定記録を最後に変えたコミットの PR を、introducedBacking で記名者に照合する。
+  // 名簿は記録を入れる前の構成(コミットの親)から読み、読めなければ今の構成を使う。PR を経ないコミットは署名の検証と author、
+  // 1名の体制は自己申告(introducedBacking のとおり)。裏づけの無いものを欠落に出す
+  const decisionAttribution = [];
+  {
+    const logCache = new Map();
+    // 名簿は記録を入れる前の構成から読む(記録と同じ変更で足した人を、記名者・確認者に数えない)。前の構成の名簿が空(初回の任免で
+    // 名簿を埋めた変更)なら、記録を入れたコミットの構成の名簿を使う。どちらも読めなければ今の構成
+    const hasRoster = (c) => Array.isArray(c?.people) && c.people.length > 0;
+    const rosterAt = (sha) => {
+      if (!sha) return config;
+      const pre = configAt(`${sha}^`);
+      if (hasRoster(pre)) return pre;
+      const post = configAt(sha);
+      return hasRoster(post) ? post : config;
+    };
+    const settle = (kind, label, b, file) => {
+      decisionAttribution.push({ kind, label, backed: b.backed, how: b.how ?? null, note: b.note ?? null, why: b.why ?? null, selfAttested: Boolean(b.selfAttested) });
+      if (b.backed) noteShared(file, label, b);
+      if (b.selfAttested) attribution.selfAttested.push({ file, judge: label, how: b.how, note: b.note, pr: null, ...(b.sharedAccount ? { sharedAccount: true } : {}) });
+      if (!b.backed) gaps.push(`${label}: 効力を持つ記録の帰属を確かめられません(名前の一致だけでは数えない): ${b.why}。記名者本人が作成者または承認者となる PR で入れます(第4章「判定記録を基底ブランチへ入れる操作」)`);
+    };
+    changeLog.forEach((e, index) => {
+      if (!inPeriod(e, index)) return;
+      if (decisionNeedsAttribution(e)) {
+        const label = `D-0 の決定の記名 changeLog[${index}](${e.kind ?? '種別なし'}・${DIRECTION_LABEL[e.direction] ?? e.direction ?? '—'}、決定 ${e.decidedBy})`;
+        // 保持していた宣言の有効化は、記録の内容と、記録を入れる前の構成の席の宣言が一致するときだけ宣言の時点の記録で確かめる(突合 H-1)
+        const own = commitOfChangeLogEntry(gitText, 'HEAD', index, { cache: logCache });
+        const j = signatureIndexOf(changeLog, index, { prior: own ? configAt(`${own}^`) : null }) ?? index;
+        const sha = j === index ? own : commitOfChangeLogEntry(gitText, 'HEAD', j, { cache: logCache });
+        // 名簿の数値の識別子を足すだけの変化点は、変化点が書く {login, id} で決定者を同定してよい(突合 H-2)
+        const roster = j === index && sha ? idMigrationRoster(rosterAt(sha), configAt(sha), e) : rosterAt(sha);
+        settle('d0', j !== index ? `${label}(記名は宣言した時点の changeLog[${j}])` : label, introducedBacking(roster, resolveSigner(roster, e.decidedBy), sha ? materialHosting.prOfCommit(sha) : null, { what: j === index ? '決定の記名' : `決定の記名(宣言した時点の changeLog[${j}])` }), `process.config.json changeLog[${index}]`);
+      }
+      // 委任の規則の承認の記名(ruleApprovedBy)は、記録を入れた PR で確かめる(突合 H-3)
+      if (e?.ruleApprovedBy) {
+        const sha = commitOfChangeLogEntry(gitText, 'HEAD', index, { cache: logCache });
+        const roster = rosterAt(sha);
+        settle('rule', `委任の規則の承認の記名 changeLog[${index}](承認 ${e.ruleApprovedBy})`, introducedBacking(roster, resolveSigner(roster, e.ruleApprovedBy), sha ? materialHosting.prOfCommit(sha) : null, { what: '規則の承認の記名' }), `process.config.json changeLog[${index}]`);
+      }
+      if (e?.sgRecord) {
+        const file = sgRecordPath(e);
+        const label = `前倒しで要る SG の判定記録 changeLog[${index}](sgRecord ${e.sgRecord})`;
+        if (!file || !exists(file)) {
+          settle('sg', label, { backed: false, why: file ? `${file} が無い` : 'sgRecord が docs/gates/ 配下の判定記録(.md)を指さない' }, `process.config.json changeLog[${index}]`);
+          return;
+        }
+        const judge = judgeOfForm(fs.readFileSync(path.join(ROOT, file), 'utf8'));
+        if (!judge) {
+          settle('sg', label, { backed: false, why: `${file} の判定者が未記入` }, file);
+          return;
+        }
+        const sha = lastCommitOfFile(gitText, 'HEAD', file);
+        const roster = rosterAt(sha);
+        settle('sg', `${label}、判定者 ${judge}`, introducedBacking(roster, resolveSigner(roster, judge), sha ? materialHosting.prOfCommit(sha) : null, { what: 'SG の判定記録' }), file);
+      }
+    });
+  }
+  generation.decisionAttribution = decisionAttribution;
+
   // 宣言と実態のずれ(標準 第3章 3.13.5)。検出したずれは変化点の起票として扱う
   const drift = [];
   const approvers = new Set(prs.flatMap((p) => p.g6.approvers));
@@ -3933,7 +4033,21 @@ if (isMain) {
   }
   const gapsForClaim = claimGapsBefore;
   const releaseConditions = [
-    { id: 1, label: '層1 の方針と受容の基準が、トップマネジメントの記名で有効である', ok: policy.valid, reason: policy.valid ? null : policy.problems.join(' / ') },
+    // 帰属を確かめられない層1 は、記名が層1 の記名者本人のものかを確かめられないため、成立条件1 を満たさない(#428 / IMPL-0415)。
+    // 確認者を置けない体制で自己申告として受け付けた層1 は成立に数え、その旨を出す
+    {
+      id: 1,
+      label: '層1 の方針と受容の基準が、トップマネジメントの記名で有効である',
+      ok: policy.valid && policy.attribution?.backed !== false,
+      reason:
+        [
+          policy.valid ? null : policy.problems.join(' / '),
+          policy.attribution && !policy.attribution.backed ? `層1 の帰属を確かめられない(名前の一致だけでは数えない): ${policy.attribution.why}` : null,
+        ]
+          .filter(Boolean)
+          .join(' / ') || null,
+      ...(policy.attribution?.selfAttested ? { note: `層1 の記名は自己申告として受け付けた(${policy.attribution.note})` } : {}),
+    },
     { id: 2, label: '層2 の保証範囲が、G-1 で宣言されている', ok: !cond2Reason, reason: cond2Reason },
     { id: 4, label: '出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している。出荷判定を記名した人は、範囲内の変更の作成を指示した者でも G-6 の承認者でもない', ok: cond4.ok, reason: cond4.reason, basis: cond4.basis },
     {
@@ -3970,7 +4084,7 @@ if (isMain) {
     claimStatement = `本${releaseWord}の変更 ${claimUnits.length} 件のうち ${claimNotEstablished} 件は、品質保証の対象外として出荷しました。`;
   }
   const claim = {
-    policy: { present: policy.present, valid: policy.valid, label: policy.label, problems: policy.problems, file: POLICY_FILE },
+    policy: { present: policy.present, valid: policy.valid, label: policy.label, problems: policy.problems, file: POLICY_FILE, attribution: policy.attribution ? { backed: policy.attribution.backed, how: policy.attribution.how ?? null, note: policy.attribution.note ?? null, why: policy.attribution.why ?? null, selfAttested: Boolean(policy.attribution.selfAttested) } : null },
     scope: { declared: !cond2Reason, reason: cond2Reason },
     conditions: [
       ...releaseConditions.slice(0, 2),
@@ -4286,7 +4400,7 @@ if (isMain) {
     R.push('| --- | --- |');
     R.push(`| 成立判定 | ${c.total ? `成立 ${c.established} 件 / 不成立 ${c.notEstablished} 件(変更 ${c.total} 件)` : '変更なし'} |`);
     R.push(`| 不成立の理由(条件ごとの件数) | ${[1, 2, 3, 4, 5, 6].map((id) => `条件${id} ${c.byCondition[id]}`).join(' / ')} |`);
-    R.push(`| 照らした層1 の版 | ${c.policy.present ? c.policy.label : '層1 なし'}${c.policy.present && !c.policy.valid ? '(有効でない)' : ''} |`);
+    R.push(`| 照らした層1 の版 | ${c.policy.present ? c.policy.label : '層1 なし'}${c.policy.present && !c.policy.valid ? '(有効でない)' : ''}${c.policy.attribution && !c.policy.attribution.backed ? `。**${policyUnattributedText(c.policy.attribution)}**` : c.policy.attribution?.selfAttested ? `。層1 の記名は自己申告(${c.policy.attribution.note})` : ''} |`);
     const facts = c.nonAcceptable.facts;
     R.push(
       `| 受容しない条件 | ${facts.length ? `**当たる事実 ${facts.length} 件**: ${facts.map((f) => `${f.fact}(条件「${f.condition}」。出所: ${f.source})`).join(' / ')}` : `当たる事実なし(機械で照合した条件 ${c.nonAcceptable.checked} 件)`}` +
@@ -4298,7 +4412,7 @@ if (isMain) {
     R.push('| --- | --- | --- |');
     for (const x of c.conditions) {
       const basis = x.id === 4 && x.basis === 'structure' ? '(構成上。G-7・G-8 の判定記録は集約の後に作られる。記録を書いた後に集約し直すと、記名で判定する)' : '';
-      R.push(`| ${x.id}. ${x.label} | ${x.ok ? `満たす${basis}` : '**満たさない**'} | ${x.reason ?? '—'} |`);
+      R.push(`| ${x.id}. ${x.label} | ${x.ok ? `満たす${basis}${x.note ? `(${x.note})` : ''}` : '**満たさない**'} | ${x.reason ?? '—'} |`);
     }
     R.push('');
     R.push(

@@ -59,7 +59,14 @@
 //   6. 停止の申し立て(標準 第7章 7.11): 受信箱のラベル `state:stop-requested` が付いた PR(付けた履歴のある PR を
 //      含む)は、基底ブランチに成立した解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」)が無い限り失敗させる。
 //      解除は層1 の項目4 の権限者の記名と理由を要し、AI の名義を受け付けない。見解を退けた解除は上申先と日付を要する。
-//      ラベルは PR_LABELS(JSON の配列)、付け外しの履歴は PR_LABEL_EVENTS(JSON)、または --pr の labels / labelEvents
+//      ラベルは PR_LABELS(JSON の配列)、付け外しの履歴は PR_LABEL_EVENTS(JSON)、または --pr の labels / labelEvents。
+//      層1 は、層1 を最後に変えた PR の作成者・承認者に層1 の記名者のアカウントがあるときだけ、項目4 を権限者の照合に使う。
+//      確かめられない層1 は、層1 が無い場合と同じく事業決裁者の席の責任者と照合し、その旨を出す(#428 / IMPL-0415)
+//   6b. D-0 の決定の記名と、前倒しで要る SG の判定記録の帰属(標準 第4章「判定記録を基底ブランチへ入れる操作」。#428 / IMPL-0415):
+//      PR が changeLog に足した記録のうち、決定者の記名を要するもの(緩める向き・任免・名簿の変更)は決定者が、事業ステージを
+//      前へ戻す記録(sgRecord)は指す SG の判定記録の判定者が、記録を入れる PR の作成者か承認者であること(作成者なら記名者以外の
+//      人の承認)を確かめ、満たさなければ失敗させる。承認は後から付くため、承認の後にワークフローを再実行する。
+//      PR のコミットの作成者は --pr の commitAuthors、またはホスティング(gh api pulls/<n>/commits)から引く
 //   8. G-6 の承認者の数(標準 第8章 軸C 規制業・軸E CL3「独立レビューは2名で実施する」。基底ブランチの構成の
 //      review.reviewerCount): PR のレビューを読めるとき(PR_REVIEWS の JSON、または --pr の reviews)、出荷の証跡の集約と
 //      同じ条件(人のアカウント、名簿の人、作成を指示した者でない、承認した者自身の挙動要約つき、レビュアごとの最後の
@@ -130,6 +137,7 @@ import {
   personKey,
   RULE_APPROVER_SEAT,
   hasWriteAssociation,
+  DIRECTION_LABEL,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -143,7 +151,17 @@ import {
   lastCommitOfFile,
   ghHosting,
   fixedHosting,
+  policyAttribution,
+  withPolicyAttribution,
+  policyUnattributedText,
+  pullInfoOf,
+  decisionNeedsAttribution,
+  signatureIndexOf,
+  commitOfChangeLogEntry,
+  sgRecordPath,
+  idMigrationRoster,
 } from './material-attribution.mjs';
+import { judgeOfForm } from './records.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -544,7 +562,12 @@ export function stopFindings({ git, base, pr = {}, config = {}, hosting = null }
   if (!requested) return { requested: false, historyRead: events !== null };
   const sinceDay = lastLabeled ? lastLabeled.slice(0, 10) : null;
   const policyText = git(['show', `${base}:${POLICY_FILE}`]);
-  const policy = readPolicy(config, { text: policyText ?? null });
+  // 層1 の帰属(#428 / IMPL-0415)。基底ブランチの層1 を最後に変えた PR の作成者・承認者に、層1 の記名者のアカウントがあるか。
+  // 確かめられない層1 は、項目4 の権限者の照合に使わない(事業決裁者の席の責任者へ戻す)
+  const policyRead = readPolicy(config, { text: policyText ?? null });
+  const policyAtt = policyAttribution(config, policyRead, { git, rev: base, hosting });
+  const policy = withPolicyAttribution(policyRead, policyAtt);
+  const policyNote = policyAtt && !policyAtt.backed ? `。${policyUnattributedText(policyAtt)}` : policyAtt?.backed ? `。層1 の帰属: ${policyAtt.note}` : '';
   const files = (git(['ls-tree', '--name-only', base, 'docs/gates/']) ?? '').split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.md'));
   const refers = (text) => Boolean(pr.number) && new RegExp(`PR\\s*#\\s*${pr.number}(?!\\d)`).test(String(text ?? ''));
   // 解除の記録の帰属(process-compass #380 / ADR-0106 / IMPL-0413・IMPL-0414)。基底ブランチの記録は、記録を入れた PR の作成者・
@@ -575,7 +598,8 @@ export function stopFindings({ git, base, pr = {}, config = {}, hosting = null }
       message:
         `停止の申し立て: ${how}。${r.review != null ? '' : '基底ブランチの'}解除の記録 ${r.file}(解除 ${r.judge}、${r.day})により保留を解く` +
         `${r.declined ? `。申し立てた者の見解を退けた解除(上申: ${r.escalation})` : ''}${r.selfReleased ? '。申し立てた者と解除した者が同一(その旨を記録に残す)' : ''}` +
-        `${r.notes.length ? `。${r.notes.join('。')}` : ''}${labeledNow ? `。ラベル ${STOP_LABEL} は外してよい` : ''}`,
+        `${r.notes.length ? `。${r.notes.join('。')}` : ''}${labeledNow ? `。ラベル ${STOP_LABEL} は外してよい` : ''}${policyNote}`,
+      policyAttribution: policyAtt,
     };
   }
   const rejected = [...releases.map((r) => `${r.file}: ${!fresh.includes(r) ? `ラベルを付けた日(${sinceDay})より前の記録` : r.problems.join('、')}`), ...byReview.rejected.filter((x) => !/読めない/.test(x))];
@@ -588,8 +612,91 @@ export function stopFindings({ git, base, pr = {}, config = {}, hosting = null }
       `この PR の上で宣言行「停止の解除: 解除」のレビュー(本文の表に、申し立てた者・解除の理由・申し立てた者の見解を退けたか・退けた場合は上申先と日付)を出して行う。` +
       `対象が PR でない場合などは、解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」、対象 \`PR #${pr.number ?? '<番号>'}\`)を、権限者本人が作成者または承認者となる PR で基底ブランチへ先に入れる。` +
       `同じ PR で足した記録は数えない。名前の一致だけでは解除に数えない。AI の名義の解除を受け付けない` +
-      `${rejected.length ? `。成立しない解除の記録: ${rejected.join(' / ')}` : ''}${policy.present ? '' : '。層1 が無いため、事業決裁者の席の責任者を権限者として照合する'}`,
+      `${rejected.length ? `。成立しない解除の記録: ${rejected.join(' / ')}` : ''}${policy.present ? '' : '。層1 が無いため、事業決裁者の席の責任者を権限者として照合する'}${policyNote}`,
+    policyAttribution: policyAtt,
   };
+}
+
+/**
+ * D-0 の決定の記名と、前倒しで要る SG の判定記録の帰属(標準 第4章「判定記録を基底ブランチへ入れる操作」。process-compass #428 /
+ * ADR-0106 決定5 / IMPL-0415)。PR が構成(process.config.json)の changeLog に足した記録のうち、
+ *   - 決定者の記名(decidedBy)を要するもの(緩める向き・任免・名簿の変更。decisionNeedsAttribution)は、決定者のアカウントが
+ *     この PR の作成者か承認者であること(作成者なら記名者以外の人の承認、名義の共有なら名義を共有していない人の承認)
+ *   - 事業ステージを前へ戻す変化点(sgRecord)は、指す SG の判定記録の判定者のアカウントが、記録を最後に変えた変更(この PR で
+ *     変えたならこの PR、基底にあれば記録を入れた PR)の作成者か承認者であること
+ * を introducedBacking で確かめ、満たさなければ失敗させる。名簿は既定ブランチの構成(rosterConfig)から読む(PR の中で足した人を
+ * 記名者・確認者に数えない)。保持していた宣言を有効にした変化点は、宣言した時点の変化点(基底にあれば、それを入れた PR)で確かめる。
+ * 承認は後から付くため、失敗の文に再実行を書く(pull_request_review では起動しない。ワークフローの冒頭)
+ */
+export function decisionRecordFindings({ git, policyRef, pr = {}, baseConfig = null, headConfig = null, rosterConfig = null, hosting = null, changedFiles = [], atHead = () => null }) {
+  const errors = [];
+  const notices = [];
+  const checked = [];
+  const baseLog = Array.isArray(baseConfig?.changeLog) ? baseConfig.changeLog : [];
+  const headLog = Array.isArray(headConfig?.changeLog) ? headConfig.changeLog : [];
+  if (!rosterConfig || headLog.length <= baseLog.length) return { errors, notices, checked };
+  let pull;
+  const current = () => {
+    if (pull === undefined) {
+      const commitAuthors = Array.isArray(pr.commitAuthors) ? pr.commitAuthors : (hosting?.pullCommitAuthors?.(pr.number) ?? null);
+      pull = pullInfoOf({ number: pr.number ?? null, author: prAuthorRef(pr), reviews: pr.reviews ?? null, head: pr.head ?? null, commitAuthors });
+    }
+    return pull;
+  };
+  const cache = new Map();
+  const rerun = '承認は後から付くため、承認の後に gate-g5 の最後の実行を再実行する';
+  const how = (who) =>
+    `${who}本人がこの PR の作成者か承認者となる(作成者なら、${who}以外の人が PR の先頭を承認する。${who}が AI の担い手と名義を共有するなら、名義を共有していない人が承認する)`;
+  const record = (kind, label, b, fix) => {
+    checked.push({ kind, label, backed: b.backed, how: b.how ?? null, note: b.note ?? null, why: b.why ?? null, selfAttested: Boolean(b.selfAttested), sharedAccount: Boolean(b.sharedAccount) });
+    if (!b.backed) errors.push(`${label}: 帰属を確かめられない(名前の一致だけでは数えない): ${b.why}。${fix}。${rerun}`);
+    else if (b.selfAttested) notices.push(`${label}: ${b.note}`);
+    else notices.push(`${label}: 帰属 ${b.note}`);
+  };
+  for (let i = baseLog.length; i < headLog.length; i++) {
+    const e = headLog[i];
+    if (decisionNeedsAttribution(e)) {
+      const label = `D-0 の決定の記名 changeLog[${i}](${e.kind ?? '種別なし'}・${DIRECTION_LABEL[e.direction] ?? e.direction ?? '—'}${e.rosterEdits?.length || e.accountConfirmations?.length || e.nameConfirmations?.length ? '・名簿の変更' : ''}、決定 ${e.decidedBy})`;
+      // 保持していた宣言の有効化は、記録の内容(intentApplied と基底の構成の席の宣言)が一致するときだけ宣言の時点の記録で確かめる(突合 H-1)
+      const j = signatureIndexOf(headLog, i, { prior: baseConfig }) ?? i;
+      let info;
+      if (j >= baseLog.length) info = current();
+      else {
+        const sha = commitOfChangeLogEntry(git, policyRef, j, { cache });
+        info = sha && hosting ? hosting.prOfCommit(sha) : null;
+      }
+      // 名簿の数値の識別子を足すだけの変化点は、変化点が書く {login, id} で決定者を同定してよい(突合 H-2)
+      const roster = j === i ? idMigrationRoster(rosterConfig, headConfig, e) : rosterConfig;
+      const b = introducedBacking(roster, resolveSigner(roster, e.decidedBy), info, { what: j === i ? '決定の記名' : `決定の記名(宣言した時点の changeLog[${j}])` });
+      record('d0', j !== i ? `${label}(記名は宣言した時点の changeLog[${j}])` : label, b, how('決定者'));
+    }
+    // 委任の規則の承認の記名(ruleApprovedBy。AI維持管理者)は、規則を働かせる記名であり、記録を入れるこの PR で確かめる(突合 H-3)
+    if (e?.ruleApprovedBy) {
+      const b = introducedBacking(rosterConfig, resolveSigner(rosterConfig, e.ruleApprovedBy), current(), { what: '規則の承認の記名' });
+      record('rule', `委任の規則の承認の記名 changeLog[${i}](承認 ${e.ruleApprovedBy})`, b, how('承認した者'));
+    }
+    if (e?.sgRecord) {
+      const file = sgRecordPath(e);
+      const label = `前倒しで要る SG の判定記録 changeLog[${i}](sgRecord ${e.sgRecord})`;
+      if (!file) {
+        record('sg', label, { backed: false, why: 'sgRecord が docs/gates/ 配下の判定記録(.md)を指さない' }, 'sgRecord に docs/gates/ の SG の判定記録の所在を書く');
+        continue;
+      }
+      const text = atHead(file);
+      const judge = text ? judgeOfForm(text) : null;
+      const inPr = changedFiles.includes(file) || git(['show', `${policyRef}:${file}`]) === null;
+      let b;
+      if (!text) b = { backed: false, why: `${file} が PR の先頭に無い` };
+      else if (!judge) b = { backed: false, why: `${file} の判定者が未記入` };
+      else {
+        const sha = inPr ? null : lastCommitOfFile(git, policyRef, file);
+        const info = inPr ? current() : sha && hosting ? hosting.prOfCommit(sha) : null;
+        b = introducedBacking(rosterConfig, resolveSigner(rosterConfig, judge), info, { what: 'SG の判定記録' });
+      }
+      record('sg', `${label}、判定者 ${judge ?? '未記入'}`, b, how('判定者'));
+    }
+  }
+  return { errors, notices, checked };
 }
 
 const RISK_RANK = { R3: 1, R2: 2, R1: 3 };
@@ -1115,7 +1222,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   // 効力を持つ記録の帰属を確かめるための、PR の先頭のコミットとホスティングの記録(process-compass #380)。
   // 先頭はワークフローが PR_HEAD_SHA で渡す(checkout はマージのコミットを取り出すため)。手元の実行は HEAD
   const prHead = pr.head ?? ((git(['rev-parse', 'HEAD']) ?? '').trim() || null);
-  const prHosting = pr.hosting?.commits ? fixedHosting(pr.hosting.commits) : (pr.hostingLookup ?? null);
+  const prHosting = pr.hosting?.commits || pr.hosting?.pulls ? fixedHosting(pr.hosting.commits, pr.hosting.pulls) : (pr.hostingLookup ?? null);
   if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})の先端から読む`);
   const atHead = (file) => {
     const p = path.join(root, file);
@@ -1484,6 +1591,24 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   if (result.stop.requested) {
     if (result.stop.released) result.notices.push(result.stop.message);
     else result.errors.push(result.stop.message);
+  }
+
+  // --- 6b. D-0 の決定の記名と、前倒しで要る SG の判定記録の帰属(第4章「判定記録を基底ブランチへ入れる操作」。#428 / IMPL-0415) ---
+  if (policyConfigured && baseConfig) {
+    result.decisionRecords = decisionRecordFindings({
+      git,
+      policyRef,
+      pr: { ...pr, head: prHead },
+      baseConfig,
+      headConfig,
+      // 名簿は既定ブランチの構成から読む。既定ブランチの名簿が空(初回の任免で名簿を埋める PR)なら、PR の先頭の構成の名簿を使う
+      rosterConfig: Array.isArray(policyConfig?.people) && policyConfig.people.length ? policyConfig : headConfig,
+      hosting: prHosting,
+      changedFiles: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])),
+      atHead,
+    });
+    result.errors.push(...result.decisionRecords.errors);
+    result.notices.push(...result.decisionRecords.notices);
   }
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---

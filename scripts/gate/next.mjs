@@ -40,7 +40,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
+import { ROOT, resolveSigner, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
@@ -1091,6 +1091,21 @@ function continuityNotes(config) {
     return row && row.role ? `層1 の項目4 の権限者(${row.role})` : '層1 の項目4 の権限者(行が空欄。層1 を先に埋める)';
   };
   const cont = `${READ.change('settings')}`;
+
+  // 層1 の帰属(第4章「判定記録を基底ブランチへ入れる操作」。process-compass #428 / IMPL-0415)。手元ではホスティングの記録を引かないため、
+  // 名簿の側で確かめられる前提(記名者が名簿の人で、数値の識別子つきのアカウントを持つ)だけを確かめ、欠けていれば移行の手順を出す。
+  // 層1 を入れた PR の作成者・承認者の照合は、G-5 の pr-rules と出荷の証跡の集約が行う
+  if (policy?.present) {
+    const signer = policy.signer ? resolveSigner(config, policy.signer) : null;
+    const withId = signer ? (Array.isArray(signer.accounts) ? signer.accounts : []).filter((a) => a && typeof a === 'object' && numericAccountId(a.id ?? null) !== null) : [];
+    if (!signer || !withId.length) {
+      notes.push(
+        `層1 の帰属を確かめられない(記名者 ${policy.signer ?? '未記入'} が${!signer ? '人の名簿(people[])に無い' : '数値の識別子つきのアカウントを持たない'})。` +
+          '帰属を確かめられない層1 では、停止の解除と組織継続の受容の権限者が事業決裁者の席へ戻り、保証の主張の成立条件1 を満たさない。' +
+          `次の一手: 決定者が /process-change(種別 accountable)で記名者を名簿へ置き(体制の外のトップマネジメントは組織上の任命権者。アカウントは { login, id })、層1 を記名者本人が作成または承認する PR で入れ直す(読む: ${READ.artifact('11-quality-assurance-policy')} の作成の手順7)`
+      );
+    }
+  }
 
   // 層1 項目4「AI の利用の拡大」の錠(委任の登録を認めない)と、構成の委任の登録の食い違い。委任の決定と承認が同一人物の記録(#288 第8巡 Y7)
   {

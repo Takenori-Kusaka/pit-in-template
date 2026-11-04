@@ -11,6 +11,15 @@
 //       コミットで、author が記名者のアカウントのものに限る
 // 確かめられない記録は数えない。PR の時点の検査(check-pr.mjs)と出荷の証跡の集約(aggregate-evidence.mjs)が同じ関数を使う。
 //
+// 層1・D-0 の決定の記名・前倒しで要る SG の判定記録(process-compass #428 / IMPL-0415)も、(B) で裏づける:
+//   層1   docs/quality-assurance-policy.md を最後に変えた変更の作成者・承認者に、層1 の記名者(冒頭の「記名」の欄)の
+//         アカウントがあるか(policyAttribution)。項目4 の各行の受容者は、層1 の記名者の記名で一体として扱い、行ごとの帰属を求めない。
+//         確かめられない層1 は、権限者の照合(org-assurance.mjs の checkAuthority)で項目4 を使わず、層1 が無い場合と同じ扱いにする
+//   D-0   構成の変化点の記録(changeLog[])のうち、決定者の記名(decidedBy)を要するもの(緩める向き・任免・名簿の変更。
+//         decisionNeedsAttribution)。記録を入れた変更の作成者・承認者に、決定者のアカウントがあるか
+//   SG    事業ステージを前へ戻す変化点(sgRecord)が指す docs/gates/ の判定記録。記録を最後に変えた変更の作成者・承認者に、
+//         記録の判定者のアカウントがあるか
+//
 // 名簿の照合は数値の識別子で行う(people[].accounts の { login, id }。identifyAccount。process-compass #430 / ADR-0108)。
 // ログイン名だけが一致する書き手・作成者・承認者は、記名者のアカウントとして数えない。
 // 名義の共有(標準 第3章 3.5.3「人と AI の担い手の名義」。構成の seats[].performerAccount が shared、または担い手を宣言して
@@ -21,7 +30,7 @@
 // 限界: 名義の申告は自己申告であり、申告の無い共有(専用と偽った申告)は検出しない(env-check の照合は実行した環境と時点に限る)。
 // レビューの本文が提出の後に編集されたかは確かめない(EV-0220)
 import { execFileSync } from 'node:child_process';
-import { accountKey, aiNameBlocked, dedicatedSeatOf, hasWriteAssociation, identifyAccount, numericAccountId, parsePagedJson, sharingOf, sharingText } from './config.mjs';
+import { accountKey, aiNameBlocked, dedicatedSeatOf, hasWriteAssociation, identifyAccount, numericAccountId, parsePagedJson, resolveSigner, sharingOf, sharingText, SIGNED_DIRECTIONS } from './config.mjs';
 
 /**
  * 記名者が AI の担い手と名義を共有するか。共有するなら { seats, confirmable }、しなければ null。
@@ -307,7 +316,8 @@ export function introducedBacking(config, signer, info, { what = '記録' } = {}
     .filter((x) => x.login && !/\[bot\]$/i.test(x.login) && !aiNameBlocked(config, x.login))
     .map((x) => ({ ...x, res: identifyAccount(config, x) }))
     .filter((x) => {
-      if (x.res.person && x.res.person.appointer !== true) return true;
+      // 組織上の任命権者は承認者に数えない。ただし記名者本人が任命権者の場合(層1 の記名者、任命権者の記名による任免)は、本人の承認として数える(#428)
+      if (x.res.person && (x.res.person.appointer !== true || x.res.person.id === signer.id)) return true;
       if (x.res.candidate?.id === signer.id && x.res.problem) unmatched.push(`@${x.login}: ${x.res.problem}`);
       return false;
     });
@@ -419,13 +429,206 @@ export function ghHosting(repo, { run = null } = {}) {
       cache.set(sha, info);
       return info;
     },
+    /** PR のコミットの作成者([{ login, id }])。PR の時点の検査が、検査する PR 自身の帰属を確かめるときに使う(#428)。読めなければ null */
+    pullCommitAuthors(number) {
+      if (!repo || !number) return null;
+      const k = `pull:${number}`;
+      if (cache.has(k)) return cache.get(k);
+      let out = null;
+      try {
+        const commits = call(['api', '--paginate', `repos/${repo}/pulls/${number}/commits`]);
+        out = Array.isArray(commits) ? commits.map((c) => (c?.author?.login ? { login: c.author.login, id: numericAccountId(c.author.id ?? null) } : null)) : null;
+      } catch {
+        out = null;
+      }
+      cache.set(k, out);
+      return out;
+    },
   };
 }
 
-/** --pr の JSON の hosting.commits({ <sha>: info })から引く(試験と、ホスティングの記録を書き出して渡す手元の実行) */
-export function fixedHosting(commits) {
+/**
+ * --pr の JSON の hosting.commits({ <sha>: info })から引く(試験と、ホスティングの記録を書き出して渡す手元の実行)。
+ * pulls({ <PR 番号>: { commitAuthors } })は、検査する PR 自身のコミットの作成者(#428)
+ */
+export function fixedHosting(commits, pulls = null) {
   const m = commits && typeof commits === 'object' ? commits : {};
-  return { prOfCommit: (sha) => (sha && Object.prototype.hasOwnProperty.call(m, sha) ? m[sha] : null) };
+  const p = pulls && typeof pulls === 'object' ? pulls : {};
+  return {
+    prOfCommit: (sha) => (sha && Object.prototype.hasOwnProperty.call(m, sha) ? m[sha] : null),
+    pullCommitAuthors: (number) => (number != null && Object.prototype.hasOwnProperty.call(p, String(number)) ? (p[String(number)]?.commitAuthors ?? null) : null),
+  };
+}
+
+// ---------------------------------------------------------------- 層1・D-0 の決定の記名・前倒しで要る SG(#428 / IMPL-0415)
+
+/**
+ * 検査する PR 自身を、記録を入れる変更として introducedBacking へ渡す形(PR の時点の検査。#428)。
+ * 承認は PR の先頭(head)に対するものだけを数える(先頭より前の承認は失効)。レビューを読めなければ null(帰属を確かめられない)
+ */
+export function pullInfoOf({ number = null, author = null, reviews = null, head = null, commitAuthors = null } = {}) {
+  if (!number || !Array.isArray(reviews)) return null;
+  const a = refOf(author);
+  const bound = normalizeReviews(reviews).map((r) => ({
+    author: { login: r.login, id: r.accountId },
+    state: r.state === 'APPROVED' && (!head || r.commitId !== head) ? 'DISMISSED' : r.state,
+    commit_id: r.commitId,
+    body: r.body,
+  }));
+  return { number, author: a.login || null, authorId: a.id, approvers: approverAccounts(bound), commitAuthors: Array.isArray(commitAuthors) ? commitAuthors : null };
+}
+
+/**
+ * 層1(docs/quality-assurance-policy.md)の帰属。層1 を最後に変えた変更(rev の履歴)の作成者・承認者に、層1 の記名者
+ * (冒頭の「記名」の欄。readPolicy の signer)のアカウントがあるか。項目4 の各行の受容者の記名は、層1 の記名者の記名で一体として扱う
+ * (行ごとの帰属を求めない)。層1 が無ければ null。返り値は introducedBacking の返り値に { signer, commit } を足したもの。
+ * pull を渡すと、層1 を PR の中で変えた場合に、その PR を記録を入れる変更として照合する
+ */
+export function policyAttribution(config, policy, { git = null, rev = null, hosting = null, file = 'docs/quality-assurance-policy.md', pull = null } = {}) {
+  if (!policy?.present) return null;
+  const signer = policy.signer ? resolveSigner(config, policy.signer) : null;
+  if (!signer) return { backed: false, why: `層1 の記名者 "${policy.signer ?? '未記入'}" が人の名簿(people[])の人へ対応づかない。記名者のアカウントを確かめられない`, signer: policy.signer ?? null, commit: null };
+  const sha = git && rev ? lastCommitOfFile(git, rev, file) : null;
+  const info = pull ?? (sha && hosting ? hosting.prOfCommit(sha) : null);
+  return { ...introducedBacking(config, signer, info, { what: '層1' }), signer: signer.name, commit: sha };
+}
+
+/** 層1 に帰属の照合の結果を付ける。backed が偽なら、権限者の照合(checkAuthority)は項目4 を使わない */
+export function withPolicyAttribution(policy, attribution) {
+  return policy && attribution ? { ...policy, attribution } : policy;
+}
+
+/** 帰属を確かめられない層1 の注記(出力に出す) */
+export function policyUnattributedText(attribution) {
+  return (
+    `帰属を確かめられない層1(${attribution.why})。項目4 の権限者の照合には、層1 が無い場合と同じく事業決裁者の席の責任者を使う。` +
+    '層1 は、記名者本人が作成者または承認者となる PR で入れる(記名者が作成者なら、記名者以外の人の承認を経る)'
+  );
+}
+
+/** 名簿の変更(D-0 表5)を含む変化点の記録か。表記の変更・アカウントと氏名の確認・名簿への追加と削除 */
+export function rosterChangeOf(e) {
+  return Boolean(e?.rosterEdits?.length || e?.accountConfirmations?.length || e?.nameConfirmations?.length || (Array.isArray(e?.diff) && e.diff.some((d) => /^人の名簿\s*[::]/.test(String(d)))));
+}
+
+/**
+ * 変化点の記録のうち、決定者の記名(decidedBy)の帰属を要するもの(D-0 の決定の記名。#428)。緩める向き・任免の決定(SIGNED_DIRECTIONS)と、
+ * 名簿の変更。記名の無い記録は、帰属の照合の対象にしない(緩める向きの記名の欠落は configIntegrityProblems が出す)
+ */
+export function decisionNeedsAttribution(e) {
+  if (!e || !e.decidedBy) return false;
+  return SIGNED_DIRECTIONS.includes(e.direction) || rosterChangeOf(e);
+}
+
+/** 保持していた宣言を規則の承認で有効にした変化点の理由の末尾(generate-profile.mjs の reason) */
+const HELD_SUFFIX = /[((]\s*[^()()]*の決定を、規則の承認により有効にした\s*[))]\s*$/;
+
+/**
+ * 決定者の記名を持つ記録の添字。保持していた委任の宣言を規則の承認で有効にした変化点は、決定者の記名が宣言した時点の変化点にある。
+ * 理由の文の一致だけでは宣言の時点の記録を借りない(理由の文は PR の作成者が書ける。#428 突合 H-1)。次のすべてが一致するときに限り、
+ * 宣言した時点の変化点の添字を返す。一致しなければ index(有効化の記録そのものを照合する)
+ *   - 記録が intentApplied(有効にした宣言の席・決定者・理由・宣言の日)を持ち、全件の決定者が記録の決定者と同じ
+ *   - 記録の理由が「<宣言の理由>(<宣言の日> の決定を、規則の承認により有効にした)」の形で、宣言の理由・日と一致する
+ *   - 記録を入れる前の構成(prior)の席が、同じ宣言(seats[].intent の decidedBy・reason・at)を保持している
+ *   - より前の記録に、決定者・理由・日付(date)が宣言と一致する記録がある(そのうち最新のもの)
+ * 規則の拡大(pendingChange)と規則だけの有効化は intentApplied を持たないため、有効化の記録そのものを照合する
+ */
+export function signatureIndexOf(log, index, { prior = null } = {}) {
+  const e = Array.isArray(log) ? log[index] : null;
+  if (!e) return null;
+  const reason = String(e.reason ?? '');
+  if (!HELD_SUFFIX.test(reason)) return index;
+  const held = Array.isArray(e.intentApplied) ? e.intentApplied : [];
+  if (!held.length || !held.every((x) => x && x.decidedBy === e.decidedBy)) return index;
+  const x = held[0];
+  if (reason !== `${x.reason}(${x.at} の決定を、規則の承認により有効にした)`) return index;
+  const kept = (Array.isArray(prior?.seats) ? prior.seats : []).find((s) => s?.role === x.seat)?.intent ?? null;
+  if (!kept || kept.decidedBy !== x.decidedBy || kept.reason !== x.reason || kept.at !== x.at) return index;
+  for (let i = index - 1; i >= 0; i--) {
+    const d = log[i];
+    if (d?.decidedBy === x.decidedBy && String(d.reason ?? '') === x.reason && String(d.date ?? '').slice(0, 10) === x.at) return i;
+  }
+  return index;
+}
+
+/**
+ * 名簿の数値の識別子を足すだけの変化点(#430 の移行。#428 突合 H-2)の照合に使う名簿。記録を入れる前の名簿(pre)のうち、変化点が
+ * アカウントを書き換えた行(rosterEdits の field: accounts)で、ログイン名の集合が同じで既にある識別子を変えないものだけを、変化点が
+ * 書く {login, id}(post の行)へ置き換える。ホスティングの記録(REST の user.login・user.id)が書く値と一致したときだけ、その行の人へ
+ * 対応づく(identifyAccount)。書く値がホスティングの実際の値と一致することが裏づけになる。当たらなければ pre をそのまま返す
+ */
+export function idMigrationRoster(pre, post, e) {
+  const rows = new Set((Array.isArray(e?.rosterEdits) ? e.rosterEdits : []).filter((x) => x?.field === 'accounts').map((x) => x.id));
+  if (!rows.size || !Array.isArray(pre?.people) || !Array.isArray(post?.people)) return pre;
+  const idOf = (a) => (a && typeof a === 'object' ? numericAccountId(a.id ?? null) : null);
+  const keys = (list) => list.map((a) => accountKey(a)).sort().join('\n');
+  const after = new Map(post.people.map((p) => [p?.id, p]));
+  let changed = false;
+  const people = pre.people.map((p) => {
+    const q = after.get(p?.id);
+    if (!p || !q || !rows.has(p.id)) return p;
+    const was = Array.isArray(p.accounts) ? p.accounts : [];
+    const now = Array.isArray(q.accounts) ? q.accounts : [];
+    if (keys(was) !== keys(now)) return p;
+    const before = new Map(was.map((a) => [accountKey(a), idOf(a)]));
+    if (!now.every((a) => before.get(accountKey(a)) == null || before.get(accountKey(a)) === idOf(a))) return p;
+    changed = true;
+    return { ...p, accounts: now };
+  });
+  return changed ? { ...pre, people } : pre;
+}
+
+/** ファイルの中の1行(文字列そのもの)を今の形で入れたコミット(git log -S)。D-0 節15 の受容の行の帰属に使う。読めなければ null */
+export function lastCommitOfLine(git, rev, file, line) {
+  if (!line) return null;
+  const out = git(['log', '-1', '--format=%H', `-S${line}`, rev, '--', file]);
+  return String(out ?? '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? null;
+}
+
+/**
+ * 変化点の記録 changeLog[index] の今の中身を入れたコミット(rev の履歴で、その記録を今と同じ中身で持つ最も古いコミット)。
+ * 記録は追記だけで書き換えないため、記録を足したコミットに当たる。読めなければ null
+ */
+export function commitOfChangeLogEntry(git, rev, index, { file = 'process.config.json', cache = null } = {}) {
+  const shas = String(git(['log', '--format=%H', rev, '--', file]) ?? '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const logAt = (sha) => {
+    if (cache?.has(sha)) return cache.get(sha);
+    let log = null;
+    try {
+      log = JSON.parse(git(['show', `${sha}:${file}`]) ?? 'null')?.changeLog ?? null;
+    } catch {
+      log = null;
+    }
+    cache?.set(sha, log);
+    return log;
+  };
+  let target = null;
+  let found = null;
+  for (const sha of shas) {
+    const log = logAt(sha);
+    const e = Array.isArray(log) && index < log.length ? JSON.stringify(log[index]) : null;
+    if (target === null) {
+      if (e === null) return null;
+      target = e;
+      found = sha;
+      continue;
+    }
+    if (e !== target) break;
+    found = sha;
+  }
+  return found;
+}
+
+/** 変化点の sgRecord を、リポジトリの根からの相対の所在(docs/gates/…)へ直す。docs/gates/ の外を指せば null */
+export function sgRecordPath(e) {
+  const given = String(e?.sgRecord ?? '').trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+  if (!given) return null;
+  // 絶対の所在で書いた記録(/process-change は ROOT からの解決で受け付ける)は、docs/gates/ からの部分を読む
+  const at = given.lastIndexOf('/docs/gates/');
+  const raw = given.startsWith('docs/gates/') || at < 0 ? given : given.slice(at + 1);
+  const parts = raw.split('/');
+  if (parts.includes('..') || !raw.startsWith('docs/gates/') || !/\.md$/i.test(raw)) return null;
+  return raw;
 }
 
 /**

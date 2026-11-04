@@ -106,6 +106,8 @@ jobs:
       - run: node scripts/gate/test-model-adoption.mjs
       # 効力を持つ記録(例外承認の台帳の行・停止の解除の記録)の帰属(process-compass #380 / IMPL-0413・IMPL-0414)
       - run: node scripts/gate/test-material-attribution.mjs
+      # 効力を持つ記録のうち、層1・D-0 の決定の記名・前倒しで要る SG の判定記録の帰属(process-compass #428 / IMPL-0415)
+      - run: node scripts/gate/test-material-records-more.mjs
       - run: node scripts/gate/test-roster-ids.mjs
       # AI の担い手の名義(seats[].performerAccount)の契約検査・G-6 の数え方・効力を持つ記録の帰属・env-check の照合(process-compass #430 / ADR-0107)
       - run: node scripts/gate/test-performer-account.mjs
