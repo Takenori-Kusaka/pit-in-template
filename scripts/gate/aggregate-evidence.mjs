@@ -3019,6 +3019,54 @@ if (isMain) {
     else if (blankGap.length) gaps.push(`${g.file}: 「見積りと実績の差」に空欄の欄があります(${blankGap.join(' / ')})。記載の欠落です(第7章 7.7.9 の要求事項4)`);
   }
 
+  // 上積みとして示した行の突合(第7章 7.7.8 の要求事項11 (b)。process-compass #412 / ADR-0092)。示してよいのは、評価の期間の開始
+  // (直前のステージ移行ゲート・棚卸しの判定の日。初回は G-1 の判定の日)より前に技術負債台帳の区分「負債」「未解決」へ登録され、
+  // 返却済みと記録され、返却の変更(PR の番号かコミットの識別子)を示せる行だけ。登録の日は、台帳へ行を足したコミットの日で確かめる
+  // (台帳に書いた日付は、後から書き換えられるため使わない)。示した行の数を件数・率として出さない
+  const dayOf = (v) => (String(v ?? '').normalize('NFKC').match(/\d{4}-\d{2}-\d{2}/) ?? [null])[0];
+  const evalRecords = gateRecordList.filter((r) => /ステージ移行|^SG|棚卸し/.test(String(r.gate ?? '').normalize('NFKC')) && dayOf(r.judgedAt));
+  const g1Days = gateRecordList.filter((r) => /^G-?1\b|企画承認/.test(String(r.gate ?? '').normalize('NFKC')) && dayOf(r.judgedAt)).map((r) => dayOf(r.judgedAt)).sort();
+  const firstAddedDay = new Map();
+  const ledgerAddedDay = (id) => {
+    if (!firstAddedDay.has(id)) {
+      const out = git(['log', '--reverse', '--format=%cs', '-S', `| ${id} |`, '--', debtFile]).split('\n').filter(Boolean);
+      firstAddedDay.set(id, out[0] ?? null);
+    }
+    return firstAddedDay.get(id);
+  };
+  function upliftProblems(g, value) {
+    const v = String(value ?? '').normalize('NFKC').trim();
+    if (!v || /^なし$/.test(v)) return [];
+    const where = `${g.file}: 「AI の利用の評価」の「上積みとして示した品質の活動」`;
+    const day = dayOf(g.judgedAt);
+    if (!day) return [`${where}: 判定記録の判定日時が無く、評価の期間の開始を導けません。記載の欠落です(第7章 7.7.8 の要求事項11)`];
+    const earlier = evalRecords.map((r) => dayOf(r.judgedAt)).filter((d) => d < day).sort();
+    const start = earlier.length ? earlier[earlier.length - 1] : g1Days[0] ?? null;
+    if (!start) return [`${where}: 評価の期間の開始(直前の評価の日、初回は G-1 の判定の日)を判定記録から導けません。記載の欠落です(第7章 7.7.8 の要求事項11)`];
+    const ids = [...new Set(v.match(/D-\d+/g) ?? [])];
+    const refs = [...new Set(v.match(/#\d+|\b[0-9a-f]{7,40}\b/gi) ?? [])];
+    const out = [];
+    if (!ids.length) out.push(`${where}: 技術負債台帳の行の識別子(D-NNN)がありません`);
+    if (!refs.length) out.push(`${where}: 返却の変更(PR の番号 #NNN またはコミットの識別子)がありません`);
+    for (const id of ids) {
+      const row = ledgerRows ? ledgerRows.find((r) => r.id === id) : null;
+      if (!row) {
+        out.push(`${where}: ${id} が技術負債台帳(${debtFile})にありません`);
+        continue;
+      }
+      if (!/^(負債|未解決)/.test(row.kind)) out.push(`${where}: ${id} の区分は「${row.kind}」です(示せるのは区分「負債」「未解決」の行)`);
+      if (!/返却済み/.test(row.state)) out.push(`${where}: ${id} の状態は「${row.state}」です(示せるのは返却済みの行)`);
+      const added = ledgerAddedDay(id);
+      if (!added) out.push(`${where}: ${id} を台帳へ足したコミットを履歴から確かめられません`);
+      else if (added >= start) out.push(`${where}: ${id} を台帳へ足したのは ${added} で、評価の期間の開始(${start})より前ではありません`);
+    }
+    for (const ref of refs) {
+      const ok = ref.startsWith('#') ? Boolean(git(['log', '-1', '--format=%h', `--grep=${ref}\\b`, '--all'])) : Boolean(git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]));
+      if (!ok) out.push(`${where}: 返却の変更 ${ref} を履歴から確かめられません`);
+    }
+    return out.map((m) => `${m}。記載の欠落です(第7章 7.7.8 の要求事項11 (b))`);
+  }
+
   // ステージ移行ゲート・案件に関与していない者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
   const AI_EVAL_ROWS = ['評価の単位', '下流の指標と比較の基準値', '総費用の内訳', '評価に用いなかった入力', '上積みとして示した品質の活動', '判定', '縮小・停止の基準に当たる状態での継続'];
   for (const g of gateRecordList.filter((r) => /ステージ移行|^SG|棚卸し/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
@@ -3033,6 +3081,7 @@ if (isMain) {
       return !filled(v) && !(k === '縮小・停止の基準に当たる状態での継続' && /該当なし/.test(String(v ?? ''))) && !(k === '上積みとして示した品質の活動' && /^なし$/.test(String(v ?? '').normalize('NFKC').trim()));
     });
     if (blank.length) gaps.push(`${g.file}: 「AI の利用の評価」に空欄の欄があります(${blank.join(' / ')})。記載の欠落です(第7章 7.7.8)`);
+    gaps.push(...upliftProblems(g, rowValue(sec, '上積みとして示した品質の活動', false)));
   }
 
   // 測定の記録(docs/adoption-trial/seeded-errors.json、または evidence/seeded-errors.json)は、human / ai のキーを持てば層ごとに読む。
