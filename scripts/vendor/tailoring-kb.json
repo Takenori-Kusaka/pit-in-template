@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "b0b8cb3ac737905f0734e5f84b420406d1549098",
+    "commit": "d1c6d11dd48efc2e443f48199d43630796ae11c9",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -604,6 +604,14 @@
         },
         {
           "target": {
+            "type": "role",
+            "id": "value-owner"
+          },
+          "action": "note",
+          "note": "契約で固定した範囲(受入基準の識別子)を締結時に記録し、それに触れる調整は層によらず契約変更の起点として B-2 へ送る。受注側の提案を見積り値の根拠にした場合は出所を企画書に書き、契約額を見積りの幅の上側として扱わない(標準 第8章 軸D、ADR-0100)"
+        },
+        {
+          "target": {
             "type": "gate",
             "id": "g-req-agree"
           },
@@ -659,6 +667,14 @@
           },
           "action": "note",
           "note": "受注側は価値責任者になれない(担えるのは機能責任者まで)。価値責任者を発注側に置くことを契約時に合意する"
+        },
+        {
+          "target": {
+            "type": "role",
+            "id": "value-owner"
+          },
+          "action": "note",
+          "note": "顧客へ示した見積りを版ごとに残し書き換えない。変更の見積りは示した版との差として示す。契約で固定した範囲に触れる調整は契約変更の起点(標準 第8章 軸D、ADR-0100)"
         },
         {
           "target": {
