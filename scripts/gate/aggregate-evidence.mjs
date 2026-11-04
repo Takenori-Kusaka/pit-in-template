@@ -2938,7 +2938,7 @@ if (isMain) {
   }
 
   // ステージ移行ゲート・案件に関与していない者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
-  const AI_EVAL_ROWS = ['評価の単位', '下流の指標と比較の基準値', '総費用の内訳', '評価に用いなかった入力', '判定', '縮小・停止の基準に当たる状態での継続'];
+  const AI_EVAL_ROWS = ['評価の単位', '下流の指標と比較の基準値', '総費用の内訳', '評価に用いなかった入力', '上積みとして示した品質の活動', '判定', '縮小・停止の基準に当たる状態での継続'];
   for (const g of gateRecordList.filter((r) => /ステージ移行|^SG|棚卸し/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
     const text = fs.readFileSync(path.join(ROOT, g.file), 'utf8');
     const sec = mdSection(text, 'AI\\s*の利用の評価');
