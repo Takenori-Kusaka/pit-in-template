@@ -72,6 +72,17 @@ import {
   findPersonByAccount,
   hasWriteAssociation,
   accountKey,
+  accountLoginOf,
+  accountIdOf,
+  accountsWithoutId,
+  identifyAccount,
+  parsePagedJson,
+  dedicatedSeatOf,
+  sharingOf,
+  sharingText,
+  performerAccountStates,
+  PERFORMER_ACCOUNT_LABEL,
+  numericAccountId,
   pendingNotices,
   outagePeriods,
   aiNameBlocked,
@@ -133,7 +144,7 @@ import {
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup } from './check-pr.mjs';
 import { exceptionReviewBacking, introducedBacking, lastCommitOfRow, lastCommitOfFile, ghHosting } from './material-attribution.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
@@ -301,6 +312,9 @@ export function lastReviewStates(reviews, headOid = undefined) {
   let unbound = 0;
   for (const r of reviews ?? []) {
     const login = r.author?.login;
+    // 書き手の数値の識別子(写し・REST の user.id)。レビュアは識別子で区別し、識別子が無ければログイン名で区別する(process-compass #430)
+    const id = numericAccountId(r.author?.id ?? r.user?.id ?? null);
+    const lkey = id !== null ? `#${id}` : login;
     let state = String(r.state ?? '').toUpperCase();
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
     if (state === 'APPROVED' && headOid !== undefined) {
@@ -312,13 +326,13 @@ export function lastReviewStates(reviews, headOid = undefined) {
         state = 'DISMISSED';
       }
     }
-    const before = last.get(login);
+    const before = last.get(lkey);
     // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(#288 第8巡 X8)
     const body = hasBehaviorSummary(stripReviewComments(r.body));
     // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
     const key = body ? behaviorSummaryKey(stripReviewComments(r.body)) : before?.state === 'APPROVED' ? before.key ?? null : null;
-    if (state === 'APPROVED') last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary), key });
-    else last.set(login, { state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
+    if (state === 'APPROVED') last.set(lkey, { login, id, state, bot: Boolean(r.author?.is_bot), summary: body || (before?.state === 'APPROVED' && before.summary), key });
+    else last.set(lkey, { login, id, state, bot: Boolean(r.author?.is_bot), summary: false, withdrew: before?.state === 'APPROVED' || before?.withdrew });
   }
   for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
   return { last, withdrawn, stale, unbound };
@@ -331,7 +345,8 @@ export function approvalCountOfCopy(copy) {
     const login = r?.user?.login;
     const state = String(r?.state ?? '').toUpperCase();
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-    last.set(login, state);
+    const id = numericAccountId(r?.user?.id ?? null);
+    last.set(id !== null ? `#${id}` : login, state);
   }
   return [...last.values()].filter((s) => s === 'APPROVED').length;
 }
@@ -387,8 +402,11 @@ export function judgeLoginsOf(config, gate) {
   if (!role) return { role: null, person: null, logins: null };
   const seat = (config?.seats ?? []).find((s) => s.role === role.id) ?? null;
   const person = seat?.accountable ? findPerson(config, seat.accountable) : null;
-  const logins = new Set((Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a)));
-  return { role: role.id, seat: seat ?? null, person, logins };
+  const accounts = Array.isArray(person?.accounts) ? person.accounts : [];
+  const logins = new Set(accounts.map((a) => accountKey(a)).filter(Boolean));
+  // 数値の識別子(名簿の { login, id })。照合は識別子で行う(process-compass #430)
+  const ids = new Set(accounts.map((a) => accountIdOf(a)).filter((x) => x !== null));
+  return { role: role.id, seat: seat ?? null, person, logins, ids };
 }
 
 /**
@@ -402,15 +420,20 @@ export function gateJudgementsOfCopy(copy, config) {
   const out = [];
   for (const j of judgementsFromCopy(copy)) {
     const who = judgeLoginsOf(config, j.gate);
-    const person = j.login ? findPersonByAccount(config, j.login) : null;
+    // 書き手は数値の識別子で名簿の人へ対応づける。ログイン名だけの一致は同定に数えない(標準 第4章「アカウントと人の対応表」。process-compass #430)
+    const ident = j.login ? identifyAccount(config, { login: j.login, id: j.userId ?? null }) : null;
+    const person = ident?.person ?? null;
     let judgeOk = null;
     let judgeNote = null;
     if (who.logins === null) judgeNote = `${j.gate} を判定する席が構成に無い。判定者本人のレビューかを確かめられない`;
     else if (!who.person) judgeNote = `${j.gate} を判定する席の責任者が未記入。判定者本人のレビューかを確かめられない`;
     else if (!who.logins.size) judgeNote = `${j.gate} を判定する席の責任者(${who.person.name})のアカウントが名簿(people[].accounts)に無い。判定者本人のレビューかを確かめられない`;
     else {
-      judgeOk = who.logins.has(accountKey(j.login ?? ''));
-      if (!judgeOk) judgeNote = `宣言行のあるレビューの書き手(@${j.login ?? '?'})が、${j.gate} を判定する席の責任者(${who.person.name})でない。判定に数えない`;
+      judgeOk = Boolean(person) && person.id === who.person.id;
+      if (!judgeOk && ident?.candidate?.id === who.person.id && ident.problem) {
+        judgeNote = `宣言行のあるレビューの書き手(@${j.login ?? '?'})を、${j.gate} を判定する席の責任者(${who.person.name})へ対応づけない(${ident.problem})。判定に数えない`;
+      } else if (!judgeOk) judgeNote = `宣言行のあるレビューの書き手(@${j.login ?? '?'})が、${j.gate} を判定する席の責任者(${who.person.name})でない。判定に数えない`;
+      else if (ident.problem) judgeNote = ident.problem;
     }
     const h = headMatches(copy, j);
     out.push({ ...j, person, seatRole: who.role, judgeOk, judgeNote, headMatch: h.match, head: h.head, mergeCommit: copy?.merge_commit_sha ?? null });
@@ -462,7 +485,11 @@ export function machineFields(j, copy, { source, pr = null, instructors = null, 
     else if (instructors.known?.has(person.id)) relation = '作成を指示した者本人';
     else if ((instructors.unresolved ?? []).length) relation = `判定できない(指示した者 ${instructors.unresolved.join(' / ')} を名簿と対応づけられない)`;
     else relation = '作成を指示した者でない';
-    if (pr?.authorLogin && j.login && accountKey(pr.authorLogin) === accountKey(j.login)) relation += '(PR の作成者本人のレビュー)';
+    // 作成者とレビューの書き手の別は、両方に数値の識別子があれば識別子で比べる(process-compass #430)
+    const authorId = numericAccountId(pr?.authorId ?? null);
+    const judgeId = numericAccountId(j.userId ?? null);
+    const sameAuthor = authorId !== null && judgeId !== null ? authorId === judgeId : Boolean(pr?.authorLogin && j.login && accountKey(pr.authorLogin) === accountKey(j.login));
+    if (sameAuthor) relation += '(PR の作成者本人のレビュー)';
   }
   const fields = [
     { field: '判定者', value: judgeValue, source: judgeSource },
@@ -502,11 +529,15 @@ export function copyCoverage(prNumbers, copies) {
  *   記名者本人の承認レビュー > 署名コミット > author の login・email(弱い裏づけ) > 名前だけ(自己申告)
  * 記名者以外の承認者は、転記の確認・帰属の確認として clerical に出す(判定ではない。欠落にも数えない。ADR-0106)
  */
-export function formAttribution(gateRecord, { judgeName = null, person = null, approvers = null } = {}) {
-  const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a));
-  const approved = Array.isArray(approvers) ? approvers.map((a) => accountKey(a)) : [];
-  const own = approved.filter((a) => accounts.includes(a));
-  const clerical = approved.filter((a) => !accounts.includes(a));
+export function formAttribution(gateRecord, { judgeName = null, person = null, approvers = null, config = null } = {}) {
+  const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountKey(a)).filter(Boolean);
+  // 承認者({ login, id })は数値の識別子で記名者へ対応づける。ログイン名だけの一致は記名者本人の承認に数えない(process-compass #430)。
+  // ログイン名の文字列(数値の識別子を持たない承認者)は、記名者本人の承認に数えない
+  const roster = config ?? { people: person ? [person] : [] };
+  const refs = Array.isArray(approvers) ? approvers.map((a) => (a && typeof a === 'object' ? { login: accountLoginOf(a), id: numericAccountId(a.id ?? null) } : { login: accountLoginOf(a), id: null })) : [];
+  const isOwn = (r) => Boolean(person) && identifyAccount(roster, r).person?.id === person.id;
+  const own = refs.filter(isOwn).map((r) => r.login);
+  const clerical = refs.filter((r) => !isOwn(r)).map((r) => r.login);
   if (!judgeName) return { backed: false, how: null, note: '判定者の記名が無い。帰属を裏づけられない', clerical, selfAttested: true };
   if (own.length) return { backed: true, how: 'approval-review', note: `記名者本人(@${own[0]})の承認レビュー`, clerical, selfAttested: false };
   // 名簿のアカウントごとに試し、最も強い裏づけを採る
@@ -562,7 +593,9 @@ if (isMain) {
   let lastGhError = null;
   function gh(args) {
     try {
-      return JSON.parse(execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+      const text = execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      // --paginate の頁ごとの配列の連結にも耐える(#430 突合 C-3)
+      return args.includes('--paginate') ? parsePagedJson(text) : JSON.parse(text);
     } catch (e) {
       lastGhError = String(e.stderr || e.message || '').split('\n').find((l) => l.trim()) ?? null;
       return null;
@@ -887,6 +920,41 @@ if (isMain) {
     return prData.get(n);
   };
   for (const n of candidateNumbers) fetchPr(n);
+  /**
+   * PR の作成者の数値の識別子。写しから起こした記録(author.id は数値)、REST から補った値(authorDatabaseId)の順に読む。
+   * gh pr view の author.id はノードの識別子(数値でない)のため使わない(process-compass #430)
+   */
+  const authorIdOf = (d) => numericAccountId(d?.author?.id ?? null) ?? numericAccountId(d?.authorDatabaseId ?? null);
+  /**
+   * 写しの無い PR の、数値の識別子を持つ記録(REST)。reviews は gh pr view の reviews と同じ形へ直す。読めなければ null
+   * (呼び出し側は gh pr view の reviews を使い、書き手は「記録に数値の識別子が無い」として名簿へ対応づけない)
+   */
+  const restAccounts = new Map();
+  function restAccountsOf(n) {
+    if (restAccounts.has(n)) return restAccounts.get(n);
+    let out = { reviews: null, authorId: null };
+    if (repo) {
+      const rv = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/reviews`]);
+      const pr = gh(['api', `repos/${repo}/pulls/${n}`]);
+      out = {
+        reviews: Array.isArray(rv)
+          ? rv.map((r) => ({
+              id: r?.id ?? null,
+              author: { login: r?.user?.login ?? null, id: numericAccountId(r?.user?.id ?? null), is_bot: String(r?.user?.type ?? '') === 'Bot' },
+              state: r?.state ?? null,
+              body: r?.body ?? '',
+              submittedAt: r?.submitted_at ?? null,
+              commit: r?.commit_id ? { oid: r.commit_id } : null,
+              commitId: r?.commit_id ?? null,
+              author_association: r?.author_association ?? null,
+            }))
+          : null,
+        authorId: numericAccountId(pr?.user?.id ?? null),
+      };
+    }
+    restAccounts.set(n, out);
+    return out;
+  }
   /** gate-g5 の check run の結果を、コミットの check-runs API で引く(rollup を読めないときの後退経路)。無ければ null */
   const g5FromCheckRuns = (sha) => {
     if (!repo || !sha) return null;
@@ -1069,7 +1137,35 @@ if (isMain) {
     const p = lookup(c);
     return p ? { ...p, former: true, formerAt: String(rev).slice(0, 8) } : null;
   }
-  const personByAccountAt = (login, rev) => findPersonByAccount(config, login) ?? personThen((c) => findPersonByAccount(c, login), rev);
+  /**
+   * ホスティングの記録の書き手({ login, id })を、承認の時点の名簿の人へ対応づける。照合は数値の識別子で行う(identifyAccount。
+   * 標準 第4章「アカウントと人の対応表」。process-compass #430 / ADR-0108)。現在の名簿に当たらない(how 'none')ときだけ当時の名簿を引く。
+   * ログイン名だけの一致・識別子の食い違いは対応づけず、理由(problem)を返す
+   */
+  const identifyAt = (ref, rev) => {
+    const now = identifyAccount(config, ref);
+    if (now.person || now.how !== 'none') return now;
+    const c = configAt(rev);
+    if (!c) return now;
+    const then = identifyAccount(c, ref);
+    if (then.person) return { ...then, person: { ...then.person, former: true, formerAt: String(rev).slice(0, 8) } };
+    // 名簿から外した人の、照合の切り替え(#430)より前の承認。当時の名簿に識別子が無く、現在の名簿に行が無いため直せない(#430 突合 M-4)
+    if (then.how === 'login-only' && then.candidate && !findPerson(config, then.candidate.id)) {
+      return { ...then, formerUnfixable: true, problem: `${then.problem}。名簿から外した人 ${then.candidate.name} の承認(承認の時点の名簿の記載)。現在の名簿に行が無いため、識別子を足して直せない` };
+    }
+    return then;
+  };
+  // ホスティングの (login, id) と名簿の (login, id) の食い違い(改名・他人の取得の疑い・識別子の欠け)。保証の開示と所見に出す
+  const accountFindings = new Map();
+  const noteAccount = (where, ref, res) => {
+    if (!res || !ref?.login) return;
+    if (res.how === 'mismatch' || res.how === 'login-only' || (res.how === 'id' && res.problem)) {
+      const k = `${accountKey(ref.login)}#${ref.id ?? ''}#${res.how}`;
+      const e = accountFindings.get(k) ?? { login: ref.login, id: ref.id ?? null, how: res.how, problem: res.problem, candidate: res.candidate?.name ?? null, where: [], ...(res.formerUnfixable ? { formerUnfixable: true } : {}) };
+      if (!e.where.includes(where)) e.where.push(where);
+      accountFindings.set(k, e);
+    }
+  };
   const personByNameAt = (name, rev) => findPerson(config, name) ?? personThen((c) => findPerson(c, name), rev);
 
   /**
@@ -1083,7 +1179,15 @@ if (isMain) {
       .filter(Boolean);
   }
   // 氏名の空白・括弧書き・敬称、アカウントの @ の有無を正規化して、名簿の人へ対応づける(例外承認の承認した者と同じ照合)
-  const resolvePerson = (token) => (token.startsWith('@') ? findPersonByAccount(config, token) : resolveSigner(config, token));
+  // 作成を指示した者のアカウントの記載は、repo を引ける実行では gh api users/<login> で数値の識別子へ解決し、identifyAccount で照合する
+  // (ADR-0108 決定1。#430 突合 M-1)。引けない実行は名の解決(ログイン名)のまま、その旨を出力に出す。PR の時点の検査と同じ関数を使う
+  const instructorLookup = repo ? ghUserLookup() : null;
+  const instructorAccountTokens = new Set();
+  const resolvePerson = (token) => {
+    const r = resolveInstructorToken(config, token, instructorLookup);
+    if (r.account) instructorAccountTokens.add(token);
+    return r;
+  };
 
   /** 開発者の席の責任者を、指示者の既定値へ足す */
   function addDeveloper(known, unresolved) {
@@ -1098,17 +1202,20 @@ if (isMain) {
     const unresolved = [];
     const tokens = instructorTokens(d.body);
     for (const t of tokens) {
-      const p = resolvePerson(t);
-      if (p) known.set(p.id, p.name);
-      else unresolved.push(t);
+      const r = resolvePerson(t);
+      if (r.person) known.set(r.person.id, r.person.name);
+      else unresolved.push(r.why ? `${t}(${r.why})` : t);
     }
     if (tokens.length) return { known, unresolved, byDefault: false };
     // 欄が未記入。PR の作成者(人のアカウントの場合)と、開発者の席の責任者を指示者とみなす
     const login = d.author?.login ?? null;
     if (login && !d.author?.is_bot && !aiAccountCheck(config, login, false).reason) {
-      const p = findPersonByAccount(config, login);
-      if (p) known.set(p.id, p.name);
-      else unresolved.push(`@${login}`);
+      // PR の作成者はホスティングの記録。数値の識別子で名簿の人へ対応づける(process-compass #430)
+      const ref = { login, id: authorIdOf(d) };
+      const res = identifyAccount(config, ref);
+      noteAccount(`PR #${d.number ?? '?'} の作成者`, ref, res);
+      if (res.person) known.set(res.person.id, res.person.name);
+      else unresolved.push(res.problem ? `@${login}(${res.problem})` : `@${login}`);
     }
     addDeveloper(known, unresolved);
     if (!known.size && !unresolved.length) unresolved.push('(PR の作成者が人のアカウントでなく、開発者の席の責任者も未記入)');
@@ -1153,7 +1260,7 @@ if (isMain) {
    * 独立した人の確認に数えるかを判定する。
    * reviews: PR のレビュー(PR を経ていないコミットでは空)。refers: G-6 の判定記録の「対象」が当該の変更を指すか
    */
-  function independentConfirmation(ins, reviews, refers, { direct = false, files = null, at = null, headOid = undefined } = {}) {
+  function independentConfirmation(ins, reviews, refers, { direct = false, files = null, at = null, headOid = undefined, prLabel = null } = {}) {
     // コア機能の変更か(構成のコア機能のパスに当たるか)。未宣言なら null(判定できない)。要求する承認者の数は、コアなら大きいほう
     const core = coreCountApplies ? touchesCore(config, files ?? [], { tracked: TRACKED_FILES }) : null;
     const required = core?.hit ? coreReviewersRequired : reviewersRequired;
@@ -1174,13 +1281,25 @@ if (isMain) {
     const records = g6RecordsFor(refers);
     const candidates = [];
     let ai = 0;
-    for (const [login, v] of last) {
+    for (const v of last.values()) {
+      const login = v.login;
       if (v.state !== 'APPROVED') continue;
       if (isAiLogin(login, v.bot)) {
         ai++;
         continue;
       }
-      candidates.push({ login, label: login, person: reviewerPerson(personByAccountAt(login, at)), summary: v.summary ? 'review' : null, key: v.summary ? v.key ?? null : null, source: 'review' });
+      const ref = { login, id: v.id ?? null };
+      // 名義を「専用」と申告した AI の担い手のアカウントの承認は、AI を示す語の有無に依らず数えない(数値の識別子で照合する。
+      // 標準 第4章 G-6。#430 / IMPL-0423)
+      const dedicated = dedicatedSeatOf(config, ref);
+      if (dedicated) {
+        ai++;
+        about.dedicatedApprovals = [...(about.dedicatedApprovals ?? []), `@${login}(${dedicated.name}の担い手の専用の名義)`];
+        continue;
+      }
+      const res = identifyAt(ref, at);
+      noteAccount(prLabel ?? '承認', ref, res);
+      candidates.push({ login, label: res.person || !res.problem ? login : `${login}(${res.problem})`, person: reviewerPerson(res.person), summary: v.summary ? 'review' : null, key: v.summary ? v.key ?? null : null, source: 'review' });
     }
     const judgeAt = (g, name) => personByNameAt(name, recordCommitOf(g.file));
     for (const g of records) {
@@ -1260,6 +1379,9 @@ if (isMain) {
       byLogins: summarized.map((c) => c.login).filter(Boolean),
       // 名簿のアカウントの確認(本人以外の記名)で、語の一致を上書きして数えた承認者(#296)
       overriddenLogins: summarized.map((c) => c.login).filter((l) => l && accountOverridden(l, false)),
+      // 名義を共有する人(第3章 3.5.3。未申告を含む)のアカウントの承認(印。#430 / IMPL-0423)。数えたうえで項目1 に件数を出す。
+      // 判定記録の記名は名義の操作ではないため、PR の承認(source が review)に限る
+      sharedApprovers: [...new Set(summarized.filter((c) => c.source === 'review' && c.person && sharingOf(config, c.person)).map((c) => c.person.name))],
       source: summarized.some((c) => c.source === 'review') ? 'review' : 'gate-record',
       summarySource: summarized.some((c) => c.summary === 'review') ? 'review' : 'gate-record',
       // 承認した者に、独立レビュアの席の責任者が含まれるか(件数として別に出す。欠落にはしない)
@@ -1273,7 +1395,7 @@ if (isMain) {
     const devKey = whoKey('dev-verifier');
     if (!devKey) return false;
     const { last } = lastReviewStates(reviews, headOid);
-    return [...last].some(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot) && findPersonByAccount(config, login)?.id === devKey);
+    return [...last.values()].some((v) => v.state === 'APPROVED' && !isAiLogin(v.login, v.bot) && identifyAccount(config, { login: v.login, id: v.id ?? null }).person?.id === devKey);
   }
 
   /**
@@ -1392,11 +1514,20 @@ if (isMain) {
     // gate-g5 の結果。PR の記録の rollup に無ければ(rollup を読めない、または写しで対応づけた PR)、PR の head の check-runs を引く
     const headSha = (Array.isArray(api?.commits) ? api.commits.at(-1)?.oid : null) ?? headOfCopy(copyEntry?.copy) ?? null;
     const g5 = (api?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5') ?? g5FromCheckRuns(headSha);
+    // 写しが無い PR は、レビューと作成者の数値の識別子を REST(user.id を持つ)から読む。gh pr view の reviews・author は
+    // 数値の識別子を持たない。REST を読めなければ gh pr view の値を使い、書き手・作成者は「記録に数値の識別子が無い」として
+    // 名簿へ対応づけない(process-compass #430)。作成者の識別子は、既定値の指示者(instructorsOf)より先に補う
+    const rest = !copyEntry && api ? restAccountsOf(n) : null;
+    if (d && rest?.authorId != null && d.authorDatabaseId == null) d.authorDatabaseId = rest.authorId;
+    // 写しがあれば、写しの author.id(record-copy.yml が github.event.pull_request.user.id を写す)を作成者の識別子とする
+    const copyAuthorId = numericAccountId(copyEntry?.copy?.author?.id ?? null);
+    if (d && d.authorDatabaseId == null && copyAuthorId !== null && accountKey(copyEntry.copy.author?.login ?? '') === accountKey(d.author?.login ?? '')) d.authorDatabaseId = copyAuthorId;
     const ins = instructorsOf(d ?? {});
     // G-6 の承認は、写しがあれば写しから読む(無ければ PR の記録)。写しと PR の記録の両方が読めるときは突合し、本文の編集・
     // dismiss・ログイン名の変化を所見に出す。写しの承認のうち commit_id がマージ時の head と違うものは、失効した承認として数えない
     const fromCopy = copyEntry ? reviewsOfCopy(copyEntry.copy, { apiReviews: api?.reviews ?? null }) : null;
-    const reviews = fromCopy ? fromCopy.reviews : (api?.reviews ?? []).map((r) => (String(r?.state ?? '').toUpperCase() === 'APPROVED' && hasWriteAssociation(r) === false ? { ...r, state: 'UNTRUSTED' } : r));
+    const apiReviews = rest?.reviews ?? api?.reviews ?? [];
+    const reviews = fromCopy ? fromCopy.reviews : apiReviews.map((r) => (String(r?.state ?? '').toUpperCase() === 'APPROVED' && hasWriteAssociation(r) === false ? { ...r, state: 'UNTRUSTED' } : r));
     const copyFindings = copyEntry && Array.isArray(api?.reviews) ? reconcileCopy(copyEntry.copy, api.reviews, { pr: n }) : [];
     // 変更したファイル(コア機能の判定と、記録だけの PR の識別に使う。第1の親との差分。マージコミットの方式でも読める)と、
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
@@ -1405,9 +1536,10 @@ if (isMain) {
     // 承認は、取り込んだ PR の先頭の版に対するものだけを数える(#296)。PR の記録に先頭が無ければ、版を確かめられない。
     // PR の記録(gh)が無く写しで対応づけた PR は、写しの head(record-copy.yml の head_sha)を先頭とする(#321 との統合)
     const headOid = api ? (api.headRefOid ?? null) : (headOfCopy(copyEntry?.copy) ?? null);
-    const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid });
+    const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid, prLabel: `PR #${n} の承認` });
     const { last } = lastReviewStates(reviews, headOid);
-    const humanApprovers = [...last].filter(([login, v]) => v.state === 'APPROVED' && !isAiLogin(login, v.bot)).map(([login]) => login);
+    const humanApproverAccounts = [...last.values()].filter((v) => v.state === 'APPROVED' && !isAiLogin(v.login, v.bot)).map((v) => ({ login: v.login, id: v.id ?? null }));
+    const humanApprovers = humanApproverAccounts.map((a) => a.login);
     // PR の変更に属するコミット(マージコミットと構成要素)
     const own = [...commitPr].filter(([, x]) => x.number === n).map(([h]) => h);
     // 規模の観測(#295 / ADR-0058)。マージコミットの差分を、PR の検査と同じ読み方で測る。測れなければ null(黙って 0 にしない)
@@ -1450,6 +1582,8 @@ if (isMain) {
       g6: {
         approver: humanApprovers[0] ?? null,
         approvers: humanApprovers,
+        // 承認者の数値の識別子({ login, id })。効力を持つ記録・様式の帰属の照合に使う(process-compass #430)
+        approverAccounts: humanApproverAccounts,
         approvals: humanApprovers.length,
         // 承認の後に変更要求を出し、承認を取り下げたレビュア
         withdrawnApprovals: independent.withdrawnApprovals ?? 0,
@@ -1470,7 +1604,9 @@ if (isMain) {
         reviews,
         head: headOid,
         author: d?.author?.login ?? null,
+        authorId: d ? authorIdOf(d) : null,
         // PR のコミットの作成者(gh pr view の commits[].authors[])。写しで対応づけた PR では読めない(null)
+        // gh pr view の authors[].id は数値の識別子でない(ノードの識別子)ため、ログイン名だけを持つ。帰属の照合はホスティングから引き直す(materialHosting)
         commitAuthors: Array.isArray(api?.commits) ? api.commits.flatMap((c) => (Array.isArray(c?.authors) && c.authors.length ? c.authors.map((a) => a?.login ?? null) : [null])) : null,
       },
     });
@@ -1487,7 +1623,17 @@ if (isMain) {
       if (!sha) return null;
       const m = commitPr.get(sha);
       const p = m?.role === 'merge' ? anyPrByNumber.get(m.number) : null;
-      if (p) return { number: p.number, author: p.material?.author ?? null, approvers: p.g6.approvers, commitAuthors: p.material?.commitAuthors ?? null };
+      if (p) {
+        // コミットの作成者の数値の識別子は、ホスティング(REST の pulls/<n>/commits)から引く。引けなければログイン名だけ(記名者のアカウントに数えない)
+        const remote = remoteHosting && p.material?.author && p.material?.commitAuthors ? remoteHosting.prOfCommit(sha) : null;
+        return {
+          number: p.number,
+          author: p.material?.author ?? null,
+          authorId: p.material?.authorId ?? remote?.authorId ?? null,
+          approvers: p.g6.approverAccounts ?? p.g6.approvers,
+          commitAuthors: remote?.commitAuthors ?? p.material?.commitAuthors ?? null,
+        };
+      }
       return remoteHosting ? remoteHosting.prOfCommit(sha) : null;
     },
   };
@@ -1505,14 +1651,26 @@ if (isMain) {
    */
   // 帰属の確認者を置けない体制(名簿に記名者以外の人がいない)で、自己申告として数えた効力を持つ記録。保証の開示の項目1 へ出す
   const materialSelfAttested = [];
+  // 記名者が AI の担い手と名義を共有する効力を持つ記録(第4章「判定記録を基底ブランチへ入れる操作」。#430 / IMPL-0427)。
+  // 帰属の確認で裏づけたものと、名義の共有を理由とする自己申告で受け付けたもの。保証の開示の項目1 に件数を出す
+  const materialShared = [];
+  const noteShared = (file, judge, b) => {
+    if (b?.sharedAccount && !materialShared.some((x) => x.file === file)) materialShared.push({ file, judge, selfAttested: Boolean(b.selfAttested), note: b.note ?? null });
+  };
   function ledgerRowUnbacked(r, signer, { material = null, instructorIds = [] } = {}) {
     if (material) {
-      const a = exceptionReviewBacking(config, r, signer, { reviews: material.reviews, author: material.author, head: material.head, instructorIds });
-      if (a.backed) return null;
+      // PR の作成者は数値の識別子つきで渡す(ログイン名だけの比較で、改名した作成者を除外し損ねない。#430 突合 L-1)
+      const a = exceptionReviewBacking(config, r, signer, { reviews: material.reviews, author: material.author ? { login: material.author, id: material.authorId ?? null } : null, head: material.head, instructorIds });
+      if (a.backed) {
+        noteShared(`${debtFile} ${r.id}`, signer?.name ?? r.approver, a);
+        if (a.selfAttested && !materialSelfAttested.some((x) => x.file === `${debtFile} ${r.id}`)) materialSelfAttested.push({ file: `${debtFile} ${r.id}`, judge: signer?.name ?? r.approver, how: 'self-attested', note: a.note, pr: null, sharedAccount: true });
+        return null;
+      }
     }
     const sha = lastCommitOfRow(gitText, 'HEAD', debtFile, r.id);
     const b = introducedBacking(config, signer, sha ? materialHosting.prOfCommit(sha) : null, { what: '台帳の行' });
-    if (b.selfAttested && !materialSelfAttested.some((x) => x.file === `${debtFile} ${r.id}`)) materialSelfAttested.push({ file: `${debtFile} ${r.id}`, judge: signer?.name ?? r.approver, how: b.how, note: b.note, pr: null });
+    if (b.backed) noteShared(`${debtFile} ${r.id}`, signer?.name ?? r.approver, b);
+    if (b.selfAttested && !materialSelfAttested.some((x) => x.file === `${debtFile} ${r.id}`)) materialSelfAttested.push({ file: `${debtFile} ${r.id}`, judge: signer?.name ?? r.approver, how: b.how, note: b.note, pr: null, ...(b.sharedAccount ? { sharedAccount: true } : {}) });
     return b.backed ? null : `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}。対象の PR の上で承認した者本人が宣言行「例外承認: ${r.id}」のレビューを出すか、承認した者本人が作成者または承認者となる PR で行を入れる`;
   }
 
@@ -1537,7 +1695,7 @@ if (isMain) {
       const seatName = j.seatRole ? ((config.roles ?? []).find((r) => r.id === j.seatRole)?.name ?? j.seatRole) : null;
       const fields = machineFields(j, entry.copy, {
         source: entry.sources[0],
-        pr: d ? { createdAt: d.createdAt ?? null, authorLogin: d.author?.login ?? null } : null,
+        pr: d ? { createdAt: d.createdAt ?? null, authorLogin: d.author?.login ?? null, authorId: authorIdOf(d) ?? numericAccountId(entry.copy?.author?.id ?? null) } : null,
         instructors: { known: new Map(ins.instructors.map((name) => [personKey(config, name), name])), unresolved: ins.unresolvedInstructors, byDefault: ins.instructorsByDefault },
         d0: d0Version !== null ? { version: String(d0Version), source: `process.config.json#d0Version(マージ前の基底 ${p.mergeCommit}^ の構成)` } : null,
         seatName,
@@ -1730,7 +1888,7 @@ if (isMain) {
           why.push(`承認した者 "${r.approver}" が、人の名簿(people[])の人へ対応づかない(氏名・名簿の id・アカウントのいずれかで書く)`);
         } else {
           // 名簿に対応づかない指示者の記載も、同じ正規化で比べる(氏名・id・アカウントのいずれかが一致すれば同じ人)
-          const keysOfP = new Set([p.id, p.name, ...(Array.isArray(p.accounts) ? p.accounts : [])].map((x) => signerKey(x)));
+          const keysOfP = new Set([p.id, p.name, ...(Array.isArray(p.accounts) ? p.accounts : []).map((a) => accountLoginOf(a))].map((x) => signerKey(x)));
           if (ins.known.has(p.id) || ins.unresolved.some((u) => resolveSigner(config, u)?.id === p.id || keysOfP.has(signerKey(u)))) {
             why.push('承認した者が、作成を指示した者である');
           }
@@ -2274,7 +2432,7 @@ if (isMain) {
   const attributeForm = (gateRecord, approvers, prNumber) => {
     const judgeName = judgeOfForm(gateRecord.text);
     const person = judgeName ? resolveSigner(config, judgeName) : null;
-    const a = formAttribution(gateRecord, { judgeName, person, approvers });
+    const a = formAttribution(gateRecord, { judgeName, person, approvers, config });
     const item = { file: gateRecord.file, judge: judgeName, how: a.how, note: a.note, pr: prNumber };
     (a.backed ? attribution.backed : attribution.selfAttested).push(item);
     if (a.clerical.length) attribution.clerical.push({ file: gateRecord.file, pr: prNumber, judge: judgeName, approvers: a.clerical });
@@ -2287,7 +2445,7 @@ if (isMain) {
     const m = added ? commitPr.get(added) : null;
     const pr = m?.role === 'merge' ? (anyPrByNumber.get(m.number) ?? null) : null;
     // 基底の様式を最後に触ったコミット(records.mjs の lastCommitOf。記録用ブランチの様式と同じ読み方)
-    attributeForm({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), commit: lastCommitOf(ROOT, 'HEAD', r.file) }, pr ? pr.g6.approvers : null, pr?.number ?? null);
+    attributeForm({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), commit: lastCommitOf(ROOT, 'HEAD', r.file) }, pr ? (pr.g6.approverAccounts ?? pr.g6.approvers) : null, pr?.number ?? null);
   }
 
   // リリース決裁(G-8)の決断の記録の「出荷判定者の異議」欄。空欄は記載の欠落である(標準 第4章 G-8)。
@@ -2381,7 +2539,8 @@ if (isMain) {
       if (!r.valid) return r;
       const sha = lastCommitOfFile(gitText, 'HEAD', r.file);
       const b = introducedBacking(config, resolveSigner(config, r.judge), sha ? materialHosting.prOfCommit(sha) : null, { what: '解除の記録' });
-      if (b.selfAttested) attribution.selfAttested.push({ file: r.file, judge: r.judge, how: b.how, note: b.note, pr: null });
+      if (b.selfAttested) attribution.selfAttested.push({ file: r.file, judge: r.judge, how: b.how, note: b.note, pr: null, ...(b.sharedAccount ? { sharedAccount: true } : {}) });
+      if (b.backed) noteShared(r.file, r.judge, b);
       return b.backed ? r : { ...r, valid: false, problems: [...r.problems, `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}`] };
     });
   for (const r of stopReleases) {
@@ -2712,6 +2871,11 @@ if (isMain) {
       byReviewerSeat: count(confirmedUnits, (c) => c.independent.byReviewerSeat),
       // アカウント名の確認済みの上書きで数えた承認の件数(承認者の数で数える。#296)
       overriddenApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.overriddenLogins?.length ?? 0), 0),
+      // 名義を共有するアカウントの承認(承認者の数で数える)と、それを数えた変更の件数(第4章 G-6。#430 / IMPL-0423・IMPL-0424)
+      sharedAccountApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.sharedApprovers?.length ?? 0), 0),
+      sharedAccountChanges: count(confirmedUnits, (c) => (c.independent.sharedApprovers?.length ?? 0) > 0),
+      // 専用と申告した担い手のアカウントの承認を数えなかった変更の件数
+      dedicatedApprovalChanges: count(changeUnits, (c) => (c.independent.dedicatedApprovals?.length ?? 0) > 0),
       notByReviewerSeat: count(confirmedUnits, (c) => !c.independent.byReviewerSeat),
       // 承認の後に同じ人が変更要求を出し、取り下げた承認を持つ PR の件数
       withdrawnApprovals: count(prs, (p) => (p.g6.withdrawnApprovals ?? 0) > 0),
@@ -2722,6 +2886,46 @@ if (isMain) {
       ...(prs.some((p) => (p.g6.unboundApprovals ?? 0) > 0) ? { ghVersion: ghVersionNow(), unboundCause: unboundCauseText(ghVersionNow()) } : {}),
     },
     accountsRegistered: roster.some((p) => Array.isArray(p?.accounts) && p.accounts.length > 0),
+    // アカウントと人の対応表(標準 第4章。process-compass #430 / ADR-0108 / IMPL-0426)。名簿の数値の識別子の欠けと、ホスティングの
+    // (login, id) と名簿の (login, id) の食い違い(改名・ログイン名が一致し識別子が異なるもの・識別子が無く対応づけなかったもの)
+    accountMatching: {
+      withoutId: accountsWithoutId(config).map((x) => ({ person: x.person.name, login: x.login })),
+      findings: [...accountFindings.values()],
+      // 名簿から外した人の、照合の切り替えより前の承認で、直す手段の無いもの(#430 突合 M-4)
+      formerUnfixable: [...accountFindings.values()].filter((f) => f.formerUnfixable).length,
+      // 作成を指示した者のアカウントの記載の解決(#430 突合 M-1)。mode: id(gh api users で解決)/ login(名の解決のまま)
+      instructorResolution: {
+        mode: instructorLookup ? 'id' : 'login',
+        at: instructorLookup ? instructorLookup.at : null,
+        tokens: instructorAccountTokens.size,
+        entries: instructorLookup ? [...instructorLookup.entries.values()] : [],
+      },
+    },
+    // AI の担い手の名義(標準 第3章 3.5.3、第4章 G-7「保証の開示」項目1。#430 / ADR-0107 / IMPL-0424)。席ごとの状態(専用 / 共有する人 /
+    // 未申告)と、名義の共有に依って数えた承認・帰属の件数。共有・未申告は列挙に無い離脱(第1章 1.10.2)
+    performerAccounts: {
+      seats: performerAccountStates(config).map((st) => ({
+        role: st.role,
+        name: st.name,
+        kind: st.kind,
+        label: PERFORMER_ACCOUNT_LABEL[st.kind],
+        account: st.kind === 'dedicated' ? st.account : null,
+        person: st.kind === 'dedicated' ? null : (st.person?.name ?? null),
+        personByDefault: st.kind === 'dedicated' ? false : st.personByDefault,
+        // env-check の照合(--seat を付けたもの。#430 突合 H-1)。名簿の人に当たって共有へ倒した席と、専用の照合の確認の有無
+        ...(st.env ? { envCheckedAt: st.env.checkedAt ?? null } : {}),
+        ...(st.env?.override ? { envOverride: true, declaredKind: st.declaredKind } : {}),
+        ...(st.kind === 'dedicated' ? { envConfirmed: Boolean(st.envConfirmed) } : {}),
+        // 共有・未申告で、名義を共有する人が分からない(相手も席の責任者も未記入。#430 突合 L-3)
+        ...(st.kind !== 'dedicated' && !st.person ? { personUnknown: true } : {}),
+      })),
+      sharedApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.sharedApprovers?.length ?? 0), 0),
+      sharedAttribution: {
+        confirmed: materialShared.filter((x) => !x.selfAttested).length,
+        selfAttested: materialShared.filter((x) => x.selfAttested).length,
+        records: materialShared,
+      },
+    },
     // R1 の変更を、独立した人の確認を経ないまま出荷する場合の例外承認(変更ごと)
     r1WithoutIndependentHuman: {
       total: r1Unconfirmed.length,
@@ -2742,6 +2946,7 @@ if (isMain) {
           g6: prevA.independence?.g6 ?? null,
           g7: prevA.independence?.g7 ?? null,
           changes: prevA.independence?.changes ?? null,
+          performerAccounts: prevA.independence?.performerAccounts ?? null,
         }
       : NO_PREVIOUS,
   };
@@ -4271,6 +4476,32 @@ if (isMain) {
     R.push(`| G-7 出荷判定 | ${A.independence.g7} | ${prev((p) => p.independence.g7)} |`);
     R.push(`| 責任者が同一人物のため独立が成立しない組 | ${listOr(A.independence.sameAccountable)} | ${prev((p) => listOr(p.independence.sameAccountable))} |`);
     R.push(`| 成立しない兼務禁止の記録(1〜2名の体制。逸脱の閉じた列挙に無い) | ${listOr(A.independence.separationDeviations)} | ${prev((p) => listOr(p.independence.separationDeviations ?? []))} |`);
+    {
+      // AI の担い手の名義(第3章 3.5.3。#430 / IMPL-0424)。共有・未申告は列挙に無い離脱。名義を共有するアカウントの承認と、
+      // 名義の共有に依る効力を持つ記録の帰属の件数を、前回の値と並べて出す
+      const pa = A.independence.performerAccounts ?? { seats: [], sharedApprovals: 0, sharedAttribution: { confirmed: 0, selfAttested: 0, records: [] } };
+      const stateText = (x) =>
+        x.seats.length
+          ? x.seats
+              .map(
+                (st) =>
+                  `${st.name} ${st.label}${st.kind === 'dedicated' ? (st.account?.id ? `(@${st.account.login} #${st.account.id})` : '(アカウントの記載なし)') : st.person ? `(${st.person} と共有${st.personByDefault ? '。席の責任者から補った' : ''})` : '(**名義を共有する人が分からない**。相手も席の責任者も未記入)'}` +
+                  (st.envOverride ? `(申告は${st.declaredKind === 'dedicated' ? '専用' : st.declaredKind}。env-check の照合で名簿の人に当たったため共有として数える)` : '') +
+                  (st.kind === 'dedicated' ? (st.envConfirmed ? `(env-check の照合で確認済み ${String(st.envCheckedAt ?? '').slice(0, 10)})` : '(**名義の照合が無い**。列挙に無い離脱)') : '')
+              )
+              .join(' / ')
+          : '担い手を宣言した席なし';
+      const loose = pa.seats.filter((st) => st.kind !== 'dedicated');
+      R.push(`| AI の担い手の名義(専用 / 共有する人 / 未申告。標準 第3章 3.5.3) | ${stateText(pa)}${loose.length ? '。**共有・未申告は列挙に無い離脱**(適合の主張を述べられない。第1章 1.10.2)' : ''} | ${prev((p) => (p.independence.performerAccounts ? stateText(p.independence.performerAccounts) : null))} |`);
+      R.push(`| 名義を共有するアカウントの承認(G-6 に数えた承認。担い手の操作でないことを機械で確かめられない。適合の主張の根拠に数えない) | ${pa.sharedApprovals} 件 | ${prev((p) => p.independence.performerAccounts?.sharedApprovals)} |`);
+      const sa = pa.sharedAttribution;
+      R.push(
+        `| 名義の共有に依る効力を持つ記録の帰属(記名者が名義を共有する記録。帰属の確認で裏づけた / 名義の共有を理由とする自己申告) | ${sa.confirmed} 件 / ${sa.selfAttested} 件${sa.records.length ? `(${sa.records.slice(0, 3).map((x) => x.file).join(', ')}${sa.records.length > 3 ? ' ほか' : ''})` : ''} | ${prev((p) => (p.independence.performerAccounts ? `${p.independence.performerAccounts.sharedAttribution?.confirmed ?? 0} 件 / ${p.independence.performerAccounts.sharedAttribution?.selfAttested ?? 0} 件` : null))} |`
+      );
+      if (A.independence.changes.dedicatedApprovalChanges) {
+        R.push(`| 専用と申告した担い手のアカウントの承認を数えなかった変更(数値の識別子で照合) | ${A.independence.changes.dedicatedApprovalChanges} 件 | ${prev((p) => p.independence.changes.dedicatedApprovalChanges)} |`);
+      }
+    }
     if (A.independence.objectionSelfAccepted) {
       R.push(`| 出荷判定者の異議と、残存リスクの受容 | **異議を書く者と、残存リスクを受容する者が同一である**(出荷判定者の席と事業決裁者の席の責任者が同一人物) | ${prev((p) => (p.independence.objectionSelfAccepted ? '同一' : '別の人'))} |`);
     }
@@ -4383,6 +4614,35 @@ if (isMain) {
     if (!A.independence.accountsRegistered) {
       R.push('');
       R.push('人の名簿にアカウント(people[].accounts[])が1件も登録されていません。承認者を人へ対応づけられないため、すべての承認を未確認に数えています。');
+    }
+    {
+      const am = A.independence.accountMatching ?? { withoutId: [], findings: [] };
+      const ir = am.instructorResolution ?? null;
+      if (ir?.tokens) {
+        R.push('');
+        R.push(
+          ir.mode === 'id'
+            ? `作成を指示した者のアカウントの記載 ${ir.tokens} 件を、集約の時点(${ir.at})に gh api users で数値の識別子へ解決して名簿と照合しました${ir.entries.some((x) => x.id === null) ? `(解決できず名簿に対応づかない指示者とした記載 ${ir.entries.filter((x) => x.id === null).length} 件)` : ''}。`
+            : `作成を指示した者のアカウントの記載 ${ir.tokens} 件は、リポジトリ(--repo)を引けない実行のため数値の識別子へ解決せず、ログイン名で名簿と対応づけました(名の解決)。`
+        );
+      }
+      if (am.formerUnfixable) {
+        R.push('');
+        R.push(
+          `名簿から外した人の、照合の切り替え(#430)より前の承認 ${am.formerUnfixable} 件を数えていません。承認の時点の名簿にアカウントの数値の識別子が無く、現在の名簿にその人の行が無いため、識別子を足して直す手段がありません(標準 第4章 G-6 の条件1 の「在籍中に行った承認は数える」に届かない。移行期間を置かない決定の帰結)。`
+        );
+      }
+      if (am.withoutId.length || am.findings.length) {
+        R.push('');
+        R.push(
+          'アカウントと人の対応表: ホスティングの記録は、数値の識別子で名簿の人へ対応づけています。ログイン名だけが一致するアカウントは、同定できたものとして数えていません(標準 第4章「アカウントと人の対応表」)。' +
+            (am.withoutId.length ? `名簿に数値の識別子の無いアカウント ${am.withoutId.length} 件${external ? '' : `(${am.withoutId.map((x) => `${x.person} @${x.login}`).join('、')})`}。` : '') +
+            (am.findings.length
+              ? `数えなかった、または食い違うアカウント ${am.findings.length} 件${external ? '' : `(${am.findings.map((f) => `@${f.login}${f.id !== null ? ` #${f.id}` : ''}: ${f.problem}(${f.where.slice(0, 3).join('・')}${f.where.length > 3 ? ' ほか' : ''})`).join('、')})`}。`
+              : '') +
+            '名簿の数値の識別子は `node scripts/gate/roster-ids.mjs` の提案を確かめ、人が /process-change(種別 accountable)で記入します。'
+        );
+      }
     }
     if (external && A.independence.nameOverrides.length) {
       R.push('');
@@ -4717,7 +4977,7 @@ if (isMain) {
   const PERSON_TOKENS = [
     ...new Set(
       [
-        ...roster.flatMap((p) => [p?.name, ...(Array.isArray(p?.accounts) ? p.accounts : [])]),
+        ...roster.flatMap((p) => [p?.name, ...(Array.isArray(p?.accounts) ? p.accounts : []).map((a) => accountLoginOf(a))]),
         ...seats.map((s) => s.accountable),
         // 層1 の記名、代理者、継続の状態の受容の記名、停止の申し立ての記名(#288)
         policy.signer,

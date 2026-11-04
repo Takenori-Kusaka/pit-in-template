@@ -34,12 +34,15 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'ok  ' : 'NG  '} ${name}${ok || !detail ? '' : `\n       ${String(detail).slice(0, 600)}`}`);
 }
 
+// 名簿とホスティングの記録の数値の識別子(名簿の照合は識別子で行う。process-compass #430 / ADR-0108)
+const UID = { yamada: 1001, suzuki: 1002, sato: 1003, ext: 1004, 'web-flow': 19864447 };
+const acct = (login) => ({ login, id: UID[login] ?? null });
 const config = {
   aiNames: ['Claude'],
   people: [
-    { id: 'p1', name: '山田 太郎', accounts: ['yamada'] },
-    { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] },
-    { id: 'p3', name: '佐藤 花子', accounts: ['sato'] },
+    { id: 'p1', name: '山田 太郎', accounts: [acct('yamada')] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [acct('suzuki')] },
+    { id: 'p3', name: '佐藤 花子', accounts: [acct('sato')] },
   ],
   seats: [{ role: 'biz-approver', accountable: '佐藤 花子' }],
 };
@@ -47,7 +50,7 @@ const signer = config.people[1];
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const row = { id: 'D-012', approver: '鈴木 一郎' };
-const review = (o = {}) => ({ id: 1, user: { login: 'suzuki', type: 'User' }, state: 'COMMENTED', body: '例外承認: D-012\n\n理由は台帳の行のとおり', submitted_at: '2026-11-05T10:00:00Z', commit_id: HEAD, edited_by: null, ...o });
+const review = (o = {}) => ({ id: 1, user: { login: 'suzuki', id: UID['suzuki'], type: 'User' }, state: 'COMMENTED', body: '例外承認: D-012\n\n理由は台帳の行のとおり', submitted_at: '2026-11-05T10:00:00Z', commit_id: HEAD, edited_by: null, ...o });
 
 // ---------------------------------------------------------------- 宣言行
 check('宣言行: 例外承認の ID を読む(全角のコロン・小文字も)', declarationOf('例外承認：d-012')?.id === 'D-012' && declarationOf('例外承認: D-012')?.kind === 'exception');
@@ -65,9 +68,9 @@ check('A: 承認した者本人が、先頭のコミットに対して宣言行�
 // IMPL-0414:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 check('A: レビューの後に先頭が変わった → 失効', !backing([review({ commit_id: OLD })]).backed && /失効/.test(backing([review({ commit_id: OLD })]).why.join('')));
 check('A: 書き手が PR の作成者 → 数えない(本人か AI かを区別できない)', !backing([review()], { author: 'suzuki' }).backed && /作成者/.test(backing([review()], { author: 'suzuki' }).why.join('')));
-check('A: 書き手が台帳の承認した者でない(名前を借りた行) → 数えない', !backing([review({ user: { login: 'sato' } })]).backed);
+check('A: 書き手が台帳の承認した者でない(名前を借りた行) → 数えない', !backing([review({ user: { login: 'sato', id: UID['sato'] } })]).backed);
 check('A: 書き手が作成を指示した者 → 数えない', !backing([review()], { instructorIds: ['p2'] }).backed);
-check('A: bot・AI の名義 → 数えない', !backing([review({ user: { login: 'suzuki', type: 'Bot' } })]).backed && !backing([review({ user: { login: 'Claude' } })]).backed);
+check('A: bot・AI の名義 → 数えない', !backing([review({ user: { login: 'suzuki', id: UID['suzuki'], type: 'Bot' } })]).backed && !backing([review({ user: { login: 'Claude' } })]).backed);
 check('A: 取り下げたレビュー → 数えない', !backing([review({ state: 'DISMISSED' })]).backed);
 check('A: 別の行の ID を指す宣言行 → 数えない', !backing([review({ body: '例外承認: D-013' })]).backed);
 check('A: 名簿に無いアカウント → 数えない', !backing([review({ user: { login: 'stranger' } })]).backed);
@@ -80,7 +83,7 @@ check('A: 書き手のリポジトリとの関係が NONE(名簿のログイン�
 
 // ---------------------------------------------------------------- (A) 停止の解除のレビュー
 const stopBody = '停止の解除: 解除\n\n| 欄 | 記載 |\n| --- | --- |\n| 申し立てた者 | 山田 太郎 |\n| 解除の理由 | 原因を除いた |\n| 申し立てた者の見解を退けたか | 退けていない |\n| 上申先と日付(退けた場合) | 該当なし |\n';
-const stopReview = (o = {}) => ({ id: 9, user: { login: 'sato' }, state: 'COMMENTED', body: stopBody, submitted_at: '2026-11-05T12:00:00Z', commit_id: HEAD, edited_by: null, ...o });
+const stopReview = (o = {}) => ({ id: 9, user: { login: 'sato', id: UID['sato'] }, state: 'COMMENTED', body: stopBody, submitted_at: '2026-11-05T12:00:00Z', commit_id: HEAD, edited_by: null, ...o });
 {
   const c = stopReviewCandidates(config, { reviews: [stopReview()], author: 'yamada', head: HEAD, labeledAt: '2026-11-05T09:00:00Z' });
   // IMPL-0414:ok(違反と適合の対。標準の実装マーク。process-compass #314)
@@ -88,7 +91,7 @@ const stopReview = (o = {}) => ({ id: 9, user: { login: 'sato' }, state: 'COMMEN
   const policy = readPolicy(config, { text: null });
   const r = parseStopRelease(config, policy, 'PR #7 のレビュー 9', stopReleaseTextOfReview(c.candidates[0].review, c.candidates[0].person, 7));
   check('停止の解除: レビューの本文の表を、様式と同じ読み方で読み、権限者(層1 が無ければ事業決裁者)と照合する', r && r.valid && r.target === 'PR #7' && r.judge === '佐藤 花子', JSON.stringify(r?.problems));
-  const notAuth = c.candidates.length ? parseStopRelease(config, policy, 'x', stopReleaseTextOfReview(stopReview({ user: { login: 'suzuki' } }), signer, 7)) : null;
+  const notAuth = c.candidates.length ? parseStopRelease(config, policy, 'x', stopReleaseTextOfReview(stopReview({ user: { login: 'suzuki', id: UID['suzuki'] } }), signer, 7)) : null;
   check('停止の解除: 権限者でない人のレビューは成立しない', notAuth && !notAuth.valid);
   // IMPL-0414:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   const before = stopReviewCandidates(config, { reviews: [stopReview({ submitted_at: '2026-11-05T08:00:00Z' })], author: 'yamada', head: HEAD, labeledAt: '2026-11-05T09:00:00Z' });
@@ -103,46 +106,46 @@ const stopReview = (o = {}) => ({ id: 9, user: { login: 'sato' }, state: 'COMMEN
 
 // ---------------------------------------------------------------- (B) 基底ブランチの記録を入れた変更
 // IMPL-0414:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-check('B: 行を入れた PR を記名者本人が承認した → 裏づける', introducedBacking(config, signer, { number: 5, author: 'yamada', approvers: ['suzuki'] }).backed);
-check('B: 記名者本人が作成し、記名者以外の人が承認した(帰属の確認) → 裏づける', introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: ['sato'], commitAuthors: ['suzuki'] }).backed);
-check('B: PR を経ないコミットで、ホスティングが署名を検証し、committer・author が記名者 → 裏づける', introducedBacking(config, signer, { number: null, verified: true, authorLogin: 'suzuki', committerLogin: 'suzuki' }).backed);
-check('B: 署名を検証したコミットでも、committer が記名者でなければ数えない(author は偽装できる)', !introducedBacking(config, signer, { number: null, verified: true, authorLogin: 'suzuki', committerLogin: 'yamada' }).backed);
-check('B: 記名者の PR に記名者以外のコミットが混じる(他の者が行を push し、無関係の人が承認) → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: ['sato'], commitAuthors: ['suzuki', 'yamada'] }).backed);
-check('B: 記名者の PR のコミットの作成者を読めない → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: ['sato'] }).backed);
-check('B: 名簿に無いアカウントの承認は、帰属の確認に数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: ['stranger'], commitAuthors: ['suzuki'] }).backed);
+check('B: 行を入れた PR を記名者本人が承認した → 裏づける', introducedBacking(config, signer, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [acct('suzuki')] }).backed);
+check('B: 記名者本人が作成し、記名者以外の人が承認した(帰属の確認) → 裏づける', introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: [acct('sato')], commitAuthors: [acct('suzuki')] }).backed);
+check('B: PR を経ないコミットで、ホスティングが署名を検証し、committer・author が記名者 → 裏づける', introducedBacking(config, signer, { number: null, verified: true, authorLogin: 'suzuki', authorId: UID['suzuki'], committerLogin: 'suzuki', committerId: UID['suzuki'] }).backed);
+check('B: 署名を検証したコミットでも、committer が記名者でなければ数えない(author は偽装できる)', !introducedBacking(config, signer, { number: null, verified: true, authorLogin: 'suzuki', authorId: UID['suzuki'], committerLogin: 'yamada', committerId: UID['yamada'] }).backed);
+check('B: 記名者の PR に記名者以外のコミットが混じる(他の者が行を push し、無関係の人が承認) → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: [acct('sato')], commitAuthors: [acct('suzuki'), acct('yamada')] }).backed);
+check('B: 記名者の PR のコミットの作成者を読めない → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: [acct('sato')] }).backed);
+check('B: 名簿に無いアカウントの承認は、帰属の確認に数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: [acct('stranger')], commitAuthors: [acct('suzuki')] }).backed);
 // IMPL-0414:ng(違反と適合の対。標準の実装マーク。process-compass #314)
-check('B: 判定される側が「承認した者: 鈴木」と書いた行の PR を開き、無関係の人が承認した → 数えない(名前を借りる経路)', !introducedBacking(config, signer, { number: 5, author: 'yamada', approvers: ['sato'] }).backed);
-check('B: 記名者本人が作成したが、他の人の承認が無い → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: [], commitAuthors: ['suzuki'] }).backed);
-check('B: bot・AI の承認は帰属の確認に数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', approvers: ['ci[bot]', 'Claude'], commitAuthors: ['suzuki'] }).backed);
-check('B: PR を経ない署名なしのコミット → 数えない', !introducedBacking(config, signer, { number: null, verified: false, authorLogin: 'suzuki' }).backed);
+check('B: 判定される側が「承認した者: 鈴木」と書いた行の PR を開き、無関係の人が承認した → 数えない(名前を借りる経路)', !introducedBacking(config, signer, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [acct('sato')] }).backed);
+check('B: 記名者本人が作成したが、他の人の承認が無い → 数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: [], commitAuthors: [acct('suzuki')] }).backed);
+check('B: bot・AI の承認は帰属の確認に数えない', !introducedBacking(config, signer, { number: 5, author: 'suzuki', authorId: UID['suzuki'], approvers: ['ci[bot]', 'Claude'], commitAuthors: [acct('suzuki')] }).backed);
+check('B: PR を経ない署名なしのコミット → 数えない', !introducedBacking(config, signer, { number: null, verified: false, authorLogin: 'suzuki', authorId: UID['suzuki'] }).backed);
 check('B: ホスティングの記録を読めない → 数えない', !introducedBacking(config, signer, null).backed);
-check('B: 記名者のアカウントが名簿に無い → 数えない', !introducedBacking(config, { id: 'x', name: '外部 太郎' }, { number: 5, author: 'yamada', approvers: ['ext'] }).backed);
-check('B: 記名者が名簿の人へ対応づかない → 数えない', !introducedBacking(config, null, { number: 5, author: 'yamada', approvers: ['suzuki'] }).backed);
+check('B: 記名者のアカウントが名簿に無い → 数えない', !introducedBacking(config, { id: 'x', name: '外部 太郎' }, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [acct('ext')] }).backed);
+check('B: 記名者が名簿の人へ対応づかない → 数えない', !introducedBacking(config, null, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [acct('suzuki')] }).backed);
 {
   // 帰属の確認者を置けない体制(名簿に記名者以外の人がいない)。自己申告として数え、その旨を出す
-  const solo = { aiNames: ['Claude'], people: [{ id: 'p1', name: '山田 太郎', accounts: ['yamada'] }] };
+  const solo = { aiNames: ['Claude'], people: [{ id: 'p1', name: '山田 太郎', accounts: [acct('yamada')] }] };
   const me = solo.people[0];
-  const s1 = introducedBacking(solo, me, { number: 5, author: 'yamada', approvers: [], commitAuthors: ['yamada'] });
+  const s1 = introducedBacking(solo, me, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [], commitAuthors: [acct('yamada')] });
   check('B: 1名の体制で、記名者本人が作成した PR → 自己申告として数え、その旨を出す', s1.backed && s1.selfAttested && /自己申告/.test(s1.note));
-  const s2 = introducedBacking(solo, me, { number: null, verified: false, authorLogin: 'yamada' });
+  const s2 = introducedBacking(solo, me, { number: null, verified: false, authorLogin: 'yamada', authorId: UID['yamada'] });
   check('B: 1名の体制で、PR を経ない署名なしのコミットの author が記名者 → 自己申告として数える', s2.backed && s2.selfAttested);
   check('B: 1名の体制でも、作成者が記名者でなければ数えない', !introducedBacking(solo, me, { number: 5, author: 'other', approvers: [] }).backed);
-  const withExternal = { ...solo, people: [...solo.people, { id: 'ext', name: '外部 確認者', external: true, accounts: ['ext'] }] };
-  check('B: 外部の確認者が名簿にいれば、記名者本人の作成だけでは数えない(帰属の確認を要する)', !introducedBacking(withExternal, me, { number: 5, author: 'yamada', approvers: [], commitAuthors: ['yamada'] }).backed && introducedBacking(withExternal, me, { number: 5, author: 'yamada', approvers: ['ext'], commitAuthors: ['yamada'] }).backed);
+  const withExternal = { ...solo, people: [...solo.people, { id: 'ext', name: '外部 確認者', external: true, accounts: [acct('ext')] }] };
+  check('B: 外部の確認者が名簿にいれば、記名者本人の作成だけでは数えない(帰属の確認を要する)', !introducedBacking(withExternal, me, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [], commitAuthors: [acct('yamada')] }).backed && introducedBacking(withExternal, me, { number: 5, author: 'yamada', authorId: UID['yamada'], approvers: [acct('ext')], commitAuthors: [acct('yamada')] }).backed);
 }
 check('承認者: 最後の状態が承認のログインだけ', JSON.stringify(approverLogins([{ user: { login: 'a' }, state: 'APPROVED' }, { user: { login: 'b' }, state: 'APPROVED' }, { user: { login: 'b' }, state: 'CHANGES_REQUESTED' }, { user: { login: 'c' }, state: 'COMMENTED' }])) === '["a"]');
 {
   // ホスティングの読み方(gh の代わりに run を渡す)
   const answers = {
-    'api repos/o/r/commits/m1/pulls': [{ number: 5, merged_at: 'x', merge_commit_sha: 'm1', head: { sha: 'h5' }, user: { login: 'suzuki' } }],
-    'api --paginate repos/o/r/pulls/5/reviews': [{ user: { login: 'sato' }, state: 'APPROVED', commit_id: 'old' }, { user: { login: 'yamada' }, state: 'APPROVED', commit_id: 'h5' }],
-    'api --paginate repos/o/r/pulls/5/commits': [{ author: { login: 'suzuki' } }],
-    'api repos/o/r/commits/m2/pulls': [{ number: 6, merged_at: 'x', merge_commit_sha: 'other', head: { sha: 'h6' }, user: { login: 'suzuki' } }],
-    'api repos/o/r/commits/m2': { commit: { verification: { verified: true } }, author: { login: 'suzuki' }, committer: { login: 'web-flow' } },
+    'api repos/o/r/commits/m1/pulls': [{ number: 5, merged_at: 'x', merge_commit_sha: 'm1', head: { sha: 'h5' }, user: { login: 'suzuki', id: UID['suzuki'] } }],
+    'api --paginate repos/o/r/pulls/5/reviews': [{ user: { login: 'sato', id: UID['sato'] }, state: 'APPROVED', commit_id: 'old' }, { user: { login: 'yamada', id: UID['yamada'] }, state: 'APPROVED', commit_id: 'h5' }],
+    'api --paginate repos/o/r/pulls/5/commits': [{ author: { login: 'suzuki', id: UID.suzuki } }],
+    'api repos/o/r/commits/m2/pulls': [{ number: 6, merged_at: 'x', merge_commit_sha: 'other', head: { sha: 'h6' }, user: { login: 'suzuki', id: UID['suzuki'] } }],
+    'api repos/o/r/commits/m2': { commit: { verification: { verified: true } }, author: { login: 'suzuki', id: UID.suzuki }, committer: { login: 'web-flow', id: UID['web-flow'] } },
   };
   const h = ghHosting('o/r', { run: (args) => answers[args.join(' ')] ?? [] });
   const i1 = h.prOfCommit('m1');
-  check('ホスティング: 承認は取り込んだ先頭のコミットに対するものだけを数える(承認の後の push で失効)', JSON.stringify(i1.approvers) === '["yamada"]' && JSON.stringify(i1.commitAuthors) === '["suzuki"]', JSON.stringify(i1));
+  check('ホスティング: 承認は取り込んだ先頭のコミットに対するものだけを数える(承認の後の push で失効)', JSON.stringify(i1.approvers) === '[{"login":"yamada","id":1001}]' && JSON.stringify(i1.commitAuthors) === '[{"login":"suzuki","id":1002}]' && i1.authorId === 1002, JSON.stringify(i1));
   const i2 = h.prOfCommit('m2');
   check('ホスティング: そのコミットを取り込みのコミットとしない PR は拾わない(PR を経ないコミットとして読む)', i2.number === null && i2.committerLogin === 'web-flow' && !introducedBacking(config, signer, i2).backed, JSON.stringify(i2));
 }
@@ -197,7 +200,11 @@ check('固定のホスティング: 未知のコミットは null', fixedHosting
   const { claimStatus } = await import('./config.mjs');
   const withAi = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1', performer: { model: 'm', instructions: 'v1', permissions: 'p' } }] });
   const noAi = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1' }] });
-  const dedicated = claimStatus({ seats: [{ role: 'dev-verifier', accountable: 'p1', performer: { model: 'm' }, performerAccount: { kind: 'dedicated' } }] });
+  // 専用の申告は、その席の担い手の環境での照合(env-check --seat)が確認済みのときだけ離脱を持たない(#430 突合 H-1)
+  const dedicated = claimStatus({
+    seats: [{ role: 'dev-verifier', accountable: 'p1', performer: { model: 'm' }, performerAccount: { kind: 'dedicated', account: { login: 'agent', id: 9 } } }],
+    performerEnvCheck: { 'dev-verifier': { status: 'confirmed', account: { login: 'agent', id: 9 }, person: null, declared: { kind: 'dedicated', account: { login: 'agent', id: 9 } } } },
+  });
   // IMPL-0430:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('名義: 担い手を宣言した席で名義が未申告なら、列挙に無い離脱として「適用の表明」まで', withAi.unlisted.some((d) => d.derived === 'performer-account') && withAi.name === '適用の表明', JSON.stringify(withAi.unlisted));
   // IMPL-0430:ok(違反と適合の対。標準の実装マーク。process-compass #314)

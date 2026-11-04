@@ -104,6 +104,15 @@ import {
   dueDayOf,
   resolveSigner,
   findPersonByAccount,
+  identifyAccount,
+  findPerson,
+  accountKey,
+  identifyWhy,
+  dedicatedSeatOf,
+  sharingOf,
+  sharingText,
+  accountRefOf,
+  numericAccountId,
   aiNameBlocked,
   canonicalJson,
   hasBehaviorSummary,
@@ -467,7 +476,8 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
   if (!ledgerText && !headLedgerText) return { matched, rejected, backing, reason: '基底ブランチに技術負債台帳(docs/debt-ledger.md)がありません' };
   if (!prNumber) return { matched, rejected, backing, reason: 'PR の番号が分からないため、例外承認の行と対応づけられません' };
   const refers = (text) => new RegExp(`PR\\s*#\\s*${prNumber}(?!\\d)`).test(String(text ?? ''));
-  const author = prAuthor ? findPersonByAccount(config, prAuthor) : null;
+  // PR の作成者はホスティングの記録。数値の識別子で名簿の人へ対応づける(process-compass #430)
+  const author = prAuthor ? identifyAccount(config, authorRef(prAuthor)).person : null;
   const baseRows = ledgerText ? parseLedger(ledgerText) : [];
   const baseIds = new Set(baseRows.map((r) => r.id));
   // PR の中で足した行(基底に無い ID)は、(A) のレビューで裏づけたときだけ数える
@@ -496,7 +506,7 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
       // 帰属の裏づけ。(A) 承認した者本人のレビュー → (B) 行を入れた PR(基底ブランチの行だけ)
       const signer = resolveSigner(config, r.approver);
       const a = exceptionReviewBacking(config, r, signer, { reviews, author: prAuthor, head, instructorIds });
-      if (a.backed) backing[r.id] = `対象の PR の上の承認した者本人のレビュー(@${a.review.login}、${a.review.submittedAt ?? '提出日時なし'})`;
+      if (a.backed) backing[r.id] = `対象の PR の上の承認した者本人のレビュー(@${a.review.login}、${a.review.submittedAt ?? '提出日時なし'})${a.note ? `。${a.note}` : ''}`;
       else if (r.inHead) why.push(`PR の中で足した行で、承認した者本人のレビューが無い(${a.why.join(' / ')})`);
       else {
         const sha = git && policyRef ? lastCommitOfRow(git, policyRef, 'docs/debt-ledger.md', r.id) : null;
@@ -548,10 +558,10 @@ export function stopFindings({ git, base, pr = {}, config = {}, hosting = null }
       const b = introducedBacking(config, resolveSigner(config, r.judge), sha && hosting ? hosting.prOfCommit(sha) : null, { what: '解除の記録' });
       return b.backed ? { ...r, notes: [...r.notes, `帰属: ${b.note}`] } : { ...r, valid: false, problems: [...r.problems, `帰属を確かめられない(名前の一致だけでは数えない): ${b.why}`] };
     });
-  const byReview = stopReviewCandidates(config, { reviews: pr.reviews ?? null, author: pr.author ?? null, head: pr.head ?? null, labeledAt: lastLabeled });
+  const byReview = stopReviewCandidates(config, { reviews: pr.reviews ?? null, author: pr.author ? prAuthorRef(pr) : null, head: pr.head ?? null, labeledAt: lastLabeled });
   for (const c of byReview.candidates) {
     const r = parseStopRelease(config, policy, `PR #${pr.number} のレビュー ${c.review.id ?? '(id なし)'}`, stopReleaseTextOfReview(c.review, c.person, pr.number));
-    if (r) releases.push({ ...r, review: c.review.id ?? null });
+    if (r) releases.push({ ...r, review: c.review.id ?? null, ...(c.note ? { notes: [...r.notes, `帰属: ${c.note}`] } : {}) });
   }
   const fresh = releases.filter((r) => r.review != null || !sinceDay || (r.day && r.day >= sinceDay));
   const valid = fresh.filter((r) => r.valid);
@@ -643,9 +653,19 @@ export function riskConfirmerOf(body) {
   return m && isFilledValue(m[1]) ? m[1].trim() : null;
 }
 
+/** PR の作成者の { login, id }。author はログイン名の文字列か { login, id }。authorId は PR_AUTHOR_ID・--pr の JSON の値 */
+export function prAuthorRef(pr) {
+  if (pr?.author && typeof pr.author === 'object') return accountRefOf({ author: pr.author });
+  return { login: String(pr?.author ?? '').replace(/^@/, ''), id: numericAccountId(pr?.authorId ?? pr?.author_id ?? null) };
+}
+/** ログイン名の文字列、または { login, id } を { login, id } へ直す */
+function authorRef(a) {
+  return a && typeof a === 'object' ? { login: String(a.login ?? '').replace(/^@/, ''), id: numericAccountId(a.id ?? null) } : { login: String(a ?? '').replace(/^@/, ''), id: null };
+}
+
 /** 作成を指示した者(PR の本文の節)。未記入なら PR の作成者のアカウント */
-export function instructorsOf(config, body, author) {
-  return instructorTokensOf(config, body, author).resolved;
+export function instructorsOf(config, body, author, lookup = null) {
+  return instructorTokensOf(config, body, author, lookup).resolved;
 }
 
 /**
@@ -653,18 +673,103 @@ export function instructorsOf(config, body, author) {
  * 対応づかない記載を黙って落とすと、旧いログイン名や誤記を書いた PR で、指示した者本人の承認が PR の時点で数えられる
  * (出荷の集約は対応づかない指示者を「確かめられない」として数えない。PR の時点でも数えない側に揃える。ただし既定値は、集約が開発者の席の責任者を足すのに対し、PR の時点は作成者だけである。process-compass #429)
  */
-export function instructorTokensOf(config, body, author) {
+/** 作成を指示した者の節の記載(区切りで分けたもの)。節が無ければ空 */
+export function instructorSectionTokens(body) {
   const section = String(body ?? '').replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*作成を指示した者.*$/m)[1]?.split(/^(?:##\s|---\s*$)/m)[0] ?? '';
-  const tokens = section.split(/[\n,、，/／]/).map((t) => t.replace(/^[\s\-*・]+/, '').trim()).filter(Boolean);
-  const list = tokens.length ? tokens : author ? [`@${String(author).replace(/^@/, '')}`] : [];
+  return section.split(/[\n,、，/／]/).map((t) => t.replace(/^[\s\-*・]+/, '').trim()).filter(Boolean);
+}
+
+export function instructorTokensOf(config, body, author, lookup = null) {
+  const tokens = instructorSectionTokens(body);
+  const ref = authorRef(author);
   const resolved = [];
   const unresolved = [];
-  for (const t of list) {
-    const p = t.startsWith('@') ? findPersonByAccount(config, t) : resolveSigner(config, t);
-    if (p) resolved.push(p);
-    else if (!(tokens.length === 0 && aiNameBlocked(config, t.replace(/^@/, '')))) unresolved.push(t);
+  if (!tokens.length) {
+    // 既定値は PR の作成者(ホスティングの記録)。数値の識別子で名簿の人へ対応づける。ログイン名だけの一致は対応づけず、
+    // 理由を添えて対応づかない指示者に入れる(process-compass #430 / ADR-0108)
+    if (ref.login) {
+      const res = identifyAccount(config, ref);
+      if (res.person) resolved.push(res.person);
+      else if (!aiNameBlocked(config, ref.login)) unresolved.push(res.problem ? `@${ref.login}(${res.problem})` : `@${ref.login}`);
+    }
+    return { resolved, unresolved, byDefault: true };
   }
-  return { resolved, unresolved, byDefault: tokens.length === 0 };
+  // 人が書いた記載(氏名・名簿の id)は、名簿の記載の名として解決する。@アカウントは、検査の時点にホスティングで数値の識別子へ
+  // 解決できる実行(lookup。GH のトークンがある実行)では識別子で名簿と照合し、解決できなければ名簿に対応づかない指示者とする
+  // (標準 第4章「アカウントと人の対応表」。process-compass #430 / ADR-0108 決定1 / IMPL-0426)。トークンの無い手元の実行は
+  // 従来の名の解決(ログイン名)のまま
+  for (const t of tokens) {
+    const r = resolveInstructorToken(config, t, lookup);
+    if (r.person) resolved.push(r.person);
+    else unresolved.push(r.why ? `${t}(${r.why})` : t);
+  }
+  return { resolved, unresolved, byDefault: false };
+}
+
+/**
+ * 作成を指示した者の欄の記載1つを名簿の人へ解決する(PR の時点の検査と出荷の集約が同じ関数を使う)。
+ * アカウントの記載(@ を付けたもの、または名簿の氏名・id でなく名簿のアカウントのログイン名に当たるもの。#430 突合 L-2)は、
+ * lookup があれば数値の識別子へ解決して identifyAccount で照合する。lookup が無ければ従来の名の解決(ログイン名)。
+ * 戻り値は { person, why, account }(account は、アカウントの記載として扱ったか)
+ */
+export function resolveInstructorToken(config, t, lookup = null) {
+  const token = String(t ?? '').trim();
+  const asAccount = token.startsWith('@') || (Boolean(findPersonByAccount(config, token)) && !findPerson(config, token));
+  if (!asAccount) return { person: resolveSigner(config, token), why: null, account: false };
+  if (!lookup) return { person: findPersonByAccount(config, token), why: null, account: true };
+  const got = lookup.resolve(token);
+  if (!got) return { person: null, why: '検査の時点に数値の識別子へ解決できない', account: true };
+  const res = identifyAccount(config, got);
+  return res.person ? { person: res.person, why: null, account: true } : { person: null, why: `${res.problem ? res.problem : '名簿の人へ対応づかない'}。識別子 ${got.id}`, account: true };
+}
+
+/**
+ * 作成を指示した者の欄の @アカウントを、検査の時点に数値の識別子へ解決する道具(ADR-0108 決定1)。resolveRaw(login) は
+ * { login, id } か null(存在しない・読めない)を返す。解決した値と時点を entries に残す(検査の結果へ出す)。
+ * 同じログイン名は1回だけ引く
+ */
+export function accountLookup(resolveRaw, { at = new Date().toISOString() } = {}) {
+  const entries = new Map();
+  return {
+    at,
+    entries,
+    resolve(token) {
+      const login = String(token ?? '').trim().replace(/^@/, '');
+      const key = accountKey(login);
+      if (!key) return null;
+      if (!entries.has(key)) {
+        let got = null;
+        let error = null;
+        try {
+          const r = resolveRaw(login);
+          got = r && numericAccountId(r.id ?? null) !== null ? { login: String(r.login ?? login), id: numericAccountId(r.id) } : null;
+          if (!got) error = '存在しない、または数値の識別子を読めない';
+        } catch (e) {
+          error = String(e?.stderr ?? e?.message ?? e).split('\n')[0];
+        }
+        entries.set(key, { token: `@${login}`, login: got?.login ?? login, id: got?.id ?? null, at, error });
+      }
+      const e = entries.get(key);
+      return e.id !== null ? { login: e.login, id: e.id } : null;
+    },
+  };
+}
+
+/** gh api users/<login> で引く(GH のトークンがある実行)。読めなければ例外 */
+export function ghUserLookup() {
+  return accountLookup((login) => {
+    const r = JSON.parse(execFileSync('gh', ['api', `users/${encodeURIComponent(login)}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    return { login: r?.login ?? login, id: r?.id ?? null };
+  });
+}
+
+/** --pr の JSON の accountIds({ <login>: 数値 | null })から引く(試験と、解決の結果を書き出して渡す手元の実行) */
+export function fixedUserLookup(ids, { at } = {}) {
+  const m = new Map(Object.entries(ids && typeof ids === 'object' ? ids : {}).map(([k, v]) => [accountKey(k), v]));
+  return accountLookup((login) => {
+    const v = m.get(accountKey(login));
+    return v === undefined || v === null ? null : { login, id: v };
+  }, at ? { at } : {});
 }
 
 /**
@@ -683,34 +788,49 @@ export function approverFindings(config, pr, files = null, tracked = null) {
   const required = core?.hit ? counts.core : counts.all;
   if (!g6Active) return { applies: false, required, core };
   if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core };
-  const instructorInfo = instructorTokensOf(config, pr.body, pr.author);
+  const instructorInfo = instructorTokensOf(config, pr.body, prAuthorRef(pr), pr.accountLookup ?? null);
   const instructors = instructorInfo.resolved;
+  // レビュアは数値の識別子で区別する(識別子が読めなければログイン名)。ホスティングの (login, id) と名簿の (login, id) の
+  // 食い違いは accountFindings に出す(process-compass #430 / ADR-0108)
   const last = new Map();
   for (const r of pr.reviews) {
-    const login = r?.author?.login;
+    const ref = accountRefOf(r);
+    const login = ref.login || null;
+    const lkey = ref.id !== null ? `#${ref.id}` : login;
     let state = String(r?.state ?? '').toUpperCase();
     // 書き込みの権限を持たない関係のアカウントの承認(名簿のログイン名を他人が取得した疑い)は数えない(#429)
     if (state === 'APPROVED' && hasWriteAssociation(r) === false) {
-      last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false, untrusted: String(r.author_association ?? r.authorAssociation) });
+      last.set(lkey, { login, id: ref.id, approved: false, bot: Boolean(r.author?.is_bot), summary: false, untrusted: String(r.author_association ?? r.authorAssociation) });
       continue;
     }
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-    const before = last.get(login);
+    const before = last.get(lkey);
     // 承認の本文は、挙動要約の最低限の形(承認の語だけでない、8文字以上)を満たすときだけ挙動要約に数える(集約と同じ。#288 第8巡 X8)
     const body = hasBehaviorSummary(r.body);
     // 挙動要約の文(同一の文かを比べる形)。本文の無い再承認は、直前の承認の文を引き継ぐ
     const key = body ? behaviorSummaryKey(r.body) : before?.approved ? before.key ?? null : null;
-    if (state === 'APPROVED') last.set(login, { approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary), key, summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
-    else last.set(login, { approved: false, bot: Boolean(r.author?.is_bot), summary: false });
+    if (state === 'APPROVED') last.set(lkey, { login, id: ref.id, approved: true, bot: Boolean(r.author?.is_bot), summary: body || (before?.approved && before.summary), key, summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
+    else last.set(lkey, { login, id: ref.id, approved: false, bot: Boolean(r.author?.is_bot), summary: false });
   }
   const counted = [];
   const notCounted = [];
-  for (const [login, v] of last) {
+  const accountFindings = [];
+  for (const v of last.values()) {
+    const login = v.login;
+    const ident = identifyAccount(config, { login, id: v.id });
+    if (ident.how === 'mismatch' || (ident.how === 'id' && ident.problem)) accountFindings.push(`@${login}(${ident.problem})`);
     if (v.untrusted) {
       notCounted.push(`@${login}(リポジトリとの関係が ${v.untrusted}。書き込みの権限を持たないアカウントの承認。名簿のログイン名を他人が取得した疑い)`);
       continue;
     }
     if (!v.approved) continue;
+    // 名義を「専用」と申告した AI の担い手のアカウントの承認は、AI を示す語の有無に依らず数えない。照合は数値の識別子で行う
+    // (標準 第4章 G-6。process-compass #430 / ADR-0107 / IMPL-0423)
+    const dedicated = dedicatedSeatOf(config, { login, id: v.id });
+    if (dedicated) {
+      notCounted.push(`@${login}(${dedicated.name}の AI の担い手の専用の名義(数値の識別子 ${v.id})。検出の層)`);
+      continue;
+    }
     if (instructorInfo.unresolved.length) {
       notCounted.push(`@${login}(作成を指示した者 ${instructorInfo.unresolved.join(' / ')} を名簿と対応づけられず、承認者と別の人かを確かめられない)`);
       continue;
@@ -719,9 +839,9 @@ export function approverFindings(config, pr, files = null, tracked = null) {
       notCounted.push(`@${login}(AI・bot のアカウント。検出の層)`);
       continue;
     }
-    const person = findPersonByAccount(config, login);
+    const person = ident.person;
     if (!person || person.appointer === true) {
-      notCounted.push(`@${login}(名簿の人へ対応づかない)`);
+      notCounted.push(`@${login}(名簿の人へ対応づかない${ident.problem && !person ? `: ${ident.problem}` : ''})`);
       continue;
     }
     if (instructors.some((i) => i.id === person.id)) {
@@ -740,9 +860,24 @@ export function approverFindings(config, pr, files = null, tracked = null) {
       notCounted.push(`@${login}(挙動要約が、先に数えた承認者 ${same.name} と同一の文。自分の言葉で書く)`);
       continue;
     }
-    counted.push({ id: person.id, name: person.name, login, key: v.key ?? null });
+    // 名義を共有する人(第3章 3.5.3。未申告を含む)の承認は、担い手の操作でないことを機械で確かめられない。条件を満たせば数え、
+    // 印(shared)を付ける。件数は保証の開示の項目1 に出る(集約)。適合の主張の根拠に数えない(第1章 1.10.2)
+    const shared = sharingOf(config, person);
+    counted.push({ id: person.id, name: person.name, login, key: v.key ?? null, shared: shared ? sharingText(shared) : null });
   }
-  return { applies: true, readable: true, required, core, counted: counted.length, approvers: counted.map((c) => c.name), notCounted, enough: counted.length >= required };
+  const sharedApprovals = counted.filter((c) => c.shared).map((c) => ({ name: c.name, login: c.login, with: c.shared }));
+  return {
+    applies: true,
+    readable: true,
+    required,
+    core,
+    counted: counted.length,
+    approvers: counted.map((c) => c.name),
+    sharedApprovals,
+    notCounted,
+    accountFindings,
+    enough: counted.length >= required,
+  };
 }
 
 /** 変更要求の本文の、満たさない基準の項目番号(`基準 3`・`基準 2, 5`・`項目 3`)。全角の数字・空白は NFKC で寄せてから読む */
@@ -762,15 +897,17 @@ export function changesRequestedFindings(config, pr) {
   if (!Array.isArray(pr.reviews)) return { applies: true, readable: false };
   const last = new Map();
   for (const r of pr.reviews) {
-    const login = r?.author?.login;
+    const ref = accountRefOf(r);
+    const login = ref.login || null;
     const state = String(r?.state ?? '').toUpperCase();
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-    last.set(login, { state, body: r.body, bot: Boolean(r.author?.is_bot) });
+    last.set(ref.id !== null ? `#${ref.id}` : login, { login, id: ref.id, state, body: r.body, bot: Boolean(r.author?.is_bot) });
   }
   const checked = [];
   const missing = [];
   const skipped = [];
-  for (const [login, v] of last) {
+  for (const v of last.values()) {
+    const login = v.login;
     if (v.state !== 'CHANGES_REQUESTED') continue;
     if (v.bot || aiNameBlocked(config, login)) {
       skipped.push(`@${login}(AI・bot のアカウント。検出の層)`);
@@ -781,8 +918,9 @@ export function changesRequestedFindings(config, pr) {
     const lacks = [];
     if (!CRITERION_REF.test(text)) lacks.push('項目番号なし');
     if (!RESUBMIT_DUE.test(text)) lacks.push('期限なし');
-    const person = findPersonByAccount(config, login);
-    const outside = !person || person.appointer === true ? '、名簿の人へ対応づかない' : '';
+    const ident = identifyAccount(config, { login, id: v.id });
+    const person = ident.person;
+    const outside = !person || person.appointer === true ? `、名簿の人へ対応づかない${ident.problem && !person ? `: ${ident.problem}` : ''}` : '';
     checked.push(login);
     if (lacks.length) missing.push(`@${login}(${lacks.join('、')}${outside})`);
   }
@@ -955,6 +1093,9 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
 export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   const git = gitIn(root);
   const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
+  // 作成を指示した者の欄の @アカウントの解決(ADR-0108 決定1 / IMPL-0426)。--pr の JSON の accountIds(試験・書き出した結果)、
+  // または呼び出し側が渡す accountLookup(GH のトークンがある実行の gh api users/<login>)。無ければ名の解決(ログイン名)
+  const userLookup = pr.accountLookup ?? (pr.accountIds ? fixedUserLookup(pr.accountIds, { at: pr.accountIdsAt ?? undefined }) : null);
   const mergeBase = (git(['merge-base', base, 'HEAD']) ?? '').trim();
   if (!mergeBase) {
     result.errors.push(`比較の起点 ${base} を解決できません。基底ブランチを取得してから実行する(fetch-depth: 0)`);
@@ -1063,15 +1204,15 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   if (size.over.length) {
     size.sizeOver = true;
     // 既存の台帳の例外承認の行は有効のまま(過去の記録を壊さない)。新しい超過は、台帳でなく規模の確認で扱う
-    const ex = exceptionFor(atPolicy('docs/debt-ledger.md'), pr.number, limitsFrom, pr.author, {
+    const ex = exceptionFor(atPolicy('docs/debt-ledger.md'), pr.number, limitsFrom, prAuthorRef(pr), {
       git,
       policyRef: policyPoint,
       reviews: pr.reviews ?? null,
       head: prHead,
       headLedgerText: atHead('docs/debt-ledger.md'),
       hosting: prHosting,
-      instructorIds: instructorsOf(limitsFrom, pr.body, pr.author).map((i) => i.id),
-      instructorUnresolved: instructorTokensOf(limitsFrom, pr.body, pr.author).unresolved,
+      instructorIds: instructorsOf(limitsFrom, pr.body, prAuthorRef(pr), userLookup).map((i) => i.id),
+      instructorUnresolved: instructorTokensOf(limitsFrom, pr.body, prAuthorRef(pr), userLookup).unresolved,
     });
     size.exception = ex;
     if (ex.matched.length) {
@@ -1082,7 +1223,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
       if (ex.rejected.length) result.notices.push(`size:over: 台帳の例外承認の行は有効でない(${ex.rejected.join(' / ')})。規模の超過は例外承認でなく規模の確認で扱う`);
       const problems = sizeAttestationProblems(att, { config: limitsFrom, assuranceValid: assurance.valid });
       // 実施者の名簿照合。作成を指示した者以外の人が名簿にいる体制では、名簿外の実施者を失敗にする(1名体制は警告)
-      const instrInfo = instructorTokensOf(limitsFrom, pr.body, pr.author);
+      const instrInfo = instructorTokensOf(limitsFrom, pr.body, prAuthorRef(pr), userLookup);
       const instr = instrInfo.resolved;
       if (instrInfo.unresolved.length) result.warnings.push(`規模の確認: 作成を指示した者 ${instrInfo.unresolved.join(' / ')} を名簿と対応づけられず、実施者が指示した者と別の人かを確かめられない(#429)`);
       const roster = Array.isArray(limitsFrom.people) ? limitsFrom.people : [];
@@ -1265,7 +1406,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   }
   if (risk === 'R1' || risk === 'R2') {
     const confirmer = riskConfirmerOf(pr.body);
-    const instructorInfo = instructorTokensOf(rulesConfig, pr.body, pr.author);
+    const instructorInfo = instructorTokensOf(rulesConfig, pr.body, prAuthorRef(pr), userLookup);
     const instructors = instructorInfo.resolved;
     const roster = Array.isArray(rulesConfig.people) ? rulesConfig.people : [];
     const others = roster.filter((p) => p?.appointer !== true && !instructors.some((i) => i.id === p.id));
@@ -1347,7 +1488,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
   // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
-  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, pr, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, 'HEAD'));
+  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, { ...pr, accountLookup: userLookup },all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, 'HEAD'));
   if (result.approvers.applies) {
     const a = result.approvers;
     const coreText = a.core
@@ -1357,17 +1498,69 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
           ? ''
           : `。**コア機能のパスが未宣言のため、この変更がコア機能(要求 ${a.core.configured} 名)に当たるかを確かめられない**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く)`
       : '';
+    // 名義を共有する人の承認の印(標準 第4章 G-6。IMPL-0423)。数えたうえで、担い手の操作でないことを確かめられない旨を出す
+    const sharedText = a.sharedApprovals?.length
+      ? `。名義を共有するアカウントの承認 ${a.sharedApprovals.length} 件(${a.sharedApprovals.map((x) => `${x.name} @${x.login}: ${x.with}と名義を共有`).join('、')}。` +
+        '担い手の操作でないことを機械で確かめられないため、印を付けて数える。出荷の証跡の集約が保証の開示の項目1 に件数を出す。適合の主張の根拠に数えない)'
+      : '';
     if (!a.readable) {
       result.notices.push(
         `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount${a.core?.hit ? ' / コア機能 coreReviewerCount' : ''})の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる${coreText}`
       );
     } else if (!a.enough) {
       result.warnings.push(
-        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}。` +
+        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}${sharedText}。` +
           `マージの前に、名簿の別人が自分の挙動要約を付けて承認する。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える(この検査は合否にしない)`
       );
     } else {
-      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}`);
+      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}${sharedText}`);
+    }
+  }
+  // ホスティングの (login, id) と名簿の (login, id) の食い違い(標準 第4章「アカウントと人の対応表」。process-compass #430 / IMPL-0426)。
+  // 改名(識別子が一致しログイン名が違う)と、ログイン名が一致し識別子が異なるアカウント(他人の取得の疑い)を出す。合否にしない
+  {
+    const rosterOf = policyConfigured ? policyConfig : headConfig;
+    const found = [...(result.approvers?.accountFindings ?? [])];
+    const aref = prAuthorRef(pr);
+    if (aref.login) {
+      const ai = identifyAccount(rosterOf, aref);
+      if (ai.how === 'mismatch' || (ai.how === 'id' && ai.problem)) found.push(`PR の作成者 @${aref.login}(${ai.problem})`);
+      else if (ai.how === 'login-only') found.push(`PR の作成者 @${aref.login}(${ai.problem}。作成者を名簿の人へ対応づけない)`);
+    }
+    // 作成を指示した者の欄の @アカウントの解決の記録(ADR-0108 決定1 / IMPL-0426)。解決した値・時点・名簿との照合の結果を残す
+    const atTokens = instructorSectionTokens(pr.body).filter((t) => t.startsWith('@') || (findPersonByAccount(rosterOf, t) && !findPerson(rosterOf, t)));
+    if (userLookup) {
+      for (const t of atTokens) userLookup.resolve(t);
+      const entries = [...userLookup.entries.values()].map((e) => {
+        const res = e.id !== null ? identifyAccount(rosterOf, { login: e.login, id: e.id }) : null;
+        return {
+          ...e,
+          result: e.id === null ? 'unresolvable' : res.how,
+          person: res?.person?.name ?? null,
+          why: e.id === null ? `数値の識別子へ解決できない${e.error ? `(${e.error})` : ''}。名簿に対応づかない指示者として扱う` : res.person ? null : identifyWhy(res),
+        };
+      });
+      result.instructorResolution = { mode: 'id', at: userLookup.at, entries };
+      if (entries.length) {
+        result.notices.push(
+          `作成を指示した者の @アカウントを、検査の時点(${userLookup.at})に数値の識別子へ解決して名簿と照合した: ` +
+            entries.map((e) => `${e.token} → ${e.id ?? '解決できない'}(${e.person ? `${e.person}` : e.why})`).join('、')
+        );
+      }
+    } else {
+      result.instructorResolution = { mode: 'login', at: null, entries: atTokens.map((t) => ({ token: t, login: t.replace(/^@/, ''), id: null, result: 'login-name', person: findPersonByAccount(rosterOf, t)?.name ?? null })) };
+      if (atTokens.length) {
+        result.notices.push(
+          `作成を指示した者の @アカウント(${atTokens.join('、')})は、GH のトークンの無い実行のため数値の識別子へ解決せず、従来どおりログイン名で名簿と対応づけた(名の解決。CI の検査は識別子で照合する)`
+        );
+      }
+    }
+    result.accountFindings = [...new Set(found)];
+    if (result.accountFindings.length) {
+      result.warnings.push(
+        `アカウントと人の対応表: ホスティングのアカウント(ログイン名・数値の識別子)と名簿の記載が食い違う、または数値の識別子が無いため対応づけなかったものがある: ${result.accountFindings.join('、')}。` +
+          '名簿の数値の識別子は `node scripts/gate/roster-ids.mjs` の提案を確かめ、人が /process-change(種別 accountable)で記入する(ADR-0108)'
+      );
     }
   }
 
@@ -1485,6 +1678,8 @@ if (isMain) {
         title: process.env.PR_TITLE ?? '',
         body: process.env.PR_BODY ?? '',
         author: process.env.PR_AUTHOR ?? '',
+        // PR の作成者の数値の識別子(github.event.pull_request.user.id)。名簿の照合は識別子で行う(process-compass #430)
+        authorId: numericAccountId(process.env.PR_AUTHOR_ID ?? null),
         // 停止の申し立て(第7章 7.11)。ラベルと、ラベルの付け外しの履歴(JSON)
         labels: parseJsonEnv('PR_LABELS') ?? [],
         labelEvents: parseJsonEnv('PR_LABEL_EVENTS'),
@@ -1494,6 +1689,8 @@ if (isMain) {
         head: process.env.PR_HEAD_SHA || undefined,
       };
   if (!pr.hosting && process.env.GITHUB_REPOSITORY && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) pr.hostingLookup = ghHosting(process.env.GITHUB_REPOSITORY);
+  // 作成を指示した者の @アカウントを検査の時点に数値の識別子へ解決する(GH のトークンがある実行。ADR-0108 決定1)。--pr の JSON の accountIds が先
+  if (!pr.accountIds && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) pr.accountLookup = ghUserLookup();
   const r = analyzePr({ base, policyBase, pr });
   if (argv.includes('--json')) {
     console.log(JSON.stringify(r, null, 2));

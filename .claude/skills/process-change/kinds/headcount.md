@@ -9,9 +9,9 @@
   "summary": "3人目が加わり、独立レビュアを置けるようになった",
   "answers": { "q-team-size": "size-3-9" },
   "people": [
-    { "id": "p1", "name": "<氏名>", "accounts": ["<アカウント>"] },
-    { "id": "p2", "name": "<氏名>", "accounts": ["<アカウント>"] },
-    { "id": "p3", "name": "<氏名>", "accounts": ["<アカウント>"] }
+    { "id": "p1", "name": "<氏名>", "accounts": [{ "login": "<ログイン名>", "id": <数値の識別子> }] },
+    { "id": "p2", "name": "<氏名>", "accounts": [{ "login": "<ログイン名>", "id": <数値の識別子> }] },
+    { "id": "p3", "name": "<氏名>", "accounts": [{ "login": "<ログイン名>", "id": <数値の識別子> }] }
   ],
   "seats": { "independent-reviewer": { "accountable": "<氏名>" } },
   "decidedBy": "<D-0 表1「体制と運用形態」の決定者の氏名>",

@@ -358,7 +358,7 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の�
   check('旧い生成区間とだけ一致する節を、再生成を勧める注記のために出す(突合 X-8)', d0LegacyOnlySections(wrap(old), nc).join(',') === '節1 役割の割り当て' && d0LegacyOnlySections(wrap(cur), nc).length === 0, JSON.stringify(d0LegacyOnlySections(wrap(old), nc)));
   const plain = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes' }, { people: [A], seats: seatsOf({ 'dev-verifier': 'a' }) });
   const plainCur = renderD0Section('seats', plain);
-  check('名簿の列: 所属・氏名の確認の記入が無くても、表5-2 の欄をすべて列として置く(突合 X-9)', D0_ROSTER_COLUMNS.every((c) => plainCur.includes(`| ${c} |`) || plainCur.includes(` ${c} |`)) && D0_ROSTER_COLUMNS.length === 6, plainCur);
+  check('名簿の列: 所属・氏名の確認の記入が無くても、表5-2 の欄をすべて列として置く(突合 X-9)', D0_ROSTER_COLUMNS.every((c) => plainCur.includes(`| ${c} |`) || plainCur.includes(` ${c} |`)) && D0_ROSTER_COLUMNS.length === 7, plainCur); // 列「アカウントの数値の識別子」を足した(process-compass #430 / IMPL-0422)
   check('名簿の列: 最終更新日の列を置かない(表5-2 の欄に無い)', !/最終更新日/.test(plainCur));
 }
 

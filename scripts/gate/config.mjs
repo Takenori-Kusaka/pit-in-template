@@ -200,12 +200,34 @@ export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {})
   const ended = applicationEnd(config);
   const { listed, unlisted: declaredUnlisted } = classifyDeviations(config);
   // AI の担い手の名義を名簿の人と共有する構成、または申告していない構成(第1章 1.10.2、第3章 3.5.3。process-compass #429)。
-  // 名義の申告の欄(seats[].performerAccount)は #430 で降ろす。それまでは、担い手を宣言した席はすべて未申告として離脱に数える
-  const aiSeats = (Array.isArray(config?.seats) ? config.seats : []).filter((s) => s?.performer);
-  const undeclaredSeats = aiSeats.filter((s) => s?.performerAccount?.kind !== 'dedicated');
-  const unlisted = undeclaredSeats.length
-    ? [...declaredUnlisted, { label: `AI の担い手の名義の共有・未申告(${undeclaredSeats.map((s) => s.role).join('・')})`, derived: 'performer-account' }]
-    : declaredUnlisted;
+  // 名義の申告(seats[].performerAccount。#430)。担い手を宣言した席で専用と申告していないものと、共有と申告した席を離脱に数える
+  // env-check の照合で名簿の人に当たった席は、申告が専用でも共有として数える(#430 突合 H-1)
+  const paStates = performerAccountStates(config);
+  const undeclaredSeats = paStates.filter((st) => st.kind !== 'dedicated');
+  // 専用の申告で、その席の担い手の環境での照合(env-check --seat)が確認済みでないもの。1.10.2 の「申告と実行環境での照合で確かめている」を
+  // 満たさないため、名義の照合が無い列挙に無い離脱として数える(名義の数え方では専用のまま扱う)
+  const unverifiedSeats = paStates.filter((st) => st.kind === 'dedicated' && !st.envConfirmed);
+  const unlisted = [
+    ...declaredUnlisted,
+    ...(undeclaredSeats.length
+      ? [
+          {
+            label: `AI の担い手の名義の共有・未申告(${undeclaredSeats.map((st) => `${st.role} ${PERFORMER_ACCOUNT_LABEL[st.kind]}${st.env?.override ? '(照合で名簿の人に当たった)' : ''}`).join('・')})`,
+            derived: 'performer-account',
+            seats: undeclaredSeats.map((st) => ({ role: st.role, kind: st.kind, person: st.person?.id ?? null, ...(st.env?.override ? { envOverride: true } : {}) })),
+          },
+        ]
+      : []),
+    ...(unverifiedSeats.length
+      ? [
+          {
+            label: `AI の担い手の名義の照合が無い(${unverifiedSeats.map((st) => `${st.role} 専用`).join('・')}。env-check --seat の照合が確認済みでない)`,
+            derived: 'performer-account-unverified',
+            seats: unverifiedSeats.map((st) => ({ role: st.role, kind: 'dedicated' })),
+          },
+        ]
+      : []),
+  ];
   const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
   const blockers = [];
   // 作業中の版は、適用の表明に限り、コミットとともに名指せる。2つの適合の主張は発行した版を要する(第1章 1.10.2・1.10.3)
@@ -515,6 +537,9 @@ export function rosterProblems(config) {
   const ids = new Set();
   const names = new Set();
   const accounts = new Set();
+  // 数値の識別子 → 書いたアカウント、ログイン名 → 数値の識別子(process-compass #430)
+  const accountIdOwners = new Map();
+  const loginIds = new Map();
   const performers = performerStrings(config);
   roster.forEach((p, i) => {
     const at = `people[${i}]`;
@@ -550,28 +575,52 @@ export function rosterProblems(config) {
     else if (p.appointer === true && p.external !== true) {
       out.push(`${at}: "${n}" を組織上の任命権者(appointer: true)とするなら、体制の外の人(external: true)として記載する(標準 第3章 3.13.3)`);
     }
-    // リポジトリ上のアカウント。承認したアカウントを名簿の人へ対応づけるために使う。
+    // リポジトリ上のアカウント。承認したアカウントを名簿の人へ対応づけるために使う。要素はログイン名の文字列か、
+    // ログイン名と数値の識別子の組 { login, id }。ホスティングの記録との照合は数値の識別子で行い、識別子の無い要素へは
+    // 対応づけない(identifyAccount。標準 第4章「アカウントと人の対応表」。process-compass #430 / ADR-0108)。
     // 記載が正しいかは機械で確かめない(架空の2人目を書ける)。監査観点6 で確かめる
     if (p.accounts !== undefined) {
-      if (!Array.isArray(p.accounts)) out.push(`${at}: accounts は配列で書く(リポジトリ上のアカウント名)`);
+      if (!Array.isArray(p.accounts)) out.push(`${at}: accounts は配列で書く(リポジトリ上のアカウント名、または { "login": "...", "id": 数値 })`);
       else {
         for (const a of p.accounts) {
           const key = accountKey(a);
-          if (typeof a !== 'string' || !key) {
+          const login = accountLoginOf(a);
+          if (a !== null && typeof a === 'object' && !Array.isArray(a)) {
+            if (!key) {
+              out.push(`${at}: accounts の要素 ${JSON.stringify(a)} に login(ログイン名)が無い`);
+              continue;
+            }
+            const unknown = Object.keys(a).filter((k) => !['login', 'id'].includes(k));
+            if (unknown.length) out.push(`${at}: accounts の "${login}" に知らない欄(${unknown.join(', ')})がある。書けるのは login と id だけ`);
+            const num = accountIdOf(a);
+            if (num === null) out.push(`${at}: accounts の "${login}" の id は、ホスティングがアカウントに与える数値の識別子(正の整数)で書く`);
+            else {
+              const prev = accountIdOwners.get(num);
+              if (prev && prev.key !== key) out.push(`${at}: 数値の識別子 ${num} が、アカウント "${prev.login}"(people[${prev.i}])と "${login}" の両方に書かれている。1つの識別子は1つのアカウントに対応する`);
+              else if (prev) out.push(`${at}: 数値の識別子 ${num} が重複している`);
+              else accountIdOwners.set(num, { key, login, i });
+              const prevId = loginIds.get(key);
+              if (prevId !== undefined && prevId !== num) out.push(`${at}: アカウント "${login}" に、別の数値の識別子(${prevId} と ${num})が書かれている`);
+              loginIds.set(key, num);
+            }
+          } else if (typeof a !== 'string' || !key) {
             out.push(`${at}: accounts に空の値、または文字列でない値がある`);
             continue;
           }
-          const bot = aiNameReason(a, { account: true });
+          const bot = aiNameReason(login, { account: true });
           // 人が確認したアカウント(accountsConfirmed)は、AI を示す語に当たっても名簿に置ける。ただし [bot] の表記は上書きしない。
           // 確認は名簿の変更として、本人以外が記名した変化点の記録を要する(accountConfirmationProblems。#296)
-          const confirmed = Array.isArray(p.accountsConfirmed) && p.accountsConfirmed.some((c) => accountKey(c) === key) && !/\[bot\]$/i.test(a.trim());
+          const confirmed = Array.isArray(p.accountsConfirmed) && p.accountsConfirmed.some((c) => accountKey(c) === key) && !/\[bot\]$/i.test(login.trim());
           if (bot && !confirmed) {
             out.push(
-              `${at}: アカウント "${a}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない` +
+              `${at}: アカウント "${login}" は ${bot}。人のアカウントに限る。AI・bot のアカウントを、人の名簿へ書かない` +
                 '(同じ語を含む実在の人のアカウントは、本人以外の記名で accountsConfirmed へ書く)'
             );
           }
-          if (accounts.has(key)) out.push(`${at}: アカウント "${a}" が重複している。1つのアカウントは1人に対応づける`);
+          if (accounts.has(key)) {
+            // 同じログイン名に別の識別子を書いた場合は、上の識別子の検査が出す。ここでは重複だけを出す
+            out.push(`${at}: アカウント "${login}" が重複している。1つのアカウントは1人に対応づける`);
+          }
           accounts.add(key);
         }
       }
@@ -585,7 +634,7 @@ export function rosterProblems(config) {
     const keys = [
       ['id', typeof p?.id === 'string' ? p.id.toLowerCase() : '', p?.id],
       ['氏名', signerKey(p?.name), p?.name],
-      ...(Array.isArray(p?.accounts) ? p.accounts : []).filter((a) => typeof a === 'string').map((a) => ['アカウント', accountKey(a), a]),
+      ...(Array.isArray(p?.accounts) ? p.accounts : []).filter((a) => accountLoginOf(a)).map((a) => ['アカウント', accountKey(a), accountLoginOf(a)]),
     ];
     for (const [what, key, raw] of keys) {
       if (!key) continue;
@@ -601,7 +650,103 @@ export function rosterProblems(config) {
 
 /** アカウント名を比べるためのキー(大文字と小文字を区別しない。先頭の @ は落とす) */
 export function accountKey(account) {
-  return typeof account === 'string' ? account.normalize('NFKC').trim().replace(/^@/, '').toLowerCase() : '';
+  const login = accountLoginOf(account);
+  return login ? login.normalize('NFKC').trim().replace(/^@/, '').toLowerCase() : '';
+}
+
+/**
+ * 名簿の accounts の要素(ログイン名の文字列、または { login, id })のログイン名。先頭の @ は落とす。読めなければ ''。
+ * 名簿の表示・CODEOWNERS の生成・確認の照合は、要素をこの値で扱う(process-compass #430)
+ */
+export function accountLoginOf(entry) {
+  const raw = typeof entry === 'string' ? entry : entry && typeof entry === 'object' && typeof entry.login === 'string' ? entry.login : '';
+  return raw.trim().replace(/^@/, '');
+}
+
+/**
+ * 数値の識別子を正の整数へ寄せる。数値の文字列(GraphQL・写しの値)も受ける。読めなければ null
+ */
+export function numericAccountId(v) {
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v > 0 ? v : null;
+  if (typeof v === 'string' && /^[1-9]\d*$/.test(v.trim())) {
+    const n = Number(v.trim());
+    return Number.isSafeInteger(n) ? n : null;
+  }
+  return null;
+}
+
+/** 名簿の accounts の要素の数値の識別子(正の整数)。文字列の要素・id の無い要素は null */
+export function accountIdOf(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  return typeof entry.id === 'number' ? numericAccountId(entry.id) : null;
+}
+
+/**
+ * ホスティングの記録(レビュー・PR・写し)の書き手の { login, id }。gh pr view の author{login}、REST の user{login,id}、
+ * 写しの user{id,login}・author{id,login}、GraphQL の databaseId を読む。数値の識別子が読めなければ id: null
+ */
+export function accountRefOf(rec) {
+  // 書き手の欄を持たない { login, id } はそのまま読む。レビューの id(レビューの識別子)を書き手の識別子と取り違えない
+  const who = rec?.author ?? rec?.user ?? (typeof rec?.login === 'string' ? rec : null);
+  const login = typeof who === 'string' ? who : who?.login ?? '';
+  const id = who && typeof who === 'object' ? numericAccountId(who.id ?? who.databaseId ?? null) : null;
+  return { login: String(login ?? '').replace(/^@/, ''), id };
+}
+
+/**
+ * ホスティングの記録の書き手(login と数値の識別子)を、名簿の人へ対応づける(標準 第4章「アカウントと人の対応表」。
+ * process-compass #430 / ADR-0108 / IMPL-0426)。照合は数値の識別子で行う。戻り値は { person, how, problem, candidate }。
+ *   - how 'id': 名簿の要素に同じ識別子がある。ログイン名が違っても同じ人(改名)として対応づけ、problem に改名を書く
+ *   - how 'mismatch': 同じログイン名の要素が別の識別子を持つ。対応づけない(改名の後の他人の取得の疑い)
+ *   - how 'login-only': ログイン名だけが一致する(名簿か記録に識別子が無い)。同定できたものとして扱わない
+ *   - how 'none': 名簿に当たらない
+ * candidate はログイン名で当たった人(対応づけなかった理由を出すために使う。照合の結果として使わない)。
+ * 人が書いた記載(PR の本文の @アカウント、記名など)の名の解決は findPersonByAccount を使う
+ */
+export function identifyAccount(config, ref = {}) {
+  const login = accountLoginOf(ref?.login ?? '');
+  const key = accountKey(login);
+  const id = numericAccountId(ref?.id ?? null);
+  const roster = Array.isArray(config?.people) ? config.people : [];
+  const entries = roster.flatMap((p) => (Array.isArray(p?.accounts) ? p.accounts : []).map((a) => ({ p, a })));
+  if (id !== null) {
+    const hit = entries.find(({ a }) => accountIdOf(a) === id);
+    if (hit) {
+      const was = accountLoginOf(hit.a);
+      const renamed = key && accountKey(was) !== key;
+      return {
+        person: hit.p,
+        how: 'id',
+        problem: renamed ? `数値の識別子 ${id} は名簿では "${was}"、記録では "${login}"(改名)。名簿のログイン名を /process-change(種別 accountable)で直す` : null,
+        candidate: hit.p,
+      };
+    }
+  }
+  const byLogin = key ? entries.find(({ a }) => accountKey(a) === key) : null;
+  if (!byLogin) return { person: null, how: 'none', problem: null, candidate: null };
+  const rosterId = accountIdOf(byLogin.a);
+  if (id === null) return { person: null, how: 'login-only', problem: '記録に数値の識別子が無い', candidate: byLogin.p };
+  if (rosterId === null) return { person: null, how: 'login-only', problem: '名簿に数値の識別子が無い', candidate: byLogin.p };
+  return {
+    person: null,
+    how: 'mismatch',
+    problem: `ログイン名が一致し数値の識別子が異なる(名簿 ${rosterId}、記録 ${id}。改名の後の他人の取得の疑い)`,
+    candidate: byLogin.p,
+  };
+}
+
+/** identifyAccount で対応づかなかった理由の文(名簿に当たらなければ「名簿の人へ対応づかない」) */
+export function identifyWhy(res) {
+  if (res?.person) return null;
+  return res?.problem ? `名簿の人へ対応づけない: ${res.problem}` : '名簿の人へ対応づかない';
+}
+
+/** 名簿のアカウントのうち、数値の識別子を持たない要素([{ person, login }])。/pit と roster-ids.mjs が使う */
+export function accountsWithoutId(config) {
+  const roster = Array.isArray(config?.people) ? config.people : [];
+  return roster.flatMap((p) =>
+    (Array.isArray(p?.accounts) ? p.accounts : []).filter((a) => accountLoginOf(a) && accountIdOf(a) === null).map((a) => ({ person: p, login: accountLoginOf(a) }))
+  );
 }
 
 /**
@@ -623,6 +768,299 @@ export function findPersonByAccount(config, account) {
   if (!key) return null;
   const roster = Array.isArray(config.people) ? config.people : [];
   return roster.find((p) => (Array.isArray(p?.accounts) ? p.accounts : []).some((a) => accountKey(a) === key)) ?? null;
+}
+
+// ---------------------------------------------------------------- AI の担い手の名義
+//
+// 担い手の名義(標準 第3章 3.5.3「人と AI の担い手の名義」。process-compass #430 / ADR-0107)は、担い手の操作をホスティングが
+// どのアカウントの操作として記録するか。構成の seats[].performerAccount で申告する:
+//   { "kind": "dedicated", "account": { "login": "...", "id": 数値 } }  担い手の専用のアカウント・アプリ(人の名簿に書かない)
+//   { "kind": "shared", "person": "<名簿の id>" }                       名簿の人のアカウントとして承認・レビュー・records への push を作れる
+//   無記入                                                              未申告。担い手を宣言した席では、その席の責任者と共有するものとして扱う
+// 名義は担い手の識別(performerKey)に含めない(要求事項1 の権限の組は実行環境の設定。ADR-0107 決定4)。
+// 申告は自己申告であり、機械が確かめるのは名簿との重なりと、env-check を実行した環境で認証したアカウントとの照合だけである
+
+export const PERFORMER_ACCOUNT_KINDS = ['dedicated', 'shared'];
+/** 名義の状態の表示名(保証の開示の項目1・D-0 表7・PROCESS-PROFILE.md と同じ語) */
+export const PERFORMER_ACCOUNT_LABEL = { dedicated: '専用', shared: '共有', undeclared: '未申告' };
+
+/** 名義の申告が意味を持つ席。担い手を宣言した席と、名義を書いた席 */
+function accountSeats(config) {
+  return (Array.isArray(config?.seats) ? config.seats : []).filter((s) => s && (s.performer || (s.performerAccount !== undefined && s.performerAccount !== null)));
+}
+
+/**
+ * 席の担い手の名義を読む。{ role, name, kind: 'dedicated' | 'shared' | 'undeclared', account: { login, id } | null,
+ * person: 名簿の人 | null, personByDefault: 共有の相手を席の責任者から補ったか }。
+ * 未申告と、共有の相手(person)を書いていない共有は、その席の責任者と共有するものとして扱う(要求事項1)
+ */
+export function performerAccountOf(config, seat, { env = null } = {}) {
+  const declared = declaredPerformerAccountOf(config, seat);
+  // env-check の照合(--seat を付けた、その席の担い手の環境での照合。#430 突合 H-1)。認証したアカウントが名簿の人に当たった席は、
+  // 申告に依らず、その人と名義を共有する席として扱う(要求事項5)。専用の申告は、申告と同じアカウントの照合が確認済みのときだけ
+  // envConfirmed を立てる(述べられる名が読む。第1章 1.10.2「申告と実行環境での照合で確かめている」)
+  const entry = env && typeof env === 'object' ? env[seat?.role] ?? null : null;
+  if (!entry) return declared;
+  const hit = entry.person?.id ? (Array.isArray(config?.people) ? config.people : []).find((p) => p?.id === entry.person.id) ?? null : null;
+  const envInfo = { checkedAt: entry.checkedAt ?? null, account: entry.account ?? null, status: entry.status ?? null };
+  if (hit) return { ...declared, kind: 'shared', person: hit, personByDefault: false, declaredKind: declared.kind, env: { ...envInfo, override: true } };
+  if (declared.kind === 'dedicated') {
+    const confirmed = entry.status === 'confirmed' && declared.account?.id != null && numericAccountId(entry.account?.id ?? null) === declared.account.id && numericAccountId(entry.declared?.account?.id ?? null) === declared.account.id;
+    return { ...declared, envConfirmed: confirmed, env: envInfo };
+  }
+  return { ...declared, env: envInfo };
+}
+
+/** env-check の記録の置き場(org-assurance.mjs の ENV_CHECK_FILE と同じ) */
+export const PERFORMER_ENV_RECORD = 'docs/adoption-trial/env-check.json';
+const performerEnvCache = new Map();
+/**
+ * env-check の記録のうち、席ごとの名義の照合(performerAccountBySeat。--seat を付けた照合だけ。席ごとに最後の照合)。無ければ null。
+ * 構成に performerEnvCheck(試験・呼び出し側が渡す値。null は記録なし)があればそれを使う。鮮度は env-check の記録と同じく
+ * 作業ツリーの記録をそのまま読み、期限を置かない。専用の確認は、記録の時点の申告と現在の申告のアカウントが一致するときだけ効く
+ */
+export function performerEnvRecord(config, { root = ROOT } = {}) {
+  if (config && typeof config === 'object' && 'performerEnvCheck' in config) return config.performerEnvCheck ?? null;
+  const p = path.join(root, PERFORMER_ENV_RECORD);
+  if (!performerEnvCache.has(p)) {
+    let v = null;
+    try {
+      const rec = JSON.parse(fs.readFileSync(p, 'utf8'));
+      v = rec?.performerAccountBySeat && typeof rec.performerAccountBySeat === 'object' ? rec.performerAccountBySeat : null;
+    } catch {
+      v = null;
+    }
+    performerEnvCache.set(p, v);
+  }
+  return performerEnvCache.get(p);
+}
+
+/** 構成の申告だけから読んだ名義(D-0 の生成区間・変化点の差分・env-check の照合が使う。照合の結果を混ぜない) */
+export function declaredPerformerAccountOf(config, seat) {
+  const pa = seat?.performerAccount;
+  const base = { role: seat?.role ?? null, name: seat?.name ?? seat?.role ?? null, account: null, person: null, personByDefault: false };
+  const holder = seat?.accountable ? findPerson(config, seat.accountable) : null;
+  if (pa && typeof pa === 'object' && pa.kind === 'dedicated') {
+    const a = pa.account && typeof pa.account === 'object' ? { login: accountLoginOf(pa.account), id: numericAccountId(pa.account.id ?? null) } : null;
+    return { ...base, kind: 'dedicated', account: a };
+  }
+  if (pa && typeof pa === 'object' && pa.kind === 'shared') {
+    const named = typeof pa.person === 'string' && pa.person.trim() ? (Array.isArray(config?.people) ? config.people : []).find((p) => p?.id === pa.person.trim()) ?? null : null;
+    if (named) return { ...base, kind: 'shared', person: named };
+    return { ...base, kind: 'shared', person: typeof pa.person === 'string' && pa.person.trim() ? null : holder, personByDefault: !(typeof pa.person === 'string' && pa.person.trim()) };
+  }
+  return { ...base, kind: 'undeclared', person: holder, personByDefault: true };
+}
+
+/** 名義の申告の一覧(名義の申告が意味を持つ席だけ)。保証の開示の項目1・D-0 表7・PROCESS-PROFILE.md が読む */
+export function performerAccountStates(config, { env } = {}) {
+  const e = env === undefined ? performerEnvRecord(config) : env;
+  return accountSeats(config).map((s) => performerAccountOf(config, s, { env: e }));
+}
+
+/**
+ * 名義を共有する人(標準 第4章 G-6「名義を共有する人(第3章 3.5.3。未申告を含む)」)。名簿の id → { person, seats: [{ role, name, kind }] }。
+ * 共有と申告した席の相手と、担い手を宣言して名義を申告していない席の責任者。担い手のいない席の未申告は数えない
+ */
+export function sharingPeople(config) {
+  const out = new Map();
+  for (const st of performerAccountStates(config)) {
+    if (st.kind === 'dedicated' || !st.person) continue;
+    const e = out.get(st.person.id) ?? { person: st.person, seats: [] };
+    e.seats.push({ role: st.role, name: st.name, kind: st.kind });
+    out.set(st.person.id, e);
+  }
+  return out;
+}
+
+/** 名簿の人が、AI の担い手と名義を共有するか。共有する席の一覧([{ role, name, kind }])か null */
+export function sharingOf(config, person) {
+  if (!person?.id) return null;
+  return sharingPeople(config).get(person.id)?.seats ?? null;
+}
+
+/** 名義の共有の表示(「開発者の席の担い手と共有」「…未申告」) */
+export function sharingText(seats) {
+  return (seats ?? []).map((s) => `${s.name}の担い手(${s.kind === 'shared' ? '共有と申告' : '名義が未申告'})`).join('・');
+}
+
+/**
+ * 専用と申告した担い手のアカウント(数値の識別子で照合する。G-6 の承認を、AI を示す語の有無に依らず数えない。標準 第4章 G-6)。
+ * ref は { login, id }。識別子が一致した席を返す。記録に識別子が無ければ照合しない(null)。
+ * ログイン名だけの一致は照合に使わない(改名の後の取得を取り違えない)
+ */
+export function dedicatedSeatOf(config, ref) {
+  const id = numericAccountId(ref?.id ?? null);
+  if (id === null) return null;
+  // 申告した専用のアカウントは、照合で席が共有へ倒れても、AI の担い手のアカウントとして承認を数えない(申告だけで読む)
+  return performerAccountStates(config, { env: null }).find((st) => st.kind === 'dedicated' && st.account?.id === id) ?? null;
+}
+
+/**
+ * `gh api --paginate` の出力を読む(#430 突合 C-3)。gh の版によっては頁ごとの配列をそのまま連結して出す(`[...][...]`)ため、
+ * 文字列の中を除いて最上位の JSON の値に切り分け、配列は連結して1つの配列に戻す。値が1つならその値を返す。読めなければ例外
+ */
+export function parsePagedJson(text) {
+  const s = String(text ?? '');
+  const values = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      if (depth === 0 && start < 0) start = i;
+      continue;
+    }
+    if (ch === '[' || ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) {
+        values.push(JSON.parse(s.slice(start, i + 1)));
+        start = -1;
+      }
+    }
+  }
+  if (!values.length) return JSON.parse(s);
+  if (values.length === 1) return values[0];
+  return values.every(Array.isArray) ? values.flat() : values;
+}
+
+/** env-check の名義の照合の範囲の注記(要求事項5。出力と記録に必ず書く) */
+export const PERFORMER_ENV_SCOPE = 'この照合は、env-check を実行した環境(その環境の gh が認証したアカウント)と時点に限る。担い手が別の環境・別の認証情報で動く場合は確かめていない';
+
+/**
+ * env-check の名義の照合(標準 第3章 3.5.3 要求事項5。process-compass #430 / IMPL-0421)。user は実行した環境の gh が認証した
+ * アカウント(gh api user の { login, id })。名簿の people[].accounts と各席の performerAccount に照合し、席ごとの所見を返す。
+ * 名簿の人に当たり、その環境で動く担い手の申告が専用(または未申告)なら一致しない所見を出す(名簿の人に当たった担い手を専用として
+ * 扱ってはならない)。seatRoles を渡すと、その席の担い手だけを「この環境で動く担い手」として照合する(省くと名義を申告する全席)。
+ * 構成を書き換えない(申告を直すのは人の /process-change)。{ status, detail, account, person, seats: [{ role, name, kind, status, detail }], scope }
+ */
+export function performerAccountEnvFinding(config, user, { seatRoles = null } = {}) {
+  const account = user && typeof user === 'object' ? { login: accountLoginOf(user.login ?? ''), id: numericAccountId(user.id ?? null) } : null;
+  const base = { account, scope: PERFORMER_ENV_SCOPE };
+  // どの席の担い手の環境かを指定しない照合は、席ごとの判定に使わない(#430 突合 L-6)。人が自分の環境で実行したときに、
+  // 担い手の環境を見ていない共有の申告へ「一致する」と出さないため
+  if (!Array.isArray(seatRoles) || !seatRoles.length) {
+    return { ...base, status: 'notSpecified', person: null, detail: 'どの席の担い手の環境かを指定していない(--seat <ロール>)。席ごとの名義の照合に使わない', seats: [] };
+  }
+  // 照合は構成の申告と比べる(前の照合の結果を混ぜない)
+  const states = performerAccountStates(config, { env: null }).filter((st) => seatRoles.includes(st.role));
+  if (!account || account.id === null) {
+    return { ...base, status: 'unconfirmed', person: null, detail: 'この環境の gh が認証したアカウント(gh api user の login と id)を読めない(未認証・模擬の gh)', seats: states.map((st) => ({ role: st.role, name: st.name, kind: st.kind, status: 'unconfirmed', detail: '認証したアカウントを読めない' })) };
+  }
+  if (!states.length) return { ...base, status: 'notApplicable', person: null, detail: '名義を申告する席(担い手を宣言した席・名義を書いた席)が無い', seats: [] };
+  const ident = identifyAccount(config, account);
+  const person = ident.person && ident.person.appointer !== true ? ident.person : null;
+  const dedicatedHit = dedicatedSeatOf(config, account);
+  const who = `@${account.login}(#${account.id})`;
+  const seats = states.map((st) => {
+    // 照合の時点の申告(読む側は、現在の申告と同じアカウントのときだけ専用の確認に数える)
+    const row = { role: st.role, name: st.name, kind: st.kind, declared: st.kind === 'dedicated' ? { kind: 'dedicated', account: st.account } : { kind: st.kind } };
+    if (person) {
+      if (st.kind === 'dedicated') return { ...row, status: 'mismatch', detail: `認証したアカウント ${who} は名簿の人 ${person.name} のもの。この環境で動く担い手を専用として扱えない(共有。kind: "shared", person: "${person.id}" へ /process-change(種別 performer)で改める)` };
+      if (st.kind === 'undeclared') return { ...row, status: 'mismatch', detail: `名義が未申告。認証したアカウント ${who} は名簿の人 ${person.name} のもの(共有として申告する。kind: "shared", person: "${person.id}")` };
+      if (st.person && st.person.id !== person.id) return { ...row, status: 'mismatch', detail: `共有の相手の申告(${st.person.name})と、認証したアカウントの人(${person.name})が異なる` };
+      return { ...row, status: 'confirmed', detail: `共有の申告(${person.name})と、認証したアカウント ${who} が一致する` };
+    }
+    if (st.kind === 'dedicated') {
+      if (st.account?.id === account.id) return { ...row, status: 'confirmed', detail: `認証したアカウント ${who} は、専用と申告したアカウントと数値の識別子が一致し、名簿の人のアカウントに当たらない` };
+      return { ...row, status: 'mismatch', detail: `認証したアカウント ${who} は、専用と申告したアカウント(${st.account?.login ? `@${st.account.login} #${st.account.id}` : '記載なし'})と異なる。この環境で動く担い手のアカウントか確かめる` };
+    }
+    if (dedicatedHit) return { ...row, status: 'mismatch', detail: `認証したアカウント ${who} は、${dedicatedHit.name}の担い手が専用と申告したアカウント。この席の申告(${PERFORMER_ACCOUNT_LABEL[st.kind]})と食い違う` };
+    return { ...row, status: 'unknown', detail: `認証したアカウント ${who} は名簿の人にも専用と申告したアカウントにも当たらない${ident.problem ? `(${ident.problem})` : ''}` };
+  });
+  const status = seats.some((s) => s.status === 'mismatch') ? 'mismatch' : seats.every((s) => s.status === 'confirmed') ? 'confirmed' : 'unknown';
+  // 名簿のログイン名に当たり識別子の無い要素は、名簿へ識別子を入れる提案だけを出す(名簿を書き換えない。入れるのは人。ADR-0108)
+  const propose = !person && ident.how === 'login-only' && ident.problem === '名簿に数値の識別子が無い' ? `名簿の ${ident.candidate?.name} の "${account.login}" に数値の識別子 ${account.id} を入れる提案(人が /process-change 種別 accountable で記入する)` : null;
+  const detail =
+    `認証したアカウント ${who}: ${person ? `名簿の人 ${person.name}` : dedicatedHit ? `${dedicatedHit.name}の担い手の専用の名義` : '名簿の人・専用の名義のどちらにも当たらない'}。` +
+    seats.map((s) => `${s.name} ${PERFORMER_ACCOUNT_LABEL[s.kind]}: ${FINDING_WORD[s.status]}`).join(' / ') +
+    (propose ? `。${propose}` : '');
+  return { ...base, status, person: person ? { id: person.id, name: person.name } : null, detail, seats, ...(propose ? { proposal: propose } : {}) };
+}
+const FINDING_WORD = { confirmed: '一致する', mismatch: '一致しない', unknown: '照合できない', unconfirmed: '読めない' };
+
+/**
+ * 名義の申告の契約検査(要求事項1〜3)。{ problems, notes }。
+ * problems: kind の値、dedicated の account(login と正の整数の id)、名簿の人のアカウント(login・id)との重なり、
+ * shared の person が名簿に無い、知らない欄。notes: 共有の相手が未記入(席の責任者と共有として扱う)
+ */
+export function performerAccountProblems(config) {
+  const problems = [];
+  const notes = [];
+  const roster = Array.isArray(config?.people) ? config.people : [];
+  const rosterIds = new Map();
+  const rosterLogins = new Map();
+  for (const p of roster) {
+    for (const a of Array.isArray(p?.accounts) ? p.accounts : []) {
+      const id = accountIdOf(a);
+      if (id !== null) rosterIds.set(id, p);
+      if (accountKey(a)) rosterLogins.set(accountKey(a), p);
+    }
+  }
+  const dedicatedIds = new Map();
+  for (const s of Array.isArray(config?.seats) ? config.seats : []) {
+    const pa = s?.performerAccount;
+    // 未申告の席で席の責任者が未記入(#430 突合 L-3)
+    if ((pa === undefined || pa === null) && s?.performer && !s.accountable) {
+      notes.push(`${s.name ?? s.role} の担い手の名義が未申告で、席の責任者も未記入のため、名義を共有する人が分からない。G-6 の印と効力を持つ記録の帰属の確認が誰にも掛からない(述べられる名は離脱に数える)`);
+    }
+    if (pa === undefined || pa === null) continue;
+    const label = `${s.name ?? s.role} の担い手の名義(performerAccount)`;
+    if (typeof pa !== 'object' || Array.isArray(pa)) {
+      problems.push(`${label}: { "kind": "dedicated", "account": { "login": "...", "id": 数値 } } か { "kind": "shared", "person": "<名簿の id>" } で書く。申告しないときは書かない(未申告)`);
+      continue;
+    }
+    if (!PERFORMER_ACCOUNT_KINDS.includes(pa.kind)) {
+      problems.push(`${label}: kind "${pa.kind}" は不正。dedicated(専用)/ shared(共有)のいずれか。申告しないときは欄を書かない(未申告。標準 第3章 3.5.3 要求事項1)`);
+      continue;
+    }
+    const allowed = pa.kind === 'dedicated' ? ['kind', 'account'] : ['kind', 'person'];
+    const unknown = Object.keys(pa).filter((k) => !allowed.includes(k));
+    if (unknown.length) problems.push(`${label}: 知らない欄(${unknown.join(', ')})がある。${pa.kind} で書けるのは ${allowed.join(' / ')} だけ`);
+    if (pa.kind === 'dedicated') {
+      const a = pa.account;
+      const login = a && typeof a === 'object' ? accountLoginOf(a) : '';
+      const id = a && typeof a === 'object' && typeof a.id === 'number' ? numericAccountId(a.id) : null;
+      if (!a || typeof a !== 'object' || Array.isArray(a)) {
+        problems.push(`${label}: 専用の名義は、担い手が操作に使うアカウントを account: { "login": "...", "id": 数値 } で書く(ホスティングが与える数値の識別子。標準 第3章 3.5.3 要求事項3)`);
+        continue;
+      }
+      const unknownA = Object.keys(a).filter((k) => !['login', 'id'].includes(k));
+      if (unknownA.length) problems.push(`${label}: account に知らない欄(${unknownA.join(', ')})がある。書けるのは login と id だけ`);
+      if (!login) problems.push(`${label}: account の login(ログイン名)が無い`);
+      if (id === null) problems.push(`${label}: account の id は、ホスティングがアカウントに与える数値の識別子(正の整数)で書く`);
+      // 担い手のアカウントを人の名簿に書いてはならない(要求事項3)。名簿の人のアカウントに当たれば、その担い手は共有である
+      const byId = id !== null ? rosterIds.get(id) : null;
+      const byLogin = login ? rosterLogins.get(accountKey(login)) : null;
+      if (byId) problems.push(`${label}: 専用と申告したアカウントの数値の識別子 ${id} が、人の名簿の ${byId.name}(${byId.id})のアカウントにある。名簿の人のアカウントで動く担い手は「共有」(kind: "shared", person: "${byId.id}")で申告する`);
+      else if (byLogin) problems.push(`${label}: 専用と申告したアカウント "${login}" が、人の名簿の ${byLogin.name}(${byLogin.id})のアカウントと同じログイン名である。担い手のアカウントを人の名簿に書かない(標準 第3章 3.5.3 要求事項3)`);
+      if (id !== null) {
+        const prev = dedicatedIds.get(id);
+        if (prev && prev.login && login && accountKey(prev.login) !== accountKey(login)) problems.push(`${label}: 数値の識別子 ${id} が、${prev.seat} の担い手の "${prev.login}" と "${login}" の両方に書かれている`);
+        else if (!prev) dedicatedIds.set(id, { login, seat: s.name ?? s.role });
+      }
+    } else {
+      const ref = typeof pa.person === 'string' ? pa.person.trim() : pa.person;
+      if (ref === undefined || ref === null || ref === '') {
+        if (!s.accountable) notes.push(`${label}: 共有の相手(person)も席の責任者も未記入のため、名義を共有する人が分からない。G-6 の印と効力を持つ記録の帰属の確認が誰にも掛からない(述べられる名は離脱に数える)`);
+        notes.push(`${label}: 共有の相手(person)が未記入。この席の責任者(${s.accountable ? personName(config, s.accountable) : '未記入'})と名義を共有するものとして扱う。名簿を記入した後、/process-change(種別 performer)で person に名簿の id を書く(標準 第3章 3.5.3 要求事項2)`);
+      } else if (typeof ref !== 'string') problems.push(`${label}: person は人の名簿の id を文字列で書く`);
+      else if (!roster.some((p) => p?.id === ref)) problems.push(`${label}: person "${ref}" が人の名簿(people[].id)に無い。誰のアカウントかを名簿の id で書く(標準 第3章 3.5.3 要求事項2)`);
+    }
+  }
+  return { problems, notes };
 }
 
 /**
@@ -1109,6 +1547,8 @@ export function configIntegrityProblems(config) {
   out.push(...chain.problems);
   out.push(...answersRosterProblems(config), ...headcountProblems(config), ...shipBlockedProblems(config));
   for (const p of namingProblems(config)) out.push(`記名を受け付けられません: ${p}`);
+  // AI の担い手の名義の申告(第3章 3.5.3。#430)。名簿の人のアカウントを専用と申告した構成などを、集約の時点でも確かめる
+  for (const p of performerAccountProblems(config).problems) out.push(`担い手の名義: ${p}`);
   for (const s of config.seats ?? []) {
     const ceiling = SEAT_CEILING[s.role] ?? 'delegated';
     if (!SEAT_MODES.includes(s.mode) || modeRank(s.mode) > modeRank(ceiling)) {

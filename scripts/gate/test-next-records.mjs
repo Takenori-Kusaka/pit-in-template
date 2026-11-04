@@ -50,8 +50,9 @@ const PR_INFO = {
 const prInfoOf = (copy) => PR_INFO[copy.pr] ?? { info: null, from: null, failed: '対応なし' };
 const CONFIG = {
   people: [
-    { id: 'p1', name: '山田 太郎', accounts: ['yamada'] },
-    { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] },
+    // 名簿の数値の識別子は fixtures/records/reviews/ の写しの user.id と同じ値(名簿の照合は識別子で行う。process-compass #430)
+    { id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 22556919 }] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 30000001 }] },
   ],
 };
 
@@ -115,7 +116,7 @@ const CONFIG = {
   const rn = recordsFromCopy(noHead, info);
   check('写しに head が無ければ、通過を確かめられないとして数えない', rn.filter((r) => r.gate === 'G-4').every((r) => /確かめられない/.test(r.issue ?? '')) && !passed(rn, 'g4', 'F-001'), JSON.stringify(rn));
   // 名簿との対応づけ(config を渡したときだけ)
-  const r14 = recordsFromCopy(copyOf(14), info, { config: { people: [{ id: 'p1', name: '山田 太郎', accounts: ['yamada'] }] } });
+  const r14 = recordsFromCopy(copyOf(14), info, { config: { people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 22556919 }] }] } });
   check('名簿を渡し、承認者が名簿に無ければ数えず、理由を出す', !passed(r14, 'g6', 'F-001') && r14.some((r) => /名簿/.test(r.issue ?? '')), JSON.stringify(r14));
   check('名簿を渡さなければ、対応づけは行わない', passed(recordsFromCopy(copyOf(14), info), 'g6', 'F-001'));
   // 宣言行 G-6: 通過 が承認でない

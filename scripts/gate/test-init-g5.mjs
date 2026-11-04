@@ -348,6 +348,44 @@ for (const stack of ['python', 'go', 'none', 'undetermined']) {
   check(`${stack}: 初期化の直後に spec-lint(引数なし)が通る`, r.ok, r.out);
 }
 
+// 初期化の問い「AI に GitHub を操作させるとき、どのアカウントで動かすか」(標準 第3章 3.5.3 要求事項1。process-compass #430 / IMPL-0428)。
+// 全規模で問い、回答から seats[].performerAccount を生成し、PROCESS-PROFILE.md に名義と、共有・未申告なら列挙に無い離脱を出す
+{
+  const initWith = (label, pa, n = 1) => {
+    const W = workspace(`pa-${label}`);
+    dirs.push(W.dir);
+    const init = W.node('scripts/init/generate-profile.mjs', '--answers', answersFile({ ...ANSWERS[n], ...COMMON, ...(pa === undefined ? {} : { performerAccount: pa }) }), '--stack', 'node');
+    const cfg = init.ok ? JSON.parse(W.read('process.config.json')) : null;
+    return { W, init, cfg, profile: init.ok ? W.read('PROCESS-PROFILE.md') : '' };
+  };
+  const dedicated = initWith('dedicated', { kind: 'dedicated', account: { login: 'pit-agent-acct', id: 7001 } }, 3);
+  const nonHuman = (cfg) => cfg.seats.filter((s) => s.modeCeiling !== 'human');
+  // IMPL-0428:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check(
+    '名義の問い: 専用の回答(login と id は人が書く)から、AI の担い手を置ける席へ performerAccount を生成する(人確定の席には書かない)',
+    dedicated.init.ok && nonHuman(dedicated.cfg).every((s) => s.performerAccount?.kind === 'dedicated' && s.performerAccount.account.id === 7001) && dedicated.cfg.seats.filter((s) => s.modeCeiling === 'human').every((s) => !s.performerAccount),
+    dedicated.init.out
+  );
+  check('名義の問い: 専用は PROCESS-PROFILE.md に名義として出て、列挙に無い離脱にしない', /### AI の担い手の名義/.test(dedicated.profile) && /pit-agent-acct/.test(dedicated.profile) && !/\*\*列挙に無い離脱\*\*: /.test(dedicated.profile), dedicated.profile.slice(0, 400));
+  const contract = dedicated.W.node('scripts/gate/verify-gate-contract.mjs');
+  check('名義の問い: 専用の回答で初期化した構成は契約検査を通る', contract.ok, contract.out);
+  const shared = initWith('shared', { kind: 'shared' });
+  check(
+    '名義の問い: 自分たちのアカウントの回答は shared(名簿が空のため person なし)。PROCESS-PROFILE.md に列挙に無い離脱として出す',
+    shared.init.ok && nonHuman(shared.cfg).every((s) => s.performerAccount?.kind === 'shared' && s.performerAccount.person === undefined) && /\*\*列挙に無い離脱\*\*: /.test(shared.profile),
+    shared.init.out
+  );
+  const undecided = initWith('undecided', 'undecided');
+  check('名義の問い: まだ決めていない回答は無記入(未申告)で、出力に未申告と出す', undecided.init.ok && undecided.cfg.seats.every((s) => !('performerAccount' in s)) && /\[名義\].*まだ決めていない/.test(undecided.init.out), undecided.init.out);
+  const absent = initWith('absent', undefined);
+  check('名義の問い: 回答が無い初期化も受け付け、問いの回答が無い旨を出す(旧い回答ファイル)', absent.init.ok && /\[名義\].*問いの回答が無い/.test(absent.init.out), absent.init.out);
+  // IMPL-0428:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  const badId = initWith('bad-id', { kind: 'dedicated', account: { login: 'pit-agent-acct', id: '7001' } });
+  check('名義の問い: 専用の id が数値の識別子でない回答を拒否し、構成を書かない', !badId.init.ok && /正の整数/.test(badId.init.out) && JSON.parse(badId.W.read('process.config.json')).configured === false, badId.init.out);
+  const withPerson = initWith('with-person', { kind: 'shared', person: 'p1' });
+  check('名義の問い: 名簿が空の初期化で共有の相手(person)を書いた回答を拒否する', !withPerson.init.ok && /person/.test(withPerson.init.out), withPerson.init.out);
+}
+
 // ワークフローの定義
 const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
 check('ワークフロー: spec-lint ジョブは引数なしで実行する(手元の既定の範囲と同じ)', /run: node scripts\/gate\/spec-lint\.mjs\s*$/m.test(wf));

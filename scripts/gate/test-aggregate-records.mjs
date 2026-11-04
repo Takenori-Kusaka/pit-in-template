@@ -51,12 +51,14 @@ const check = (name, ok, detail = '') => {
 };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-// 構成(手で起こしたもの)。山田が価値責任者(G-2・G-4 を判定する席)、鈴木が独立レビュア(G-6)
+// 構成(手で起こしたもの)。山田が価値責任者(G-2・G-4 を判定する席)、鈴木が独立レビュア(G-6)。
+// 名簿の数値の識別子は fixtures/records/reviews/ の写しの user.id と同じ値(名簿の照合は識別子で行う。process-compass #430)
+const UID = { yamada: 22556919, suzuki: 30000001, sato: 40000002 };
 const config = {
   people: [
-    { id: 'p1', name: '山田 太郎', accounts: ['yamada'] },
-    { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] },
-    { id: 'p3', name: '佐藤 花子', accounts: ['sato'] },
+    { id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: UID.yamada }] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: UID.suzuki }] },
+    { id: 'p3', name: '佐藤 花子', accounts: [{ login: 'sato', id: UID.sato }] },
     { id: 'p4', name: '高橋 次郎' },
   ],
   roles: [
@@ -200,7 +202,7 @@ const config = {
   check('G-4(pr-12): 宣言行の無い承認(suzuki の LGTM)は判定でない', !j12.some((j) => j.login === 'suzuki'));
   const j13 = gateJudgementsOfCopy(copyOf(13), config);
   check('G-6(pr-13): 判定者本人(@suzuki)の差し戻し。commit_id != head(確定していない版)', j13.length === 1 && j13[0].judgeOk === true && j13[0].headMatch === false && j13[0].result === '差し戻し' && same(j13[0].criteria, [3, 5]), JSON.stringify(j13));
-  const other = { pr: 17, merge_commit_sha: 'm', head_sha: 'h', reviews: [{ id: 1, state: 'APPROVED', commit_id: 'h', submitted_at: '2026-10-01T00:00:00Z', user: { id: 3, login: 'sato' }, body: 'G-4: 通過\n確認した項目: 基準1' }] };
+  const other = { pr: 17, merge_commit_sha: 'm', head_sha: 'h', reviews: [{ id: 1, state: 'APPROVED', commit_id: 'h', submitted_at: '2026-10-01T00:00:00Z', user: { id: UID.sato, login: 'sato' }, body: 'G-4: 通過\n確認した項目: 基準1' }] };
   const jo = gateJudgementsOfCopy(other, config);
   check('G-4(pr-17): 判定する席の責任者でない者(@sato)の宣言行は judgeOk=false(数えない)', jo.length === 1 && jo[0].judgeOk === false && /席の責任者/.test(jo[0].judgeNote), JSON.stringify(jo));
   const ju = gateJudgementsOfCopy(copyOf(12), { people: config.people });
@@ -215,7 +217,7 @@ const config = {
     pr: 18,
     merge_commit_sha: 'm'.repeat(40),
     head_sha: 'h'.repeat(40),
-    reviews: [{ id: 2, state: 'COMMENTED', commit_id: commitId, submitted_at: '2026-10-01T00:00:00Z', user: { id: 1, login }, body: `${gate}: 通過\n確認した項目: 基準1` }],
+    reviews: [{ id: 2, state: 'COMMENTED', commit_id: commitId, submitted_at: '2026-10-01T00:00:00Z', user: { id: UID[login], login }, body: `${gate}: 通過\n確認した項目: 基準1` }],
   });
   const gapsOf = (copy) => unconfirmedVersionGaps(gateJudgementsOfCopy(copy, config).map((j) => ({ ...j, pr: copy.pr })));
   // IMPL-0129:ng
@@ -291,13 +293,13 @@ const config = {
   const base = { hash: 'abcdef0123456789', authorName: '鈴木 一郎', authorEmail: '30000001+suzuki@users.noreply.github.com', authorLogin: 'suzuki', date: '2026-10-20T14:00:00+09:00' };
   const rec = (commit) => ({ file: 'docs/gates/g7-v1.2.0-2026-10-20.md', text: g7, commit });
   // 記録だけの PR を、記名者本人が承認した(承認者 = 記名者)
-  const a1 = formAttribution(rec({ ...base, authorName: 'pit-in-bot', authorEmail: 'bot@example.com', authorLogin: null, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: ['suzuki'] });
+  const a1 = formAttribution(rec({ ...base, authorName: 'pit-in-bot', authorEmail: 'bot@example.com', authorLogin: null, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: [{ login: 'suzuki', id: UID.suzuki }] });
   check('帰属: 記名者本人の承認レビュー → backed(approval-review)。事務の承認者なし', a1.backed === true && a1.how === 'approval-review' && a1.clerical.length === 0 && a1.selfAttested === false, JSON.stringify(a1));
   // 記名者以外が承認した(取り込みの事務)。コミットの author は草案の文脈(bot)
-  const a2 = formAttribution(rec({ ...base, authorName: 'pit-in-bot', authorEmail: 'bot@example.com', authorLogin: null, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: ['yamada'] });
+  const a2 = formAttribution(rec({ ...base, authorName: 'pit-in-bot', authorEmail: 'bot@example.com', authorLogin: null, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: [{ login: 'yamada', id: UID.yamada }] });
   check('帰属: 記名者以外の承認だけ → 自己申告。承認者は取り込みの事務(clerical)に出す', a2.backed === false && a2.selfAttested === true && same(a2.clerical, ['yamada']), JSON.stringify(a2));
   // 記名者以外の承認でも、コミットの author が記名者なら弱い裏づけ
-  const a3 = formAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: ['yamada'] });
+  const a3 = formAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: [{ login: 'yamada', id: UID.yamada }] });
   check('帰属: 承認は別人でも author の login が記名者 → backed(author-login)。別人の承認は事務', a3.backed === true && a3.how === 'author-login' && same(a3.clerical, ['yamada']), JSON.stringify(a3));
   // 記録用ブランチ(PR を経ない)の署名コミット
   const a4 = formAttribution(rec({ ...base, signed: true }), { judgeName: '鈴木 一郎', person: suzuki, approvers: null });
@@ -312,9 +314,12 @@ const config = {
   const a8 = formAttribution(rec({ ...base, signed: true }), { judgeName: null, person: null, approvers: ['suzuki'] });
   check('帰属: 記名が無ければ裏づけられない(承認があっても)', a8.backed === false && /記名が無い/.test(a8.note));
   // 名簿のアカウントが複数ある人
-  const multi = { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki-old', 'suzuki'] };
-  const a9 = formAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', person: multi, approvers: ['SUZUKI-OLD'] });
-  check('帰属: 名簿の複数のアカウント(大文字小文字を問わない)のいずれかで裏づける', a9.backed === true && a9.how === 'approval-review', JSON.stringify(a9));
+  const multi = { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki-old', id: 30000009 }, { login: 'suzuki', id: UID.suzuki }] };
+  const a9 = formAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', person: multi, approvers: [{ login: 'SUZUKI-OLD', id: 30000009 }] });
+  check('帰属: 名簿の複数のアカウントのいずれか(数値の識別子で照合)で裏づける', a9.backed === true && a9.how === 'approval-review', JSON.stringify(a9));
+  // IMPL-0426:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  const a10 = formAttribution(rec({ ...base, authorName: 'pit-in-bot', authorEmail: 'bot@example.com', authorLogin: null, signed: false }), { judgeName: '鈴木 一郎', person: suzuki, approvers: ['suzuki', { login: 'suzuki', id: 99999999 }] });
+  check('帰属: ログイン名だけの承認者・ログイン名が一致し数値の識別子が異なる承認者は、記名者本人の承認に数えない', a10.backed === false && a10.how !== 'approval-review', JSON.stringify(a10));
 }
 
 // ---------------------------------------------------------------- PR の記録を gh で取得できないときの後退経路(写しの本文)

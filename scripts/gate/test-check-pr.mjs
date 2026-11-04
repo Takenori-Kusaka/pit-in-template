@@ -34,15 +34,18 @@ git('init', '-q', '-b', 'main');
 git('config', 'user.email', 't@example.com');
 git('config', 'user.name', 'tester');
 git('config', 'core.autocrlf', 'false');
+// 名簿とホスティングの記録の数値の識別子(名簿の照合は識別子で行う。process-compass #430 / ADR-0108)
+const UID = { yamada: 1001, suzuki: 1002, sato: 1003, tester: 1009 };
+const acct = (login) => ({ login, id: UID[login] });
 const config = {
   configured: true,
   adapters: { stack: 'node' },
   ci: { coverageThreshold: 80 },
   task: { maxChangedLines: 400, maxChangedFiles: 15, selfHealMaxIterations: 3 },
   people: [
-    { id: 'p1', name: '山田 太郎', accounts: ['yamada'] },
-    { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] },
-    { id: 'p3', name: '佐藤 花子', accounts: ['sato'] },
+    { id: 'p1', name: '山田 太郎', accounts: [acct('yamada')] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [acct('suzuki')] },
+    { id: 'p3', name: '佐藤 花子', accounts: [acct('sato')] },
   ],
   // 区分の下限の規則(標準 第3章 3.8.1。#288 第2巡)
   riskFloor: { rules: [{ id: 'auth', paths: ['src/auth/**'], floor: 'R1', why: '認証・認可' }] },
@@ -71,14 +74,17 @@ let failures = 0;
 let n = 0;
 // 効力を持つ記録(台帳の行・解除の記録)を基底ブランチへ入れた PR の記録(ホスティングの代役。process-compass #380)。
 // 既定は、記名者(鈴木 一郎・佐藤 花子)本人の承認で入った記録として扱う。帰属の照合そのものの試験は test-material-attribution.mjs
-const BACKED = { prOfCommit: () => ({ number: 1, author: 'tester', approvers: ['suzuki', 'sato'] }) };
+const BACKED = { prOfCommit: () => ({ number: 1, author: 'tester', authorId: UID.tester, approvers: [acct('suzuki'), acct('sato')] }) };
 function scenario(name, pr, mutate, expect) {
   n++;
   git('switch', '-q', '-C', `pr-${n}`, 'main');
   mutate();
   git('add', '-A');
   git('commit', '-q', '--allow-empty', '-m', `change ${n}`);
-  const r = analyzePr({ root: TMP, base: 'main', pr: { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, ...(typeof pr === 'function' ? pr() : pr) } });
+  const prIn = { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, ...(typeof pr === 'function' ? pr() : pr) };
+  // PR の作成者の数値の識別子(PR_AUTHOR_ID)。場面が作成者を替えたら、その作成者の識別子
+  if (prIn.authorId === undefined) prIn.authorId = UID[prIn.author] ?? null;
+  const r = analyzePr({ root: TMP, base: 'main', pr: prIn });
   const problems = expect(r);
   const ok = !problems.length;
   if (!ok) failures++;
@@ -499,7 +505,7 @@ scenario('停止の申し立て: PR の中で足した解除の記録は数え�
 // ---------------------------------------------------------------- 効力を持つ記録の帰属(process-compass #380 / ADR-0106)
 // 単体の試験は test-material-attribution.mjs(IMPL-0414)。ここは PR の時点の検査へ組み込んだ形を確かめる(IMPL-0413)。
 // レビューの対象のコミットは、場面のコミットの後の先頭(PR の情報を関数で渡し、analyzePr を呼ぶ時点に読む)
-const reviewed = (login, body) => ({ reviews: [{ id: 1, author: { login }, state: 'COMMENTED', body, submitted_at: '2099-01-01T00:00:00Z', commit_id: git('rev-parse', 'HEAD').trim(), edited_by: null }] });
+const reviewed = (login, body) => ({ reviews: [{ id: 1, author: acct(login), state: 'COMMENTED', body, submitted_at: '2099-01-01T00:00:00Z', commit_id: git('rev-parse', 'HEAD').trim(), edited_by: null }] });
 // ラベルを付けた履歴(解除のレビューは、ラベルの後に出したものに限る)
 const LABELED = [{ event: 'labeled', label: 'state:stop-requested', at: '2098-12-31T00:00:00Z' }];
 const baseRelease = () => onBase(() => write(`docs/gates/stop-attr-${n + 1}.md`, release(100 + n + 1, '佐藤 花子')));
@@ -507,7 +513,7 @@ const RELEASE_BODY = '停止の解除: 解除\n\n| 欄 | 記載 |\n| --- | --- |
 // 基底の解除の記録が名前だけで書かれ、記録を入れた PR に解除した者本人の操作が無い(名前を借りる経路。#380 品質監査 F-1・F-3)
 baseRelease();
 // IMPL-0413:ng(違反と適合の対。標準の実装マーク。process-compass #314)
-scenario('帰属: 基底ブランチの解除の記録を入れた PR に、解除した者本人の作成・承認が無ければ数えない', { labels: STOP, hostingLookup: { prOfCommit: () => ({ number: 2, author: 'yamada', approvers: ['suzuki'] }) } }, () => write('docs/x.md', 'x\n'), failsWith(/帰属を確かめられない/));
+scenario('帰属: 基底ブランチの解除の記録を入れた PR に、解除した者本人の作成・承認が無ければ数えない', { labels: STOP, hostingLookup: { prOfCommit: () => ({ number: 2, author: 'yamada', authorId: UID.yamada, approvers: [acct('suzuki')] }) } }, () => write('docs/x.md', 'x\n'), failsWith(/帰属を確かめられない/));
 baseRelease();
 scenario('帰属: ホスティングの記録を読めなければ、基底ブランチの解除の記録を数えない', { labels: STOP, hostingLookup: null }, () => write('docs/x.md', 'x\n'), failsWith(/ホスティングから読めない/));
 // IMPL-0413:ok(違反と適合の対。標準の実装マーク。process-compass #314)
@@ -524,7 +530,7 @@ scenario('帰属: PR の中で足した例外承認の行は、承認した者�
   write('docs/debt-ledger.md', read('docs/debt-ledger.md') + exceptionRow('D-778', 778));
   write('src/big.js', lines(450, 'x'));
 }, (r) => (r.size.exception?.matched.includes('D-778') ? ['数えてはならない行を数えた'] : r.size.exception?.rejected.some((x) => /承認した者本人のレビューが無い/.test(x)) ? [] : [`理由が出ていない: ${JSON.stringify(r.size.exception?.rejected)}`]));
-scenario('帰属: 基底ブランチの例外承認の行を入れた PR に承認した者本人が無ければ数えない(名前を借りる経路)', { number: 7, hostingLookup: { prOfCommit: () => ({ number: 3, author: 'yamada', approvers: ['sato'] }) } }, () => {
+scenario('帰属: 基底ブランチの例外承認の行を入れた PR に承認した者本人が無ければ数えない(名前を借りる経路)', { number: 7, hostingLookup: { prOfCommit: () => ({ number: 3, author: 'yamada', authorId: UID.yamada, approvers: [acct('sato')] }) } }, () => {
   write('src/big.js', lines(450, 'x'));
 }, (r) => (r.size.exception?.matched.includes('D-001') ? ['数えてはならない行を数えた'] : r.size.exception?.rejected.some((x) => /帰属を確かめられない/.test(x)) ? [] : [`理由が出ていない: ${JSON.stringify(r.size.exception?.rejected)}`]));
 
@@ -541,7 +547,7 @@ onBase(() =>
 const warned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [] : [`${re} の警告が出ていない: ${JSON.stringify(r.warnings)}`]);
 const noticed = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [] : [`${re} の通知が出ていない: ${JSON.stringify(r.notices)}`]);
 const notWarned = (re) => (r) => (r.warnings.some((w) => re.test(w)) ? [`${re} の警告が出ている`] : []);
-const rv = (login, body = '挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた', state = 'APPROVED') => ({ author: { login }, state, body });
+const rv = (login, body = '挙動要約: 差分を読み、招待の失効の分岐を自分で確かめた', state = 'APPROVED') => ({ author: acct(login), state, body });
 scenario('承認者の数: レビューを読めないときは、その旨を出す(黙って通さない)', {}, () => write('src/a.js', lines(24)), passes(noticed(/G-6 の承認者の数: PR のレビューを読めない/)));
 // IMPL-0078:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('承認者の数: 独立した人の承認 1 名 / 要求 2 名 → 警告(失敗にはしない)', { reviews: [rv('suzuki')] }, () => write('src/a.js', lines(24)), passes(warned(/G-6 の承認者 1 名 \/ 要求 2 名/)));
@@ -716,8 +722,8 @@ for (const [name, ok] of defs) {
 
 // ---------------------------------------------------------------- 承認者の照合の穴(process-compass #429 品質監査 F-4・F-5)
 {
-  const cfg = { gates: { g6: { state: 'required' } }, review: { reviewerCount: 1 }, people: [{ id: 'p1', name: '山田 太郎', accounts: ['yamada'] }, { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] }] };
-  const rv = (extra = {}) => [{ author: { login: 'suzuki' }, state: 'APPROVED', body: '招待の期限切れで 410 を返すことを確かめた', ...extra }];
+  const cfg = { gates: { g6: { state: 'required' } }, review: { reviewerCount: 1 }, people: [{ id: 'p1', name: '山田 太郎', accounts: [acct('yamada')] }, { id: 'p2', name: '鈴木 一郎', accounts: [acct('suzuki')] }] };
+  const rv = (extra = {}) => [{ author: acct('suzuki'), state: 'APPROVED', body: '招待の期限切れで 410 を返すことを確かめた', ...extra }];
   const body = (instr) => `## 作成を指示した者
 
 ${instr}

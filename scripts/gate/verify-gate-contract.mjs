@@ -77,6 +77,9 @@ import {
   codeownersState,
   deviationCategoryProblems,
   enforcedApprovalFindings,
+  performerAccountProblems,
+  performerAccountStates,
+  PERFORMER_ACCOUNT_LABEL,
 } from './config.mjs';
 import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
@@ -549,6 +552,25 @@ if (!Array.isArray(config.seats)) {
   for (const p of accountConfirmationProblems(config)) problems.push(p);
   for (const p of nameConfirmationProblems(config)) problems.push(p);
   for (const n of nameConfirmationNotices(config)) notes.push(n);
+  // AI の担い手の名義(標準 第3章 3.5.3 要求事項1〜3・6。process-compass #430 / ADR-0107)。共有と未申告は列挙に無い離脱として表示し続ける
+  const pa = performerAccountProblems(config);
+  for (const p of pa.problems) problems.push(`${p}(第3章 3.5.3)`);
+  for (const n of pa.notes) notes.push(n);
+  const paAll = performerAccountStates(config);
+  const paLoose = paAll.filter((st) => st.kind !== 'dedicated');
+  const paUnverified = paAll.filter((st) => st.kind === 'dedicated' && !st.envConfirmed);
+  if (paUnverified.length) {
+    notes.push(
+      `AI の担い手の名義の照合が無い(列挙に無い離脱): ${paUnverified.map((st) => st.name).join(' / ')} は専用と申告しているが、その席の担い手の環境での照合(node scripts/gate/adoption-trial.mjs env-check --by <氏名> --seat <ロール>)が確認済みでない。` +
+        '名義の数え方では専用のまま扱い、述べられる名では離脱に数えます(第1章 1.10.2・第3章 3.5.3 要求事項5)'
+    );
+  }
+  if (paLoose.length) {
+    notes.push(
+      `AI の担い手の名義の共有・未申告(列挙に無い離脱。逸脱ではない): ${paLoose.map((st) => `${st.name} ${PERFORMER_ACCOUNT_LABEL[st.kind]}${st.person ? `(${st.person.name} と共有)` : ''}`).join(' / ')}。` +
+        'この範囲では適合の主張を述べられません(第1章 1.10.2)。名義を共有する人の G-6 の承認は印を付けて数え、効力を持つ記録の帰属には、名義を共有していない人の帰属の確認を要します(第4章)'
+    );
+  }
   for (const [key, v] of confirmedAccounts(config)) notes.push(`アカウント名の機械検査を人が上書きした: ${key}(${v.date ?? '日付なし'}、決定 ${v.decidedBy})`);
   if (!(config.people ?? []).length) {
     notes.push(

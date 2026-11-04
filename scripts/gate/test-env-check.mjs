@@ -118,9 +118,9 @@ function workspace(config) {
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: init');
   const mapFile = path.join(BIN, `map-${path.basename(dir)}.json`);
-  const run = (map) => {
+  const run = (map, extra = []) => {
     fs.writeFileSync(mapFile, JSON.stringify(map));
-    const r = spawnSync(process.execPath, ['scripts/gate/adoption-trial.mjs', 'env-check', '--by', '名簿 丙', '--repo', R], {
+    const r = spawnSync(process.execPath, ['scripts/gate/adoption-trial.mjs', 'env-check', '--by', '名簿 丙', '--repo', R, ...extra], {
       cwd: dir,
       encoding: 'utf8',
       env: { ...process.env, PATH: `${BIN}${path.delimiter}${process.env.PATH}`, FAKE_GH_MAP: mapFile, GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' },
@@ -336,6 +336,33 @@ if (process.platform === 'win32') {
   const none = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [{ type: 'deletion', ruleset_id: 12 }] } }));
   // IMPL-0314:ng(違反の入力: G-6 が無効の構成で、gate-g5 が必須チェックに無い)
   check('G-6 が無効の構成で gate-g5 が必須チェックに無ければ「不一致」', none.items.ruleset?.status === 'mismatch' && /gate-g5/.test(none.items.ruleset?.detail ?? ''), JSON.stringify(none.items.ruleset));
+  w.done();
+}
+
+{
+  // AI の担い手の名義の照合(標準 第3章 3.5.3 要求事項5。process-compass #430 / IMPL-0421)。この環境の gh が認証したアカウント
+  // (gh api user)を名簿と名義の申告に照合し、確かめた日時と結果を所見として記録へ書く。確認済みの判定(9項目・終了コード)に入れない
+  const people = PEOPLE.map((p, i) => ({ ...p, accounts: [{ login: `acc${i}`, id: 100 + i }] }));
+  const cfg = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' }, { people, seats: SEATS3 });
+  const dev = cfg.seats.find((s) => s.role === 'dev-verifier');
+  dev.performer = { model: 'm-1', instructions: 'v1', permissions: 'p' };
+  dev.performerAccount = { kind: 'dedicated', account: { login: 'agent-acct', id: 9001 } };
+  const w = workspace(cfg);
+  // --seat を省いた照合は、席ごとの判定に使わない(#430 突合 L-6)
+  const noSeat = w.run(ghMap({ 'api user': { stdout: { login: 'acc1', id: 101 } } }));
+  check('名義の照合: --seat を省くと、どの席の環境かを指定していない所見だけを出し、席ごとの照合を記録しない', noSeat.record?.performerAccount?.status === 'notSpecified' && !Object.keys(noSeat.record?.performerAccountBySeat ?? {}).length, JSON.stringify(noSeat.record?.performerAccount));
+  const human = w.run(ghMap({ 'api user': { stdout: { login: 'acc1', id: 101 } } }), ['--seat', 'dev-verifier']);
+  const pa = human.record?.performerAccount;
+  // IMPL-0421:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('名義の照合: 認証したアカウントが名簿の人で、専用と申告した担い手の環境なら「一致しない」所見を記録する', pa?.status === 'mismatch' && pa.account?.id === 101 && /名簿 乙/.test(pa.detail) && /所見 AI の担い手の名義の照合/.test(human.out), JSON.stringify(pa));
+  check('名義の照合: 確かめた日時と、照合が実行した環境と時点に限ることを記録と出力に書く', Boolean(pa?.checkedAt) && /実行した環境/.test(pa?.scope ?? '') && /実行した環境/.test(human.out));
+  check('名義の照合: 席ごとの最後の照合を記録に残す(述べられる名・G-6 の印・帰属の確認が読む)', human.record?.performerAccountBySeat?.['dev-verifier']?.person?.id === 'p1', JSON.stringify(human.record?.performerAccountBySeat));
+  const agent = w.run(ghMap({ 'api user': { stdout: { login: 'agent-acct', id: 9001 } } }), ['--seat', 'dev-verifier']);
+  // IMPL-0421:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('名義の照合: 認証したアカウントが専用と申告したアカウントなら確認済み', agent.record?.performerAccount?.status === 'confirmed', JSON.stringify(agent.record?.performerAccount));
+  check('名義の照合は所見であり、9項目の確認済みの判定と終了コードを変えない', human.code === agent.code && Object.keys(human.items).length === 9, `${human.code} / ${agent.code}`);
+  const unread = w.run(ghMap(), ['--seat', 'dev-verifier']);
+  check('名義の照合: gh api user を読めなければ未確認', unread.record?.performerAccount?.status === 'unconfirmed', JSON.stringify(unread.record?.performerAccount));
   w.done();
 }
 

@@ -14,7 +14,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
   "date": "2026-10-01",
   "summary": "3人目が加わり、独立レビュアを置けるようになった",
   "answers": { "q-team-size": "size-3-9" },
-  "people": [{ "id": "p1", "name": "<氏名>", "accounts": ["<アカウント>"] }],
+  "people": [{ "id": "p1", "name": "<氏名>", "accounts": [{ "login": "<ログイン名>", "id": <数値の識別子> }] }],
   "seats": { "independent-reviewer": { "accountable": "<氏名>" } },
   "decidedBy": "<D-0 表1「体制と運用形態」の決定者の氏名>",
   "reason": "<任命の理由>"
@@ -28,7 +28,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `summary` | 何が変わったかを1行で |
 | `answers` | 変える軸の回答だけ。書かなかった回答は現在の値を引き継ぐ。文言は `scripts/vendor/tailoring-kb.json` の `questions` のものに限る |
 | `people` | 人の名簿。**書くと全体を置き換える**。`{ "id", "name", "external", "appointer", "accounts", "accountsConfirmed", "nameConfirmed", "team" }`。`team` は所属(任意。10名以上の規則の判定に使う)。詳細: `kinds/accountable.md` |
-| `seats` | 席(ロール ID)ごとに、変える欄だけ。`accountable` / `mode` / `performer` / `fallback` / `qualification` / `competence` |
+| `seats` | 席(ロール ID)ごとに、変える欄だけ。`accountable` / `mode` / `performer` / `performerAccount` / `fallback` / `qualification` / `competence` |
 | `delegation` | `rules` / `changeTypes` / `protectedPaths`。**書いた一覧は全体を置き換える**。詳細: `kinds/mode.md` |
 | `governance` | D-0 表1 の2行の決定者の席と、品質保証部門の通知先。`{ "structureDecider", "catalogRegistrar", "qaNotice" }`。決定者の席を変えるのは、変更前の「体制と運用形態」の決定者に限る(記名と理由)。`qaNotice` を定めるのは厳しくする向き、外す(`null`)のは緩める向き |
 | `decidedBy` / `reason` | 決定した者の氏名と理由。**緩める向きと任免では必須** |
@@ -51,6 +51,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `accountable` | 責任者。名簿の氏名または `id`。**記名の自然人に限る** |
 | `mode` | `human`(人確定) / `collab`(協働) / `delegated`(委任)。**上限の宣言**であり、変更ごとのリスク区分の判定が下げる |
 | `performer` | `{ "model": "<モデルの版>", "instructions": "<指示資産の版>", "permissions": "<権限の組>" }`。人が担う席は `null` |
+| `performerAccount` | AI の担い手の名義(種別 performer でだけ)。`{ "kind": "dedicated", "account": { "login": "<ログイン名>", "id": <数値の識別子> } }` か `{ "kind": "shared", "person": "<名簿の id>" }`。`null` は申告を取り下げる(未申告)。担い手の識別に含めない(`kinds/performer.md`「担い手の名義を変える」) |
 | `fallback` | AI が使えないときの扱い。`human`(人へ戻す) / `stop`(止める) |
 | `qualification` | 適合性確認の記録。`{ "confirmedAt", "performedBy", "approvedBy", "cases", "result", "performer" }`。`confirmedAt` は発効日以前の実在する日付。`performer` に確認した担い手の識別。**`performedBy` は AI維持管理者の席の責任者、`approvedBy` は当該の席の責任者に限る**(標準 第3章 3.4.2)。承認し直すだけなら `{ "approvedBy": "<新しい責任者>" }` |
 | `competence` | 席の責任者本人の、AI を使わずに判断できる力量の確認の記録(判断を担う席。標準 第3章 3.4.3 要求事項1)。`{ "confirmedAt", "confirmedBy", "record" }`。`confirmedBy` は本人以外の自然人。`null` で記録を消す。責任者が交代すると前任の記録は引き継がれない。記録だけの変化点に記名は要らない。詳細: `kinds/accountable.md` |

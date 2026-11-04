@@ -40,7 +40,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, findPersonByAccount, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
+import { ROOT, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
@@ -269,12 +269,16 @@ export function recordsFromCopy(copy, prInfo, { config = null, file = null } = {
     const login = r?.user?.login;
     const state = String(r?.state ?? '').toUpperCase();
     if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-    const before = last.get(login);
+    // 承認者は数値の識別子(写しの user.id)で区別する。識別子が無ければログイン名(process-compass #430)
+    const id = numericAccountId(r?.user?.id ?? null);
+    const lkey = id !== null ? `#${id}` : login;
+    const before = last.get(lkey);
     const body = hasBehaviorSummary(r.body);
-    if (state === 'APPROVED') last.set(login, { r, approved: true, summary: body || Boolean(before?.approved && before.summary), summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
-    else last.set(login, { r, approved: false });
+    if (state === 'APPROVED') last.set(lkey, { r, login, id, approved: true, summary: body || Boolean(before?.approved && before.summary), summaryWhy: body ? null : behaviorSummaryShortfall(r.body) });
+    else last.set(lkey, { r, login, id, approved: false });
   }
-  for (const [login, v] of last) {
+  for (const v of last.values()) {
+    const { login } = v;
     const r = v.r;
     if (isBotUser(r.user)) continue;
     const d = parseDeclaration(r.body);
@@ -298,9 +302,14 @@ export function recordsFromCopy(copy, prInfo, { config = null, file = null } = {
       rec.result = null;
       rec.resultRaw = '承認(挙動要約なし)';
       rec.issue = `写し ${where} の承認 ${whoAt(r)} は挙動要約が無い(${v.summaryWhy ?? '形を満たさない'})ため、G-6 に数えていない。承認者本人が自分の挙動要約(1〜2文)を付けて承認し直す`;
-    } else if (Array.isArray(config?.people) && config.people.length && !findPersonByAccount(config, login)) {
+    } else if (Array.isArray(config?.people) && config.people.length && !identifyAccount(config, { login, id: v.id }).person) {
+      // 名簿の照合は数値の識別子で行う。ログイン名だけの一致は同定に数えない(標準 第4章「アカウントと人の対応表」。process-compass #430)
+      const ident = identifyAccount(config, { login, id: v.id });
       rec.result = null;
-      rec.issue = `写し ${where} の承認 ${whoAt(r)} は、承認者を名簿(D-0 表5)と対応づけられないため、G-6 に数えていない。名簿に accounts を書くか、名簿の人が承認する`;
+      rec.issue = ident.problem
+        ? `写し ${where} の承認 ${whoAt(r)} は、承認者を名簿(D-0 表5)の人へ対応づけない(${ident.problem})ため、G-6 に数えていない。` +
+          '名簿の数値の識別子は `node scripts/gate/roster-ids.mjs` の提案を確かめ、人が /process-change(種別 accountable)で記入する'
+        : `写し ${where} の承認 ${whoAt(r)} は、承認者を名簿(D-0 表5)と対応づけられないため、G-6 に数えていない。名簿に accounts を書くか、名簿の人が承認する`;
     }
     out.push(rec);
   }
@@ -812,6 +821,25 @@ export function computeNext({ fetch = true, network = true } = {}) {
       if (rn) result.notes.push(rn);
     } catch (e) {
       result.notes.push(`能力依存の定数の再評価待ちを読めない(${String(e.message).split('\n')[0]})`);
+    }
+  }
+
+  // --- 名簿の数値の識別子(標準 第4章「アカウントと人の対応表」。process-compass #430 / ADR-0108) ---
+  // 識別子の無いアカウントは、ホスティングの記録(承認・判定・帰属)を名簿の人へ対応づけない。提案は機械が出し、名簿へ書くのは人。
+  // 段階を止めない(承認を数えない側に倒れているため)
+  {
+    const missing = accountsWithoutId(config);
+    if (missing.length) {
+      result.project.push({
+        stage: '名簿に数値の識別子の無いアカウント',
+        ...cmd(
+          'node scripts/gate/roster-ids.mjs',
+          `名簿のアカウント ${missing.length} 件(${missing.slice(0, 5).map((m) => `${m.person.name} @${m.login}`).join('、')}${missing.length > 5 ? ' ほか' : ''})に数値の識別子が無く、` +
+            'ホスティングの承認・判定・帰属を名簿の人へ対応づけていない。記録用ブランチの写しの user.id から提案を出す(写しに無い人は --lookup)。' +
+            '提案を確かめたうえで、人が `/process-change`(種別 accountable)で名簿へ書く。AI は名簿を書き換えない'
+        ),
+        read: READ.change('accountable'),
+      });
     }
   }
 

@@ -25,7 +25,8 @@
 
 import {
   classifyDelegation,
-  findPersonByAccount,
+  identifyAccount,
+  numericAccountId,
   personKey,
   aiNameReason,
   matchGlob,
@@ -155,7 +156,7 @@ export function classifyForSeat(config, files, seatRole, changedLines = null) {
  *   files    [{ path, previousPath, additions, deletions }]  PR の変更ファイル一覧
  *   commits  [{ sha, message }]                               PR のコミット
  *   checks   [{ name, status, conclusion }]                   PR の先頭のコミットのチェック
- *   reviews  [{ login, state, isBot }]                        PR のレビュー(時系列)。開発者の席が協働の場合に使う
+ *   reviews  [{ login, id, state, isBot }]                    PR のレビュー(時系列。id は書き手の数値の識別子)。開発者の席が協働の場合に使う
  *   records  検知の記録(autonomy.mjs の readAutonomyRecords の返り値の形)。autonomy を渡した場合は使わない
  *   autonomy autonomyState の返り値(呼び出し側で導いた場合)
  */
@@ -288,10 +289,12 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
       const last = new Map();
       for (const r of reviews) {
         const state = String(r.state ?? '').toUpperCase();
-        if (r.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) last.set(r.login, { state, bot: Boolean(r.isBot) });
+        // 承認者は数値の識別子で区別し、名簿の人へ識別子で対応づける。ログイン名だけの一致は数えない(process-compass #430)
+        const id = numericAccountId(r.id ?? null);
+        if (r.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) last.set(id !== null ? `#${id}` : r.login, { login: r.login, id, state, bot: Boolean(r.isBot) });
       }
-      const approved = [...last].some(
-        ([login, v]) => v.state === 'APPROVED' && !aiAccountCheck(cfg, login, v.bot).reason && devKey && findPersonByAccount(cfg, login)?.id === devKey
+      const approved = [...last.values()].some(
+        (v) => v.state === 'APPROVED' && !aiAccountCheck(cfg, v.login, v.bot).reason && devKey && identifyAccount(cfg, { login: v.login, id: v.id }).person?.id === devKey
       );
       put(
         '開発者の席',

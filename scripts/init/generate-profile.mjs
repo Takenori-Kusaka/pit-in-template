@@ -113,6 +113,8 @@ import {
   answersRosterProblems,
   resolveSigner,
   accountKey,
+  accountLoginOf,
+  accountIdOf,
   EDITION_PATTERN,
   END_REASONS,
   WORKING_DRAFT,
@@ -121,6 +123,12 @@ import {
   claimStatus,
   classifyDeviations,
   deviationCategory,
+  performerAccountOf,
+  performerAccountStates,
+  performerAccountProblems,
+  PERFORMER_ACCOUNT_KINDS,
+  PERFORMER_ACCOUNT_LABEL,
+  canonicalJson as canonicalJsonOf,
 } from '../gate/config.mjs';
 
 const normName = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -130,10 +138,19 @@ const rosterTag = (x) => (x.appointer === true ? '(組織上の任命権者)' : 
 /** アカウントの並びを比べるためのキー(配列、または変更記録の「a, b」の文字列。大文字と小文字・並び順を区別しない) */
 const accountSetKey = (v) =>
   (Array.isArray(v) ? v : String(v ?? '').split(','))
-    .map((a) => accountKey(String(a)))
+    .map((a) => accountKey(typeof a === 'string' ? a.replace(/\(#\d+\)\s*$/, '') : a))
     .filter(Boolean)
     .sort()
     .join(', ');
+/**
+ * 名簿のアカウントの表示。数値の識別子があれば `login(#id)`(process-compass #430)。識別子を足す・変えることは、
+ * アカウントの表記の変更として変化点の記録(rosterEdits)に残り、決定者の記名を要する
+ */
+const accountText = (a) => {
+  const login = accountLoginOf(a);
+  const id = accountIdOf(a);
+  return id !== null ? `${login}(#${id})` : login;
+};
 
 /**
  * 名簿の行を、名簿へ足したときの氏名とアカウント(K74)。変更記録の表記の変更(rosterEdits)を新しい順に
@@ -161,7 +178,8 @@ export function rosterOrigin(config, row) {
 export function rosterEditText(x) {
   return (
     `${x.id} の${x.field === 'name' ? '氏名' : 'アカウント'} ${x.from ?? '未記入'} → ${x.to ?? '未記入'}` +
-    (x.seats?.length ? `(席の責任者の行: ${x.seats.join('・')})` : '')
+    (x.seats?.length ? `(席の責任者の行: ${x.seats.join('・')})` : '') +
+    (x.selfIdAddition ? '(本人の記名による数値の識別子の追加。1名の体制)' : '')
   );
 }
 /** 即時通知の通知先が1つも定まらない場合に、通知先の欄へ記録する値(K70 / 第3章 3.13.6) */
@@ -330,6 +348,28 @@ function readAnswers(argv) {
   if (i < 0) throw new Error('--answers <file> が必要です');
   const raw = JSON.parse(fs.readFileSync(argv[i + 1], 'utf8'));
   return raw.answers ?? raw;
+}
+
+/**
+ * 初期化の問い「AI に GitHub を操作させるとき、どのアカウントで動かすか」の回答(標準 第3章 3.5.3 要求事項1。process-compass #430 /
+ * IMPL-0428)。回答ファイルの performerAccount(回答を answers で包む形では answers と同じ階層、包まない形では設問と同じ階層)。
+ *   { "kind": "dedicated", "account": { "login": "...", "id": 数値 } }  AI 専用のアカウント・アプリ(login と id は人が書く)
+ *   { "kind": "shared" }                                                 自分たちのアカウント(名簿が空のため、相手は席の責任者から補う)
+ *   "undecided" または null                                              まだ決めていない(未申告)
+ * 問いの回答が無ければ undefined(未申告として扱い、その旨を出す)
+ */
+export function initPerformerAccountOf(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  if (raw.answers && typeof raw.answers === 'object') return raw.performerAccount;
+  return raw.performerAccount;
+}
+
+/** 初期化の名義の回答の問題(拒否の理由)。名簿は初期化では空のため、共有の相手(person)は書けない */
+export function initPerformerAccountProblems(v) {
+  if (v === undefined || v === null || v === 'undecided') return [];
+  if (typeof v !== 'object' || Array.isArray(v)) return ['performerAccount は { "kind": "dedicated", "account": { "login": "...", "id": 数値 } }、{ "kind": "shared" }、"undecided" のいずれかで書きます'];
+  if (v.kind === 'shared' && v.person !== undefined) return ['初期化では人の名簿が空のため、共有の相手(person)を書けません。{ "kind": "shared" } とし、名簿を記入した後に /process-change(種別 performer)で person を書きます'];
+  return performerAccountProblems({ people: [], seats: [{ role: 'init', name: '初期化の回答', performerAccount: v }] }).problems;
 }
 
 function arg(argv, name, fallback) {
@@ -588,6 +628,9 @@ export function buildSeats(prevSeats = []) {
         modeCeiling: ceiling,
         delegable: ceiling === 'delegated',
         performer: p.performer ?? null,
+        // AI の担い手の名義(標準 第3章 3.5.3。process-compass #430 / ADR-0107)。担い手の識別(performer)に含めない。
+        // 無記入は未申告(担い手を宣言した席では、席の責任者と共有として扱う)。鍵は申告した席にだけ置く(旧い構成の要約値を保つ)
+        ...(p.performerAccount && typeof p.performerAccount === 'object' ? { performerAccount: p.performerAccount } : {}),
         fallback: p.fallback ?? null,
         qualification: p.qualification ?? null,
         // 席の責任者本人の、AI を使わずに判断できる力量の確認の記録(第3章 3.4.3 要求事項1。#288 第6巡 R)。
@@ -1441,7 +1484,7 @@ export function diffConfig(before, after) {
   const rosterOf = (c) => Object.fromEntries((c.people ?? []).map((p) => [p.id, p]));
   const bp = rosterOf(before);
   const ap = rosterOf(after);
-  const accountsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).join(', ');
+  const accountsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).map(accountText).join(', ');
   // 名簿の既存の行の書き換え(K67 / 第3章 3.13.3)。氏名とアカウントの両方を変える変更は、別の人への差し替えであり
   // 拒否する(rosterSwaps)。氏名だけ、またはアカウントだけの変更は、同じ人の表記の変更として扱い、D-0 表1
   // 「体制と運用形態」の決定者の記名と理由を要する(renameItems)。変更記録へ旧い値と新しい値を残す(rosterEdits)
@@ -1475,19 +1518,34 @@ export function diffConfig(before, after) {
         const field = nameChanged ? 'name' : 'accounts';
         // 席の責任者の行なら、その席を残す(変化点の記録・D-0 の改訂履歴・品質レポートの項目7 に出す。K74)
         const seats = (before.seats ?? []).filter((s) => s.accountable && findPerson(before, s.accountable)?.id === id).map((s) => s.name);
+        // 既存のログイン名に数値の識別子を足すだけの変更(ログイン名の集合は同じで、既にある識別子を変えない。process-compass #430 突合 H-3)。
+        // 1名の体制では決定者本人のほかに記名できる人がいないため、本人の記名を受け付け、変化点の記録に区別して残す
+        const beforeIds = new Map((Array.isArray(bp[id].accounts) ? bp[id].accounts : []).map((a) => [accountKey(a), accountIdOf(a)]));
+        const idOnly =
+          !nameChanged &&
+          accountsChanged &&
+          accountSetKey(bp[id].accounts) === accountSetKey(p.accounts) &&
+          (Array.isArray(p.accounts) ? p.accounts : []).every((a) => {
+            const was = beforeIds.get(accountKey(a));
+            return was === null || was === undefined ? true : was === accountIdOf(a);
+          });
+        const self = Boolean(priorDeciderRow) && priorDeciderRow.id === id;
+        const selfIdAddition = idOnly && self && insiderCount(after) === 1;
         const edit = {
           id,
           field,
           from: nameChanged ? bp[id].name : accountsOf(bp[id]) || null,
           to: nameChanged ? p.name : accountsOf(p) || null,
           ...(seats.length ? { seats } : {}),
+          ...(selfIdAddition ? { selfIdAddition: true } : {}),
         };
         rosterEdits.push(edit);
         renameItems.push({
-          line: `人の名簿の表記の変更(${id}): ${field === 'name' ? '氏名' : 'アカウント'} ${edit.from ?? '未記入'} → ${edit.to ?? '未記入'}`,
+          line: `人の名簿の表記の変更(${id}): ${field === 'name' ? '氏名' : 'アカウント'} ${edit.from ?? '未記入'} → ${edit.to ?? '未記入'}${selfIdAddition ? '(本人の記名による数値の識別子の追加。1名の体制)' : ''}`,
           id,
-          // 決定者本人の行の書き換えは、本人の記名では確定できない
-          self: Boolean(priorDeciderRow) && priorDeciderRow.id === id,
+          // 決定者本人の行の書き換えは、本人の記名では確定できない(1名の体制の識別子の追加だけは受け付ける)
+          self,
+          selfIdAddition,
         });
       }
     }
@@ -1631,6 +1689,31 @@ export function diffConfig(before, after) {
       // 再確認が済んでいても、委任へ戻すのは緩める向きの決定である(第5章 5.5.7)
       if (p.mode === 'delegated' && s.mode === 'delegated') {
         push(`${s.name}: 担い手の識別が変わった後も委任とする(再確認のうえ、委任へ戻す決定)`, 1, 0, s.role);
+      }
+    }
+    // AI の担い手の名義(標準 第3章 3.5.3。process-compass #430 / ADR-0107 決定4)。変化点4 に数える(種別 performer)が、担い手の
+    // 識別に含めないため、適合性確認を失効させず、即時通知の対象(識別の変更)にもしない。専用から共有・未申告への切り替えは
+    // 緩める向きの変更で、当該の席の責任者の記名と理由を要する(AI の担い手が決めない)
+    if (canonicalJsonOf(p.performerAccount ?? null) !== canonicalJsonOf(s.performerAccount ?? null)) {
+      const show = (cfg, seat) => {
+        const st = performerAccountOf(cfg, seat);
+        if (st.kind === 'dedicated') return `専用(${st.account?.login ? `@${st.account.login} #${st.account.id ?? '識別子なし'}` : 'アカウントの記載なし'})`;
+        if (st.kind === 'shared') return `共有(${st.person ? st.person.name : '相手の記載なし'}${st.personByDefault ? '。席の責任者から補う' : ''})`;
+        return '未申告';
+      };
+      // 専用と共有・未申告のあいだの切り替えは、どちらの向きも記名を要する(#430 突合 H-2)。共有・未申告から専用へ切り替えると、
+      // 列挙に無い離脱・G-6 の承認の印・効力を持つ記録の帰属の確認が外れるため、統制の数え方を外す変更として扱う
+      // (ADR-0107 決定4 は専用から共有を緩める向きと定め、逆向きを定めていない。記名を要する側に倒した)
+      const kindOf = (seat) => performerAccountOf({ people: [] }, seat).kind;
+      const crossing = (kindOf(p) === 'dedicated') !== (kindOf(s) === 'dedicated');
+      push(`${s.name}: 担い手の名義 ${show(before, p)} → ${show(after, s)}`, crossing ? 1 : 0, 0, s.role, { holderOnly: true });
+      if (performerAccountOf(after, s).kind !== 'dedicated' && (s.performer || s.performerAccount)) {
+        remaining.push(
+          `${s.name}: 担い手の名義が${PERFORMER_ACCOUNT_LABEL[performerAccountOf(after, s).kind]}。列挙に無い離脱として表示し続ける(第1章 1.10.2)。名義を共有する人の G-6 の承認は印を付けて数え、` +
+            '効力を持つ記録の帰属には名義を共有していない人の帰属の確認を要する(第4章)。担い手の実行環境で node scripts/gate/adoption-trial.mjs env-check を実行し、認証したアカウントを名簿と照合する(第3章 3.5.3 要求事項5)'
+        );
+      } else {
+        remaining.push(`${s.name}: 担い手の実行環境で node scripts/gate/adoption-trial.mjs env-check を実行し、認証したアカウントが名簿の人に当たらないことを確かめる(第3章 3.5.3 要求事項5。照合は実行した環境と時点に限る)`);
       }
     }
     // 適合性確認の記録だけが変わる変化点(再確認の記録の提出)も、構成の変更として記録する
@@ -2121,6 +2204,8 @@ export function deciderProblems(config, report, decidedBy, before = null) {
     const byAppointer = isAppointer(config, decidedBy) && before && isAppointer(before, decidedBy);
     if (item.self && report.priorDeciderPresent) {
       if (key !== report.priorDecider && (byAppointer || otherHolders.has(key))) continue;
+      // 1名の体制で、既存のログイン名に数値の識別子を足すだけの変更は、本人の記名を受け付ける(#430 突合 H-3)
+      if (item.selfIdAddition && key === report.priorDecider) continue;
       out.push(
         `「${item.line}」は、D-0 表1「体制と運用形態」の決定者本人の行の変更です。決定できるのは、組織上の任命権者(名簿に external: true と appointer: true で、` +
           `この変化点より前に記載した人)、または本人以外の席の責任者1名です("${decidedBy}" は該当しません)。本人の記名では確定できません(第3章 3.13.3)`
@@ -2135,6 +2220,15 @@ export function deciderProblems(config, report, decidedBy, before = null) {
     );
   }
   for (const item of report.loosenItems) {
+    // 担い手の名義を専用から共有・未申告へ切り替える変更は、当該の席の責任者に限る(D-0 表1 の決定者では足りない。#430)
+    // ただし、独立レビュアの席の責任者が外部の確認者である場合は、席の責任者の記名を受け付けない規則(第3章 3.13.3)を優先し、下の判定に回す
+    const holderPerson = item.seat ? findPerson(config, (config.seats ?? []).find((s) => s.role === item.seat)?.accountable) : null;
+    if (item.holderOnly && item.seat && !(item.seat === 'independent-reviewer' && holderPerson?.external === true)) {
+      const holder = (config.seats ?? []).find((s) => s.role === item.seat)?.accountable;
+      if (holder && personKey(config, holder) === key) continue;
+      out.push(`「${item.line}」は緩める向きの変更であり、決定できるのは ${seatName(item.seat)} の席の責任者(${holder ? personName(config, holder) : '未記入'})です("${decidedBy}" は該当しません。AI の担い手が決めない。標準 第3章 3.5.3)`);
+      continue;
+    }
     if (allowedDeciders(config, item.seat).has(key)) continue;
     // 独立レビュアの席の責任者が外部の確認者である席では、緩める向きの決定を、席の責任者の記名では受け付けない(標準 第3章 3.13.3)
     const externalReviewer =
@@ -2369,11 +2463,23 @@ export const D0_ROSTER_COLUMNS = [
   '氏名',
   '区分(体制の内 / 外部の確認者 / 組織上の任命権者)',
   'リポジトリ上のアカウント',
+  'アカウントの数値の識別子',
   '所属(`team`。10名以上の体制で必須)',
   '氏名の確認(確認した者と日付)',
 ];
+/** #430 より前の表5-2 の列(アカウントの数値の識別子の列を持たない)。旧い生成区間を一致として受け付けるために描く */
+const D0_ROSTER_COLUMNS_BEFORE_430 = D0_ROSTER_COLUMNS.filter((c) => c !== 'アカウントの数値の識別子');
 
-export function renderD0Section(key, config, { legacy = false } = {}) {
+/** D-0 表7 の担い手の名義の欄の値(標準 第3章 3.5.3。#430)。個人名は表5 に隔離するため、共有の相手は表5-2 の識別子で書く */
+export function performerAccountCell(config, s) {
+  if (!s.performer && !(s.performerAccount && typeof s.performerAccount === 'object')) return '—';
+  const st = performerAccountOf(config, s);
+  if (st.kind === 'dedicated') return st.account?.login ? `専用(\`@${st.account.login}\` #${st.account.id ?? '**識別子なし**'})` : '専用(**アカウントの記載なし**)';
+  if (st.kind === 'shared') return `**共有**(${st.person ? `表5-2 の \`${st.person.id}\`` : '相手の記載なし'}${st.personByDefault ? '。席の責任者から補った' : ''}。列挙に無い離脱)`;
+  return '**未申告**(席の責任者と共有として扱う。列挙に無い離脱)';
+}
+
+export function renderD0Section(key, config, { legacy = false, before430 = false } = {}) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
   const blank = config.configured === false;
@@ -2393,7 +2499,7 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
     L.push('');
     const roster = config.people ?? [];
     const kindOf = (p) => (p.appointer === true ? '組織上の任命権者(体制の外。第3章 3.13.3)' : p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内');
-    const accountsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).join(', ') || '**未記入**';
+    const accountsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).map(accountText).join(', ') || '**未記入**';
     if (legacy) {
       // #312 より前の生成区間(所属は記入があるときだけ列を出し、氏名の確認の列を持たない)。d0SectionProblems が
       // 一致として受け付け、/pit が再生成を勧める(突合 X-8)。新しく描くときには使わない
@@ -2415,13 +2521,25 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
         if (st === 'unrecorded') return '確認の記録なし(1名の体制のため効かせている)';
         return '**効かない**(本人以外の記名の記録が無い)';
       };
-      L.push(`| ${D0_ROSTER_COLUMNS.join(' | ')} |`);
-      L.push(`|${' --- |'.repeat(D0_ROSTER_COLUMNS.length)}`);
+      // アカウントの数値の識別子の列(#430 / IMPL-0422)。#430 より前の生成区間(列なし。アカウントの列に login(#id))も受け付ける
+      const cols = before430 ? D0_ROSTER_COLUMNS_BEFORE_430 : D0_ROSTER_COLUMNS;
+      const loginsOf = (p) => (Array.isArray(p.accounts) ? p.accounts : []).map(accountLoginOf).filter(Boolean).join(', ') || '**未記入**';
+      const idsOf = (p) => {
+        const list = Array.isArray(p.accounts) ? p.accounts : [];
+        if (!list.length) return '—';
+        return list.map((a) => (accountIdOf(a) !== null ? String(accountIdOf(a)) : '**未記入**')).join(', ');
+      };
+      L.push(`| ${cols.join(' | ')} |`);
+      L.push(`|${' --- |'.repeat(cols.length)}`);
       for (const p of roster) {
         const team = typeof p.team === 'string' && p.team.trim() ? p.team : '—';
-        L.push(`| \`${p.id}\` | ${cell(p.name)} | ${kindOf(p)} | ${cell(accountsOf(p))} | ${cell(team)} | ${cell(confirmText(p))} |`);
+        L.push(
+          before430
+            ? `| \`${p.id}\` | ${cell(p.name)} | ${kindOf(p)} | ${cell(accountsOf(p))} | ${cell(team)} | ${cell(confirmText(p))} |`
+            : `| \`${p.id}\` | ${cell(p.name)} | ${kindOf(p)} | ${cell(loginsOf(p))} | ${cell(idsOf(p))} | ${cell(team)} | ${cell(confirmText(p))} |`
+        );
       }
-      if (!roster.length) L.push(`|${' |'.repeat(D0_ROSTER_COLUMNS.length)}`);
+      if (!roster.length) L.push(`|${' |'.repeat(cols.length)}`);
     }
   } else if (key === 'competence') {
     // 席の責任者本人の、AI を使わずに判断できる力量の確認(第3章 3.4.3 要求事項1。#288 第6巡 R)。記録は構成の seats[].competence。
@@ -2439,8 +2557,13 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
   } else if (key === 'performers') {
     const FALLBACK = { human: '人へ戻す', stop: '止める' };
     const d = config.delegation ?? { allowed: false, blockedBy: [], rules: [] };
-    L.push('| 役割 | 担い手(人 / AI の担い手の識別) | 運用形態(人確定 / 協働 / 委任) | 委任の範囲(機械の規則の所在) | 適合性確認の期限または失効条件 | AI が使えないときの扱い(人へ戻す / 止める) |');
-    L.push('| --- | --- | --- | --- | --- | --- |');
+    // 担い手の名義の列(#430 / IMPL-0422)。#430 より前の生成区間(列なし)も受け付ける
+    L.push(
+      before430
+        ? '| 役割 | 担い手(人 / AI の担い手の識別) | 運用形態(人確定 / 協働 / 委任) | 委任の範囲(機械の規則の所在) | 適合性確認の期限または失効条件 | AI が使えないときの扱い(人へ戻す / 止める) |'
+        : '| 役割 | 担い手(人 / AI の担い手の識別) | 担い手の名義(専用 / 共有 / 未申告) | 運用形態(人確定 / 協働 / 委任) | 委任の範囲(機械の規則の所在) | 適合性確認の期限または失効条件 | AI が使えないときの扱い(人へ戻す / 止める) |'
+    );
+    L.push(before430 ? '| --- | --- | --- | --- | --- | --- |' : '| --- | --- | --- | --- | --- | --- | --- |');
     for (const s of seats) {
       const rules = (d.rules ?? []).filter((r) => r.seat === s.role).map((r) => `\`${r.id}\``);
       const scope = !s.delegable ? '委任しない' : blank ? '' : s.mode === 'delegated' ? rules.join(' ') : rules.length ? `${rules.join(' ')}(委任は有効でない)` : '—';
@@ -2462,7 +2585,8 @@ export function renderD0Section(key, config, { legacy = false } = {}) {
         blank && s.modeCeiling !== 'human'
           ? ''
           : (MODE_LABEL[s.mode] ?? s.mode) + (s.intent ? `(委任を宣言済み。規則の承認待ち。決定: ${cell(s.intent.decidedBy)})` : '');
-      L.push(`| ${s.name} | ${cell(performer)} | ${mode} | ${scope} | ${cell(q)} | ${blank ? '' : FALLBACK[s.fallback] ?? (s.performer ? '**未記入**' : '—')} |`);
+      const account = blank ? '' : cell(performerAccountCell(config, s));
+      L.push(`| ${s.name} | ${cell(performer)} | ${before430 ? '' : `${account} | `}${mode} | ${scope} | ${cell(q)} | ${blank ? '' : FALLBACK[s.fallback] ?? (s.performer ? '**未記入**' : '—')} |`);
     }
     L.push('');
     L.push('委任の範囲(`delegation`):');
@@ -2602,7 +2726,9 @@ export function d0SectionProblems(text, config) {
     } else if (
       norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config)) &&
       // 表5-2 の列(#312)を置く前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない。/pit が再生成を勧める)
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true }))
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true })) &&
+      // 表5-2 のアカウントの数値の識別子と表7 の担い手の名義の列(#430)を置く前の生成区間も受け付ける(/pit が再生成を勧める)
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before430: true }))
     ) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
@@ -2627,7 +2753,7 @@ export function d0LegacyOnlySections(text, config) {
     const e = text.indexOf(end);
     if (b < 0 || e < 0 || e < b) continue;
     const body = norm(text.slice(b + begin.length, e));
-    if (body !== norm(renderD0Section(key, config)) && body === norm(renderD0Section(key, config, { legacy: true }))) out.push(NAMES[key]);
+    if (body !== norm(renderD0Section(key, config)) && (body === norm(renderD0Section(key, config, { legacy: true })) || body === norm(renderD0Section(key, config, { before430: true })))) out.push(NAMES[key]);
   }
   return out;
 }
@@ -2732,7 +2858,7 @@ export function codeownersProposal(config) {
     const seat = (config.seats ?? []).find((s) => s.role === role);
     const seatName = seat?.name ?? (KB.roles ?? []).find((r) => r.id === role)?.name ?? role;
     const person = seat?.accountable ? findPerson(config, seat.accountable) : null;
-    const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => String(a).trim().replace(/^@/, '')).filter(Boolean);
+    const accounts = (Array.isArray(person?.accounts) ? person.accounts : []).map((a) => accountLoginOf(a)).filter(Boolean);
     const pad = p.padEnd(24, ' ');
     if (!seat?.accountable) return { path: p, role, seat: seatName, owner: null, line: `# ${pad}<${seatName}の席の責任者が未記入>  # ${why}` };
     if (!accounts.length) return { path: p, role, seat: seatName, owner: null, line: `# ${pad}<${personName(config, seat.accountable)} のアカウントが名簿(people[].accounts)に無い>  # ${why}` };
@@ -3014,7 +3140,7 @@ export function renderProfileMd(config, result) {
       L.push('| id | 氏名 | 区分 | リポジトリ上のアカウント |');
       L.push('| --- | --- | --- | --- |');
       for (const p of roster) {
-        const accounts = (Array.isArray(p.accounts) ? p.accounts : []).map((a) => `\`${a}\``).join(' ') || '**未記入**';
+        const accounts = (Array.isArray(p.accounts) ? p.accounts : []).map((a) => `\`${accountText(a)}\``).join(' ') || '**未記入**';
         L.push(`| \`${p.id}\` | ${p.name} | ${p.external ? '外部の確認者(体制の人数に数えない)' : '体制の内'} | ${accounts} |`);
       }
       L.push('');
@@ -3056,6 +3182,42 @@ export function renderProfileMd(config, result) {
       );
     }
     L.push('');
+    // AI の担い手の名義(標準 第3章 3.5.3。process-compass #430 / IMPL-0428)。共有・未申告は列挙に無い離脱(第1章 1.10.2)
+    {
+      const states = performerAccountStates(config);
+      L.push('### AI の担い手の名義');
+      L.push('');
+      L.push('AI の担い手の操作を、GitHub がどのアカウントの操作として記録するかの申告です(`seats[].performerAccount`。標準 第3章 3.5.3)。名義は担い手の識別に含めません。変えるときは `/process-change`(種別 performer)を使います。');
+      L.push('');
+      if (!states.length) {
+        L.push('- 名義を申告した席も、AI の担い手を宣言した席もありません。担い手を宣言すると、名義の申告の無い席は**未申告**(席の責任者と名義を共有するものとして扱う)になり、列挙に無い離脱として表示されます');
+      } else {
+        L.push('| 席 | 名義 | アカウント・共有の相手 |');
+        L.push('| --- | --- | --- |');
+        for (const st of states) {
+          const who = st.kind === 'dedicated' ? (st.account?.login ? `\`@${st.account.login}\`(#${st.account.id ?? '識別子なし'})` : '**記載なし**') : st.person ? `${st.person.name}${st.personByDefault ? '(席の責任者から補った)' : ''}` : '**分からない**';
+          L.push(`| ${st.name} | ${st.kind === 'dedicated' ? '専用' : `**${PERFORMER_ACCOUNT_LABEL[st.kind]}**`} | ${who} |`);
+        }
+        const loose = states.filter((st) => st.kind !== 'dedicated');
+        L.push('');
+        if (loose.length) {
+          L.push(
+            `- **列挙に無い離脱**: ${loose.map((st) => `${st.name}の担い手の名義が${PERFORMER_ACCOUNT_LABEL[st.kind]}`).join('、')}(第1章 1.10.2)。適合の主張を述べられません。` +
+              '名義を共有する人の G-6 の承認は印を付けて数え、件数を保証の開示の項目1 に出します。例外承認・停止の解除などの効力を持つ記録は、記名者本人の操作だけでは帰属に数えず、名義を共有していない人の帰属の確認を要します(第4章)'
+          );
+        }
+        const unverified = states.filter((st) => st.kind === 'dedicated' && !st.envConfirmed);
+        if (unverified.length) {
+          L.push(
+            `- **列挙に無い離脱(名義の照合が無い)**: ${unverified.map((st) => st.name).join('、')}は専用と申告していますが、その席の担い手の環境での照合(\`env-check --seat <ロール>\`)が確認済みではありません(第1章 1.10.2)。` +
+              '名義の数え方では専用のまま扱います'
+          );
+        }
+        L.push('- 設定で承認・レビュー・マージを拒否していても、名義の分離には数えません(抑止であり分離ではない。標準 第3章 3.5.3 要求事項4)');
+        L.push('- 申告は、担い手の実行環境で `node scripts/gate/adoption-trial.mjs env-check --by <氏名> --seat <ロール>` を実行して、認証したアカウントと名簿を照合します。照合は実行した環境と時点に限ります。照合で名簿の人に当たった席は、申告が専用でも共有として数えます');
+      }
+      L.push('');
+    }
     // 記録の置き場の所有者(CODEOWNERS の案)。席の責任者のアカウントから起こす。/process-init は .github/CODEOWNERS を書き換えない(#54)
     L.push('### 記録の置き場の所有者(CODEOWNERS の案)');
     L.push('');
@@ -3850,8 +4012,21 @@ if (isMain) {
         bad.push(`seats.${role} はオブジェクトで書きます`);
         continue;
       }
-      const unknown = Object.keys(v).filter((k) => !['accountable', 'mode', 'performer', 'fallback', 'qualification', 'competence'].includes(k));
-      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは accountable / mode / performer / fallback / qualification / competence です`);
+      const unknown = Object.keys(v).filter((k) => !['accountable', 'mode', 'performer', 'performerAccount', 'fallback', 'qualification', 'competence'].includes(k));
+      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは accountable / mode / performer / performerAccount / fallback / qualification / competence です`);
+      // AI の担い手の名義(標準 第3章 3.5.3。#430)。変化点4 として種別 performer でだけ受け付ける。null は申告を取り下げる(未申告)
+      if (v.performerAccount !== undefined) {
+        const pa = v.performerAccount;
+        const roster = change.people ?? prior.people ?? [];
+        if (change.kind !== 'performer') bad.push(`seats.${role}.performerAccount(担い手の名義)は、種別 performer で変えます(変化点4。標準 第3章 3.13.1)`);
+        else if (pa !== null) {
+          const probe = performerAccountProblems({ people: roster, seats: [{ role, name: knownSeats.find((s) => s.role === role)?.name ?? role, performerAccount: pa }] });
+          for (const p of probe.problems) bad.push(`seats.${role}: ${p}`);
+          if (isObject(pa) && pa.kind === 'shared' && !(typeof pa.person === 'string' && pa.person.trim())) {
+            bad.push(`seats.${role}.performerAccount: 共有(shared)は、誰のアカウントかを person に人の名簿の id で書きます(標準 第3章 3.5.3 要求事項2)`);
+          }
+        }
+      }
       // 席の責任者本人の力量の確認の記録(3.4.3 要求事項1。#288 第6巡 R)。null は記録を消す(確認を経ない任命へ戻す)
       if (v.competence !== undefined && v.competence !== null) {
         const c = v.competence;
@@ -4193,6 +4368,21 @@ if (isMain) {
   }
 
   const answers = change ? { ...prior.answers, ...(change.answers ?? {}) } : readAnswers(argv);
+  // 初期化の問い(担い手の名義。#430 / IMPL-0428)。回答の設問の一覧(知識ベース)には無いため、answers から外して読む
+  let initPerformerAccount;
+  if (!change) {
+    let raw = null;
+    try {
+      raw = JSON.parse(fs.readFileSync(argv[argv.indexOf('--answers') + 1], 'utf8'));
+    } catch {
+      raw = null;
+    }
+    initPerformerAccount = initPerformerAccountOf(raw);
+    delete answers.performerAccount;
+    if (prior && initPerformerAccount !== undefined) reject('performerAccount(担い手の名義)は初期化でだけ回答から読みます。設定済みの構成では /process-change(種別 performer)で変えます');
+    const pab = initPerformerAccountProblems(initPerformerAccount);
+    if (pab.length) reject('担い手の名義の回答を受け付けられません', pab);
+  }
   if (!change) {
     // 初期化と再生成の回答も、知識ベースの設問と選択肢で確かめる
     const bad = [];
@@ -4324,6 +4514,10 @@ if (isMain) {
 
   // 席の記入・委任の規則・変化点の記録は、再生成で失わない。変化点の指定があれば上書きする
   const seatsInput = (prior?.seats ?? buildSeats()).map((s) => ({ ...s, ...(change?.seats?.[s.role] ?? {}) }));
+  // 初期化の名義の回答を、人確定に限らない席(AI の担い手を置ける席)へ書く。まだ決めていない・回答が無い場合は書かない(未申告)
+  if (!prior && !change && isObject(initPerformerAccount)) {
+    for (const s of seatsInput) if (s.modeCeiling !== 'human') s.performerAccount = JSON.parse(JSON.stringify(initPerformerAccount));
+  }
   const delegationInput = { ...(prior?.delegation ?? {}), ...(change?.delegation ?? {}) };
   const peopleInput = change?.people ?? prior?.people ?? [];
   const governanceInput = { ...(prior?.governance ?? {}), ...(change?.governance ?? {}) };
@@ -5456,6 +5650,16 @@ if (isMain) {
       console.log(
         `[ブランチ保護] 人が適用する(エージェントは実行しない): gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/${config.ruleset ?? 'checks-only'}.json` +
           (config.ruleset ? '' : '。独立レビュー(G-6)の承認は強制せず、必須チェック gate-g5 だけを強制する')
+      );
+      // 担い手の名義の問い(標準 第3章 3.5.3 要求事項1。#430 / IMPL-0428)。回答をそのまま写す。推測で埋めない
+      console.log('');
+      const pa = initPerformerAccount;
+      console.log(
+        isObject(pa) && pa.kind === 'dedicated'
+          ? `[名義] AI の担い手は専用のアカウント(@${pa.account?.login} #${pa.account?.id})で動くと申告した。人確定に限らない席に書いた。担い手の実行環境で env-check を実行し、認証したアカウントを名簿と照合する`
+          : isObject(pa) && pa.kind === 'shared'
+            ? '[名義] AI の担い手は自分たちのアカウントで動くと申告した(共有)。相手は席の責任者から補う。名簿を記入した後、/process-change(種別 performer)で person を書く。共有は列挙に無い離脱として表示し続ける'
+            : `[名義] AI の担い手の名義は${pa === undefined ? '問いの回答が無い' : 'まだ決めていない'}(未申告)。担い手を宣言した席は、席の責任者と名義を共有するものとして扱い、列挙に無い離脱として表示する。決めたら /process-change(種別 performer)で申告する`
       );
     }
     // 次の一手(#286)。状態から機械が導出する。失敗しても構成の書き込みは終わっている

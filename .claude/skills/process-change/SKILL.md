@@ -25,7 +25,7 @@ description: 体制の変化点(責任者の増減・交代、人数の境界の
 | `accountable` | 責任者の増減・交代・長期の不在、兼務、名簿(初回の記入を含む) | `kinds/accountable.md` |
 | `headcount` | 人数の境界の通過(3名未満と3名以上、10名) | `kinds/headcount.md` |
 | `mode` | 担い手の運用形態の変更、委任の範囲の変更 | `kinds/mode.md` |
-| `performer` | AI の担い手の識別(モデル・指示資産・権限・実行基盤)の変更 | `kinds/performer.md` |
+| `performer` | AI の担い手の識別(モデル・指示資産・権限・実行基盤)の変更、担い手の名義(専用・共有)の変更 | `kinds/performer.md` |
 | `axis` | 軸B〜E の入力(ステージ・規制・委託・安全重要度)の変化 | `kinds/axis.md` |
 | `settings` | 個別の値(アダプタ・CI の下限・変更規模の上限など)。変化点に数えない | `kinds/settings.md` |
 | `outage` | 提供者の障害・利用上限で AI が使えない期間。変化点に数えない | `kinds/outage.md` |

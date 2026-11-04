@@ -58,7 +58,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES } from './config.mjs';
+import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 
@@ -436,7 +436,9 @@ function runScenes(config, { keep = false } = {}) {
   const insiders = people.filter((p) => p.external !== true);
   const A = insiders[0] ?? people[0] ?? null;
   const B = people.find((p) => A && p.id !== A.id) ?? null;
-  const acct = (p) => (Array.isArray(p?.accounts) && p.accounts[0] ? String(p.accounts[0]).replace(/^@/, '') : null);
+  // 名簿の最初のアカウントのログイン名と数値の識別子(名簿の照合は識別子で行う。process-compass #430)
+  const acct = (p) => (Array.isArray(p?.accounts) && p.accounts[0] ? accountLoginOf(p.accounts[0]) || null : null);
+  const acctId = (p) => (Array.isArray(p?.accounts) && p.accounts[0] ? accountIdOf(p.accounts[0]) : null);
   const body = ({ risk = 'R2', confirmer = null, instructor = A?.name ?? '' } = {}) =>
     `## 検証方法と結果\n\n導入前の検証の場面\n\n## 作成を指示した者\n\n${instructor}\n\n## リスク区分\n\n${risk}\n${confirmer ? `\n確定した者: ${confirmer}\n` : ''}\n## トレーラ\n\nSpec: setup\n`;
   let prNo = 9000;
@@ -447,7 +449,7 @@ function runScenes(config, { keep = false } = {}) {
     const reviews = opts.reviews ?? [];
     fs.writeFileSync(
       path.join(prs, `${prNo}.json`),
-      JSON.stringify({ number: prNo, title: 'feat: 導入前の検証の場面', author: { login: acct(A) ?? 'unknown' }, reviews, statusCheckRollup: [{ __typename: 'CheckRun', name: 'gate-g5', status: 'COMPLETED', conclusion: 'SUCCESS' }], body: opts.body ?? body(opts), mergeCommit: { oid: hash }, commits: [{ oid: hash, messageHeadline: 'feat: 導入前の検証の場面' }], labels: (opts.labels ?? []).map((name) => ({ name })) })
+      JSON.stringify({ number: prNo, title: 'feat: 導入前の検証の場面', author: { login: acct(A) ?? 'unknown', id: acctId(A) }, reviews, statusCheckRollup: [{ __typename: 'CheckRun', name: 'gate-g5', status: 'COMPLETED', conclusion: 'SUCCESS' }], body: opts.body ?? body(opts), mergeCommit: { oid: hash }, commits: [{ oid: hash, messageHeadline: 'feat: 導入前の検証の場面' }], labels: (opts.labels ?? []).map((name) => ({ name })) })
     );
     return prNo;
   };
@@ -510,7 +512,7 @@ function runScenes(config, { keep = false } = {}) {
 
   scene(2, () => {
     if (!A || !acct(A)) return { result: '確かめていない', detail: '人の名簿にアカウントを持つ人がいない' };
-    const n = prCommit({ 'pit-trial/scene2.js': 'export const scene = 2;\n' }, { risk: 'R1', reviews: [{ author: { login: acct(A) }, state: 'APPROVED', body: '挙動要約: 自分で確かめた' }] });
+    const n = prCommit({ 'pit-trial/scene2.js': 'export const scene = 2;\n' }, { risk: 'R1', reviews: [{ author: { login: acct(A), id: acctId(A) }, state: 'APPROVED', body: '挙動要約: 自分で確かめた' }] });
     const r = agg();
     const ok = r.code !== 0 && has(r.gaps, `PR #${n}`, '独立した人の確認を経ていません');
     return stopped(ok, ok ? '作成を指示した者だけが承認した R1 の変更を、出荷の集約が欠落にした' : '自己承認の変更が欠落にならなかった', r.gaps.filter((g) => g.includes(`#${n}`)).slice(0, 2));
@@ -525,7 +527,7 @@ function runScenes(config, { keep = false } = {}) {
     cg(['switch', '-q', '-c', 'pit-trial-s3', 'pit-trial-base-s3']);
     write('docs/pit-trial-note.md', '場面3\n');
     commit('docs: 場面3');
-    const a = checkPr({ number: 9103, title: 'docs', body: body({ risk: 'R3' }), author: acct(A) ?? '', labels: ['state:stop-requested'] }, 'pit-trial-base-s3');
+    const a = checkPr({ number: 9103, title: 'docs', body: body({ risk: 'R3' }), author: acct(A) ?? '', authorId: acctId(A), labels: ['state:stop-requested'] }, 'pit-trial-base-s3');
     parts.push({ part: '停止の申し立ての AI の名義の解除', ok: a.code !== 0 && has(a.errors, '停止の申し立て') && has(a.errors, 'AI') });
     // (b) D-0 の改訂(緩める向きの変化点)の AI の名義の記名
     cg(['switch', '-q', '-f', 'pit-trial-base']);
@@ -550,9 +552,9 @@ function runScenes(config, { keep = false } = {}) {
 
   scene(4, () => {
     onBranch('pit-trial-s4', { 'docs/pit-trial-note.md': '場面4\n' }, 'docs: 場面4');
-    const a = checkPr({ number: 9104, title: 'docs', body: body({ risk: 'R3' }), author: acct(A) ?? '', labels: ['state:stop-requested'] });
+    const a = checkPr({ number: 9104, title: 'docs', body: body({ risk: 'R3' }), author: acct(A) ?? '', authorId: acctId(A), labels: ['state:stop-requested'] });
     cg(['switch', '-q', '-f', 'pit-trial-base']);
-    const n = prCommit({ 'pit-trial/scene4.js': 'export const scene = 4;\n' }, { risk: 'R3', labels: ['state:stop-requested'], reviews: B && acct(B) ? [{ author: { login: acct(B) }, state: 'APPROVED', body: '挙動要約: 確かめた' }] : [] });
+    const n = prCommit({ 'pit-trial/scene4.js': 'export const scene = 4;\n' }, { risk: 'R3', labels: ['state:stop-requested'], reviews: B && acct(B) ? [{ author: { login: acct(B), id: acctId(B) }, state: 'APPROVED', body: '挙動要約: 確かめた' }] : [] });
     const r = agg();
     const prOk = a.code !== 0 && has(a.errors, '停止の申し立て');
     const shipOk = r.code !== 0 && has(r.gaps, '停止の申し立ての保留', `PR #${n}`);
@@ -575,14 +577,14 @@ function runScenes(config, { keep = false } = {}) {
     const rule = rules.find((r) => r.floor === 'R1') ?? rules[0];
     const target = pathFromGlob(rule.paths[0]);
     onBranch('pit-trial-s6', { [target]: '// 導入前の検証の場面6\n' }, 'feat: 場面6');
-    const a = checkPr({ number: 9106, title: 'feat', body: body({ risk: 'R3' }), author: acct(A) ?? '' });
+    const a = checkPr({ number: 9106, title: 'feat', body: body({ risk: 'R3' }), author: acct(A) ?? '', authorId: acctId(A) });
     const ok = a.code !== 0 && has(a.errors, '区分の下限');
     return stopped(ok, `${target}(規則 ${rule.id}、下限 ${rule.floor})を R3 と記載: ${ok ? '止まった' : '止まらなかった'}`);
   });
 
   scene(7, () => {
     onBranch('pit-trial-s7', { 'docs/pit-trial-note.md': '場面7\n' }, 'docs: 場面7');
-    const a = checkPr({ number: 9107, title: 'docs', body: body({ risk: 'R2' }), author: acct(A) ?? '' });
+    const a = checkPr({ number: 9107, title: 'docs', body: body({ risk: 'R2' }), author: acct(A) ?? '', authorId: acctId(A) });
     const ok = a.code !== 0 && has(a.errors, 'リスク区分の確定者');
     if (!ok && has(a.notices, 'リスク区分の確定者')) return { result: '止まらなかった', detail: '作成を指示した者以外の人が名簿にいないため、確定していない区分として表示するだけ(1名体制の扱い)' };
     return stopped(ok, ok ? '確定者の無い R2 を G-5 が失敗させた' : '確定者の無い R2 が通った');
@@ -1126,6 +1128,15 @@ function run() {
       ? `- 記録: ${ENV_CHECK_FILE}(確認した者 ${env.record?.checkedBy ?? '未記入'} / ${String(env.record?.checkedAt ?? '').slice(0, 10) || '日付なし'} / 対象 ${env.record?.repo ?? '不明'}。${env.committed === true ? 'コミット済み' : env.committed === false ? '**コミットされていない**' : 'コミットの状態を確かめられない'})${env.problems.length ? `。**${env.problems.join('。')}**` : ''}`
       : `- 記録なし(${ENV_CHECK_FILE} が無い)。採用者が実環境の gh で \`node scripts/gate/adoption-trial.mjs env-check --by <氏名>\` を実行し、記録をコミットする。模擬の gh では各項目が「読めない」と出て未確認のまま残る`
   );
+  // AI の担い手の名義の照合(#430 / IMPL-0421)。所見であり、確認済みの判定に入れない
+  if (env.present) {
+    const pa = env.record?.performerAccount ?? null;
+    L.push(
+      pa
+        ? `- AI の担い手の名義の照合(所見。${String(pa.checkedAt ?? '').slice(0, 16) || '日時なし'}): ${pa.status === 'mismatch' ? '**一致しない**' : FINDING_STATUS_LABEL[pa.status] ?? (pa.status === 'notSpecified' ? '席の指定なし' : pa.status)}(${String(pa.detail ?? '').replace(/\|/g, '/')})。${pa.scope ?? ''}`
+        : '- AI の担い手の名義の照合: 記録に無い(#430 より前の env-check。実行し直す)'
+    );
+  }
   if (env.present) L.push(`- 実環境の識別(査察で GitHub の画面と突合する鍵): ${env.evidenceText ?? '**記録に無い**(第7巡より前の記録、または識別を返さない gh。確認済みの項目は識別が無ければ未確認に倒れる)'}`);
   L.push('- 場面集の「止まった」は一時の複製と模擬の gh での結果である。実環境でマージを止めるのはブランチ保護であり、その適用はこの表で確かめる。未確認のまま採用の判断を進めるなら、節9 の受容の対象にする');
   L.push('');
@@ -1232,7 +1243,13 @@ function run() {
 
 // ---------------------------------------------------------------- 実環境の統制の確認(要件⑦。#288 第6巡)
 //
-//   node scripts/gate/adoption-trial.mjs env-check --by <確認した者の氏名> [--repo owner/name] [--branch main] [--pr N]
+//   node scripts/gate/adoption-trial.mjs env-check --by <確認した者の氏名> [--repo owner/name] [--branch main] [--pr N] [--seat <ロール,…>]
+//
+// AI の担い手の名義の照合(標準 第3章 3.5.3 要求事項5。process-compass #430 / IMPL-0421): この環境の gh が認証したアカウント
+// (gh api user の login と id)を、名簿(people[].accounts)と各席の名義の申告(seats[].performerAccount)に照合し、所見として
+// 記録の performerAccount へ書く(確かめた日時 checkedAt と結果)。名簿の人に当たり、この環境で動く担い手の申告が専用か
+// 未申告なら「一致しない」。--seat で、この環境で動く担い手の席を限る(省くと名義を申告する全席)。照合は env-check を
+// 実行した環境と時点に限り、その旨を出力と記録(scope)に書く。構成は書き換えない(申告を直すのは人の /process-change)
 //
 // ブランチ保護(ルールセット)の GitHub 上の適用、gate-g5 が PR_REVIEWS に渡すレビューの取得、ship-evidence が取り込む
 // gate-g5 の成果物の取得を、採用者のリポジトリの実環境の gh で読み、docs/adoption-trial/env-check.json(記録の置き場)へ書く。
@@ -1848,6 +1865,33 @@ function envCheck() {
   else items.environments = envEnvironments(repo, branch, notConformance, confirmedWith, fromFailure);
   // 7. 記録用ブランチの所見(段階 2。確認済みの判定に入れない。RECORDS_FINDING_LABEL の注記)
   const findings = recordsFindings({ repo, branch, latestPr });
+  // 8. AI の担い手の名義の照合(標準 第3章 3.5.3 要求事項5。process-compass #430 / IMPL-0421)。この環境の gh が認証したアカウント
+  //    (gh api user の login と id)を、名簿と各席の名義の申告に照合する。所見であり、確認済みの判定(allOk)に入れない。
+  //    照合は env-check を実行した環境と時点に限る。--seat <ロール,…> で、この環境で動く担い手の席を限れる(省くと名義を申告する全席)
+  const seatArg = arg('--seat', null);
+  const userR = ghJson(['api', 'user']);
+  const performerAccount = {
+    checkedAt: localIso(),
+    api: 'user',
+    ...(seatArg ? { seatsInEnvironment: seatArg.split(',').map((x) => x.trim()).filter(Boolean) } : {}),
+    ...performerAccountEnvFinding(config, userR.value && typeof userR.value === 'object' ? { login: userR.value.login, id: userR.value.id } : null, { seatRoles: seatArg ? seatArg.split(',').map((x) => x.trim()).filter(Boolean) : null }),
+    ...(userR.value ? {} : { why: userR.why ?? null }),
+  };
+  // 席ごとの最後の照合(--seat を付けた照合だけ。#430 突合 H-1・L-6)。述べられる名・G-6 の印・効力を持つ記録の帰属の確認が読む
+  // (config.mjs の performerEnvRecord)。前の記録の、今回照合しなかった席の照合は残す
+  const performerAccountBySeat = (() => {
+    let prev = {};
+    try {
+      prev = JSON.parse(fs.readFileSync(path.join(ROOT, ENV_CHECK_FILE), 'utf8'))?.performerAccountBySeat ?? {};
+    } catch {
+      prev = {};
+    }
+    const out = { ...(prev && typeof prev === 'object' ? prev : {}) };
+    for (const st of performerAccount.seats ?? []) {
+      out[st.role] = { checkedAt: performerAccount.checkedAt, checkedBy: by, account: performerAccount.account, person: performerAccount.person, status: st.status, declared: st.declared ?? null, detail: st.detail };
+    }
+    return out;
+  })();
   // 対象外は確認済みに数えない。全体の成否は、各項目が確認済みか対象外であること(#315 R-4)
   const allOk = Object.values(items).every((i) => i.status === 'confirmed' || i.status === 'notApplicable');
   // gh の版。2.30.0 より前の gh はレビューの承認した版(commit.oid)を返さず、集約がすべての承認を数えない(突合 X-7)
@@ -1870,6 +1914,8 @@ function envCheck() {
     config: { reviewerCount: want, ruleset, g6: config.gates?.g6?.state ?? null },
     items,
     findings,
+    performerAccount,
+    performerAccountBySeat,
     integrationId: '未確認(必須チェックの発行元 integration_id の固定は、実走で確かめてから規定にする。#315 R-4)',
     note: '実環境の gh で読んだ結果。結果は確認済み / 不一致 / 未確認(理由)/ 対象外の4値で、対象外は確認済みに数えない(#315 R-4)。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる。findings は記録用ブランチ(records)の所見で、確認済みの判定に入れない(人が読む。mismatch は強制層の縮小または保護の欠落)',
   };
@@ -1884,6 +1930,13 @@ function envCheck() {
     const line = `所見 ${RECORDS_FINDING_LABEL[id]}: ${word}(${it.detail})`;
     if (it.status === 'confirmed') notice(line);
     else warn(line);
+  }
+  {
+    const pa = performerAccount;
+    const line = `所見 AI の担い手の名義の照合: ${FINDING_STATUS_LABEL[pa.status] ?? (pa.status === 'notApplicable' ? '対象外' : pa.status === 'notSpecified' ? '席の指定なし' : pa.status)}(${pa.detail})。${pa.scope}`;
+    if (pa.status === 'mismatch') warn(line);
+    else notice(line);
+    for (const st of pa.seats ?? []) if (st.status === 'mismatch') warn(`  ${st.name}: ${st.detail}`);
   }
   const idText = envEvidenceText({ record, items: Object.entries(items).map(([id, it]) => ({ id, evidence: it.evidence ?? null })) });
   notice(`実環境の識別(査察で GitHub の画面と突合する鍵): ${idText ?? '無し(識別を返さない gh、または模擬。確認済みの項目は無い)'}`);

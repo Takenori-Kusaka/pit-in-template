@@ -236,7 +236,7 @@ try {
     '--paginate',
     `repos/${repo}/pulls/${number}/reviews?per_page=100`,
     '--jq',
-    '.[] | {login: .user.login, state, isBot: (.user.type == "Bot")}',
+    '.[] | {login: .user.login, id: .user.id, state, isBot: (.user.type == "Bot")}',
   ]);
 } catch (e) {
   cannotJudge(`入力の取得に失敗した(${String(e.stderr ?? e.message).trim().split('\n')[0]})`, headSha);

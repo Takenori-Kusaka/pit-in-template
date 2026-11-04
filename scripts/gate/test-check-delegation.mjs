@@ -117,7 +117,7 @@ const cases = [
     '独立レビュアの席の規則だけに該当し、開発者の席の責任者が承認している',
     (i) => {
       reviewerOnly(i);
-      i.reviews = [{ login: 'yamada-taro', state: 'APPROVED' }];
+      i.reviews = [{ login: 'yamada-taro', id: 2001, state: 'APPROVED' }];
     },
     true,
     [],
@@ -126,7 +126,7 @@ const cases = [
     '独立レビュアの席の規則だけに該当し、開発者の席の責任者が承認の後に変更を要求した',
     (i) => {
       reviewerOnly(i);
-      i.reviews = [{ login: 'yamada-taro', state: 'APPROVED' }, { login: 'yamada-taro', state: 'CHANGES_REQUESTED' }];
+      i.reviews = [{ login: 'yamada-taro', id: 2001, state: 'APPROVED' }, { login: 'yamada-taro', id: 2001, state: 'CHANGES_REQUESTED' }];
     },
     false,
     ['開発者の席'],
@@ -135,7 +135,7 @@ const cases = [
     '独立レビュアの席の規則だけに該当し、開発者の席の責任者でない人が承認している',
     (i) => {
       reviewerOnly(i);
-      i.reviews = [{ login: 'suzuki-ichiro', state: 'APPROVED' }];
+      i.reviews = [{ login: 'suzuki-ichiro', id: 2003, state: 'APPROVED' }];
     },
     false,
     ['開発者の席'],

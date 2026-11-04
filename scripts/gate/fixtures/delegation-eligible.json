@@ -19,21 +19,21 @@
         "id": "p1",
         "name": "山田 太郎",
         "accounts": [
-          "yamada-taro"
+          { "login": "yamada-taro", "id": 2001 }
         ]
       },
       {
         "id": "p2",
         "name": "佐藤 花子",
         "accounts": [
-          "sato-hanako"
+          { "login": "sato-hanako", "id": 2002 }
         ]
       },
       {
         "id": "p3",
         "name": "鈴木 一郎",
         "accounts": [
-          "suzuki-ichiro"
+          { "login": "suzuki-ichiro", "id": 2003 }
         ]
       }
     ],

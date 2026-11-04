@@ -106,6 +106,9 @@ jobs:
       - run: node scripts/gate/test-model-adoption.mjs
       # 効力を持つ記録(例外承認の台帳の行・停止の解除の記録)の帰属(process-compass #380 / IMPL-0413・IMPL-0414)
       - run: node scripts/gate/test-material-attribution.mjs
+      - run: node scripts/gate/test-roster-ids.mjs
+      # AI の担い手の名義(seats[].performerAccount)の契約検査・G-6 の数え方・効力を持つ記録の帰属・env-check の照合(process-compass #430 / ADR-0107)
+      - run: node scripts/gate/test-performer-account.mjs
       # ホスティングへの書き込みの操作の遮断(.claude/hooks/guard-bash.mjs。process-compass #429 / IMPL-0418)
       - run: node scripts/gate/test-guard-bash.mjs
       # 従う本標準の版・適用の終了・適用の開始の境・述べられる主張の名を、一時の置き場で通しで試験する(process-compass #313)
@@ -357,6 +360,8 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # PR の作成者の数値の識別子。名簿の照合は識別子で行う(process-compass #430 / ADR-0108)
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_LABEL_EVENTS: ${{ steps.label-events.outputs.events }}
           PR_REVIEWS: ${{ steps.reviews.outputs.reviews }}

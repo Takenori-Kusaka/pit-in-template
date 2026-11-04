@@ -130,6 +130,91 @@ try {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// ---------------------------------------------------------------- 担い手の名義の変更(/process-change 種別 performer。process-compass #430 / IMPL-0429)
+// 名義は変化点4 に数えるが担い手の識別に含めないため、適合性確認を失効させない。専用から共有への切り替えは緩める向きの変更で、
+// 当該の席の責任者の記名と理由を要する(D-0 表1 の決定者の記名では受け付けない。AI の担い手が決めない)
+{
+  const B = { id: 'b', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 2002 }] };
+  const PERF = { model: 'm-1', instructions: 'v1', permissions: 'p' };
+  const base = quiet(
+    () =>
+      buildConfig(answers, {
+        generatedAt: '2026-10-24T09:00:00+09:00',
+        d0Version: null,
+        people: [A, B, X],
+        seats: seatsOf({ 'biz-approver': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'x' }),
+      }).config
+  );
+  const dev = base.seats.find((s) => s.role === 'dev-verifier');
+  dev.performer = PERF;
+  dev.qualification = { confirmedAt: '2026-10-20', performedBy: '山田 太郎', approvedBy: '山田 太郎', cases: '試験の事例', result: '通過', performer: PERF };
+  dev.performerAccount = { kind: 'dedicated', account: { login: 'pit-agent-acct', id: 7001 } };
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-performer-account-'));
+  try {
+    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
+      if (SKIP.has(e.name)) continue;
+      fs.cpSync(path.join(ROOT, e.name), path.join(dir2, e.name), { recursive: true });
+    }
+    const git = (...a) => execFileSync('git', a, { cwd: dir2, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 'tester');
+    git('config', 'core.autocrlf', 'false');
+    const env = { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' };
+    const cfgPath = path.join(dir2, 'process.config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(base), null, 2) + '\n');
+    fs.mkdirSync(path.join(dir2, 'docs'), { recursive: true });
+    fs.copyFileSync(path.join(dir2, 'templates/00-d0-governance.md'), path.join(dir2, 'docs/D-0-governance.md'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: init');
+    const run = (obj) => {
+      fs.writeFileSync(path.join(dir2, 'change.json'), JSON.stringify(obj));
+      const r = spawnSync(process.execPath, ['scripts/init/generate-profile.mjs', '--change', 'change.json'], { cwd: dir2, encoding: 'utf8', env });
+      return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    const toShared = (o = {}) => ({ kind: 'performer', summary: '開発者の席の担い手を、責任者のアカウントで動かす', seats: { 'dev-verifier': { performerAccount: { kind: 'shared', person: 'a' } } }, ...o });
+    const before = fs.readFileSync(cfgPath, 'utf8');
+    const byDecider = run(toShared({ decidedBy: B.name, reason: '試験' }));
+    // IMPL-0429:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+    check('名義: 専用から共有への切り替えを、D-0 表1 の決定者(席の責任者でない)の記名では受け付けない', !byDecider.ok && /担い手の名義/.test(byDecider.out) && /席の責任者/.test(byDecider.out) && fs.readFileSync(cfgPath, 'utf8') === before, byDecider.out);
+    const unsigned = run(toShared());
+    check('名義: 専用から共有への切り替えを、記名と理由なしでは受け付けない', !unsigned.ok && fs.readFileSync(cfgPath, 'utf8') === before, unsigned.out);
+    const wrongKind = run({ kind: 'accountable', summary: '名義を変える', seats: { 'dev-verifier': { performerAccount: { kind: 'shared', person: 'a' } } }, decidedBy: A.name, reason: '試験' });
+    check('名義: 種別 performer 以外では名義を変えない(変化点4)', !wrongKind.ok && /種別 performer/.test(wrongKind.out), wrongKind.out);
+    const noPerson = run({ kind: 'performer', summary: '名義を変える', seats: { 'dev-verifier': { performerAccount: { kind: 'shared' } } }, decidedBy: A.name, reason: '試験' });
+    check('名義: /process-change の共有は、相手(person)を名簿の id で書く', !noPerson.ok && /person/.test(noPerson.out), noPerson.out);
+    const byHolder = run(toShared({ decidedBy: A.name, reason: '試験' }));
+    const after = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const last = after.changeLog.at(-1);
+    const devAfter = after.seats.find((s) => s.role === 'dev-verifier');
+    // IMPL-0429:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+    check(
+      '名義: 当該の席の責任者の記名と理由なら受け付け、変化点4(緩める向き)として記録する',
+      byHolder.ok && last.kind === 'performer' && last.changePoint === 4 && last.direction === 'loosen' && last.decidedBy === A.name && devAfter.performerAccount?.kind === 'shared',
+      `${byHolder.out}\n${JSON.stringify(last)}`
+    );
+    check('名義: 名義の変更では適合性確認を失効させず、即時通知(識別の変更)も出さない', JSON.stringify(devAfter.qualification) === JSON.stringify(dev.qualification) && !/適合性確認の失効/.test(byHolder.out) && !(last.notice?.reasons ?? []).some((r) => /識別/.test(r)), `${byHolder.out}\n${JSON.stringify(devAfter.qualification)}`);
+    check('名義: 共有は D-0 表7 の担い手の名義の列に出る(相手は表5-2 の識別子)', /\*\*共有\*\*\(表5-2 の `a`/.test(fs.readFileSync(path.join(dir2, 'docs/D-0-governance.md'), 'utf8')));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: shared');
+    // 共有から専用への切り替えも、統制の数え方(列挙に無い離脱・G-6 の印・帰属の確認)を外す変更として記名を要する(#430 突合 H-2。
+    // ADR-0107 が定めていない逆向きを、記名を要する側に倒した)
+    const toDedicated = (o = {}) => ({ kind: 'performer', summary: '専用のアカウントへ戻す', seats: { 'dev-verifier': { performerAccount: { kind: 'dedicated', account: { login: 'pit-agent-acct', id: 7001 } } } }, ...o });
+    const beforeBack = fs.readFileSync(cfgPath, 'utf8');
+    const backUnsigned = run(toDedicated());
+    check('名義: 共有から専用への切り替えも、記名と理由なしでは受け付けない', !backUnsigned.ok && fs.readFileSync(cfgPath, 'utf8') === beforeBack, backUnsigned.out);
+    const backByDecider = run(toDedicated({ decidedBy: B.name, reason: '試験' }));
+    check('名義: 共有から専用への切り替えも、D-0 表1 の決定者(席の責任者でない)の記名では受け付けない', !backByDecider.ok && fs.readFileSync(cfgPath, 'utf8') === beforeBack, backByDecider.out);
+    const back = run(toDedicated({ decidedBy: A.name, reason: '試験' }));
+    const last2 = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).changeLog.at(-1);
+    check('名義: 共有から専用への切り替えは、当該の席の責任者の記名と理由で受け付ける(記名を要する向きとして記録する)', back.ok && last2.direction === 'loosen' && last2.decidedBy === A.name, `${back.out}\n${JSON.stringify(last2)}`);
+    const overlap = run({ kind: 'performer', summary: '専用と申告する', seats: { 'dev-verifier': { performerAccount: { kind: 'dedicated', account: { login: 'suzuki', id: 2002 } } } } });
+    check('名義: 名簿の人のアカウントを専用と申告する入力を拒否する', !overlap.ok && /鈴木 一郎/.test(overlap.out), overlap.out);
+  } finally {
+    fs.rmSync(dir2, { recursive: true, force: true });
+  }
+}
+
 if (failures) {
   console.error(`\n緩める向きの決定者の入口の試験: ${failures} 件の失敗`);
   process.exit(1);
