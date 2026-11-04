@@ -4064,7 +4064,7 @@ if (isMain) {
     R.push('- 依存先の一覧(承認済みモデルの一覧を広げたもの。構成と記録から生成):');
     for (const d of ct.dependencies) {
       if (d.kind === 'モデル') {
-        R.push(`  - モデル ${d.name}: 提供者 ${d.provider} / 使う席 ${d.seats.join('・')} / 代替 ${d.alternative} / 退出の予行を最後に行った日 ${d.lastExitRehearsal}${d.exitLapse ? `(**失効**: ${d.exitLapse})` : ''} / 通知の期間 ${d.noticePeriod} / データ ${external ? (d.fieldsBlank?.includes('データ') ? '記録なし' : '記録あり') : d.data}`);
+        R.push(`  - モデル ${d.name}: 提供者 ${d.provider} / 使う席 ${d.seats.join('・')} / 代替 ${d.alternative} / 導入の承認 ${d.adoption ?? '導入の記録なし'} / 退出の予行を最後に行った日 ${d.lastExitRehearsal}${d.exitLapse ? `(**失効**: ${d.exitLapse})` : ''} / 通知の期間 ${d.noticePeriod} / データ ${external ? (d.fieldsBlank?.includes('データ') ? '記録なし' : '記録あり') : d.data}`);
       } else if (d.kind === '評価用の基準集合') {
         R.push(`  - ${d.kind}: ${d.name}${d.inRepo ? '(自組織のリポジトリ)' : '(**自組織のリポジトリで所在を確かめられない**)'}。範囲の承認(AI運用担当者の起案・技術判断者の記名): ${d.scopeApproved ? 'あり' : `**なし**(${(d.scopeWhy ?? []).join('。')})`}`);
       } else {
@@ -4112,6 +4112,7 @@ if (isMain) {
       );
     }
     for (const p of ct.problems) R.push(`- 読めない記録: ${p}`);
+    for (const n of ct.adoptionNotes ?? []) R.push(`- 注記(モデルの導入・評価の物差し): ${n}`);
     return R;
   }
 

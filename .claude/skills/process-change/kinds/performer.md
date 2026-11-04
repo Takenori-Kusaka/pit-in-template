@@ -51,6 +51,35 @@
 - `approvedBy` が AI運用担当者の席の責任者のとき、その代替を「3.12.3 を通過した代替」に数える。AI の名義は数えない
 - `baseline` がリポジトリ内に無い(URL など)場合は「自組織に無い資産」と出る
 - 記録の値(差分の中身・評価の十分性)は機械が判定しない。値は利用者から受け取り、推測で書かない
+- 予行の差分を AI の採点で求めた場合は、`"grading": "ai"` と、較正の記録 `judge`(下の「AI の採点者の較正の記録」と同じ形)を書く。無ければ「未測定」と出る(標準 第3章 3.12.13 の要求事項1 (a))
+
+## モデルの導入の記録(変化点ではない)
+
+新しいモデルを導入する前の回帰評価と、AI運用担当者の記名による承認の記録です(標準 第3章 3.12.3 の要求事項1〜4)。AI運用担当者が `docs/model-adoption.json` へ追記して PR で入れます。出荷判定の証跡の集約が読み、依存先の一覧の「導入の承認」へ出します。記録の無い構成は「導入の記録なし」と出ます(欠落にはしない)。
+
+```json
+{ "adoptions": [ { "model": "<導入するモデルの版>", "provider": "<提供者>", "replaces": "<現行のモデルの版。新規なら null>", "baseline": "docs/eval-baseline/", "evaluatedAt": "2026-10-03", "diff": "<現行モデルとの差分の記録の所在>", "approvedBy": "<AI運用担当者の席の責任者>", "approvedAt": "2026-10-04", "change": "<差し替えの PR の番号かコミット>", "grading": "ai | deterministic | human", "judge": { "<AI の採点者の較正の記録>": "grading が ai のとき" }, "unmeasuredAcceptance": { "by": "<層1 の権限者>", "until": "2026-12-31" }, "revisedAfterResults": [ { "case": "<事例の id>", "beforeResult": "<改める前の正解による結果>", "failToPass": false, "removed": false } ] } ] }
+```
+
+- 正解の目録は、基準集合の所在(`baseline`)の `answers.json` に置く。事例ごとに確定の記録を書く(標準 第3章 3.12.3 の要求事項11〜14・16):
+
+```json
+{ "cases": [ { "id": "C-1", "kind": "expected-output | verdict | rubric", "source": "external | past-judgment | new", "sourceRef": "<外部の観測・過去の判定の所在>", "seat": "<事例が再現する判断の席の role>", "confirmedBy": "<確定した人>", "at": "2026-09-20", "draft": { "model": "<草案を作ったモデルの版>" }, "revisions": [ { "from": "", "to": "", "reason": "", "confirmedBy": "", "at": "" } ] } ], "blindConfirmation": { "count": 0, "agreement": null } }
+```
+
+- `confirmedBy` は事例が再現する席の責任者(席が無い・AI運用担当者の席の事例は技術判断者)。AI の名義・一括の承認だけの事例は「確定なし」と出る。草案が無ければ `draft` は `null`。盲検の確定を行わなければ `blindConfirmation` は `"なし"`
+- **確定・採点の欄を AI が埋めない**。草案は草案と書き、正解を確定した記録として書かない(CLAUDE.md の常駐の規則)
+
+### AI の採点者の較正の記録(`judge`)
+
+標準 第3章 3.12.13 の要求事項2〜8 の記録です。
+
+```json
+{ "identity": { "model": "<採点のモデルの固定した版。latest などの別名は不可>", "prompt": "<採点の指示の版>", "settings": "<推論の設定>" }, "readingRule": { "rule": "<どの指標がどの値に届かなければ用いないか>", "draftedBy": "<AI運用担当者>", "decidedBy": "<技術判断者>", "at": "<評価の前の日>" }, "sample": { "method": "random | stratified", "sizeRule": "<件数の決め方>", "upweighted": 0 }, "raters": [ { "name": "<人の採点者>", "at": "" } ], "arms": { "<比べるモデル>": { "model": "", "table": { "<人の判定×AI の判定>": 0 }, "indicator": { "name": "kappa など", "value": 0.0 }, "interval": "", "simple": 0.0 } }, "swapChanges": null, "lengthControl": "なし", "reached": true }
+```
+
+- 比べる双方(現行と候補)の `arms` を分けて書く。偶然の一致を除く指標(`indicator`)の無い記録は「未測定」と出る。未測定で導入するときは `unmeasuredAcceptance` に層1 の権限者の受容を書く。未測定かつ比べるモデルと同じ版で採点した差分は、受容があっても導入の根拠に数えない
+- 一致の読み方を回帰評価の日より後に定めた記録は、統制を緩める向きの変更として出る
 
 ## 検出の層に数える条件2〜5 の確認(附属書H H.4)
 

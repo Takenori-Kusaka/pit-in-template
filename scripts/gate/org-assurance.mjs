@@ -33,6 +33,7 @@ export const BRIEF_FILE = 'docs/project-brief.md';
 export const D0_FILE = 'docs/D-0-governance.md';
 export const HANDOVER_FILE = 'docs/handover.md';
 export const EXIT_REHEARSAL_FILE = 'docs/exit-rehearsal.json';
+import { modelAdoptionState, rehearsalJudgeFindings } from './model-adoption.mjs';
 
 const readText = (rel, root = ROOT) => {
   const p = path.join(root, rel);
@@ -798,6 +799,9 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
     return { model: clean(r?.model), provider, alternative: { provider: alt, model: clean(r?.alternative?.model) }, at: r?.at ?? null, valid: !why.length, why, approved, baseline: baseline || null, baselineInRepo };
   });
   for (const r of rehearsals) if (!r.valid) problems.push(`退出の予行の記録(${r.model || 'model 未記入'} / ${r.at ?? '日付なし'})を数えない: ${r.why.join('。')}`);
+  // モデルの導入の記録・正解の目録・AI の採点者の較正(第3章 3.12.3 の要求事項1〜4・11〜16、3.12.13。process-compass #426)
+  const adoption = modelAdoptionState(config, { root });
+  problems.push(...adoption.problems, ...rehearsalJudgeFindings(config, ex.records));
   // 評価用の基準集合の範囲の承認(第3章 3.12.3 の要求事項10。AI運用担当者が起案し、技術判断者が記名で承認する)
   const scope = ex.baselineScope ?? null;
   const techAccountable = seats.find((s) => s.role === 'tech-lead')?.accountable ?? null;
@@ -857,6 +861,12 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
       fieldsBlank: [notice ? null : '通知の期間', data ? null : 'データ'].filter(Boolean),
       hasAlternative: alt.length > 0,
       exitTried: own.length > 0 && !exitLapse,
+      // 導入の承認(第3章 3.12.3 の要求事項3)。記録が無い構成は「導入の記録なし」と出す(欠落にはしない)
+      adoption: (() => {
+        const rec = adoption.adoptions.filter((x) => m && matchModel(m, { model: x.model }));
+        if (!adoption.present || !rec.length) return '導入の記録なし';
+        return rec.some((x) => x.approved) ? '承認あり' : '承認なし(導入の記録に欠け)';
+      })(),
     });
   }
   const instructions = [...new Set(aiSeats.map((s) => s.performer.instructions).filter((v) => isFilledValue(v)))];
@@ -944,6 +954,7 @@ export function continuityState(config, policy, { root = ROOT, day = null } = {}
     acceptances,
     expired,
     problems,
+    adoptionNotes: adoption.notes,
   };
 }
 
