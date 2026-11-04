@@ -98,6 +98,34 @@ try {
     ok.ok && last.kind === 'mode' && last.decidedBy === A.name && after.changeLog.length === initial.changeLog.length + 1 && after.seats.find((s) => s.role === 'independent-reviewer').mode === 'collab',
     `${ok.out}\n${JSON.stringify(last)}`
   );
+
+  // 判断記録の要否の規則(標準 第2章 2.6。process-compass #422 / ADR-0101)。種別 settings で書き、再生成で失わない。
+  // 規則を削る・対象のパスを外すのは緩める向きで、D-0 表1 の決定者の記名を要する
+  const settings = (obj) => {
+    fs.writeFileSync(path.join(dir, 'change.json'), JSON.stringify({ kind: 'settings', ...obj }));
+    const r = spawnSync(process.execPath, ['scripts/init/generate-profile.mjs', '--change', 'change.json'], { cwd: dir, encoding: 'utf8', env });
+    return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: mode');
+  const badShape = settings({ summary: '規則を置く', settings: { decisionRules: { rules: [{ id: 'api', paths: 'src/api/**' }] } } });
+  check('判断記録の要否の規則: 形の違う規則(paths が配列でない、why が無い)を拒否する', !badShape.ok && /decisionRules\.rules\[0\]\.paths/.test(badShape.out) && /decisionRules\.rules\[0\]\.why/.test(badShape.out), badShape.out);
+  const add = settings({ summary: '規則を置く', settings: { decisionRules: { rules: [{ id: 'api', paths: ['src/api/**'], why: '公開インタフェース' }] } } });
+  const withRule = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  check('判断記録の要否の規則: 規則を足す変化点を受け付け、構成に残る', add.ok && withRule.decisionRules?.rules?.[0]?.id === 'api', add.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rules');
+  const keep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 300 } } });
+  check('判断記録の要否の規則: ほかの設定の変化点で規則を失わない', keep.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).decisionRules?.rules?.length === 1, keep.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: task');
+  const beforeDrop = fs.readFileSync(cfgPath, 'utf8');
+  const drop = settings({ summary: '規則を消す', settings: { decisionRules: null } });
+  // IMPL-0390:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('判断記録の要否の規則: 規則を削る変化点は、決定者の記名と理由が無ければ拒否する', !drop.ok && /判断記録の要否の規則 api: 削除/.test(drop.out) && fs.readFileSync(cfgPath, 'utf8') === beforeDrop, drop.out);
+  const dropOk = settings({ summary: '規則を消す', settings: { decisionRules: null }, decidedBy: A.name, reason: '試験' });
+  // IMPL-0390:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('判断記録の要否の規則: 同じ変化点を、D-0 表1 の決定者の記名なら受け付ける', dropOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).decisionRules === undefined, dropOk.out);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

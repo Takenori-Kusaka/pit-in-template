@@ -49,6 +49,13 @@
 //      riskFloor を変える PR の下限は R2 とし、riskFloor と製品のコードを同じ PR で変えたら失敗させる。
 //      R1・R2 の区分は、「リスク区分」の節の「確定した者: <氏名>」に、作成を指示した者以外の名簿の人(AI の名義でない)の
 //      記名が要る。指示した者以外の人が名簿にいない体制(1名体制など)では失敗させず、確定していない区分として出す
+//   7b. 判断記録の要否の規則(標準 第2章 2.6「判断記録の要否の規則」。process-compass #422 / ADR-0101): 基底ブランチの
+//      構成の decisionRules.rules(パスと変更の種類から、判断記録を要する変更を導く規則)に当たる変更で、本文の末尾の
+//      段落にトレーラ ADR が無い、または指す判断記録が context/decisions/ に無ければ失敗させる(事業ステージ S0 では
+//      失敗させず注意として出す。2.6 のステージ表)。申告で外す経路は置かない。規則が無い・規則のパスが追跡中の
+//      ファイルに1件も当たらない構成は、未宣言として「長期的な決定を検出できない」と出す。decisionRules を変える
+//      PR の下限は R2 とし、decisionRules と製品のコードを同じ PR で変えたら失敗させる。G-3 の判定記録への到達と、
+//      判断記録の中身は確かめない
 //   6. 停止の申し立て(標準 第7章 7.11): 受信箱のラベル `state:stop-requested` が付いた PR(付けた履歴のある PR を
 //      含む)は、基底ブランチに成立した解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」)が無い限り失敗させる。
 //      解除は層1 の項目4 の権限者の記名と理由を要し、AI の名義を受け付けない。見解を退けた解除は上申先と日付を要する。
@@ -116,6 +123,7 @@ import {
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
+import { stageOf } from './verification-trace.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -540,6 +548,41 @@ export function riskFloorOf(rules, changes) {
   }
   const floor = hits.reduce((f, h) => (RISK_RANK[h.floor] > RISK_RANK[f] ? h.floor : f), 'R3');
   return { floor, hits };
+}
+
+/**
+ * 判断記録の要否の規則(構成の decisionRules.rules)に当たる変更を返す。rules は基底ブランチの構成から渡す。
+ * 規則: { id, paths: [glob], kinds?: ['add' | 'modify' | 'delete' | 'rename'], why }。
+ * tracked(追跡中のファイル)を渡すと、追跡中のファイルに1件も当たらない規則を unmatched に出す(未宣言として扱う)
+ */
+export function decisionRuleHits(rules, changes, tracked = null) {
+  const hits = [];
+  const unmatched = [];
+  const malformed = [];
+  let valid = 0;
+  for (const r of Array.isArray(rules) ? rules : []) {
+    if (!Array.isArray(r?.paths) || !r.paths.length || !r.paths.every((g) => typeof g === 'string' && g.trim())) {
+      malformed.push(r?.id ?? '(ID なし)');
+      continue;
+    }
+    valid++;
+    if (tracked && !tracked.some((f) => r.paths.some((g) => matchAny([g], f)))) unmatched.push(r.id ?? '(ID なし)');
+    const kinds = Array.isArray(r.kinds) && r.kinds.length ? r.kinds : null;
+    const files = changes.filter((c) => (!kinds || kinds.includes(c.kind)) && r.paths.some((g) => matchAny([g], c.path) || (c.from && matchAny([g], c.from)))).map((c) => c.path);
+    if (files.length) hits.push({ id: r.id ?? '(ID なし)', why: r.why ?? null, files });
+  }
+  return { rules: valid, unmatched, malformed, hits };
+}
+
+/** 本文の末尾の段落のトレーラ ADR が指す判断記録の番号(4桁)。「ADR: ADR-021, ADR-0034」の形を読む */
+export function adrTrailerIds(body) {
+  const ids = [];
+  for (const line of lastParagraph(body).split('\n')) {
+    const m = /^\s*ADR\s*:\s*(.+)$/.exec(line);
+    if (!m) continue;
+    for (const x of m[1].matchAll(/ADR-(\d{1,5})/g)) ids.push(String(Number(x[1])).padStart(4, '0'));
+  }
+  return [...new Set(ids)];
 }
 
 /** 「リスク区分」の節の「確定した者: <氏名>」。無ければ null */
@@ -1106,6 +1149,17 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
       );
     }
   }
+  // 判断記録の要否の規則を変える変更も、下限は R2(第2章 2.6「判断記録の要否の規則」の要求事項6。3.8.1 の要求事項6 と同じ扱い)
+  const decisionRulesChanged = baseConfigured && canonicalJson(baseConfig.decisionRules ?? null) !== canonicalJson(headConfig.decisionRules ?? null);
+  if (decisionRulesChanged) {
+    floorResult.hits.push({ id: 'decisionRules の変更', floor: 'R2', why: '判断記録の要否の規則を変える変更の下限は R2(第2章 2.6「判断記録の要否の規則」の要求事項6)', files: ['process.config.json'] });
+    if (RISK_RANK.R2 > RISK_RANK[floorResult.floor]) floorResult.floor = 'R2';
+    if (productCode.length) {
+      result.errors.push(
+        `判断記録の要否の規則: 規則(process.config.json の decisionRules)と製品のコード(${productCode.slice(0, 3).join(', ')}${productCode.length > 3 ? ' ほか' : ''})が同じ PR で変わっています。規則の変更を別の PR に分ける(第2章 2.6「判断記録の要否の規則」の要求事項6)`
+      );
+    }
+  }
   result.riskFloor = { floor: floorResult.floor, hits: floorResult.hits, rules: (rulesConfig.riskFloor?.rules ?? []).length };
   if (risk && RISK_RANK[risk] < RISK_RANK[floorResult.floor]) {
     const why = floorResult.hits.filter((h) => RISK_RANK[h.floor] > RISK_RANK[risk]).map((h) => `${h.id}(下限 ${h.floor}${h.why ? `。${h.why}` : ''}: ${h.files.slice(0, 3).join(', ')}${h.files.length > 3 ? ' ほか' : ''})`);
@@ -1136,6 +1190,52 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
             '「リスク区分」の節に `確定した者: <氏名>` を1行書く(区分を確定した人が自分で書く。AI は書かない)'
         );
       }
+    }
+  }
+
+  // --- 7b. 判断記録の要否の規則(標準 第2章 2.6。#422 / ADR-0101) ---
+  // 規則は基底ブランチの構成から読む。同じ PR で規則を書き換えても、その PR の当たりは変わらない。
+  // 規則に当たった変更を、申告(「設計上の選択を含まない」の記載など)で外す経路は置かない。偽陽性は規則を狭める変更で直す
+  {
+    const tracked = trackedFiles(root, 'HEAD');
+    const dr = decisionRuleHits(rulesConfig.decisionRules?.rules, changes, tracked);
+    const stage = stageOf(rulesConfig);
+    const declared = dr.rules > dr.unmatched.length;
+    const ids = adrTrailerIds(pr.body);
+    const listMd = (dir) => (fs.existsSync(path.join(root, dir)) ? fs.readdirSync(path.join(root, dir)) : []);
+    const has = (files, id) => files.some((f) => f.startsWith(`${id}-`) && f.endsWith('.md'));
+    const present = listMd('context/decisions');
+    const archived = listMd('context/_archive/decisions');
+    const found = ids.filter((id) => has(present, id));
+    const missing = ids.filter((id) => !found.includes(id));
+    const retired = missing.filter((id) => has(archived, id));
+    result.decisionRules = { rules: dr.rules, unmatched: dr.unmatched, malformed: dr.malformed, hits: dr.hits, stage, adr: found, missing, retired };
+    if (dr.malformed.length) {
+      result.notices.push(`判断記録の要否の規則: 形の誤った規則(${dr.malformed.join(', ')}。paths はパスの glob の配列)を数えていない。構成は /process-change の種別 settings で直す`);
+    }
+    if (!declared) {
+      result.notices.push(
+        dr.rules
+          ? `判断記録の要否の規則: 規則のパスが追跡中のファイルに1件も当たらない(${dr.unmatched.join(', ')})。未宣言として扱い、判断記録を要する設計上の選択(公開インタフェース・データ形式・構成単位の境界など)を検出できない(第2章 2.6「判断記録の要否の規則」)`
+          : '判断記録の要否の規則(process.config.json の decisionRules.rules)が無い。判断記録を要する設計上の選択(公開インタフェース・データ形式・構成単位の境界など)を検出できない。規則の外の選択は、PR の自己チェックと G-6 に残る(第2章 2.6「判断記録の要否の規則」)'
+      );
+    } else if (dr.unmatched.length) {
+      result.notices.push(`判断記録の要否の規則: 規則 ${dr.unmatched.join(', ')} のパスが追跡中のファイルに1件も当たらない(当たらない規則は検出しない)`);
+    }
+    if (dr.hits.length && !found.length) {
+      const where = dr.hits.map((h) => `${h.id}(${h.files.slice(0, 3).join(', ')}${h.files.length > 3 ? ' ほか' : ''}${h.why ? `。${h.why}` : ''})`).join(' / ');
+      const why = retired.length
+        ? `トレーラ ADR が指す判断記録(${retired.map((id) => `ADR-${id}`).join(', ')})は保管領域(context/_archive/decisions/)にあり、置き換え・廃止済みである。現に効いている判断記録(後継)を指す`
+        : missing.length
+          ? `トレーラ ADR が指す判断記録(${missing.map((id) => `ADR-${id}`).join(', ')})が context/decisions/ に無い(ファイル名は 4 桁の番号で始める)`
+          : '本文の末尾の段落にトレーラ ADR が無い';
+      const msg =
+        `判断記録の要否の規則: 判断記録を要する変更です(当たった規則: ${where})。${why}。判断記録を context/decisions/ へ置き、トレーラ \`ADR: ADR-NNNN\` を末尾の段落に書く。` +
+        '判断記録は取り込む前に技術設計判断(G-3)の判定を受ける。選択の余地が無かった場合も、判断記録にそう書いて G-3 に掛ける。申告で外す経路はありません。規則が広すぎる場合は、規則を狭める変更を別の PR で行う(第2章 2.6「判断記録の要否の規則」)';
+      if (stage === 'S0') result.notices.push(`${msg}。事業ステージ S0 のため失敗させない(2.6 のステージ表)`);
+      else result.errors.push(msg);
+    } else if (dr.hits.length && missing.length) {
+      result.warnings.push(`判断記録の要否の規則: トレーラ ADR のうち ${missing.map((id) => `ADR-${id}`).join(', ')} が context/decisions/ に無い`);
     }
   }
 

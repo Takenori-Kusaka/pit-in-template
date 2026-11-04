@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "d1c6d11dd48efc2e443f48199d43630796ae11c9",
+    "commit": "b270dc85b10c6a1e498f3d6202775a28f3afe5b9",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1625,6 +1625,12 @@
       "range": "物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか"
+    },
+    {
+      "title": "確認の範囲と深さ",
+      "range": "G-6 の承認",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#確認の範囲と深さ適用-g-6-の承認"
     },
     {
       "title": "承認レビューを判定記録とする条件",

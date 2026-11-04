@@ -85,6 +85,7 @@ function scenario(name, pr, mutate, expect) {
 const has = (r, re) => r.errors.some((e) => re.test(e));
 const passes = (...extra) => (r) => [...(r.errors.length ? ['失敗するはずがない'] : []), ...extra.flatMap((f) => f(r))];
 const failsWith = (re, ...extra) => (r) => [...(has(r, re) ? [] : [`${re} の失敗が出ていない`]), ...extra.flatMap((f) => f(r))];
+const noticedEarly = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [] : [`${re} の通知が出ていない: ${JSON.stringify(r.notices)}`]);
 const testListed = (count) => (r) => (r.testChanges.length === count ? [] : [`既存のテストの変更の件数 ${r.testChanges.length}(期待 ${count})`]);
 
 // ---------------------------------------------------------------- 通る場面(誤検出の候補)
@@ -391,6 +392,81 @@ scenario('確定者: R2 で「確定した者」が無い', { body: BODY('Spec: 
 scenario('確定者: 確定した者が作成を指示した者', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 山田 太郎')) }, () => write('src/a.js', lines(23)), failsWith(/作成を指示した者である/));
 scenario('確定者: AI の名義', { body: BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: Claude')) }, () => write('src/a.js', lines(23)), failsWith(/AI の名義/));
 scenario('確定者: 様式の説明のまま(<…>)は記名に数えない', { body: BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: <区分を確定した人の氏名。作成を指示した者以外の名簿の人>')) }, () => write('src/a.js', lines(23)), failsWith(/「確定した者: <氏名>」が無い/));
+
+// ---------------------------------------------------------------- 判断記録の要否の規則(第2章 2.6。process-compass #422 / ADR-0101)
+const withDecisionRules = (rules, extra = {}) => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.decisionRules = { rules };
+  Object.assign(cfg, extra);
+  write('process.config.json', cfg);
+  write('src/api/handler.js', lines(3, 'h'));
+  advanceBase('decision-rules');
+};
+const API_RULE = [{ id: 'public-api', paths: ['src/api/**'], why: '公開インタフェース' }];
+const ADR_BODY = (ids = 'ADR-0001') => BODY(`Spec: F-001 / Task-1\nADR: ${ids}`);
+// IMPL-0384:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('判断記録の要否: 規則(src/api/**)に当たる変更にトレーラ ADR が無い', {}, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+}, failsWith(/判断記録の要否の規則: 判断記録を要する変更です\(当たった規則: public-api/));
+rewindBase();
+scenario('判断記録の要否: トレーラ ADR が指す判断記録が context/decisions/ に無い', { body: ADR_BODY('ADR-0007') }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+}, failsWith(/ADR-0007\)が context\/decisions\/ に無い/));
+rewindBase();
+// IMPL-0384:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('判断記録の要否: トレーラ ADR が実在する判断記録を指せば通る(「ADR-1」の書き方も 4 桁へ読む)', { body: ADR_BODY('ADR-1') }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, passes((r) => (r.decisionRules?.adr?.includes('0001') ? [] : ['判断記録の識別を読んでいない'])));
+rewindBase();
+scenario('判断記録の要否: 本文に「設計上の選択を含まない」と書いても外れない(申告で外す経路は無い)', { body: BODY('Spec: F-001 / Task-1').replace('説明', '設計上の選択を含まない(記名: 佐藤 花子)') }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+}, failsWith(/判断記録を要する変更です/));
+rewindBase();
+scenario('判断記録の要否: 変更の種類(kinds: add)に当たらない変更は対象外', {}, () => {
+  withDecisionRules([{ id: 'new-api', paths: ['src/api/**'], kinds: ['add'], why: '公開インタフェースの追加' }]);
+  write('src/api/handler.js', lines(5, 'h'));
+}, passes((r) => (r.decisionRules?.hits.length === 0 ? [] : ['modify を当てている'])));
+rewindBase();
+scenario('判断記録の要否: 事業ステージ S0 では失敗させず、注意として出す(2.6 のステージ表)', {}, () => {
+  withDecisionRules(API_RULE, { answers: { 'q-biz-phase': 'poc' } });
+  write('src/api/handler.js', lines(5, 'h'));
+}, passes(noticedEarly(/判断記録を要する変更です.*S0 のため失敗させない/)));
+rewindBase();
+scenario('判断記録の要否: 同じ PR で規則を書き換えても、基底の規則で判定する', {}, () => {
+  withDecisionRules(API_RULE);
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.decisionRules = { rules: [] };
+  write('process.config.json', cfg);
+  write('src/api/handler.js', lines(5, 'h'));
+}, failsWith(/判断記録を要する変更です/, (r) => (has(r, /規則の変更を別の PR に分ける/) ? [] : ['規則と製品のコードの同時変更を失敗させていない']), (r) => (r.riskFloor?.hits.some((h) => h.id === 'decisionRules の変更' && h.floor === 'R2') ? [] : ['規則の変更の下限 R2 が出ていない'])));
+rewindBase();
+scenario('判断記録の要否: 規則のパスが追跡中のファイルに1件も当たらなければ未宣言として出す', {}, () => {
+  withDecisionRules([{ id: 'typo', paths: ['src/apii/**'], why: '誤記' }]);
+  write('src/a.js', lines(21));
+}, passes(noticedEarly(/規則のパスが追跡中のファイルに1件も当たらない\(typo\)。未宣言として扱い/)));
+rewindBase();
+scenario('判断記録の要否: 規則が無い構成では、判断記録を要する設計上の選択を検出できない旨を出す', {}, () => write('src/a.js', lines(21)), passes(noticedEarly(/decisionRules\.rules\)が無い。判断記録を要する設計上の選択.*を検出できない/)));
+scenario('判断記録の要否: ステージを確かめられない構成(回答 q-biz-phase が無い)は失敗させる側に倒す', {}, () => {
+  withDecisionRules(API_RULE, { answers: {} });
+  write('src/api/handler.js', lines(5, 'h'));
+}, failsWith(/判断記録を要する変更です/));
+rewindBase();
+scenario('判断記録の要否: 保管領域の判断記録(置き換え・廃止済み)を指すトレーラは通さない', { body: ADR_BODY('ADR-0002') }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/_archive/decisions/0002-old-api.md', '# ADR-0002: 旧い形\n');
+}, failsWith(/保管領域\(context\/_archive\/decisions\/\)にあり、置き換え・廃止済み/));
+rewindBase();
+scenario('判断記録の要否: 形の誤った規則(paths が文字列)は数えず、その旨を出す', {}, () => {
+  withDecisionRules([{ id: 'bad', paths: 'src/api/**', why: '形の誤り' }]);
+  write('src/a.js', lines(21));
+}, passes(noticedEarly(/形の誤った規則\(bad。/)));
+rewindBase();
 
 // ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)
 const STOP = ['state:stop-requested'];

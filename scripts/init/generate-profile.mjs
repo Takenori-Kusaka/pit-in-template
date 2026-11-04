@@ -1897,6 +1897,27 @@ export function diffConfig(before, after) {
         }
       }
       for (const [id, r] of a) if (!b.has(id)) push(`区分の下限の規則 ${id}: 追加(下限 ${r.floor}。${(r.paths ?? []).join(', ')})`, 0, 1, null);
+    }
+    // 判断記録の要否の規則(第2章 2.6「判断記録の要否の規則」の要求事項5。#422 / ADR-0101)。規則を削る変更・対象のパスを
+    // 狭める変更・変更の種類を絞る変更は、緩める向きとして D-0 表1「体制と運用形態」の決定者の記名と理由を要する(seat は null)
+    {
+      const rulesOf = (c) => new Map((c.decisionRules?.rules ?? []).map((r) => [r.id, r]));
+      const b = rulesOf(before);
+      const a = rulesOf(after);
+      for (const [id, r] of b) {
+        const n = a.get(id);
+        if (!n) push(`判断記録の要否の規則 ${id}: 削除(${(r.paths ?? []).join(', ')})`, 1, 0, null);
+        else {
+          const removed = (r.paths ?? []).filter((g) => !(n.paths ?? []).includes(g));
+          const added = (n.paths ?? []).filter((g) => !(r.paths ?? []).includes(g));
+          if (removed.length) push(`判断記録の要否の規則 ${id}: 対象のパスを外す(${removed.join(', ')})`, 1, 0, null);
+          if (added.length) push(`判断記録の要否の規則 ${id}: 対象のパスを足す(${added.join(', ')})`, 0, 1, null);
+          const kb = JSON.stringify(r.kinds ?? null);
+          const ka = JSON.stringify(n.kinds ?? null);
+          if (kb !== ka) push(`判断記録の要否の規則 ${id}: 変更の種類 ${kb} → ${ka}`, n.kinds && (!r.kinds || r.kinds.some((k) => !n.kinds.includes(k))) ? 1 : 0, 0, null);
+        }
+      }
+      for (const [id, r] of a) if (!b.has(id)) push(`判断記録の要否の規則 ${id}: 追加(${(r.paths ?? []).join(', ')})`, 0, 1, null);
       if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
         diff.push(`依存先の欄(通知の期間・データ): ${(before.dependencies ?? []).length} 件 → ${(after.dependencies ?? []).length} 件`);
         remaining.push('依存先の欄は、提供者との契約・規約で確かめた通知の期間と、渡すデータの種別と保持の条件を書く(第3章 3.12.11)。空欄の欄は単一障害点の候補として出る');
@@ -4193,7 +4214,7 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'dependencies'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
@@ -4213,6 +4234,23 @@ if (isMain) {
             bad.push(`settings.riskFloor.rules[${i}].kinds は "add" / "modify" / "delete" / "rename" の配列で書きます`);
           }
           if (typeof r?.why !== 'string' || !r.why.trim()) bad.push(`settings.riskFloor.rules[${i}].why(この下限を置く理由)を書きます`);
+        }
+      }
+    }
+    // 判断記録の要否の規則(標準 第2章 2.6「判断記録の要否の規則」。#422 / ADR-0101)。{ rules: [{ id, paths: [glob], kinds?, why }] }
+    if (S.decisionRules !== undefined && S.decisionRules !== null) {
+      if (!isObject(S.decisionRules) || !Array.isArray(S.decisionRules.rules)) bad.push('settings.decisionRules は { "rules": [{ "id": "<ID>", "paths": ["<glob>"], "why": "<理由>" }] } で書きます。設定を消すときは null です');
+      else {
+        const ids = new Set();
+        for (const [i, r] of S.decisionRules.rules.entries()) {
+          if (!isObject(r) || typeof r.id !== 'string' || !r.id.trim()) bad.push(`settings.decisionRules.rules[${i}].id を書きます`);
+          else if (ids.has(r.id)) bad.push(`settings.decisionRules.rules の id "${r.id}" が重複しています`);
+          else ids.add(r.id);
+          if (!strList(r?.paths)) bad.push(`settings.decisionRules.rules[${i}].paths はパスの glob の配列で書きます`);
+          if (r?.kinds !== undefined && !(Array.isArray(r.kinds) && r.kinds.every((k) => ['add', 'modify', 'delete', 'rename'].includes(k)))) {
+            bad.push(`settings.decisionRules.rules[${i}].kinds は "add" / "modify" / "delete" / "rename" の配列で書きます`);
+          }
+          if (typeof r?.why !== 'string' || !r.why.trim()) bad.push(`settings.decisionRules.rules[${i}].why(判断記録を要する理由)を書きます`);
         }
       }
     }
@@ -4539,7 +4577,7 @@ if (isMain) {
     config.changeLog[0].preflight = preflightRecord(preflightResult, ROOT, config.changeLog[0].at ?? null);
   }
   // 区分の下限の規則と依存先の欄(種別 settings で書く)。再生成で失わない。null は設定を消す
-  for (const key of ['riskFloor', 'dependencies']) {
+  for (const key of ['riskFloor', 'decisionRules', 'dependencies']) {
     const now = S[key] !== undefined ? S[key] : prior?.[key];
     if (now != null) config[key] = now;
     else delete config[key];
