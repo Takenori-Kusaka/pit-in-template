@@ -130,9 +130,9 @@ import {
   coreReviewText,
   qaAffiliationText,
 } from './org-assurance.mjs';
-import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE } from './verification-trace.mjs';
+import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits } from './check-pr.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
@@ -1929,6 +1929,68 @@ if (isMain) {
           'リスク区分は変更ごとに確定する記録です(第3章 3.8.1)。成立済みのコミットは書き換えず、判定記録(docs/gates)の「対象」へ' +
           `コミットの識別子 ${d.commit.slice(0, 7)} を、「変更のリスク区分」へ区分を書いて確定してください`
       );
+    }
+    // 区分の下限と判断記録の要否の規則(第3章 3.8.1 の要求事項2・6、第2章 2.6 の要求事項2・6。process-compass #423)。
+    // PR を経ないコミットにも、PR の検査(check-pr.mjs の 7・7b)と同じ規則を当てる。規則は当該コミットの直前の構成から読む
+    // (コミット自身が規則を書き換えて、自らを規則の外へ出す経路を作らない)
+    {
+      const before = configBefore(d.hash);
+      const KIND = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'add', T: 'modify' };
+      const changes = git(['diff-tree', '--no-commit-id', '-r', '-M', '--name-status', '-z', d.hash])
+        .split('\0')
+        .reduce((acc, tok, i, arr) => {
+          if (!tok || !/^[AMDRCT]/.test(tok) || acc.skip > i) return acc;
+          const k = KIND[tok[0]] ?? 'modify';
+          if (k === 'rename' || tok[0] === 'C') {
+            acc.list.push({ path: arr[i + 2], from: tok[0] === 'R' ? arr[i + 1] : undefined, kind: k });
+            acc.skip = i + 3;
+          } else {
+            acc.list.push({ path: arr[i + 1], kind: k });
+            acc.skip = i + 2;
+          }
+          return acc;
+        }, { list: [], skip: 0 }).list;
+      const RANK = { R3: 1, R2: 2, R1: 3 };
+      const floor = riskFloorOf(before.riskFloor?.rules, changes);
+      d.riskFloor = floor.floor;
+      if (d.riskClass && RANK[d.riskClass] < RANK[floor.floor]) {
+        const why = floor.hits.filter((h) => RANK[h.floor] > RANK[d.riskClass]).map((h) => `${h.id}(下限 ${h.floor}: ${h.files.slice(0, 3).join(', ')})`);
+        gaps.push(
+          `コミット ${d.commit}: ${claimed}PR を経ていないコミットの区分 ${d.riskClass} は、変更の対象から導いた下限 ${floor.floor} より低い(当たった規則: ${why.join(' / ')})。` +
+            `区分の下限は PR を経ないコミットにも掛かります(第3章 3.8.1 の要求事項2)。成立済みのコミットは書き換えず、判定記録(docs/gates)の「対象」へコミットの識別子 ${d.commit.slice(0, 7)} を、「変更のリスク区分」へ ${floor.floor} 以上の区分を書いて確定してください`
+        );
+      }
+      const touched = changes.flatMap((c) => (c.from ? [c.path, c.from] : [c.path]));
+      const product = touched.filter((f) => f !== 'process.config.json' && notRecordReasons(d.hash, [f]).length);
+      if (touched.includes('process.config.json') && product.length) {
+        let after = null;
+        try {
+          after = JSON.parse(git(['show', `${d.hash}:process.config.json`]));
+        } catch {
+          after = null;
+        }
+        const same = (key) => JSON.stringify(before?.[key] ?? null) === JSON.stringify(after?.[key] ?? null);
+        for (const [key, label, where] of [['riskFloor', '区分の下限の規則', '第3章 3.8.1 の要求事項6'], ['decisionRules', '判断記録の要否の規則', '第2章 2.6 の要求事項6']]) {
+          if (after && !same(key)) {
+            gaps.push(`コミット ${d.commit}: ${claimed}${label}(process.config.json の ${key})と製品のコード(${product.slice(0, 3).join(', ')})が同じコミットで変わっています(${where})。規則の変更は別のコミットに分けます`);
+          }
+        }
+      }
+      const dr = decisionRuleHits(before.decisionRules?.rules, changes);
+      if (dr.hits.length) {
+        const ids = [...new Set((git(['log', '-1', '--format=%(trailers:key=ADR,valueonly,separator=%x2C)', d.hash]).match(/ADR-(\d{1,5})/g) ?? []).map((x) => String(Number(x.slice(4))).padStart(4, '0')))];
+        const present = git(['ls-tree', '--name-only', `${d.hash}:context/decisions`]).split('\n').map((s) => s.trim()).filter(Boolean);
+        const found = ids.filter((id) => present.some((f) => f.startsWith(`${id}-`) && f.endsWith('.md')));
+        const stage = stageOf(before);
+        d.decisionRules = { hits: dr.hits.map((h) => h.id), adr: found, stage };
+        if (!found.length) {
+          const where = dr.hits.map((h) => `${h.id}(${h.files.slice(0, 3).join(', ')})`).join(' / ');
+          const why = ids.length ? `トレーラ ADR が指す判断記録(${ids.map((id) => `ADR-${id}`).join(', ')})が、そのコミットの context/decisions/ に無い` : 'トレーラ ADR が無い';
+          const text = `コミット ${d.commit}: ${claimed}PR を経ていないコミットが、判断記録の要否の規則に当たります(当たった規則: ${where})。${why}(第2章 2.6 の要求事項2)`;
+          if (stage === 'S0') d.decisionRules.notice = `${text}。事業ステージ S0 のため欠落にしない`;
+          else gaps.push(`${text}。成立済みのコミットは書き換えず、判断記録を置いたうえで、判定記録(docs/gates)の「対象」へコミットの識別子 ${d.commit.slice(0, 7)} を書き、技術設計判断(G-3)の判定を受けてください`);
+        }
+      }
     }
     const needs = exceptionNeeded(d.independent.counted, false, d.riskClass);
     const ex = needs ? exceptionMatch(commitRefers(d.hash), { known: new Map(d.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: d.independent.unresolvedInstructors }) : { matched: [], rejected: [] };
@@ -4239,6 +4301,7 @@ if (isMain) {
       `- PR を経ていないコミット(区分はトレーラ Risk、または判定記録による): R1 ${dc.R1} / R2 ${dc.R2} / R3 ${dc.R3} / 記載なし ${dc.notRecorded}` +
         `。対象外にしたコミット: 記録だけのコミット ${dc.exempt.recordOnly} 件 / ファイルの変更を持たないコミット ${dc.exempt.empty} 件(変更の件数に数えていない)`
     );
+    for (const x of directProduct.filter((d) => d.decisionRules?.notice)) R.push(`- 注意: ${x.decisionRules.notice}`);
     R.push(`- 参照した D-0 の版の記載がない判定記録: ${A.changes.gateRecordsWithoutD0Version} 件`);
     // AI自律レベル(第5章 5.4.6)。登録した変更種別ごとに、現在のレベルと停止を出す。判定不能を「異常なし」と書かない
     const au = A.autonomy;
