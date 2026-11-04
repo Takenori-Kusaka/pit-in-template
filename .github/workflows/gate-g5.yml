@@ -86,6 +86,8 @@ jobs:
       - run: node scripts/gate/test-roster-rules.mjs
       # 企画書の閾値の行(7.6 のエスカレーション閾値と 7.7.4 の自動的な上程の閾値)の記入の検査(process-compass #419 / ADR-0097)
       - run: node scripts/gate/test-brief-thresholds.mjs
+      # 当初の見積りの保存(G-1 の時点の見積りの空欄と書き換え)と、見積りと実績の差の記録(process-compass #416 / ADR-0093)
+      - run: node scripts/gate/test-brief-estimates.mjs
       # 記録の無い非推奨の兼務を、出荷判定の証跡の集約が記載の欠落にすることを、一時の置き場で通しで試験する(process-compass #312)
       - run: node scripts/gate/test-discouraged-evidence.mjs
       # 従う本標準の版・適用の終了・適用の開始の境・述べられる主張の名を、一時の置き場で通しで試験する(process-compass #313)

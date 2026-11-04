@@ -12,6 +12,7 @@ import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords } 
 import { readBriefQuality } from './verification-trace.mjs';
 import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
+import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -132,6 +133,39 @@ if (quality.missingIds.length) {
 if (quality.duplicates.length) problems.push(`「壊してはならない品質条件」の識別子が重複しています(${[...new Set(quality.duplicates)].join(', ')})`);
 if (!quality.cost.present) problems.push('「総費用の内訳」の表がありません(templates/06-project-brief.md の様式から写す。AI の実行・検証・修正・教育・管理の5区分)');
 else if (quality.cost.blank.length) problems.push(`「総費用の内訳」に記入の無い区分があります(${quality.cost.blank.join(' / ')})。記録から取れない区分は「見積り」と書き、算定の方法を出所へ書く`);
+
+// 総費用の内訳の「G-1 の時点の見積り」の列(標準 第7章 7.7.9 の要求事項3。process-compass #416 / ADR-0093)。
+// 空欄は G-1 の前は失敗、G-1 を通過済みは欠落として出す。通過済みの企画書は、G-1 の判定記録の「参照した企画書の版」と比べ、
+// 列が書き換えられていれば失敗させる(当初の見積りを上書きしない)。版を読めなければ、確かめられないことを出す
+{
+  const g1Recs = readGateRecords().filter((r) => /^G-1(?!d)/.test(r.gate ?? '') && r.result === '通過');
+  const blankG1 = g1EstimateBlank(text, isFilledValue);
+  if (blankG1 === null && quality.cost.present) {
+    const msg = '「総費用の内訳」に列「G-1 の時点の見積り」がありません(templates/06-project-brief.md の様式から写す。標準 第7章 7.7.9 の要求事項3)';
+    if (g1Recs.length) warn(`${msg}。G-1 を通過済みのため遡って失敗させません。記載の欠落です`);
+    else problems.push(msg);
+  } else if (blankG1 && blankG1.length) {
+    const msg = `「総費用の内訳」の列「G-1 の時点の見積り」に空欄の区分があります(${blankG1.join(' / ')})。G-1 の時点では「値」と同じ値を書きます(標準 第7章 7.7.9 の要求事項3)`;
+    if (g1Recs.length) warn(`${msg}。G-1 を通過済みのため遡って失敗させません。記載の欠落です`);
+    else problems.push(msg);
+  }
+  for (const r of g1Recs) {
+    const ver = briefVersionOf(fs.readFileSync(path.join(ROOT, r.file), 'utf8'));
+    if (!ver) {
+      warn(`${r.file}: 「参照した企画書の版」にコミットの識別子が無いため、G-1 の時点の見積りが書き換えられていないかを確かめられません(標準 第7章 7.7.9 の要求事項3)`);
+      continue;
+    }
+    const base = fileAtVersion(ROOT, ver, 'docs/project-brief.md');
+    if (base === null) {
+      warn(`${r.file}: 参照した企画書の版 ${ver} の docs/project-brief.md を読めません。G-1 の時点の見積りが書き換えられていないかを確かめられません`);
+      continue;
+    }
+    const changed = g1EstimateChanges(base, text);
+    if (changed.length) {
+      problems.push(`総費用の内訳の「G-1 の時点の見積り」が、G-1 の判定(${r.file}。参照した企画書の版 ${ver})の後に書き換えられています(${changed.map((c) => `${c.label}: ${c.before} → ${c.after || '空欄'}`).join(' / ')})。当初の見積りは上書きしません。実績は「値」と「実績 / 見積り」の列へ書きます(標準 第7章 7.7.9 の要求事項3)`);
+    }
+  }
+}
 
 // 本文全体での TBD / 未定 / ??? 検査
 const generalEmpty = lines

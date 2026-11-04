@@ -136,6 +136,7 @@ import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf } f
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
+import { estimateGapBlank } from './brief-estimates.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -2935,6 +2936,13 @@ if (isMain) {
           '保留を解くのは解除の記録だけです。出荷判定者の署名と G-8 の受容は保留を解きません'
       );
     }
+  }
+
+  // ステージ移行ゲートの判定記録の「見積りと実績の差」(第7章 7.7.9 の要求事項4 / テンプレ4。process-compass #416)。節の欠落と空欄は記載の欠落
+  for (const g of gateRecordList.filter((r) => /ステージ移行|^SG/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
+    const blankGap = estimateGapBlank(fs.readFileSync(path.join(ROOT, g.file), 'utf8'), filled);
+    if (blankGap === null) gaps.push(`${g.file}: ステージ移行ゲートの判定記録に「見積りと実績の差」の節がありません。記載の欠落です(第7章 7.7.9 の要求事項4。テンプレ4)`);
+    else if (blankGap.length) gaps.push(`${g.file}: 「見積りと実績の差」に空欄の欄があります(${blankGap.join(' / ')})。記載の欠落です(第7章 7.7.9 の要求事項4)`);
   }
 
   // ステージ移行ゲート・案件に関与していない者による棚卸しの判定記録の「AI の利用の評価」(第7章 7.7.8 / テンプレ4)。節の欠落と空欄は記載の欠落
