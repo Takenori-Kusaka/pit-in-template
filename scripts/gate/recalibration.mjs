@@ -62,6 +62,8 @@ export function recalibrationState(config, { today = localDay(), registry = read
   const items = [];
   for (const c of registry.constants) {
     if (!c.capabilityDependent) continue;
+    // テンプレートの様式に、その定数が働く記録が無い(RC-03 の見積の列など)。再評価待ちに数えず、適用なしとして出す(process-compass #417)
+    if (c.notApplicable) continue;
     const rec = latest.get(c.id) ?? null;
     const baseline = rec?.day ?? baseline0;
     const reasons = [];
@@ -75,10 +77,11 @@ export function recalibrationState(config, { today = localDay(), registry = read
     if (reasons.length) items.push({ id: c.id, name: c.name, reasons, lastDecision: rec, noRelax: Boolean(c.noRelaxByCapability) });
   }
   return {
-    total: registry.constants.filter((c) => c.capabilityDependent).length,
+    total: registry.constants.filter((c) => c.capabilityDependent && !c.notApplicable).length,
     pending: items,
     count: items.length,
     notDependent: registry.constants.filter((c) => !c.capabilityDependent).map((c) => c.id),
+    notApplicable: registry.constants.filter((c) => c.capabilityDependent && c.notApplicable).map((c) => ({ id: c.id, why: c.notApplicable })),
     ignored,
   };
 }
@@ -93,6 +96,7 @@ export function recalibrationNote(state) {
       ? `${state.pending.filter((p) => p.noRelax).map((p) => p.id).join('・')} は人の帯域に由来する。**能力が上がったことを理由に緩めない**。変えるなら、実績(充足率)と手段の変化の記録を要する。`
       : '') +
     '能力が上がったことを理由に、観測窓・力量確認の周期・監査の周期は短縮しない(登録簿で「能力に依らない」と明記)' +
+    `${state.notApplicable?.length ? `。適用なし: ${state.notApplicable.map((x) => x.id).join('・')}(様式に働く記録が無い)` : ''}` +
     `${state.ignored.length ? `。数えなかった記録: ${state.ignored.join(' / ')}` : ''}`
   );
 }

@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "6dddfc56ab1dc0aaed3ad16b4c3a4cfe2d364336",
+    "commit": "49f9ec4c94a5c0dfcaed77a093b2acaf996224f6",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -329,7 +329,7 @@
           "action": "set",
           "param": "mode",
           "value": "planned-payback",
-          "note": "負債の計画返却を開始する(返却枠の目安は容量の20%)"
+          "note": "負債の計画返却を開始する(返却枠の例は完了させる作業単位の個数の20%)"
         }
       ],
       "reason": "グロース期は参照モデルをほぼそのまま適用する段階。負債を返し始めないと拡大速度が落ちる",

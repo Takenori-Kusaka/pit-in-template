@@ -27,7 +27,8 @@
       "capabilityDependent": true,
       "configKey": null,
       "assumption": "人の作業量に基づく見積",
-      "guarantee": "超えたら理由を記録する(目安)"
+      "guarantee": "超えたら理由を記録する(目安)",
+      "notApplicable": "このテンプレートの実装計画(templates/07-implementation-plan.md)は見積の列を持たないため、目安が働く記録が無い。見積の列を足した構成で再評価の対象にする(process-compass #417 / ADR-0098)"
     },
     {
       "id": "RC-04",
