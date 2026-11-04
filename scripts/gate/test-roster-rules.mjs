@@ -28,6 +28,7 @@ import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, beh
 import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
 import { headcountProblems, deviationCategory, deviationCategoryProblems, enforcedApprovalFindings, RULE_APPROVER_SEAT } from './config.mjs';
 import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices, pendingTightenings } from '../init/generate-profile.mjs';
+import { ESCALATION, renderEscalation } from '../init/generate-profile.mjs';
 import { discouragedPairings, discouragedUnrecorded, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
@@ -535,6 +536,16 @@ for (const cl of ['cl1', 'cl2', 'cl3']) {
   check('未適用の厳格化: CL0 の差は表示するが、欠落には数えない', f0.length === 1 && f0[0].blocking === false, JSON.stringify(f0));
 }
 
+// エスカレーションの段階と判定する者(標準 第7章 7.6 / ADR-0095。process-compass #418)
+{
+  const esc = renderEscalation();
+  check('エスカレーション: 定義の無い語「プロジェクト責任者」「部門責任者・PMO」を判定する者に書かない', !/プロジェクト責任者|部門責任者・PMO/.test(esc), esc);
+  const scm = ESCALATION.find(([stage]) => /段階1/.test(stage) && /SC-M/.test(stage));
+  check('エスカレーション: SC-M を動かす必要は段階1 から事業決裁者が判定し、state:needs-owner を付ける', Boolean(scm) && /事業決裁者/.test(scm[1]) && scm[2] === 'state:needs-owner', JSON.stringify(scm));
+  const s1 = ESCALATION.find(([stage]) => /段階1/.test(stage) && /予算/.test(stage));
+  check('エスカレーション: 予算・日程の段階1 は価値責任者が吸収し、期日・予算・SC-M を動かさない', Boolean(s1) && /価値責任者/.test(s1[1]) && /動かさない/.test(s1[1]) && /判定を要しない/.test(s1[1]) && s1[2] === 'state:needs-po', JSON.stringify(s1));
+  check('エスカレーション: 起票した者は自分の起票を判定しないことと、実際の宛先が D-0 の節6 によることを出す', /起票した者は自分の起票を判定しない/.test(esc) && /D-0 の節6/.test(esc), esc);
+}
 console.log('');
 if (failures) {
   console.log(`独立と席の規則の試験: ${failures} 件が期待と一致しません`);
