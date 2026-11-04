@@ -11,6 +11,7 @@ import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
 import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
+import { briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -110,6 +111,13 @@ for (const [section, key] of REQUIRED_ROWS) {
   }
   const value = row.replace(/\*/g, '').slice(`| ${key} |`.length).replace(/\|\s*$/, '').trim();
   if (!isFilledValue(value)) problems.push(`「${section}」の欄「${key}」が未記入です(空欄、または様式の説明 <…> のまま)`);
+}
+
+// 7.6 のエスカレーション閾値と 7.7.4 の自動的な上程の閾値(組織が定める値。標準 第1章 1.7.7、第7章 7.6・7.7.2。#419 / ADR-0097)。
+// 記録の無い企画書は G-1 の基準4 を満たさない。G-1 を通過済みの企画書は遡って失敗させず、欠落として出す
+for (const p of briefThresholdProblems(text, readGateRecords(), isFilledValue)) {
+  if (p.state === 'gap') warn(briefThresholdMessage(p));
+  else problems.push(briefThresholdMessage(p));
 }
 
 // 壊してはならない品質条件の識別子(QC-NN)と、総費用の内訳(5区分)。標準 第6章 テンプレ6、第4章 G-7

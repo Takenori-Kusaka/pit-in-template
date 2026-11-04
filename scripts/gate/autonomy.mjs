@@ -40,7 +40,7 @@ export const LEVELS = ['L1', 'L2', 'L3'];
 export const levelRank = (l) => LEVELS.indexOf(l);
 /** 差し戻し率の観測の窓(月)。第5章 5.4.6 の「2か月継続」(EV-0146)。組織の値を構成に持たない */
 export const WINDOW_MONTHS = 2;
-/** 窓の中の最小標本数(変更の件数)。第4章「閾値の設定と較正」の要求事項3 の初期値 */
+/** 窓の中の最小標本数(変更の件数)。第4章「閾値の設定と較正」の要求事項3 の既定値 */
 export const MIN_SAMPLE = 30;
 /** 手戻り率は集計しない。表示し続ける(標準の実装マーク IMPL-0291 は降りていない) */
 export const REWORK_UNDELIVERED =

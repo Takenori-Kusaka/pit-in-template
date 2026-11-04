@@ -908,7 +908,7 @@ export function buildConfig(answers, opts = {}) {
   if (opts.selfHealMaxIterations !== undefined && opts.selfHealMaxIterations !== derivedSelfHealMaxIterations) {
     console.log(`[較正引き継ぎ] 既存の較正設定（task.selfHealMaxIterations: ${opts.selfHealMaxIterations}）を検出し、引き継ぎました（標準の導出初期値: ${derivedSelfHealMaxIterations}）`);
   }
-  // 無進捗(同じ失敗したテストの集合が続く回数)の停止条件。標準 第3章 3.12.10 の初期値 2 回(EV-0001)。#296
+  // 無進捗(同じ失敗したテストの集合が続く回数)の停止条件。標準 第3章 3.12.10 の参考の値 2 回(EV-0001)。#296
   const derivedSelfHealNoProgressLimit = 2;
   const selfHealNoProgressLimit = opts.selfHealNoProgressLimit ?? derivedSelfHealNoProgressLimit;
   if (opts.selfHealNoProgressLimit !== undefined && opts.selfHealNoProgressLimit !== derivedSelfHealNoProgressLimit) {
@@ -3180,7 +3180,7 @@ export function renderProfileMd(config, result) {
   L.push(`| アダプタ | \`${config.adapters.stack}\` |`);
   L.push('');
   L.push(
-    'カバレッジの下限は初期値です。**実測に基づく値ではありません**。企画承認(G-1)で自組織の値を定めて置き換えてください。'
+    'カバレッジの下限は参考の値です(組織が定める値。標準 第1章 1.7.7)。**実測に基づく値ではありません**。企画承認(G-1)で自組織の値を定めて記録してください(参考の値をそのまま用いる場合も記録します)。'
   );
   L.push('');
   L.push('### 実装スタックの確定時期');
