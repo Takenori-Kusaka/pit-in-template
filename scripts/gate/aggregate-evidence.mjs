@@ -130,7 +130,7 @@ import {
   coreReviewText,
   qaAffiliationText,
 } from './org-assurance.mjs';
-import { readBriefQuality, traceVerification, readDefectLedger, DEFECT_FILE, stageOf } from './verification-trace.mjs';
+import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits } from './check-pr.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
@@ -2821,6 +2821,17 @@ if (isMain) {
   const briefQuality = readBriefQuality();
   const trace = traceVerification({ conditions: briefQuality.conditions });
   const defects = readDefectLedger(config);
+  // 確定した欠陥の検出工程(運用メトリクス。#413 / ADR-0102)。原因の変更の PR の作成を指示した者は、PR の記録から引く
+  // 確定日で出荷の範囲(期間の指定ではその期間)に絞る。起点の無い初回は終点まで
+  const defectStages = readDefectStages(config, {
+    since: period ? period.from : from ? git(['log', '-1', '--format=%cs', from]) || null : null,
+    until: period ? period.to : git(['log', '-1', '--format=%cs', to]) || null,
+    instructorsOf: (ref) => {
+      const m = /#(\d+)/.exec(ref ?? '');
+      const p = m ? prs.find((x) => String(x.number) === m[1]) : null;
+      return p ? (p.instructedBy ?? []) : null;
+    },
+  });
 
   // 5. 残存リスク、既知の不具合、未回収の例外
   const debtRows = ledgerRows ? ledgerRows.filter((r) => r.state.startsWith('未返却')) : null;
@@ -2834,6 +2845,7 @@ if (isMain) {
     gateExceptions: gateExceptions.matched,
     openUnresolved: debtRows ? debtRows.filter((r) => r.kind === '未解決').map((r) => `${r.id} ${r.content}`) : NO_RECORD,
     openDebt: debtRows ? count(debtRows, (r) => r.kind === '負債') : NO_RECORD,
+    defectStages,
     knownDefects: !defects.present
       ? `${NO_RECORD}(欠陥の台帳 ${DEFECT_FILE} が無い)`
       : defects.noKnown
@@ -4375,6 +4387,30 @@ if (isMain) {
     R.push(`- 未解決事項(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openUnresolved) : A.residual.openUnresolved)}`);
     R.push(`- 未返却の負債(技術負債台帳): ${A.residual.openDebt === NO_RECORD ? NO_RECORD : `${A.residual.openDebt} 件`}`);
     R.push(`- 既知の不具合: ${A.residual.knownDefects}`);
+    {
+      // 確定した欠陥の検出工程(運用メトリクス「欠陥の検出工程」「重大欠陥の流出」。#413 / ADR-0102)
+      const ds = A.residual.defectStages;
+      if (!ds?.present) R.push('- 確定した欠陥の検出工程: 未測定(欠陥の台帳が無い)');
+      else if (!ds.measurable) R.push(`- 確定した欠陥の検出工程: 未測定(${ds.why})`);
+      else {
+        const stages = Object.entries(ds.byStage).map(([k, v]) => `${k} ${v} 件`).join(' / ');
+        R.push(
+          `- 確定した欠陥の検出工程(処分が「欠陥」で、確定した者が人・確定日が ${ds.since ?? '起点なし'}〜${ds.until ?? '終点なし'} の行): ${stages}。合計 ${ds.confirmed} 件、検出の時点が運用の Sev1・Sev2 ${ds.opsSevere} 件。` +
+            `同じ範囲で取り込んだ変更 ${A.independence?.changes?.total ?? '値なし'} 件。現時点の未処分の報告 ${ds.unprocessed} 件(確定するまで数えない)。` +
+            `起票の経路ごとの件数は出さない(採用しない指標)。${prev((p) => (p.residual?.defectStages?.measurable ? `合計 ${p.residual.defectStages.confirmed} 件、運用 ${p.residual.defectStages.byStage['運用']} 件` : null))}`
+        );
+        const notes = [
+          ds.mismatched.length ? `列「検出の時点」と「検出した工程」が食い違う行 ${ds.mismatched.join(', ')}` : '',
+          ds.whenBlank.length ? `検出の時点が空欄の行 ${ds.whenBlank.join(', ')}(委任の判定は「運用」として読む)` : '',
+          ds.noStage.length ? `検出した工程の無い確定した行 ${ds.noStage.join(', ')}(工程に数えていない)` : '',
+          ds.noConfirmer.length ? `処分が「欠陥」だが確定した者・確定日の無い行 ${ds.noConfirmer.join(', ')}(数えていない)` : '',
+          ds.aiConfirmer.length ? `確定した者が AI の名義の行 ${ds.aiConfirmer.join(', ')}(数えていない)` : '',
+          ds.instructorDisposals.length ? `運用の報告を、原因の変更の作成を指示した者が「欠陥でない」「取り下げ」とした行 ${ds.instructorDisposals.join(', ')}` : '',
+          ds.instructorUnknown.length ? `運用の報告を「欠陥でない」「取り下げ」とした行のうち、原因の変更の作成を指示した者を確かめられない行 ${ds.instructorUnknown.join(', ')}(原因の変更が PR の番号でない、または出荷の範囲の外)` : '',
+        ].filter(Boolean);
+        if (notes.length) R.push(`  - 注記: ${notes.join('。')}`);
+      }
+    }
     R.push(`- テストへ降ろしていない品質条件(受入基準から参照、テストから参照なし): ${listOr(A.residual.qcNoTest ?? [])}`);
     R.push(`- 検証へ降ろしていない品質条件(受入基準から参照なし): ${listOr(A.residual.qcUnreferenced ?? [])}`);
     if (preInitDetail.total) {

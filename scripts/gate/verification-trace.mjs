@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ROOT, isFilledValue, matchGlob } from './config.mjs';
+import { ROOT, isFilledValue, matchGlob, aiNameBlocked, personKey } from './config.mjs';
 
 export const BRIEF_FILE = 'docs/project-brief.md';
 export const DEFECT_FILE = 'docs/defect-ledger.md';
@@ -340,6 +340,80 @@ export function traceVerification({ root = ROOT, conditions = [] } = {}) {
 export function stageOf(config) {
   const p = config?.answers?.['q-biz-phase'];
   return p === 'poc' ? 'S0' : p === 'mvp' ? 'S1' : p ? 'S2' : null;
+}
+
+/**
+ * 確定した欠陥の検出工程(運用メトリクス「欠陥の検出工程」「重大欠陥の流出」。標準 第4章「確定した欠陥と検出した工程」。process-compass #413 / ADR-0102)。
+ * 欠陥の台帳の、処分が「欠陥」で、確定した者(人。AI の名義は数えない)と確定日のある行のうち、確定日が範囲(since〜until)に入る行を、
+ * 列「検出した工程」ごとに数える。未処分の件数は、範囲によらず現時点の行数を出す(滞留の把握。指標にしない)。
+ * 起票の経路ごとの件数は出さない(採用しない指標)。G-7 基準2 と委任の停止の読み方は変えない(処分は統制を緩めない)。
+ * instructorsOf(ref): 原因の変更(「#123」など)の作成を指示した者の氏名の配列。PR の記録から引けなければ null
+ */
+export function readDefectStages(config, { root = ROOT, instructorsOf = () => null, since = null, until = null } = {}) {
+  const text = readText(DEFECT_FILE, root);
+  if (!text) return { present: false, measurable: false };
+  const t = firstTable(headingLines(text, /台帳|欠陥/).length ? headingLines(text, /台帳|欠陥/) : text.split('\n'));
+  const col = (re) => t.header.findIndex((h) => re.test(nfkc(h)));
+  const iStage = col(/検出した工程/);
+  const iDisp = col(/処分/);
+  const iBy = col(/確定した者/);
+  const iAt = col(/確定日/);
+  const iWhen = col(/検出の時点/);
+  const iSev = col(/重大度/);
+  const iCause = col(/原因の変更/);
+  const rows = t.rows.filter((r) => isFilledValue(r[0]) || isFilledValue(r[1]));
+  if (iStage < 0 || iDisp < 0 || iBy < 0 || iAt < 0) return { present: true, measurable: false, why: '台帳に列「検出した工程」「処分」「確定した者」「確定日」が無い(旧い様式)' };
+  const STAGES = ['出荷前の検証', '出荷判定', '運用', '特定できない'];
+  const byStage = Object.fromEntries(STAGES.map((s) => [s, 0]));
+  const out = {
+    present: true, measurable: true, since, until, byStage, confirmed: 0, unprocessed: 0, opsSevere: 0,
+    mismatched: [], whenBlank: [], aiConfirmer: [], noConfirmer: [], noStage: [], instructorDisposals: [], instructorUnknown: [],
+  };
+  const inRange = (day) => (!since || day >= since) && (!until || day <= until);
+  const key = (n) => personKey(config, n);
+  for (const r of rows) {
+    const id = clean(r[0]);
+    const disp = nfkc(r[iDisp]);
+    const by = clean(r[iBy]);
+    const at = (nfkc(r[iAt]).match(/\d{4}-\d{2}-\d{2}/) ?? [null])[0];
+    const stage = STAGES.find((s) => nfkc(r[iStage]).includes(s)) ?? null;
+    const when = iWhen >= 0 ? nfkc(r[iWhen]) : '';
+    // 2 つの列の照合は、処分の有無によらず行う。検出の時点の空欄は、委任の判定が「運用」として読む(止める)
+    if (stage && stage !== '特定できない') {
+      if (!isFilledValue(when)) out.whenBlank.push(id);
+      else if ((stage === '運用') !== /運用/.test(when)) out.mismatched.push(id);
+    }
+    if (!isFilledValue(disp)) {
+      out.unprocessed++;
+      continue;
+    }
+    if (/欠陥でない|取り下げ/.test(disp)) {
+      // 運用の報告を、原因の変更の作成を指示した者が「欠陥でない」「取り下げ」とした行を示す(禁じない。EV-0208)
+      const ops = stage === '運用' || /運用/.test(when);
+      if (ops && isFilledValue(by)) {
+        const names = iCause >= 0 && isFilledValue(r[iCause]) ? instructorsOf(clean(r[iCause])) : null;
+        if (names === null) out.instructorUnknown.push(id);
+        else if (names.some((n) => key(n) === key(by))) out.instructorDisposals.push(id);
+      }
+      continue;
+    }
+    if (!/^欠陥/.test(disp)) continue;
+    if (!isFilledValue(by) || !at) {
+      out.noConfirmer.push(id);
+      continue;
+    }
+    if (aiNameBlocked(config, by)) {
+      out.aiConfirmer.push(id);
+      continue;
+    }
+    if (!inRange(at)) continue;
+    if (!stage) out.noStage.push(id);
+    else byStage[stage]++;
+    out.confirmed++;
+    const sev = iSev >= 0 ? nfkc(r[iSev]).match(/Sev\s*([12])/i) : null;
+    if (/運用/.test(when) && sev) out.opsSevere++;
+  }
+  return out;
 }
 
 /** 欠陥トリアージ基準(第4章「事業ステージ別のトリアージマトリクス」)の区分。機械は区分を引くだけで、出荷の可否を判定しない */
