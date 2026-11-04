@@ -272,7 +272,7 @@ function migration(people, after, entry, pr) {
   g('add', '-A');
   g('commit', '-q', '-m', 'base');
   g('switch', '-q', '-c', 'pr');
-  put({ ...base, people: after, changeLog: [INIT, { date: '2026-11-05', ...entry }] });
+  put({ ...base, people: after, changeLog: [INIT, { date: '2026-10-02', ...entry }] });
   g('add', '-A');
   g('commit', '-q', '-m', 'ids');
   const head = g('rev-parse', 'HEAD');
@@ -347,7 +347,7 @@ function migration(people, after, entry, pr) {
   const people = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [{ login: `acc${i}`, id: 3000 + i }] }));
   const seats = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
   const answers = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', 'q-biz-phase': 'growth' };
-  const config = quiet(() => buildConfig(answers, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people, seats }).config);
+  const config = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null, people, seats }).config);
   const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const put = (c) => fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(c, null, 2) + '\n');
   put(config);
@@ -361,8 +361,8 @@ function migration(people, after, entry, pr) {
   g('config', 'gc.auto', '0');
   g('add', '-A');
   g('commit', '-q', '-m', 'chore: fixture');
-  const at = '2026-11-05T10:00:00+09:00';
-  put({ ...config, changeLog: [...config.changeLog, { date: '2026-11-05', at, kind: 'mode', direction: 'tighten', decidedBy: '名簿 戊', reason: '厳しくする', diff: [] }, { date: '2026-11-05', at, kind: 'mode', direction: 'loosen', decidedBy: '名簿 戊', reason: '緩める', diff: [] }] });
+  const at = '2026-10-02T10:00:00+09:00';
+  put({ ...config, changeLog: [...config.changeLog, { date: '2026-10-02', at, kind: 'mode', direction: 'tighten', decidedBy: '名簿 戊', reason: '厳しくする', diff: [] }, { date: '2026-10-02', at, kind: 'mode', direction: 'loosen', decidedBy: '名簿 戊', reason: '緩める', diff: [] }] });
   g('add', '-A');
   g('commit', '-q', '-m', 'chore: 変化点\n\nRisk: R3\nVerification: 手元で試験を実行した');
   const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' } });
@@ -418,7 +418,7 @@ if (process.platform === 'win32') {
       if (SKIP.has(e.name)) continue;
       fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
     }
-    const config = quiet(() => buildConfig(answers, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people, seats }).config);
+    const config = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null, people, seats }).config);
     const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     const put = (rel, text) => {
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -439,7 +439,7 @@ if (process.platform === 'win32') {
       const sha = g('rev-parse', 'HEAD');
       if (!c.pr) continue;
       const user = (login) => ({ login, id: people.flatMap((p) => p.accounts ?? []).find((a) => a.login === login)?.id ?? null });
-      map[`repos/${R}/commits/${sha}/pulls`] = [{ number: c.pr.number, merged_at: '2026-11-05T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${c.pr.number}` }, user: user(c.pr.author) }];
+      map[`repos/${R}/commits/${sha}/pulls`] = [{ number: c.pr.number, merged_at: '2026-10-02T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${c.pr.number}` }, user: user(c.pr.author) }];
       map[`repos/${R}/pulls/${c.pr.number}/reviews`] = c.pr.approvers.map((l, i) => ({ id: 800 + i, user: { ...user(l), type: 'User' }, state: 'APPROVED', commit_id: `head-${c.pr.number}`, body: '' }));
       map[`repos/${R}/pulls/${c.pr.number}/commits`] = [{ author: user(c.pr.author) }];
     }
@@ -457,11 +457,11 @@ if (process.platform === 'win32') {
     const people = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [{ login: `acc${i}`, id: 3000 + i }] }));
     const seats = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
     const answers = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', 'q-biz-phase': 'growth' };
-    const at = '2026-11-05T10:00:00+09:00';
+    const at = '2026-10-02T10:00:00+09:00';
     const files = (config) => ({
       'docs/gates/sg-back.md': SG('名簿 丁'),
       'process.config.json':
-        JSON.stringify({ ...config, changeLog: [...config.changeLog, { date: '2026-11-05', at, kind: 'mode', direction: 'loosen', decidedBy: '名簿 戊', reason: '緩める', diff: [] }, { date: '2026-11-05', at, kind: 'axis', direction: 'loosen', decidedBy: '名簿 戊', reason: 'S1 へ戻す', diff: [], sgRecord: 'docs/gates/sg-back.md' }] }, null, 2) + '\n',
+        JSON.stringify({ ...config, changeLog: [...config.changeLog, { date: '2026-10-02', at, kind: 'mode', direction: 'loosen', decidedBy: '名簿 戊', reason: '緩める', diff: [] }, { date: '2026-10-02', at, kind: 'axis', direction: 'loosen', decidedBy: '名簿 戊', reason: 'S1 へ戻す', diff: [], sgRecord: 'docs/gates/sg-back.md' }] }, null, 2) + '\n',
     });
     const ok = aggregateOf({ people, seats, answers, commits: [{ message: 'chore: 変化点と SG', files, pr: { number: 5, author: 'acc0', approvers: ['acc4', 'acc3'] } }] });
     const da = ok.ev?.assurance?.generation?.decisionAttribution ?? [];
