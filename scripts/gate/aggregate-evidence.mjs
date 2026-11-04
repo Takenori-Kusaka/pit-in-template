@@ -2948,7 +2948,7 @@ if (isMain) {
     }
     const blank = AI_EVAL_ROWS.filter((k) => {
       const v = rowValue(sec, k, false);
-      return !filled(v) && !(k === '縮小・停止の基準に当たる状態での継続' && /該当なし/.test(String(v ?? '')));
+      return !filled(v) && !(k === '縮小・停止の基準に当たる状態での継続' && /該当なし/.test(String(v ?? ''))) && !(k === '上積みとして示した品質の活動' && /^なし$/.test(String(v ?? '').normalize('NFKC').trim()));
     });
     if (blank.length) gaps.push(`${g.file}: 「AI の利用の評価」に空欄の欄があります(${blank.join(' / ')})。記載の欠落です(第7章 7.7.8)`);
   }
