@@ -12,7 +12,7 @@ import { d0SectionProblems, d0GovernanceProblems, d0OptionalSectionProblems, D0_
 import { readPolicy, continuityState } from './org-assurance.mjs';
 import { d0VerificationProblems } from './customer-voice.mjs';
 import { readGateRecords } from './config.mjs';
-import { clJudgmentState, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
+import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 const config = loadConfig();
 const D0 = path.join(ROOT, 'docs/D-0-governance.md');
@@ -146,7 +146,8 @@ if (!process.argv.includes('--no-cl')) {
       for (const p of st.recordProblems) warn(`${p}(判定の記録を求める前に G-1 を通過した旧い構成のため、遡って失敗させません。記録がそろうまで、出荷の証跡の集約が判定の確認を未達として出します)`);
     } else {
       problems.push(...st.recordProblems);
-      problems.push('初期化の回答 q-criticality は仮の判定です。安全重要度の判定の記録と判定者の記名がそろうまで、G-1 の審議を開始できません(標準 第2章 2.8、第8章 軸E)');
+      // 止めた理由と次の一手(節16 を書く)を拒否の文に出す(議長の「修正の帰結への裁定」)
+      problems.push(clStopText(st));
     }
   } else if (!st.confirmation.ok) {
     warn(`安全重要度の判定の確認: ${clJudgmentText(st)}。G-1 は止めません(確認者は判定者と別の自然人。置けない間は未達として表示し続けます)`);

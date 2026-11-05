@@ -200,14 +200,32 @@ export function recordPoint(root, rowTexts) {
   let sha = shas[0];
   for (const s of shas.slice(1)) if (s !== sha && gitIn(root, ['merge-base', '--is-ancestor', sha, s]) !== null) sha = s;
   const at = gitIn(root, ['show', '-s', '--format=%cI', sha]);
-  const cfgText = gitIn(root, ['show', `${sha}:process.config.json`]);
-  let cfg = null;
-  try {
-    cfg = cfgText ? JSON.parse(cfgText) : null;
-  } catch {
-    cfg = null;
+  const cfgAt = (rev) => {
+    const t = gitIn(root, ['show', `${rev}:process.config.json`]);
+    try {
+      return t ? JSON.parse(t) : null;
+    } catch {
+      return null;
+    }
+  };
+  // 照らす構成は、基底ブランチ(HEAD)の第1親の連鎖にあるコミットの構成に限る(再確認 N-1)。PR の途中のコミットで構成を
+  // 書き換えて元へ戻す経路を塞ぐ。記録の行を含む最初の第1親のコミット(取り込みのコミット)から始め、変化点の記録
+  // (changeLog)が同じままの後続の第1親のコミットのうち、最後のものの構成で照らす。構成を変える正規の経路(/process-change)は
+  // 必ず変化点の記録を足すため、変化点の記録を足さずに書き換えた構成(手の書き換え)は、戻した後の構成に置き換わる
+  const chain = (gitIn(root, ['rev-list', '--first-parent', '--reverse', 'HEAD']) ?? '').split('\n').filter(Boolean);
+  let i = chain.indexOf(sha);
+  if (i < 0) i = chain.findIndex((c) => gitIn(root, ['merge-base', '--is-ancestor', sha, c]) !== null);
+  if (i < 0) return { kind: 'commit', sha, at, config: null, why: '記録を入れたコミットが基底ブランチの第1親の連鎖に無い' };
+  let via = chain[i];
+  let cfg = cfgAt(via);
+  const logOf = (c) => JSON.stringify(c?.changeLog ?? null);
+  for (let j = i + 1; j < chain.length && cfg; j++) {
+    const next = cfgAt(chain[j]);
+    if (!next || logOf(next) !== logOf(cfg)) break;
+    via = chain[j];
+    cfg = next;
   }
-  return { kind: 'commit', sha, at, config: cfg };
+  return { kind: 'commit', sha, at, via, config: cfg };
 }
 
 /** G-1 の判定記録を入れたコミットの時刻(基底ブランチの docs/gates/。最初に足したコミット) */
@@ -289,7 +307,10 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
       }
     } else {
       const decider = deciderOf(pointConfig);
-      const where = point.kind === 'commit' ? `記録を入れたコミット ${point.sha.slice(0, 8)}(${point.at})の時点` : '記録の時点(未コミット。現在の構成)';
+      const where =
+        point.kind === 'commit'
+          ? `記録を入れたコミット ${point.sha.slice(0, 8)}(${point.at})の時点${point.via && point.via !== point.sha ? `(照らした構成は、基底ブランチの第1親の連鎖のコミット ${point.via.slice(0, 8)} のもの)` : ''}${point.why ? `(${point.why})` : ''}`
+          : '記録の時点(未コミット。現在の構成)';
       if (!decider) {
         // 初期化の直後(席が全部空)は、席の責任者の任免が先に人の判断待ちに出る。記録の側の不備としては出す(突合 X-9)
         recordProblems.push(`安全重要度の判定の判定者(${v.judge})を照らす決定者がいません(${where}に D-0 表1「体制と運用形態」の決定者の席が空、または構成が無い)。席を埋めてから記名します`);
@@ -411,6 +432,24 @@ export function readClJudgment(config, { root = ROOT, gateRecords = [] } = {}) {
   return clJudgmentState(config, { text, gateRecords, root });
 }
 
+/**
+ * 判定の記録の不備で止めた理由と次の一手(議長の「修正の帰結への裁定」)。旧い構成でも、節16 を持たない・F.2 を読めない・
+ * CL1 以上・規制業・F.2 の Q1 が「はい」の案件は止まる。止めた理由と、節16 を書くという次の一手を、/pit と拒否の文に出す
+ */
+export function clStopText(st) {
+  if (!st.recordProblems.length || st.legacy) return null;
+  const head = '初期化の回答 q-criticality は仮の判定です。安全重要度の判定の記録と判定者の記名がそろうまで、G-1 の審議を開始できません(標準 第2章 2.8、第8章 軸E)';
+  const why = st.legacyConfig
+    ? `${head}。判定の記録を求める前(2026-11-05 より前)に G-1 を通過した構成ですが、旧い構成を緩く扱うのは、節16 の判定の記録があり、CL0 で規制業でなく、附属書F F.2 の Q1 が「いいえ」の案件に限ります。この構成は当たらないため止めます(ADR-0113)`
+    : st.g1Passed
+      ? `${head}。G-1 を通過済みでも、判定の記録と判定者の記名の欠落は止めます(G-1 の後に記録を消す・書き換える経路を塞ぐため。ADR-0113)`
+      : head;
+  const next = st.present
+    ? '次の一手: D-0 の節16 の欄を埋め、D-0 表1「体制と運用形態」の決定者が判定者として記名する(判定者・判定日の行を入れたコミットの時点の決定者で照らす)'
+    : '次の一手: templates/00-d0-governance.md の節16「安全重要度の判定の記録」を docs/D-0-governance.md へ写し、D-0 表1「体制と運用形態」の決定者が欄を埋めて判定者として記名する';
+  return `${why}。${next}`;
+}
+
 /** 判定の確認の状態を1行の文にする(保証の開示の項目1・/pit の注記)。external は氏名を出さない */
 export function clJudgmentText(st, { external = false } = {}) {
   if (!st.present || (st.recordProblems.length && !st.cls)) {
@@ -418,7 +457,13 @@ export function clJudgmentText(st, { external = false } = {}) {
   }
   const who = (n) => (external ? (n ? '記名あり' : '記名なし') : (n ?? '記名なし'));
   const head = `判定 ${CL_LABEL[st.cls] ?? '不明'}(判定者: ${who(st.judge)})`;
-  if (st.recordProblems.length) return `${head}。**未達**(記録の不備 ${st.recordProblems.length} 件)`;
+  if (st.recordProblems.length) {
+    // 旧い構成として緩く扱った場合は、その旨と、境界が判定記録を入れたコミットの時刻(書き手が偽れる)に依ることを開示する(再確認 N-2)
+    const legacyNote = st.legacy
+      ? '。判定の記録を求める前に G-1 を通過した旧い構成(CL0・規制業でない・F.2 の Q1「いいえ」)として未達の表示にとどめた。旧い構成かは G-1 の判定記録を入れたコミットの時刻で決め、その時刻は書き手が偽れる'
+      : '';
+    return `${head}。**未達**(記録の不備 ${st.recordProblems.length} 件${legacyNote})`;
+  }
   const c = st.confirmation;
   const recordedText = c.recorded ? `段${c.recorded}${c.effective !== c.recorded ? `(段${c.effective} として数えた)` : ''}` : '記載なし';
   const base = `${head} / 確認者: ${st.confirmer ? who(st.confirmer) : 'なし'} / 求める段 段${c.required}(${c.reasons.join('。')}) / 記録した段 ${recordedText}`;

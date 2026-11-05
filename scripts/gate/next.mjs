@@ -50,7 +50,7 @@ import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonom
 import { retiredDetectionTypes } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
-import { clJudgmentState, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
+import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 /**
  * 直近の出荷の集約の出力(evidence/evidence.json。.gitignore の下。手元で集約を実行したときだけある)。
@@ -681,7 +681,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
           what: `D-0 節16「安全重要度の判定の記録」の記入と判定者の記名(初期化の回答 ${config.answers?.['q-criticality'] ?? '未記入'} は仮の判定)`,
           seat: seatOf(config, decider),
           after: '判定者が記入した後に `node scripts/gate/check-d0.mjs` で確かめる。区分を変えるなら /process-change(種別 axis)',
-          detail: cl.recordProblems.slice(0, 2).join(' / ').slice(0, 300),
+          // 止めた理由と次の一手(議長の「修正の帰結への裁定」。旧い構成で止まる場合も理由を出す)
+          detail: `${clStopText(cl)} / ${cl.recordProblems.slice(0, 2).join(' / ').slice(0, 300)}`,
           read: READ.artifact('00-d0-governance'),
           roles: [
             { role: decider, action: '最悪の帰結(対策の前)・1つ上の区分に当たらない理由・附属書F F.2 の回答を書き、判定者として記名する。判定者と別の自然人に確認を頼む' },

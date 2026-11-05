@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { clJudgmentState, clJudgmentText, reductionProblems, requiredStep, sraApprovalProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
+import { clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -145,6 +145,13 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
   check('記録: 旧い構成の規制業で節16 が無ければ、欠落に数える', st.legacy === false && st.shipBlocking, JSON.stringify({ l: st.legacy, b: st.shipBlocking }));
   st = clJudgmentState(config, { text: '# D-0\n', gateRecords: G1_PASSED, since: SINCE });
   check('記録: 旧い構成の CL0 でも、節16 が無く F.2 の回答を読めなければ、緩い扱いに当たらない(欠落に数える)', st.legacy === false && st.shipBlocking, JSON.stringify({ l: st.legacy, b: st.shipBlocking }));
+  // 議長の「修正の帰結への裁定」: 止めた理由と次の一手を、拒否の文と /pit に出す
+  check(
+    '記録: 節16 を持たない旧い構成で止めるときは、止めた理由(旧い構成の緩い扱いに当たらない)と次の一手(節16 を写して記入する)を出す',
+    /旧い構成を緩く扱うのは/.test(clStopText(st) ?? '') && /次の一手: templates\/00-d0-governance\.md の節16/.test(clStopText(st) ?? ''),
+    clStopText(st)
+  );
+  check('記録: 緩く扱う旧い構成では、止める文を出さない', clStopText(clJudgmentState(config, { text: d0({ 判定者: '' }), gateRecords: G1_PASSED, since: SINCE })) === null);
   // 突合 X-2(b): 判定日の書き方
   st = clJudgmentState(config, { text: d0({ 判定日: '2026/10/01' }) });
   check('記録: 判定日が YYYY-MM-DD でなければ記録の不備にする', st.recordProblems.some((p) => /「判定日」\(2026\/10\/01\)を YYYY-MM-DD/.test(p)), JSON.stringify(st.recordProblems));
@@ -255,7 +262,7 @@ try {
   r = run('scripts/gate/check-d0.mjs', ['--no-cl']);
   check('D-0 の検査: --no-cl では判定の記録を見ない(next.mjs が分けて出す)', !/「判定者」が未記入/.test(r.out), r.out);
   r = run('scripts/gate/next.mjs', ['--json']);
-  check('next.mjs: 判定の記録と記名が無いことを人の判断待ちとして出す', /安全重要度の判定の記録と記名が無い\(仮の判定\)/.test(r.out), r.out.slice(0, 2000));
+  check('next.mjs: 判定の記録と記名が無いことを人の判断待ちとして出し、止めた理由と次の一手を添える', /安全重要度の判定の記録と記名が無い\(仮の判定\)/.test(r.out) && /次の一手: D-0 の節16 の欄を埋め/.test(r.out), r.out.slice(0, 2000));
   // 旧い構成の境界は、G-1 の判定日時と、その判定記録を入れたコミットの時刻の両方で決める(議長の裁定 X-3)
   const commitAt = (when, msg) => {
     git('add', '-A');
@@ -351,7 +358,10 @@ try {
         return { g, at };
       };
       const ONO = configOf(); // 事業決裁者は大野
-      const AOKI = configOf({}, { seats: seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p0' }) });
+      // 決定者の交代は正規の経路(/process-change)で変化点の記録を足す。記録を足さない書き換えは手の書き換えとして扱われる(再確認 N-1)
+      const withChange = (c, summary) => ({ ...c, changeLog: [...(c.changeLog ?? []), { kind: 'accountable', date: '2026-10-15', summary, decidedBy: '大野 五郎', reason: '試験' }] });
+      const AOKI = withChange(configOf({}, { seats: seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p0' }) }), '決定者を青木へ');
+      const ETO_FORGED = configOf({}, { seats: seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p3' }) });
       const EMPTY = configOf({}, { seats: seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3' }) });
       const D0 = 'docs/D-0-governance.md';
       const judge = (cfg, root) => clJudgmentState(cfg, { text: fs.readFileSync(path.join(root, D0), 'utf8'), root });
@@ -406,6 +416,27 @@ try {
         q.at('2026-10-15T15:00:00+09:00', 'docs: 判定の記録(交代の後)', { [D0]: d0({ 判定者: '大野 五郎', 判定日: '2026-10-15' }) });
         const st2 = judge(AOKI, q.p);
         check('判定者: 同じ日の交代の後に入れた前の決定者の記録は、コミットの順で拒否する', st2.recordProblems.some((x) => /決定者\(青木 一郎\)ではありません/.test(x)), JSON.stringify(st2.recordProblems));
+      }
+      // (3b) 途中のコミットで構成を手で書き換え(変化点の記録を足さずに決定者を江藤へ)、同時に江藤の記録を入れ、次のコミットで構成を戻す。
+      // 照らす構成は第1親の連鎖の、変化点の記録が同じ最後のコミットの構成(戻した後の青木)になり、拒否する(再確認 N-1。probe3 の R4)
+      {
+        const { p, at } = fresh();
+        const forged = { ...AOKI, seats: ETO_FORGED.seats };
+        at('2026-10-15T15:00:00+09:00', 'chore: 青木が決定者', { 'process.config.json': AOKI });
+        at('2026-10-20T10:00:00+09:00', 'chore: 構成を手で書き換え、江藤の記録を入れる', { 'process.config.json': forged, [D0]: d0({ 判定者: '江藤 四郎', 判定日: '2026-10-20', 確認者: '大野 五郎' }) });
+        at('2026-10-20T10:05:00+09:00', 'chore: 構成を戻す', { 'process.config.json': AOKI });
+        const st = judge(AOKI, p);
+        check('判定者: 途中のコミットで構成を手で書き換えて戻しても、戻した後の構成(青木)で照らして拒否する', st.recordProblems.some((x) => /決定者\(青木 一郎\)ではありません/.test(x)) && st.point?.via !== st.point?.sha, JSON.stringify({ p: st.recordProblems, pt: st.point && { sha: st.point.sha, via: st.point.via } }));
+        // PR(マージのコミット)で入れた場合: 第1親の連鎖にあるのはマージのコミットだけで、その木の構成(青木)で照らす
+        const q = fresh();
+        q.at('2026-10-15T15:00:00+09:00', 'chore: 青木が決定者', { 'process.config.json': AOKI });
+        q.g('switch', '-q', '-c', 'feature');
+        q.at('2026-10-20T10:00:00+09:00', 'chore: 構成を手で書き換え、江藤の記録を入れる', { 'process.config.json': forged, [D0]: d0({ 判定者: '江藤 四郎', 判定日: '2026-10-20', 確認者: '大野 五郎' }) });
+        q.at('2026-10-20T10:05:00+09:00', 'chore: 構成を戻す', { 'process.config.json': AOKI });
+        q.g('switch', '-q', 'main');
+        execFileSync('git', ['merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature'], { cwd: q.p, env: { ...process.env, GIT_AUTHOR_DATE: '2026-10-21T10:00:00+09:00', GIT_COMMITTER_DATE: '2026-10-21T10:00:00+09:00' }, stdio: 'ignore' });
+        const st2 = judge(AOKI, q.p);
+        check('判定者: PR の途中のコミットの構成は使わず、基底ブランチの第1親の連鎖のマージのコミットの構成で照らす', st2.recordProblems.some((x) => /決定者\(青木 一郎\)ではありません/.test(x)), JSON.stringify({ p: st2.recordProblems, pt: st2.point && { sha: st2.point.sha, via: st2.point.via } }));
       }
       // (4) 記録の時点で決定者の席が空なら、記録の不備にする(X-9)
       {
@@ -470,7 +501,14 @@ try {
   fs.writeFileSync(path.join(dir, 'docs/gates/g1-P-001-2026-09-01.md'), G1_FORM);
   commitAt('2026-09-01T10:00:00+09:00', 'docs: G-1 の判定記録(判定の記録を求める前)');
   a = aggregate();
-  check('集約: 旧い構成でも、節16 が無く F.2 の回答を読めなければ欠落に数える(議長の裁定 X-1)', clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
+  check('集約: 旧い構成でも、節16 が無く F.2 の回答を読めなければ欠落に数え、止めた理由と次の一手を出す(議長の裁定 X-1・修正の帰結への裁定)', clGap(a.out) && /旧い構成を緩く扱うのは/.test(a.out) && /次の一手: templates\/00-d0-governance\.md の節16/.test(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
+  {
+    // 節16 を持たない旧い様式の D-0(節15 まで)
+    fs.writeFileSync(d0Path, fs.readFileSync(path.join(dir, 'templates/00-d0-governance.md'), 'utf8').split(/^## 16\. 安全重要度の判定の記録/m)[0]);
+    const r = run('scripts/gate/check-d0.mjs');
+    fs.rmSync(d0Path);
+    check('D-0 の検査: 節16 を持たない旧い構成の拒否の文に、止めた理由と次の一手を出す', r.status !== 0 && /::error::[^\n]*旧い構成を緩く扱うのは[^\n]*次の一手: templates\/00-d0-governance\.md の節16/.test(r.out), r.out);
+  }
   writeD0({ 判定者: '' });
   a = aggregate();
   check('集約: 判定の記録を求める前に G-1 を通過した CL0・F.2 の Q1「いいえ」の旧い構成は、判定者の記名の欠落を未達と出し、欠落に数えない', /\*\*未達\*\*/.test(clRow(a.report)) && !clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);

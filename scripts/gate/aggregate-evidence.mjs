@@ -172,7 +172,7 @@ import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
-import { readClJudgment, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
+import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -2890,7 +2890,11 @@ if (isMain) {
   // 判定の記録そのものの不備は G-1 の前提条件(D-0 の検査)が止める。G-1 を通過済みの旧い構成(記録を求める前の構成)は、
   // 遡って止めず、記録がそろうまで未達として出し続ける
   const clJudgment = readClJudgment(config, { root: ROOT, gateRecords: gateRecordsForCl({ root: ROOT, branch: recordsBranch }) });
-  if (clJudgment.shipBlocking) gaps.push(`安全重要度の判定の確認: ${clJudgment.shipBlockingReason}。${clJudgmentText(clJudgment)}(D-0 節16。第8章 軸E「判定の記録と確認」)`);
+  if (clJudgment.shipBlocking) {
+    // 判定の記録の不備で止めるときは、止めた理由と次の一手(節16 を書く)を添える(議長の「修正の帰結への裁定」)
+    const stop = clStopText(clJudgment);
+    gaps.push(`安全重要度の判定の確認: ${clJudgment.shipBlockingReason}。${clJudgmentText(clJudgment)}(D-0 節16。第8章 軸E「判定の記録と確認」)${stop ? `。${stop.replace(/^初期化の回答 q-criticality は仮の判定です。[^。]*。/, '')}` : ''}`);
+  }
 
   // --- 代償措置つきの逸脱(未達と区別して載せる) ------------------------------
 
