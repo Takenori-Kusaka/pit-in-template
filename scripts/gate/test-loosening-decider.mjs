@@ -7,13 +7,16 @@
 //   - 変化点の入口(generate-profile.mjs --change)が、外部の確認者(独立レビュアの席の責任者)の記名による
 //     緩める向きの決定(独立レビュアの席の運用形態を人確定から協働へ上げる)を拒否し、構成を書き換えない(IMPL-0115:ng)
 //   - 同じ変化点を、D-0 表1 の決定者(事業決裁者の席の責任者)の記名なら受け付ける(IMPL-0115:ok)
+//   - 任免と緩める向きの行を1つの変化点に含み、すべての行の要件を満たす1人がいなければ拒否し、変化点を分ける案内を出す。
+//     分ければ受け付ける(process-compass #376 / ADR-0110 決定2。IMPL-0444:ng/ok)
+//   - 変化点の記録に差分の行ごとの種類(rowKinds)を残し、数の合わない記録を検査が問題にする(ADR-0110 決定3。IMPL-0445:ng/ok)
 // 関数の単位の試験(test-roster-rules.mjs)に加えて、入口を通して確かめる。一時の置き場で試し、GitHub へ問い合わせません。
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, sealChangeLog } from './config.mjs';
+import { ROOT, sealChangeLog, directionLabel, rowKindsProblems } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
@@ -213,6 +216,146 @@ try {
   } finally {
     fs.rmSync(dir2, { recursive: true, force: true });
   }
+}
+
+// ---------------------------------------------------------------- 任免と緩める向きを同じ変化点に含む場合(process-compass #376 / ADR-0110。IMPL-0444・IMPL-0445)
+// 1つの変化点の記名者は、すべての行(任免・緩める・名簿の表記の変更)の要件を満たす1人に限る。満たす者がいなければ受け付けず、
+// 分け方を案内する。分ければ通る。差分の行ごとの種類を記録に残し、緩める行と任免の行を両方含む記録は「緩める(任免を含む)」と出す
+{
+  const P = [
+    { id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 3001 }] },
+    { id: 'p2', name: '佐藤 花子', accounts: [{ login: 'sato', id: 3002 }] },
+    { id: 'p3', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 3003 }] },
+  ];
+  const ORG = { id: 'org', name: '組織 任命者', external: true, appointer: true };
+  const SEAT_IDS = ['biz-approver', 'value-owner', 'tech-lead', 'dev-verifier', 'independent-reviewer', 'qa-gatekeeper', 'context-owner', 'ai-maintainer', 'ai-ops'];
+  /** 席の並び(SEAT_IDS)ごとの人の添字。null は空ける */
+  const seatsBy = (arr) => Object.fromEntries(SEAT_IDS.map((s, i) => [s, { accountable: arr[i] === null ? null : P[arr[i]].name }]));
+  const DAY = '2026-10-01';
+  const workspace = (prefix) => {
+    const blank = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
+      if (SKIP.has(e.name)) continue;
+      fs.cpSync(path.join(ROOT, e.name), path.join(d, e.name), { recursive: true });
+    }
+    const git = (...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 'tester');
+    git('config', 'core.autocrlf', 'false');
+    const env = { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' };
+    const cfgPath = path.join(d, 'process.config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(blank), null, 2) + '\n');
+    fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+    fs.copyFileSync(path.join(d, 'templates/00-d0-governance.md'), path.join(d, 'docs/D-0-governance.md'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: init');
+    const run = (obj) => {
+      fs.writeFileSync(path.join(d, 'change.json'), JSON.stringify({ kind: 'accountable', date: DAY, ...obj }));
+      const r = spawnSync(process.execPath, ['scripts/init/generate-profile.mjs', '--change', 'change.json'], { cwd: d, encoding: 'utf8', env });
+      if (r.status === 0) {
+        git('add', '-A');
+        git('commit', '-q', '-m', 'chore: change');
+      }
+      return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    const cfg = () => JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    return { d, run, cfg, raw: () => fs.readFileSync(cfgPath, 'utf8'), profile: () => fs.readFileSync(path.join(d, 'PROCESS-PROFILE.md'), 'utf8') };
+  };
+  const hinted = (out) => /すべての行\(任免・緩める・名簿の表記の変更\)の要件を満たす記名者が、名簿にいません/.test(out) && /新しい決定者が記名する後の変化点で決めます/.test(out);
+
+  // (b) 決定者の交代と緩める向きの行を1つの変化点に含む(2名 mvp cl0。前任の決定者は AI維持管理者の席に残らない)
+  const wb = workspace('pit-in-376b-');
+  try {
+    const fill = wb.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+    check('#376 (b): 前提の初回の記入を受け付ける', fill.ok, fill.out);
+    const mixed = { summary: '決定者の交代と確認者', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 1, 1]), reason: '決定者を交代する' };
+    const before = wb.raw();
+    const byPrior = wb.run({ ...mixed, decidedBy: P[0].name });
+    const byNew = wb.run({ ...mixed, decidedBy: P[1].name });
+    // IMPL-0444:ng 1人ですべての行の要件を満たせない変化点は、どちらの記名でも受け付けず、分け方を案内する
+    check(
+      'IMPL-0444:ng 決定者の交代と緩める向きの行を1つの変化点に含むと、前任・新任のどちらの記名でも拒否し、変化点を分ける案内を出す',
+      !byPrior.ok && !byNew.ok && hinted(byPrior.out) && hinted(byNew.out) && wb.raw() === before,
+      `${byPrior.out}\n----\n${byNew.out}`
+    );
+    // 分ける: (i) 決定者の交代だけ(前任の記名)→ (ii) 残りの任免と緩める向きの行(新しい決定者の記名)
+    const s1 = wb.run({ summary: '決定者の交代', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '決定者を交代する' });
+    const e1 = wb.cfg().changeLog.at(-1);
+    const s2 = wb.run({ summary: '確認者', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 1, 1]), decidedBy: P[1].name, reason: '確認者を置く' });
+    const c2 = wb.cfg();
+    const e2 = c2.changeLog.at(-1);
+    // IMPL-0444:ok 分ければ、各段をその段の要件を満たす者の記名で受け付ける
+    check(
+      'IMPL-0444:ok 変化点を分ければ、決定者の交代(前任の記名)と、緩める向きの行を含む任命(新しい決定者の記名)を受け付ける',
+      s1.ok && s2.ok && e1.direction === 'appoint' && e2.direction === 'loosen' && e2.decidedBy === P[1].name && c2.ci.coverageThreshold === 80,
+      `${s1.out}\n----\n${s2.out}\n${JSON.stringify(e2)}`
+    );
+    const kindOf = (e, re) => e.rowKinds?.[e.diff.findIndex((l) => re.test(l))];
+    // IMPL-0445:ok 差分の行ごとの種類を、diff と同じ順・同じ数で記録に残す
+    check(
+      'IMPL-0445:ok 変化点の記録に、差分の行ごとの種類(任免・緩める)を diff と同じ数で残す',
+      Array.isArray(e2.rowKinds) &&
+        e2.rowKinds.length === e2.diff.length &&
+        kindOf(e2, /^独立レビュア.*: 責任者 /) === 'appoint' &&
+        kindOf(e2, /^カバレッジの下限: /) === 'loosen' &&
+        Array.isArray(e1.rowKinds) &&
+        e1.rowKinds.length === e1.diff.length &&
+        e1.rowKinds.includes('appoint') &&
+        !e1.rowKinds.includes('loosen'),
+      `${JSON.stringify(e1.diff)}\n${JSON.stringify(e1.rowKinds)}\n${JSON.stringify(e2.diff)}\n${JSON.stringify(e2.rowKinds)}`
+    );
+    check(
+      '#376: 緩める向きの行と任免の行を両方含む記録は、体制の変化点の記録(PROCESS-PROFILE.md)の向きに「緩める(任免を含む)」と出す(要約の向きは loosen のまま)',
+      /\| 緩める\(任免を含む\) \|/.test(wb.profile()) && /\| 任免の決定 \|/.test(wb.profile()),
+      wb.profile().split('\n').filter((l) => /^\| 20/.test(l)).join('\n')
+    );
+  } finally {
+    fs.rmSync(wb.d, { recursive: true, force: true });
+  }
+
+  // (a) 前任の決定者が離脱済みで、組織上の任命権者が決定者を任命する変化点に、代償措置の終了(緩める向きの行)が混ざる
+  const wa = workspace('pit-in-376a-');
+  try {
+    const fill = wa.run({ summary: '体制を記入', people: [P[0], P[1], ORG], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
+    const leave = wa.run({ summary: '1人目が離脱', people: [P[1], ORG], seats: seatsBy(SEAT_IDS.map(() => null)) });
+    check('#376 (a): 前提の記入と離脱を受け付ける', fill.ok && leave.ok, `${fill.out}\n${leave.out}`);
+    const before = wa.raw();
+    const mixed = wa.run({ summary: '後任の任命と確認者', people: [P[1], P[2], ORG], seats: seatsBy([1, 1, 1, 1, 2, 2, 1, 1, 2]), decidedBy: ORG.name, reason: '前任の離脱に伴う後任の任命' });
+    // IMPL-0444:ng 任命権者は緩める向きの行を決められず、新任の決定者は自分の任命を決められない。案内を出す
+    check(
+      'IMPL-0444:ng 任命権者の記名による任命に代償措置の終了が混ざる変化点を拒否し、変化点を分ける案内を出す',
+      !mixed.ok && hinted(mixed.out) && /カバレッジの下限: 90% → 80%/.test(mixed.out) && wa.raw() === before,
+      mixed.out
+    );
+    const s1 = wa.run({ summary: '後任の任命', people: [P[1], ORG], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: ORG.name, reason: '前任の離脱に伴う後任の任命' });
+    const e1 = wa.cfg().changeLog.at(-1);
+    const s2 = wa.run({ summary: '確認者の任命', people: [P[1], P[2], ORG], seats: seatsBy([1, 1, 1, 1, 2, 1, 1, 1, 2]), decidedBy: P[1].name, reason: '確認者を置く' });
+    const c2 = wa.cfg();
+    const e2 = c2.changeLog.at(-1);
+    // IMPL-0444:ok 任命権者の段に緩める向きの行を入れず、新しい決定者の段で決めれば受け付ける
+    check(
+      'IMPL-0444:ok 任命権者の段(緩める向きの行なし)と、新しい決定者の段(代償措置の終了を含む)に分ければ受け付ける',
+      s1.ok && s2.ok && e1.direction === 'appoint' && e1.appointerSigned === true && e2.direction === 'loosen' && c2.ci.coverageThreshold === 80,
+      `${s1.out}\n----\n${s2.out}`
+    );
+  } finally {
+    fs.rmSync(wa.d, { recursive: true, force: true });
+  }
+
+  // 複合のラベルと、行ごとの種類の欄の検査(欄の無い旧い記録は受け付ける)
+  const legacy = { direction: 'loosen', diff: ['独立レビュア: 責任者 山田 太郎 → 佐藤 花子', 'カバレッジの下限: 90% → 80%'] };
+  check(
+    '#376: 行ごとの種類の無い旧い記録は「緩める」と出し、欄の検査で問わない。任免だけの記録は「任免の決定」と出す',
+    directionLabel(legacy) === '緩める' && rowKindsProblems(legacy, 0).length === 0 && directionLabel({ direction: 'appoint', rowKinds: ['appoint'] }) === '任免の決定' &&
+      directionLabel({ ...legacy, rowKinds: ['appoint', 'loosen'] }) === '緩める(任免を含む)' && directionLabel({ ...legacy, rowKinds: ['none', 'loosen'] }) === '緩める'
+  );
+  // IMPL-0445:ng 欄がある記録で、diff の行と数が合わない(または不明な種類がある)ものを検査が問題にする
+  check(
+    'IMPL-0445:ng 行ごとの種類の数が差分の行と合わない記録、不明な種類を含む記録を、検査が問題にする',
+    rowKindsProblems({ ...legacy, rowKinds: ['loosen'] }, 4).some((p) => /changeLog\[4\].*数が合いません/.test(p)) && rowKindsProblems({ ...legacy, rowKinds: ['appoint', 'widen'] }, 0).some((p) => /不明な種類/.test(p))
+  );
 }
 
 if (failures) {

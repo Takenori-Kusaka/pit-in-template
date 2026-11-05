@@ -137,7 +137,7 @@ import {
   personKey,
   RULE_APPROVER_SEAT,
   hasWriteAssociation,
-  DIRECTION_LABEL,
+  directionLabel,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -656,7 +656,7 @@ export function decisionRecordFindings({ git, policyRef, pr = {}, baseConfig = n
   for (let i = baseLog.length; i < headLog.length; i++) {
     const e = headLog[i];
     if (decisionNeedsAttribution(e)) {
-      const label = `D-0 の決定の記名 changeLog[${i}](${e.kind ?? '種別なし'}・${DIRECTION_LABEL[e.direction] ?? e.direction ?? '—'}${e.rosterEdits?.length || e.accountConfirmations?.length || e.nameConfirmations?.length ? '・名簿の変更' : ''}、決定 ${e.decidedBy})`;
+      const label = `D-0 の決定の記名 changeLog[${i}](${e.kind ?? '種別なし'}・${directionLabel(e)}${e.rosterEdits?.length || e.accountConfirmations?.length || e.nameConfirmations?.length ? '・名簿の変更' : ''}、決定 ${e.decidedBy})`;
       // 保持していた宣言の有効化は、記録の内容(intentApplied と基底の構成の席の宣言)が一致するときだけ宣言の時点の記録で確かめる(突合 H-1)
       const j = signatureIndexOf(headLog, i, { prior: baseConfig }) ?? i;
       let info;

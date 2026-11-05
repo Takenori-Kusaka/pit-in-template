@@ -66,6 +66,7 @@ import {
   mergeHookRegistration,
   enforcementDigestsWith,
   DIRECTION_LABEL,
+  directionLabel,
   modeRank,
   performerKey,
   qualificationProblems,
@@ -1226,6 +1227,9 @@ export function changeLogEntry(e) {
     d0Before: e.d0Before ?? null,
     d0After: e.d0After ?? null,
     diff: e.diff ?? [],
+    // 差分の行ごとの種類(diff と同じ順。任免・緩める・名簿の表記の変更・厳しくする・未達の発生・none)。標準 第3章 3.13.4、ADR-0110 決定3。
+    // 渡されない記録(移行・取り込みなど)は欄を持たない
+    ...(Array.isArray(e.rowKinds) ? { rowKinds: e.rowKinds } : {}),
     // 未達・逸脱・列挙に無い離脱の発生。決定ではなく事実であり、記名を待たずに反映する(第3章 3.13.3)
     arising: e.arising ?? [],
     separationRecheck: e.separationRecheck ?? null,
@@ -1299,10 +1303,18 @@ export function diffConfig(before, after) {
   const remaining = [];
   // 任免の決定(席の責任者の任命・交代、D-0 表1 の決定者の変更)。緩める向きとは別に、決定者の記名を要する
   const appointItems = [];
+  // 差分の行ごとの種類(diff の添字 → 種類。印の無い行は none)。記録の rowKinds になる(標準 第3章 3.13.4。ADR-0110 決定3)
+  const kindAt = new Map();
+  const mark = (kind, index = diff.length - 1) => kindAt.set(index, kind);
   const push = (line, b, a, seat = null, extra = {}) => {
     diff.push(line);
-    if (a < b) loosenItems.push({ line, seat, ...extra });
-    else if (a > b) tightens.push(line);
+    if (a < b) {
+      loosenItems.push({ line, seat, ...extra });
+      mark('loosen');
+    } else if (a > b) {
+      tightens.push(line);
+      mark('tighten');
+    }
   };
   const seatIn = (c, role) => (c.seats ?? []).find((s) => s.role === role);
 
@@ -1368,6 +1380,7 @@ export function diffConfig(before, after) {
   const derived = (line, b, a) => {
     if (a < b && shrinkOnly) {
       diff.push(line);
+      mark('arising');
       arising.push(`体制の縮小に伴う変化: ${line}`);
     } else push(line, b, a);
   };
@@ -1375,6 +1388,7 @@ export function diffConfig(before, after) {
   const g6Bound = (line, b, a) => {
     if (a < b && g6Forced) {
       diff.push(line);
+      mark('arising');
       arising.push(`未達の発生に伴う変化: ${line}(承認する人がいない)`);
     } else if (a < b && becameUnmet('g6')) {
       push(`${line}(人は減っていない、または確認できる人が名簿に残っている。独立レビューを置かない決定である)`, b, a);
@@ -1392,8 +1406,10 @@ export function diffConfig(before, after) {
       const line = `${g.label}: ${stateLabel(b ?? 'required')} → ${stateLabel(g.state)}`;
       if (key === 'g6') g6Bound(line, gateRank(b), gateRank(g.state));
       // 独立レビュー以外の未達(技術スタックが未確定のままステージが進んだ、など)は、入力の帰結として表示する
-      else if (becameUnmet(key)) diff.push(line);
-      else derived(line, gateRank(b), gateRank(g.state));
+      else if (becameUnmet(key)) {
+        diff.push(line);
+        mark('arising');
+      } else derived(line, gateRank(b), gateRank(g.state));
     }
     const bp = before.gates?.[key]?.params ?? {};
     for (const k of new Set([...Object.keys(bp), ...Object.keys(g.params ?? {})])) {
@@ -1451,6 +1467,7 @@ export function diffConfig(before, after) {
     if (fact) {
       arising.push(`${term}の発生: ${d.label} — ${d.rule}`);
       diff.push(`${d.label}: ${term}が生じる`);
+      mark('arising');
     } else {
       push(
         d.gate
@@ -1471,6 +1488,7 @@ export function diffConfig(before, after) {
   // 出荷できない状態。決定ではなく事実であり、記名を待たずに反映する
   if (!before.shipBlocked && after.shipBlocked) {
     diff.push('出荷できない状態: なし → あり');
+    mark('arising');
     arising.push(`出荷できない状態の発生: ${after.shipBlocked.reason}`);
     remaining.push(
       '出荷できない状態である。出荷判定(G-7)の証跡の集約は失敗する。体制を3名以上へ戻す、危害の帰結を設計で下げる、当該の機能を実施しない、のいずれかを人が決める(標準 第8章 軸E)'
@@ -1492,16 +1510,23 @@ export function diffConfig(before, after) {
   const renameItems = [];
   const rosterEdits = [];
   const priorDeciderRow = findPerson(before, (before.seats ?? []).find((s) => s.role === structureDeciderSeat(before))?.accountable);
+  // 名簿の行ごとの差分の添字(表記の変更・任命権者を置く変更の種類を付ける)
+  const rosterRows = new Map();
+  const rosterRow = (id) => rosterRows.set(id, [...(rosterRows.get(id) ?? []), diff.length - 1]);
   for (const [id, p] of Object.entries(ap)) {
-    if (!bp[id]) diff.push(`人の名簿: 追加 ${p.name}${rosterTag(p)}`);
-    else {
+    if (!bp[id]) {
+      diff.push(`人の名簿: 追加 ${p.name}${rosterTag(p)}`);
+      rosterRow(id);
+    } else {
       const nameChanged = normName(bp[id].name) !== normName(p.name);
       const accountsChanged = accountsOf(bp[id]) !== accountsOf(p);
       if (bp[id].name !== p.name || rosterTag(bp[id]) !== rosterTag(p)) {
         diff.push(`人の名簿: 変更 ${bp[id].name}${rosterTag(bp[id])} → ${p.name}${rosterTag(p)}`);
+        rosterRow(id);
       }
       if (accountsChanged) {
         diff.push(`人の名簿: ${p.name} のアカウント ${accountsOf(bp[id]) || '未記入'} → ${accountsOf(p) || '未記入'}`);
+        rosterRow(id);
       }
       // 表記の変更を重ねて別の人へ移す経路を作らないため、直前の値に加えて、その行を名簿へ足したときの値と比べる(K74)。
       // 氏名とアカウントの両方が足したときの値と異なることになる変更は、2回に分けても差し替えとして拒否する
@@ -1540,6 +1565,7 @@ export function diffConfig(before, after) {
           ...(selfIdAddition ? { selfIdAddition: true } : {}),
         };
         rosterEdits.push(edit);
+        for (const index of rosterRows.get(id) ?? []) mark('rename', index);
         renameItems.push({
           line: `人の名簿の表記の変更(${id}): ${field === 'name' ? '氏名' : 'アカウント'} ${edit.from ?? '未記入'} → ${edit.to ?? '未記入'}${selfIdAddition ? '(本人の記名による数値の識別子の追加。1名の体制)' : ''}`,
           id,
@@ -1585,7 +1611,10 @@ export function diffConfig(before, after) {
   const priorDeciderHere = findPerson(after, (before.seats ?? []).find((s) => s.role === structureDeciderSeat(before))?.accountable);
   for (const [id, p] of Object.entries(ap)) {
     if (p.appointer !== true || bp[id]?.appointer === true) continue;
-    if (priorDeciderHere) appointItems.push({ line: `人の名簿: ${p.name} を組織上の任命権者として置く`, seat: null, decider: true, roster: true });
+    if (priorDeciderHere) {
+      appointItems.push({ line: `人の名簿: ${p.name} を組織上の任命権者として置く`, seat: null, decider: true, roster: true });
+      for (const index of rosterRows.get(id) ?? []) mark('appoint', index);
+    }
     else remaining.push(`${p.name} を組織上の任命権者として名簿へ置いた。決定者の席が空いているため、記名を待たずに置いた。任命権者が記名できるのは、次の変化点からである`);
   }
 
@@ -1600,11 +1629,13 @@ export function diffConfig(before, after) {
     if (gov(before).structureDecider !== gov(after).structureDecider) {
       const line = `D-0 表1「体制と運用形態」の決定者: ${roleName(gov(before).structureDecider)} → ${roleName(gov(after).structureDecider)}`;
       diff.push(line);
+      mark('appoint');
       appointItems.push({ line, seat: null, decider: true, governance: true });
     }
     if (gov(before).catalogRegistrar !== gov(after).catalogRegistrar) {
       const line = `D-0 表1「標準変更カタログへの登録」の決定者: ${registrarName(gov(before).catalogRegistrar)} → ${registrarName(gov(after).catalogRegistrar)}`;
       diff.push(line);
+      mark('appoint');
       appointItems.push({ line, seat: null, decider: true, governance: true });
     }
     if ((before.governance.qaNotice ?? null) !== (after.governance?.qaNotice ?? null)) {
@@ -1641,9 +1672,11 @@ export function diffConfig(before, after) {
       const line = `${s.name}: 責任者 ${fromName ?? '未記入'} → ${toName ?? '未記入'}`;
       if (!s.accountable && p.accountable && !findPerson(after, p.accountable)) {
         diff.push(`${line}(体制から外れた。席が空く)`);
+        mark('arising');
         arising.push(`席が空く: ${s.name}(${fromName} が体制から外れた)`);
       } else {
         diff.push(line);
+        mark('appoint');
         appointItems.push({ line, seat: s.role, decider: s.role === deciderRole, from: fromName, to: toName });
       }
       credentials = true;
@@ -2098,6 +2131,11 @@ export function diffConfig(before, after) {
     !(before.changeLog ?? []).some((e) => (e?.diff ?? []).some((l) => /: 責任者 /.test(String(l))));
   // 名簿の表記の変更は、どの席にも責任者が記入されたことがない間(初回の記入より前)は、記名を要しない
   if (allBlankBefore) renameItems.length = 0;
+  // 差分の行ごとの種類。記名を要しない表記の変更(初回の記入より前)は、種類を付けない
+  const rowKinds = diff.map((_, i) => {
+    const k = kindAt.get(i) ?? 'none';
+    return k === 'rename' && !renameItems.length ? 'none' : k;
+  });
   // 向き「発生」は、人が実際に減った変化点に限る。任免と名簿の表記の変更は、緩める向きを含まない場合に「任免の決定」とする
   const direction = loosens.length
     ? 'loosen'
@@ -2146,6 +2184,7 @@ export function diffConfig(before, after) {
     priorDeciderPresent,
     noticeAlso,
     diff,
+    rowKinds,
     loosens,
     loosenItems,
     tightens,
@@ -2168,7 +2207,27 @@ export function diffConfig(before, after) {
  * 決定できるのは、対象の席の責任者、または D-0 表1「体制と運用形態」の決定者(既定は事業決裁者の
  * 席の責任者)。AI の名義を受け付けない。決定者そのものを変える決定は、変更前の決定者が行う。
  */
+/**
+ * 1つの変化点のすべての行の要件を満たす記名者がいないときの案内(標準 第3章 3.13.3。process-compass #376 / ADR-0110 決定2)。
+ * 要件を緩めず、変化点を分ける
+ */
+export const SPLIT_CHANGE_POINT_HINT =
+  'この変化点のすべての行(任免・緩める・名簿の表記の変更)の要件を満たす記名者が、名簿にいません。1つの変化点の記名者は、すべての行の要件を満たす1人に限ります(標準 第3章 3.13.3)。' +
+  '変化点を分けて出します。決定者その人を替える変化点と、組織上の任命権者が記名する変化点には、緩める向きの行を入れません(緩める向きの行を生む任命は、後の変化点へ回します)。' +
+  '緩める向きの行は、新しい決定者が記名する後の変化点で決めます';
+
 export function deciderProblems(config, report, decidedBy, before = null) {
+  const out = deciderRowProblems(config, report, decidedBy, before);
+  // 任免・名簿の表記の変更の行と緩める向きの行を両方含み、名簿のだれの記名でも全行の要件を満たせないときに限り、分け方を案内する
+  const mixed = Boolean((report.appointItems?.length || report.renameItems?.length) && report.loosenItems?.length);
+  if (out.length && mixed && !(config.people ?? []).some((p) => !deciderRowProblems(config, report, p.name, before).length)) {
+    out.push(SPLIT_CHANGE_POINT_HINT);
+  }
+  return out;
+}
+
+/** 記名者1人に、変化点の行ごとの要件を照らす(向きの値を要件の根拠に使わない。ADR-0110 決定1・2) */
+function deciderRowProblems(config, report, decidedBy, before = null) {
   const out = nameProblems(config, decidedBy, { requireRoster: true }).map((p) => `決定した者の記名を受け付けられません: ${p}`);
   const key = personKey(config, decidedBy);
   const seatName = (role) => (config.seats ?? []).find((s) => s.role === role)?.name ?? role;
@@ -3307,7 +3366,7 @@ export function renderProfileMd(config, result) {
         .filter(Boolean)
         .join('。');
       L.push(
-        `| ${String(e.date).slice(0, 10)} | ${kind} | ${summary} | ${e.result === 'no-change' ? '構成の変更なし' : '変更あり'} | ${DIRECTION_LABEL[e.direction] ?? e.direction} | ${e.d0Before ?? '—'} → ${e.d0After ?? '—'} | ${e.decidedBy ?? '—'} | ${noticeText(config, i)} |`
+        `| ${String(e.date).slice(0, 10)} | ${kind} | ${summary} | ${e.result === 'no-change' ? '構成の変更なし' : '変更あり'} | ${directionLabel(e)} | ${e.d0Before ?? '—'} → ${e.d0After ?? '—'} | ${e.decidedBy ?? '—'} | ${noticeText(config, i)} |`
       );
     });
     L.push('');
@@ -5437,6 +5496,7 @@ if (isMain) {
         d0Before: change.d0Before ?? prior.d0Version ?? null,
         d0After: config.d0Version,
         diff: report.diff,
+        rowKinds: report.rowKinds,
         arising: report.arising,
         separationRecheck: change.separationRecheck ?? separationSummary(config),
         invalidatedChecks: change.invalidatedChecks ?? [],
@@ -5550,7 +5610,7 @@ if (isMain) {
           : '(表1「体制と運用形態」の決定者の席の責任者が未記入。記入後の変化点で入る)';
         const decidedBy = last.decidedBy
           ? personName(config, last.decidedBy)
-          : `決定を要しない変化点(${DIRECTION_LABEL[last.direction] ?? '—'}。${KIND_NOTE[last.kind] ?? `変化点${last.changePoint ?? ''}`})`;
+          : `決定を要しない変化点(${directionLabel(last)}。${KIND_NOTE[last.kind] ?? `変化点${last.changePoint ?? ''}`})`;
         // 「key:」の直後に必ず空白を1つ置く(空白の無い `approver:氏名` は YAML の鍵と値にならない)
         text = text
           .replace(/^(---\r?\n[\s\S]*?^approver:)[ \t]*(.*)$/m, `$1 ${approver}`)

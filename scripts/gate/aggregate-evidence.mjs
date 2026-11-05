@@ -70,6 +70,7 @@ import {
   readGateRecords,
   KIND_NOTE,
   DIRECTION_LABEL,
+  directionLabel,
   aiNameReason,
   personKey,
   personName,
@@ -3979,7 +3980,7 @@ if (isMain) {
     changeLog.forEach((e, index) => {
       if (!inPeriod(e, index)) return;
       if (decisionNeedsAttribution(e)) {
-        const label = `D-0 の決定の記名 changeLog[${index}](${e.kind ?? '種別なし'}・${DIRECTION_LABEL[e.direction] ?? e.direction ?? '—'}、決定 ${e.decidedBy})`;
+        const label = `D-0 の決定の記名 changeLog[${index}](${e.kind ?? '種別なし'}・${directionLabel(e)}、決定 ${e.decidedBy})`;
         // 保持していた宣言の有効化は、記録の内容と、記録を入れる前の構成の席の宣言が一致するときだけ宣言の時点の記録で確かめる(突合 H-1)
         const own = commitOfChangeLogEntry(gitText, 'HEAD', index, { cache: logCache });
         const j = signatureIndexOf(changeLog, index, { prior: own ? configAt(`${own}^`) : null }) ?? index;
@@ -5407,7 +5408,7 @@ if (isMain) {
         const decided =
           (external ? (e.decidedBy ? '記名あり' : '—') : (e.decidedBy ?? '—')) + (e.appointerSigned ? '(決定者の任命を、組織上の任命権者の記名で行った)' : '');
         R.push(
-          `| ${e.date} | ${KIND_NOTE[e.kind] ?? `${e.changePoint ?? '—'} ${e.kind}`} | ${summary} | ${e.result === 'no-change' ? '構成の変更なし' : '変更あり'} | ${DIRECTION_LABEL[e.direction] ?? '—'} | ${decided} | ${noticeText} |`
+          `| ${e.date} | ${KIND_NOTE[e.kind] ?? `${e.changePoint ?? '—'} ${e.kind}`} | ${summary} | ${e.result === 'no-change' ? '構成の変更なし' : '変更あり'} | ${directionLabel(e)} | ${decided} | ${noticeText} |`
         );
       }
       R.push('');

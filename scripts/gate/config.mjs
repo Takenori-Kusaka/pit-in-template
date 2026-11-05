@@ -307,6 +307,40 @@ export const DIRECTION_LABEL = {
 /** 決定した者の記名と理由を要する向き */
 export const SIGNED_DIRECTIONS = ['loosen', 'appoint'];
 
+/**
+ * 変化点の記録の差分の行ごとの種類(changeLog[].rowKinds。diff と同じ順。標準 第3章 3.13.4、process-compass #376 / ADR-0110 決定3)。
+ * none は、いずれにも当たらない行(名簿への追加、回答の変更など)。旧い記録には rowKinds が無く、種類の区分の無い記録として扱う
+ */
+export const ROW_KIND_LABEL = {
+  appoint: '任免',
+  loosen: '緩める',
+  rename: '名簿の表記の変更',
+  tighten: '厳しくする',
+  arising: '未達の発生',
+  none: '—',
+};
+
+/**
+ * 変化点の向きの表示名(記録1件から)。単一値の向きは要約であり、記名の要件の根拠に使わない(ADR-0110 決定1)。
+ * 緩める行と任免の行を両方含む記録は「緩める(任免を含む)」と出す。行ごとの種類の無い旧い記録は、向きの表示名のまま
+ */
+export function directionLabel(e) {
+  if (e?.direction === 'loosen' && Array.isArray(e.rowKinds) && e.rowKinds.includes('appoint')) return '緩める(任免を含む)';
+  return DIRECTION_LABEL[e?.direction] ?? e?.direction ?? '—';
+}
+
+/** 行ごとの種類の欄の問題(欄の無い記録は問わない。欄があれば、diff の行と数が合い、値が既知であること) */
+export function rowKindsProblems(e, i) {
+  if (!e || e.rowKinds === undefined) return [];
+  if (!Array.isArray(e.rowKinds)) return [`changeLog[${i}]: rowKinds(差分の行ごとの種類)は配列で書きます`];
+  const out = [];
+  const n = Array.isArray(e.diff) ? e.diff.length : 0;
+  if (e.rowKinds.length !== n) out.push(`changeLog[${i}]: rowKinds(差分の行ごとの種類)が ${e.rowKinds.length} 件で、差分の行(${n} 件)と数が合いません(第3章 3.13.4)`);
+  const unknown = [...new Set(e.rowKinds.filter((k) => !(k in ROW_KIND_LABEL)))];
+  if (unknown.length) out.push(`changeLog[${i}]: rowKinds に不明な種類があります(${unknown.join(', ')})`);
+  return out;
+}
+
 export function modeRank(mode) {
   return SEAT_MODES.indexOf(mode);
 }
@@ -1587,6 +1621,7 @@ export function configIntegrityProblems(config) {
     if (SIGNED_DIRECTIONS.includes(e?.direction) && !(e.decidedBy && e.reason)) {
       out.push(`changeLog[${i}]: ${DIRECTION_LABEL[e.direction]}向きの変更に、決定した者の記名または理由がありません(第3章 3.13.3)`);
     }
+    out.push(...rowKindsProblems(e, i));
   });
   return out;
 }

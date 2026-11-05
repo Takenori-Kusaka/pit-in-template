@@ -62,6 +62,7 @@ import {
   confirmerOnRoster,
   SIGNED_DIRECTIONS,
   DIRECTION_LABEL,
+  rowKindsProblems,
   isRealDay,
   accountConfirmationProblems,
   nameConfirmationProblems,
@@ -630,6 +631,8 @@ if (!Array.isArray(config.seats)) {
       if (SIGNED_DIRECTIONS.includes(e.direction) && !(e.decidedBy && e.reason)) {
         problems.push(`changeLog[${i}]: ${DIRECTION_LABEL[e.direction]}向きの変更に、決定した者の記名または理由がありません(第3章 3.13.3)`);
       }
+      // 差分の行ごとの種類(ADR-0110 決定3)。欄の無い旧い記録は問わない
+      problems.push(...rowKindsProblems(e, i));
       if (e.date && !isRealDay(String(e.date).slice(0, 10))) problems.push(`changeLog[${i}]: 日付 "${e.date}" は、暦に実在する日付ではありません`);
       // 過去の記名は、現在の名簿と照合しない(離任した人の記録を残すため)。AI の名義だけを拒否する
       // 人が上書きした名義は、その時点の記録(nameOverrides)か、現在の名簿で確かめる
