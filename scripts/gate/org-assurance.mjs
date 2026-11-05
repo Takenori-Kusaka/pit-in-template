@@ -1348,7 +1348,8 @@ export function envEvidenceText(env) {
 export function readEnvCheck(config, { root = ROOT } = {}) {
   const p = path.join(root, ENV_CHECK_FILE);
   // findings: 記録用ブランチの所見(ENV_CHECK_FINDINGS)。確認済みの判定(confirmed)に入れない。attention は一致しない所見
-  const out = { present: fs.existsSync(p), record: null, items: [], findings: [], attention: [], findingsText: null, confirmed: false, problems: [], committed: null, summary: '' };
+  const out = { present: fs.existsSync(p), record: null, items: [], findings: [], attention: [], findingsText: null, confirmed: false, problems: [], committed: null, summary: '', baseJudge: null };
+  out.baseJudge = baseJudgeOf(null);
   if (!out.present) {
     out.summary = `未確認(${ENV_CHECK_FILE} が無い。採用者が実環境の gh で node scripts/gate/adoption-trial.mjs env-check --by <氏名> を実行し、記録をコミットする)`;
     out.items = ENV_CHECK_ITEMS.map(([id, label]) => ({ id, label, status: 'unconfirmed', reason: 'not-run', detail: '記録なし' }));
@@ -1427,7 +1428,24 @@ export function readEnvCheck(config, { root = ROOT } = {}) {
   out.summary = out.confirmed
     ? `確認済み(${String(r.checkedAt).slice(0, 10)} ${r.checkedBy}。対象 ${r.repo ?? 'リポジトリ未記録'}。確認済み ${out.counts.confirmed} 項目・対象外 ${out.counts.notApplicable} 項目。対象外は確認済みに数えない)。${itemText}${out.evidenceText ? `。実環境の識別: ${out.evidenceText}` : ''}`
     : `未確認(${[...out.items.filter((i) => i.status !== 'confirmed' && i.status !== 'notApplicable').map((i) => `${i.label.split('(')[0]}: ${envStatusLabel(i)}。${i.detail}`), ...out.problems].join(' / ')})`;
+  out.baseJudge = baseJudgeOf(r);
   return out;
+}
+
+/** 基底から読む判定の3値の表示(process-compass #371 / ADR-0115) */
+export const BASE_JUDGE_TEXT = { satisfied: '満たす', unsatisfied: '満たさない', unconfirmed: '確かめていない' };
+
+/**
+ * env-check の記録の「基底から読む判定」(gate-g5-base が既定ブランチの定義で動き、必須チェックとして効いているか)。3値の
+ * satisfied / unsatisfied / unconfirmed。記録が無い、#371 より前の記録、読めない値は unconfirmed(標準 第4章 G-5「判定のコードの読み元」。
+ * process-compass #371 / ADR-0115 / EV-0233)。満たさない・確かめていないは未達として保証の開示に出し、欠落には数えない
+ */
+export function baseJudgeOf(record) {
+  if (!record) return { status: 'unconfirmed', detail: `記録なし(${ENV_CHECK_FILE} が無い)` };
+  const b = record.baseJudge;
+  if (!b || typeof b !== 'object') return { status: 'unconfirmed', detail: '記録に項目が無い(#371 より前の env-check。実行し直す)' };
+  const status = Object.hasOwn(BASE_JUDGE_TEXT, b.status) ? b.status : 'unconfirmed';
+  return { status, detail: String(b.detail ?? ''), evidence: b.evidence && typeof b.evidence === 'object' ? b.evidence : null };
 }
 
 // ---------------------------------------------------------------- 10名以上の規則(第8章 軸A)の項目1 の文

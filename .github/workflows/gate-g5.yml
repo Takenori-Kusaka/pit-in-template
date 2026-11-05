@@ -5,6 +5,12 @@
 #
 # 実際に走るコマンドは adapters/<stack>.json から差し込みます。
 # プロセスの骨格を言語に依存させないためです。
+#
+# このワークフローは pull_request で動くため、定義も検査のスクリプトも PR の側から読まれます。同じ PR で集約・検査の一覧を
+# 書き換えれば、その PR の gate-g5 は通ります(2026-11-05 の実機の確認)。PR 単位の検査(pr-rules)のうち、PR のコードを実行しない
+# 判定は、gate-g5-base.yml が既定ブランチの判定のコードで行い、統制の設定を変える PR に AI維持管理者本人の承認のレビューを求めます。
+# テスト・静的解析ほか PR のコードを実行する検査の結果は、統制の設定を変える PR では信頼しないデータとして扱います
+# (標準 第4章 G-5「判定のコードの読み元」。process-compass #371 / ADR-0115)
 
 name: gate-g5
 
@@ -89,6 +95,12 @@ jobs:
       - run: node scripts/gate/test-check-delegation.mjs
       # PR 単位の検査(check-pr)を、一時のリポジトリのフィクスチャで試験する
       - run: node scripts/gate/test-check-pr.mjs
+      # 統制の設定の変更の承認(AI維持管理者本人の承認のレビューを名簿の数値の識別子で照らす)と、基底から読む判定の読み方(--head)、
+      # 出荷の証跡の集約の照合(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115)
+      - run: node scripts/gate/test-control-approval.mjs
+      # 基底から読む判定のワークフロー(gate-g5-base.yml)と record-copy.yml の定義の静的な試験(PR のコードを checkout しない、
+      # 権限が最小、check run で結果を出す、既定ブランチの定義で動く。process-compass #371 / ADR-0115)
+      - run: node scripts/gate/test-base-judge-workflow.mjs
       # 記録用ブランチの写しと様式の読み取り(records.mjs)、/pit と出荷の証跡の集約がそれを読む経路(process-compass #321 段階2)
       - run: node scripts/gate/test-records.mjs
       - run: node scripts/gate/test-next-records.mjs

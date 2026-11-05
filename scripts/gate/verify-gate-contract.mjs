@@ -820,6 +820,10 @@ if (config.gates?.g6?.state === 'required') {
     if (!names.includes('gate-g5')) {
       problems.push('ルールセットの必須ステータスチェックに gate-g5 が含まれていません');
     }
+    // 基底から読む判定(既定ブランチの判定のコードで動く PR 単位の検査と、統制の設定の変更の承認)。process-compass #371 / ADR-0115
+    if (!names.includes('gate-g5-base')) {
+      problems.push('ルールセットの必須ステータスチェックに gate-g5-base が含まれていません(既定ブランチの判定のコードで動く判定。標準 第4章 G-5「判定のコードの読み元」)');
+    }
   }
 } else if (config.gates?.g6?.state === 'unmet') {
   notes.push('G-6 は未達です。ブランチ保護による承認の強制は行いません');

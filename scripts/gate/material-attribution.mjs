@@ -30,7 +30,7 @@
 // 限界: 名義の申告は自己申告であり、申告の無い共有(専用と偽った申告)は検出しない(env-check の照合は実行した環境と時点に限る)。
 // レビューの本文が提出の後に編集されたかは確かめない(EV-0220)
 import { execFileSync } from 'node:child_process';
-import { accountKey, aiNameBlocked, dedicatedSeatOf, hasWriteAssociation, identifyAccount, numericAccountId, parsePagedJson, resolveSigner, sharingOf, sharingText, SIGNED_DIRECTIONS } from './config.mjs';
+import { accountKey, aiNameBlocked, dedicatedSeatOf, hasWriteAssociation, identifyAccount, numericAccountId, parsePagedJson, resolveSigner, sharingOf, sharingText, SIGNED_DIRECTIONS, RULE_APPROVER_SEAT, isFilledValue } from './config.mjs';
 
 /**
  * 記名者が AI の担い手と名義を共有するか。共有するなら { seats, confirmable }、しなければ null。
@@ -360,6 +360,86 @@ export function lastCommitOfRow(git, rev, file, id) {
 export function lastCommitOfFile(git, rev, file) {
   const out = git(['log', '-1', '--format=%H', rev, '--', file]);
   return String(out ?? '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? null;
+}
+
+/**
+ * 統制の設定の変更の承認を出荷の証跡の集約が欠落に数える境(ADR-0115 の採用日)。この日より前にマージした変更は、照らした結果を
+ * 保証の開示の項目1 に出し、欠落に数えない(規定の前に取り込んだ変更に、承認のレビューを後から付ける手段が無いため)
+ */
+export const CONTROL_APPROVAL_REQUIRED_SINCE = '2026-11-05';
+
+/**
+ * 統制の設定を変える変更の AI維持管理者の承認(標準 第4章 G-5「統制の設定の変更の承認」、第1章 1.4 の効力を持つ記録。
+ * process-compass #371 / ADR-0115)。AI維持管理者の席の責任者本人のアカウントによる、PR の先頭のコミットへの承認のレビューで成立する。
+ * 本文の記名は数えない。書き手の条件は (A) と同じ(reviewerCheck: 名簿の数値の識別子、AI・bot の名義でない、PR の作成者でない、
+ * 書き手以外の編集なし、対象のコミットが先頭と一致)。書き手ごとの最後の状態が承認であるものに限る。
+ * 席の責任者が AI の担い手と名義を共有する場合は、本人の承認に加えて帰属の確認を要する(IMPL-0427 と同じ)。
+ * 席の責任者が PR の作成者である場合(本人は自分の PR を承認できない)は、席の責任者以外で名義を共有していない名簿の人の承認
+ * (帰属の確認)を要する。その人が名簿にいない体制(1名の体制)では、自己申告として受け付け、selfAttested を付けて返す
+ * (ADR-0106 決定3 と同じ扱い。ADR-0115 / 議長の裁定 AR-3)。PR の時点の判定(check-pr.mjs の 3c)と出荷の証跡の集約が同じ関数を使う。
+ * 返り値: { backed, how: 'review' | 'author' | 'self-attested', selfAttested?, sharedAccount?, maintainer, review?, note, why: [] }
+ */
+export function controlApprovalBacking(config, { reviews = null, author = null, head = null } = {}) {
+  const name = (config?.seats ?? []).find((s) => s?.role === RULE_APPROVER_SEAT)?.accountable ?? null;
+  if (!isFilledValue(name)) return { backed: false, maintainer: null, why: ['AI維持管理者の席の責任者が構成(seats)に無い。承認する者を確かめられない'] };
+  const maintainer = resolveSigner(config, name);
+  if (!maintainer) return { backed: false, maintainer: name, why: [`AI維持管理者の席の責任者 ${name} が人の名簿(people)の人へ対応づかない`] };
+  if (!(Array.isArray(maintainer.accounts) ? maintainer.accounts : []).some((a) => numericAccountId(a?.id ?? null) !== null)) {
+    return { backed: false, maintainer: maintainer.name, why: [`AI維持管理者 ${maintainer.name} のアカウントの数値の識別子が名簿(people[].accounts)に無い。承認のレビューの書き手を照らせない`] };
+  }
+  const list = normalizeReviews(reviews);
+  if (!list) return { backed: false, maintainer: maintainer.name, why: ['対象の PR のレビューを読めない'] };
+  const last = new Map();
+  for (const r of list) {
+    if (!r.login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED', 'COMMENTED'].includes(r.state)) continue;
+    // 意見だけのレビュー(COMMENTED)は、書き手の最後の状態を変えない
+    if (r.state === 'COMMENTED') continue;
+    last.set(r.accountId !== null ? `#${r.accountId}` : `@${accountKey(r.login)}`, r);
+  }
+  const maintainerLogins = new Set((maintainer.accounts ?? []).map((a) => accountKey(a?.login ?? '')).filter(Boolean));
+  const why = [];
+  const sh = signerSharing(config, maintainer);
+  for (const r of last.values()) {
+    if (r.state !== 'APPROVED') {
+      if (maintainerLogins.has(accountKey(r.login))) why.push(`AI維持管理者 @${r.login} の最後のレビューが承認でない(${r.state})`);
+      continue;
+    }
+    const c = reviewerCheck(config, r, { author, head });
+    if (c.why) {
+      if (maintainerLogins.has(accountKey(r.login))) why.push(c.why);
+      continue;
+    }
+    if (c.person.id !== maintainer.id) continue;
+    const review = { id: r.id, login: r.login, submittedAt: r.submittedAt, commitId: r.commitId };
+    if (sh) {
+      const conf = attributionConfirmers(config, list, { signer: maintainer, author, head });
+      if (conf.length) return { backed: true, how: 'review', review, sharedAccount: true, maintainer: maintainer.name, note: `AI維持管理者 ${maintainer.name}(@${r.login})の承認のレビュー。名義を共有するため、帰属の確認 @${conf[0].login}(${conf[0].person.name})`, why: [] };
+      if (!sh.confirmable) return { backed: true, how: 'review', review, selfAttested: true, sharedAccount: true, maintainer: maintainer.name, note: `AI維持管理者 ${maintainer.name}(@${r.login})の承認のレビュー。${sharedSelfText(sh)}`, why: [] };
+      why.push(`AI維持管理者 ${maintainer.name}(@${r.login})は ${sharingText(sh.seats)}と名義を共有する。本人の承認だけでは帰属に数えず、名義を共有していない人の承認(帰属の確認)が PR の先頭に無い`);
+      continue;
+    }
+    return { backed: true, how: 'review', review, maintainer: maintainer.name, note: `AI維持管理者 ${maintainer.name}(@${r.login})の承認のレビュー(PR の先頭 ${String(r.commitId).slice(0, 7)})`, why: [] };
+  }
+  // 席の責任者が PR の作成者(本人は自分の PR を承認できない)
+  const authorPerson = author ? identifyAccount(config, refOf(author)).person : null;
+  if (authorPerson && authorPerson.id === maintainer.id) {
+    const conf = attributionConfirmers(config, list, { signer: maintainer, author, head });
+    if (conf.length) return { backed: true, how: 'author', ...(sh ? { sharedAccount: true } : {}), maintainer: maintainer.name, note: `PR の作成者が AI維持管理者 ${maintainer.name} 本人。帰属の確認 @${conf[0].login}(${conf[0].person.name})の承認`, why: [] };
+    const alone = !(Array.isArray(config.people) ? config.people : []).some((p) => p && p.id !== maintainer.id && p.appointer !== true);
+    if (alone || (sh && !sh.confirmable)) {
+      return {
+        backed: true,
+        how: 'self-attested',
+        selfAttested: true,
+        ...(sh ? { sharedAccount: true } : {}),
+        maintainer: maintainer.name,
+        note: `PR の作成者が AI維持管理者 ${maintainer.name} 本人で、名簿に${sh ? '名義を共有していない' : '席の責任者以外の'}人がいない。作成者は自分の PR を承認できず、別の者の承認を得られないため、承認が自己申告である`,
+        why: [],
+      };
+    }
+    why.push(`PR の作成者が AI維持管理者 ${maintainer.name} 本人であり、本人は自分の PR を承認できない。席の責任者以外${sh ? 'で名義を共有していない' : ''}名簿の人の承認(帰属の確認)が PR の先頭に無い`);
+  }
+  return { backed: false, maintainer: maintainer.name, why: why.length ? [...new Set(why)] : [`AI維持管理者 ${maintainer.name} 本人の承認のレビューが、PR の先頭${head ? `(${String(head).slice(0, 7)})` : ''}に無い`] };
 }
 
 /** 承認者ごとの最後の状態が APPROVED のログイン */

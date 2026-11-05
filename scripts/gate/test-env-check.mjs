@@ -149,6 +149,29 @@ if (process.platform === 'win32') {
   check('効いている CODEOWNERS の所在と blob の sha を記録する', ok.items.codeowners?.evidence?.path === '.github/CODEOWNERS' && ok.items.codeowners?.evidence?.blobSha === 'a'.repeat(40), JSON.stringify(ok.items.codeowners));
   check('必須チェックの発行元(integration_id)を確かめていないことを記録に書く', /integration_id/.test(ok.record?.integrationId ?? ''), JSON.stringify(ok.record?.integrationId));
 
+  // 基底から読む判定(gate-g5-base)の3値(process-compass #371 / ADR-0115)。全体の成否には入れない
+  {
+    const wfKey = `api repos/${R}/contents/.github/workflows/gate-g5-base.yml?ref=main`;
+    const wfBody = { sha: 'b'.repeat(40), content: Buffer.from('on:\n  pull_request_target:\n    types: [opened]\n').toString('base64') };
+    const rulesBase = [{ ...RULES_TEAM[0], parameters: { required_status_checks: [{ context: 'gate-g5' }, { context: 'gate-g5-base' }] } }, RULES_TEAM[1]];
+    // IMPL-0458:ok
+    const sat = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: rulesBase }, [wfKey]: { stdout: wfBody } }));
+    check('基底から読む判定: ワークフローが pull_request_target で既定ブランチにあり、gate-g5-base が必須なら「満たす」', sat.record?.baseJudge?.status === 'satisfied' && sat.code === 0, JSON.stringify(sat.record?.baseJudge));
+    // IMPL-0458:ng
+    check('基底から読む判定: 必須チェックに gate-g5-base が無く、ワークフローも無ければ「満たさない」(未達。全体の成否は変えない)', ok.record?.baseJudge?.status === 'unsatisfied' && /gate-g5-base/.test(ok.record?.baseJudge?.detail ?? '') && ok.code === 0, JSON.stringify(ok.record?.baseJudge));
+    const noReq = w.run(ghMap({ [wfKey]: { stdout: wfBody } }));
+    check('基底から読む判定: ワークフローがあっても必須チェックに無ければ「満たさない」', noReq.record?.baseJudge?.status === 'unsatisfied' && /必須チェックに gate-g5-base が無い/.test(noReq.record?.baseJudge?.detail ?? ''), JSON.stringify(noReq.record?.baseJudge));
+    const prSide = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: rulesBase }, [wfKey]: { stdout: { ...wfBody, content: Buffer.from('on:\n  pull_request:\n').toString('base64') } } }));
+    check('基底から読む判定: ワークフローが pull_request で動くなら「満たさない」', prSide.record?.baseJudge?.status === 'unsatisfied' && /pull_request_target/.test(prSide.record?.baseJudge?.detail ?? ''), JSON.stringify(prSide.record?.baseJudge));
+    const unread = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' }, [wfKey]: { stdout: wfBody } }));
+    check('基底から読む判定: 規則を読めなければ「確かめていない」', unread.record?.baseJudge?.status === 'unconfirmed', JSON.stringify(unread.record?.baseJudge));
+    const legacy = { ...sat.record };
+    delete legacy.baseJudge;
+    fs.writeFileSync(path.join(w.dir, ENV_CHECK_FILE), JSON.stringify(legacy, null, 2) + '\n');
+    const rd = readEnvCheck(sealed(TEAM), { root: w.dir });
+    check('基底から読む判定: 項目の無い旧い記録は「確かめていない」として読む', rd.baseJudge?.status === 'unconfirmed' && /#371 より前/.test(rd.baseJudge?.detail ?? ''), JSON.stringify(rd.baseJudge));
+  }
+
   // IMPL-0316:ng(違反の入力: 読めた空の一覧。読めなかった場合と区別して不一致にする)
   const empty = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [] } }));
   check('読めた空のルールセットの一覧は「不一致」(未確認でない)', empty.items.ruleset?.status === 'mismatch' && empty.code === 1, JSON.stringify(empty.items.ruleset));

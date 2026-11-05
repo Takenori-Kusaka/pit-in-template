@@ -36,7 +36,7 @@ export const INVENTORY_FILE = 'docs/adoption-inventory.md';
 export const DISPOSITIONS = ['取り込む', '置き換える', '残して並存する', '対象外とする'];
 
 /** 準拠テンプレートが持つワークフロー。これ以外のワークフローは既存の資産として一覧へ載せる */
-export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'record-copy.yml', 'ship-evidence.yml'];
+export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'gate-g5-base.yml', 'record-copy.yml', 'ship-evidence.yml'];
 /** 準拠テンプレートの直下の配置。これ以外のファイルは、既存の製品のコードと履歴として一覧へ載せる */
 export const TEMPLATE_TOP = ['.claude', '.gitattributes', '.github', '.gitignore', '.ignore', '.prettierignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
 /** .gitignore に含めるテンプレートの行(証跡・秘匿情報・カバレッジの出力・端末ごとの状態の除外) */

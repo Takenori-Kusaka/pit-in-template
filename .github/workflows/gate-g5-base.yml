@@ -1,0 +1,132 @@
+# G-5 の判定のうち、変更のコードを実行しない判定を、既定ブランチの判定のコードで行う(標準 第4章 G-5「判定のコードの読み元」。
+# process-compass #371 / ADR-0115)
+#
+# gate-g5.yml は pull_request で動くため、ワークフローの定義も検査のスクリプト(scripts/gate/)も PR の側から読まれます。
+# 同じ PR で集約を書き換える、検査の対象の一覧(CONTROL_FILES)を空にする、同じ名前のジョブを足すと、その PR の gate-g5 は通ります
+# (2026-11-05 の実機の確認。process-compass research/371-deliberation/probe-371.md の E-1〜E-3)。
+# このワークフローは、PR 単位の検査(check-pr.mjs)を、既定ブランチの定義・スクリプト・構成で走らせます。
+#
+# **判定のコードと構成は、既定ブランチから読みます**(pull_request_target。PR の基底のブランチに依らず、既定ブランチの定義で動く。
+# 実機の確認 E-15)。**PR のコードを checkout しません**。PR の先頭は git fetch で取得するだけで、差分と本文をデータとして読みます
+# (check-pr.mjs の --head。git show・git diff で読み、取り出さない・実行しない。実機の確認 E-11)。
+# 次の手順を、このワークフローへ足してはなりません(GitHub Security Lab「Preventing pwn requests」の注意):
+#   - actions/checkout の ref へ PR の先頭(head.sha・head.ref・refs/pull/N/*)を指定する
+#   - PR の側のファイルを実行する(依存の導入、アダプタのコマンド、PR の側の ./.github/actions、PR の側のスクリプトの node 実行)
+#   - PR の題名・本文・ブランチ名を run: の中へ式展開する(環境変数で渡す)
+#   - 書き込みの権限(permissions の write)と秘密情報を足す
+#
+# **結果は、このジョブの結果(check run)で出します**。commit status では出しません。commit status は同じ context の最新の値だけが効き、
+# PR の側のワークフローが statuses: write で後から上書きできるためです(実機の確認 E-4)。PR の側に同じ名前のジョブを足しても、
+# このジョブが失敗している限り、必須チェックは満たされません。ルールセットの必須チェックに gate-g5-base を足します(.github/rulesets/)。
+#
+# 統制の設定(CONTROL_FILES と閾値・除外設定)を変える PR は、AI維持管理者の席の責任者本人の承認のレビューを要します(check-pr.mjs の 3c。
+# 名簿の数値の識別子で照らす。本文の記名は数えない)。承認の後に、このワークフローの最後の実行を再実行します
+# (pull_request_review は PR の側の定義で動くため、契機に使わない)。
+#
+# 限界(2026-11-05 時点): フォークからの PR での GITHUB_TOKEN の権限(E-12)、別のアカウントの承認の振る舞い(E-7 の本題・E-13)は
+# 実機で確かめていません。判定のジョブが起動しない間(pending)と、起動の契機の漏れの扱いも確かめていません。
+# 個人所有・無償のプランで使えたのは、この形(pull_request_target の check run を必須にする)だけです(E-8〜E-10)。
+# このファイルは強制層です。変更は AI維持管理者の承認を要し、その承認もこのワークフローの既定ブランチの版が照らします。
+
+name: gate-g5-base
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+  # 停止の申し立てのラベルの付け外しの履歴(issue の events)を読む
+  issues: read
+
+jobs:
+  base-judge:
+    # ルールセットの必須チェックはこのジョブ名を指す
+    name: gate-g5-base
+    runs-on: ubuntu-latest
+    steps:
+      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      # 検査の道具を動かす Node の版(既定ブランチの .github/gate-node-version)
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      # 既定ブランチの構成が未設定のあいだは判定しない(構成は既定ブランチから読む。PR の側の構成で判定を外せない)
+      - id: config
+        run: |
+          v=$(node -e "const c=require('./process.config.json');console.log(c.configured===false?'false':'true')")
+          echo "configured=$v" >> "$GITHUB_OUTPUT"
+          if [ "$v" = "false" ]; then
+            echo "::notice::既定ブランチのプロセス構成が未設定です。/process-init を既定ブランチへ入れるまで、基底から読む判定は実施しません"
+          fi
+      # PR の先頭・基底・既定ブランチを取得する(取り出さない。submodule を取得しない)。
+      # 認証は取得の間だけ環境変数で渡す(checkout の persist-credentials は無効)
+      - if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$auth" fetch --no-tags --no-recurse-submodules origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head" \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
+            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+      - name: ラベルの履歴
+        id: label-events
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ev=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/events" --paginate \
+            --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, at: .created_at, actor: .actor.login}' \
+            | jq -s -c . 2>/dev/null) || ev=''
+          { echo 'events<<PIT_IN_EVENTS'; echo "${ev}"; echo 'PIT_IN_EVENTS'; } >> "$GITHUB_OUTPUT"
+      # PR のレビュー(統制の設定の変更の承認、G-6 の承認者の数、効力を持つ記録の帰属)。書き手の数値の識別子と、本文の編集者を読む
+      - name: PR のレビュー
+        id: reviews
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          rv=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '.[] | {id, state, body, submitted_at, commit_id, author_association, author: {login: .user.login, id: .user.id, is_bot: (.user.type == "Bot")}}' \
+            | jq -s -c . 2>/dev/null) || rv=''
+          ed=$(gh api graphql -F owner="${REPO%%/*}" -F name="${REPO#*/}" -F number="${PR_NUMBER}" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100){nodes{databaseId editor{login}}}}}}' \
+            --jq '[.data.repository.pullRequest.reviews.nodes[] | {key: (.databaseId | tostring), value: (.editor.login // "")}] | from_entries' 2>/dev/null) || ed=''
+          if [ -n "$rv" ] && [ -n "$ed" ]; then
+            rv=$(printf '%s' "$rv" | jq -c --argjson ed "$ed" 'map((.id | tostring) as $k | if ($ed | has($k)) then . + {edited_by: (if $ed[$k] == "" then null else $ed[$k] end)} else . end)') || rv=''
+          fi
+          { echo 'reviews<<PIT_IN_REVIEWS'; echo "${rv}"; echo 'PIT_IN_REVIEWS'; } >> "$GITHUB_OUTPUT"
+      # 判定。既定ブランチの scripts/gate/check-pr.mjs が、取得した PR の先頭(refs/remotes/pr/head)をデータとして読む。
+      # PR の題名と本文は環境変数で渡す(シェルへ展開しない)。PR へコメントを書かない(書き込みの権限を持たない)
+      - name: PR の検査(既定ブランチの判定のコード)
+        if: steps.config.outputs.configured == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_LABEL_EVENTS: ${{ steps.label-events.outputs.events }}
+          PR_REVIEWS: ${{ steps.reviews.outputs.reviews }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/gate/check-pr.mjs --base "origin/${BASE_REF}" --policy-base "origin/${DEFAULT_BRANCH}" --head refs/remotes/pr/head --require-control-approval --report evidence/pr-checks-base.md

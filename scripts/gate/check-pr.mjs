@@ -2,6 +2,12 @@
 // (scripts/gate/test-check-pr.mjs)。
 //
 //   node scripts/gate/check-pr.mjs --base origin/<PR の基底> [--policy-base origin/<既定ブランチ>] [--pr <PR の JSON>] [--report <出力先>] [--comment] [--json]
+//                                  [--head <PR の先頭を取得した参照> --require-control-approval]
+//
+// 基底から読む判定(process-compass #371 / ADR-0115): gate-g5-base.yml は、pull_request_target で既定ブランチを取り出し、
+// この判定のコードと構成を既定ブランチから読む。PR の先頭は取得(fetch)だけを行い、--head で渡した参照を git の内容として読む
+// (取り出さない・実行しない)。--require-control-approval で、統制の設定を変える PR に AI維持管理者本人の承認のレビューを求める(3c)。
+// 結果は、そのジョブの結果(check run)で出す。commit status で出さない(PR の側のワークフローが同じ context で上書きできるため)
 //
 // 差分は PR の基底(--base)から取る。基準値・名簿・区分の下限の規則・除外設定(.gitattributes)・台帳の例外承認・
 // 停止の申し立ての解除の記録は、既定ブランチ(--policy-base)の先端から読む(標準 フェーズ5「スタック型 PR」・CI/CD ゲート構成
@@ -38,6 +44,11 @@
 //      欠けている、結果が「止まらなかった」、確かめた者が AI の名義なら失敗させる。結果が「外した」(検査を意図して外す)なら、
 //      外した検査・止めていた場面・外した後に止めるもの・受け入れた者(AI の名義でない。構成に AI維持管理者の席の責任者が
 //      あればその人)を要する。初回の設定と依存の更新の bot の PR は対象外。場面が実際に止まるかは確かめない
+//   3c. 統制の設定の変更の承認(標準 第4章 G-5。process-compass #371 / ADR-0115。--require-control-approval のときだけ): 統制の設定
+//      (CONTROL_FILES と閾値・除外設定。追加・削除を含む)を変える PR は、AI維持管理者の席の責任者本人のアカウント(名簿の数値の識別子)
+//      による、PR の先頭のコミットへの承認のレビューを要する。本文の記名は承認に数えない。席の責任者が作成者なら、席の責任者以外の
+//      名簿の人の承認を要し、その人が名簿にいない体制(1名の体制)では自己申告として受け付けて出す。照らす関数は material-attribution.mjs
+//      の controlApprovalBacking(出荷の証跡の集約と同じ)
 //   4. 既存のテストの変更: 基底にあるテスト(.claude/guard.json の testPatterns)の削除・名前の変更・行の削除を
 //      一覧にする。独立レビュー(G-6)の材料であり、合否には使わない。--comment で PR へ出す
 //   5. リスク区分: PR の本文の「リスク区分」の節に R1 / R2 / R3 のいずれか1つだけが残っていること。変更の種類に
@@ -160,6 +171,7 @@ import {
   commitOfChangeLogEntry,
   sgRecordPath,
   idMigrationRoster,
+  controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm } from './records.mjs';
 
@@ -330,7 +342,24 @@ export const CONTROL_FILES = [
   // 検査装置(標準 第1章 1.4): 検査のスクリプト、知識ベースの複製、スタック別の検査の定義。検査のスクリプトを `process.exit(0)` に
   // 替える PR が、誤りも注意も出さずに通っていた(process-compass #290 / ADR-0074)
   'scripts/gate/**', 'scripts/vendor/**', 'adapters/**',
+  // 判定のコードの読み込み先(標準 第4章 G-5「判定のコードの読み元」)。ワークフローが使う手元の action と、検査の道具を動かす
+  // Node の版。書き換えれば判定のコードを替えられる(process-compass #371 / ADR-0115)
+  '.github/actions/**', '.github/gate-node-version',
 ];
+
+/**
+ * 統制の設定を変える変更の承認で数える、変更したファイル(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115)。
+ * CONTROL_FILES と閾値・除外設定(thresholdGlobs)に当たる変更したファイル(名前の変更の元を含む)。陰性の確認(3b)と違い、
+ * 基底に無いファイルの追加(新しいワークフローの追加を含む)と削除も数える。同じ名前のジョブを足すワークフローの追加が、
+ * 統制の設定の変更に当たるためである。files は { path, from } の配列
+ */
+export function controlTouchedOf(files, thresholdGlobs = THRESHOLD_FILES) {
+  const out = new Set();
+  for (const e of files ?? []) {
+    for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f)) out.add(f);
+  }
+  return [...out];
+}
 /**
  * 「統制の設定の陰性の確認」の節。通した違反の場面・結果(止まった / 止まらなかった / 外した)・確かめた者。節が無ければ present: false。
  * 結果が「外した」(検査を意図して外す変更。標準 第4章 G-5「検査を外す変更の記録」。#290 / ADR-0074)のときは、外した検査・
@@ -1197,13 +1226,17 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
 }
 
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
-export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
+export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head = null, requireControlApproval = false }) {
   const git = gitIn(root);
   const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
+  // 判定の対象の版。head を渡したとき(基底から読む判定。gate-g5-base.yml)は、PR の先頭を取得した参照をデータとして読み、
+  // 作業ツリー(既定ブランチの判定のコード)を判定の対象にしない。PR のファイルを取り出さず、実行しない(process-compass #371 / ADR-0115)。
+  // 省いたとき(手元の実行と gate-g5.yml の pr-rules)は、取り出した作業ツリー(HEAD)を読む
+  const HEADREF = head ?? 'HEAD';
   // 作成を指示した者の欄の @アカウントの解決(ADR-0108 決定1 / IMPL-0426)。--pr の JSON の accountIds(試験・書き出した結果)、
   // または呼び出し側が渡す accountLookup(GH のトークンがある実行の gh api users/<login>)。無ければ名の解決(ログイン名)
   const userLookup = pr.accountLookup ?? (pr.accountIds ? fixedUserLookup(pr.accountIds, { at: pr.accountIdsAt ?? undefined }) : null);
-  const mergeBase = (git(['merge-base', base, 'HEAD']) ?? '').trim();
+  const mergeBase = (git(['merge-base', base, HEADREF]) ?? '').trim();
   if (!mergeBase) {
     result.errors.push(`比較の起点 ${base} を解決できません。基底ブランチを取得してから実行する(fetch-depth: 0)`);
     return result;
@@ -1221,13 +1254,15 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   result.policy = { ref: policyRef, sameAsBase: policyPoint === mergeBase };
   // 効力を持つ記録の帰属を確かめるための、PR の先頭のコミットとホスティングの記録(process-compass #380)。
   // 先頭はワークフローが PR_HEAD_SHA で渡す(checkout はマージのコミットを取り出すため)。手元の実行は HEAD
-  const prHead = pr.head ?? ((git(['rev-parse', 'HEAD']) ?? '').trim() || null);
+  const prHead = pr.head ?? ((git(['rev-parse', HEADREF]) ?? '').trim() || null);
   const prHosting = pr.hosting?.commits || pr.hosting?.pulls ? fixedHosting(pr.hosting.commits, pr.hosting.pulls) : (pr.hostingLookup ?? null);
   if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})の先端から読む`);
-  const atHead = (file) => {
-    const p = path.join(root, file);
-    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
-  };
+  const atHead = head
+    ? (file) => git(['show', `${head}:${file}`])
+    : (file) => {
+        const p = path.join(root, file);
+        return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+      };
   const json = (text) => {
     try {
       return text ? JSON.parse(text) : null;
@@ -1249,12 +1284,12 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   // 上限と名簿は既定ブランチの構成から読む。同じ PR(とスタックの下の層)で上限を書き換えても、その PR の検査は変わらない
   const limitsFrom = policyConfigured ? policyConfig : headConfig;
 
-  const all = parseNumstatZ(git(['diff', '--numstat', '-z', '-M', mergeBase, 'HEAD']));
+  const all = parseNumstatZ(git(['diff', '--numstat', '-z', '-M', mergeBase, HEADREF]));
   // 空白を無視した差分。空白だけが変わったファイル(一括整形)は、この出力に現れない。取得に失敗した場合は、空白を含めて数える
-  const wsOut = git(['diff', '--numstat', '-z', '-M', '-w', '--ignore-blank-lines', mergeBase, 'HEAD']);
+  const wsOut = git(['diff', '--numstat', '-z', '-M', '-w', '--ignore-blank-lines', mergeBase, HEADREF]);
   const ws = wsOut === null ? null : new Map(parseNumstatZ(wsOut).map((e) => [e.path, e]));
   const status = new Map(
-    (git(['diff', '--name-status', '-z', '--no-renames', mergeBase, 'HEAD']) ?? '')
+    (git(['diff', '--name-status', '-z', '--no-renames', mergeBase, HEADREF]) ?? '')
       .split('\0')
       .reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
   );
@@ -1277,7 +1312,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
     risk: declaredRisk,
     floor: riskFloorOf(limitsFrom.riskFloor?.rules, changes).floor,
     touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])),
-    tracked: trackedFiles(root, 'HEAD'),
+    tracked: trackedFiles(root, HEADREF),
   });
   const { maxLines, maxFiles } = eff;
   const lines = counted.reduce((n, c) => n + c.lines, 0);
@@ -1417,6 +1452,33 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
     } else result.notices.push(`統制の設定の陰性の確認: 記録あり(${nc.scene.slice(0, 60)} → 止まった。確かめた者 ${nc.checker})。場面が実際に止まるかは、この検査では確かめていない`);
   }
 
+  // --- 3c. 統制の設定の変更の承認(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115) ---
+  // 基底から読む判定(gate-g5-base.yml の --require-control-approval)でだけ行う。PR の側で動く pr-rules では行わない(同じ PR で外せるため)。
+  // 統制の設定を変える変更は、その変更自身が書き換えた検査に合格しただけでは取り込まない。AI維持管理者の席の責任者本人のアカウント
+  // (名簿の数値の識別子)による、PR の先頭のコミットへの承認のレビューを要する。本文の記名(「受け入れた者」)は承認に数えない。
+  // 向きに依らず掛ける(機械は緩める向きか強める向きかを判定しない)。依存の更新の bot の PR も対象にする(ワークフローの action の更新を含む)
+  if (requireControlApproval) {
+    const touched = controlTouchedOf(all, thresholdGlobs);
+    if (all.some((e) => e.path === 'process.config.json') && thresholdChanges.some((x) => x.startsWith('process.config.json'))) touched.push('process.config.json');
+    result.controlApproval = { changed: touched, backing: null };
+    if (touched.length && policyConfigured) {
+      const b = controlApprovalBacking(policyConfig, { reviews: pr.reviews ?? null, author: { login: pr.author ?? '', id: pr.authorId ?? null }, head: prHead });
+      result.controlApproval.backing = b;
+      const list = `${touched.slice(0, 5).join(', ')}${touched.length > 5 ? ` ほか ${touched.length - 5} 件` : ''}`;
+      if (!b.backed) {
+        result.errors.push(
+          `統制の設定の変更の承認: 統制の設定(${list})を変える PR です。この変更自身が書き換えた検査に合格しただけでは取り込みません。` +
+            `${b.why.join('。')}。AI維持管理者の席の責任者本人が、PR の先頭のコミットに承認のレビューを出す(本文の記名は承認に数えない)。` +
+            '承認の後に、このワークフロー(gate-g5-base)の最後の実行を再実行する(標準 第4章 G-5「統制の設定の変更の承認」)'
+        );
+      } else if (b.selfAttested) {
+        result.notices.push(`統制の設定の変更の承認: ${b.note}(統制の設定 ${list})。自己申告として出荷の証跡の集約が区別して数える`);
+      } else result.notices.push(`統制の設定の変更の承認: ${b.note}(統制の設定 ${list})`);
+    } else if (touched.length) {
+      result.notices.push(`統制の設定の変更の承認: 既定ブランチの構成が未設定のため、承認を照らさない(初回の設定。統制の設定 ${touched.slice(0, 5).join(', ')})`);
+    }
+  }
+
   // --- 1. トレーラ Spec ---
   const author = String(pr.author ?? '');
   if (DEPENDENCY_BOTS.includes(author)) {
@@ -1544,12 +1606,14 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
   // 規則は基底ブランチの構成から読む。同じ PR で規則を書き換えても、その PR の当たりは変わらない。
   // 規則に当たった変更を、申告(「設計上の選択を含まない」の記載など)で外す経路は置かない。偽陽性は規則を狭める変更で直す
   {
-    const tracked = trackedFiles(root, 'HEAD');
+    const tracked = trackedFiles(root, HEADREF);
     const dr = decisionRuleHits(rulesConfig.decisionRules?.rules, changes, tracked);
     const stage = stageOf(rulesConfig);
     const declared = dr.rules > dr.unmatched.length;
     const ids = adrTrailerIds(pr.body);
-    const listMd = (dir) => (fs.existsSync(path.join(root, dir)) ? fs.readdirSync(path.join(root, dir)) : []);
+    const listMd = head
+      ? (dir) => String(git(['ls-tree', '--name-only', `${head}:${dir}`]) ?? '').split(/\r?\n/).filter(Boolean)
+      : (dir) => (fs.existsSync(path.join(root, dir)) ? fs.readdirSync(path.join(root, dir)) : []);
     const has = (files, id) => files.some((f) => f.startsWith(`${id}-`) && f.endsWith('.md'));
     const present = listMd('context/decisions');
     const archived = listMd('context/_archive/decisions');
@@ -1613,7 +1677,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
   // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
-  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, { ...pr, accountLookup: userLookup },all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, 'HEAD'));
+  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, { ...pr, accountLookup: userLookup },all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, HEADREF));
   if (result.approvers.applies) {
     const a = result.approvers;
     const coreText = a.core
@@ -1715,7 +1779,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {} }) {
       continue;
     }
     if (!e.removed) continue;
-    const diff = git(['diff', '-U0', '-M', mergeBase, 'HEAD', '--', from, e.path]) ?? '';
+    const diff = git(['diff', '-U0', '-M', mergeBase, HEADREF, '--', from, e.path]) ?? '';
     const removedLines = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
     const assertions = removedLines.filter((l) => ASSERTION.test(l)).map((l) => l.slice(1).trim().slice(0, 120));
     result.testChanges.push({ file: e.path, kind: e.from ? `名前の変更と行の削除(${from} →)` : '行の削除・書き換え', removed: e.removed, assertions });
@@ -1816,7 +1880,23 @@ if (isMain) {
   if (!pr.hosting && process.env.GITHUB_REPOSITORY && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) pr.hostingLookup = ghHosting(process.env.GITHUB_REPOSITORY);
   // 作成を指示した者の @アカウントを検査の時点に数値の識別子へ解決する(GH のトークンがある実行。ADR-0108 決定1)。--pr の JSON の accountIds が先
   if (!pr.accountIds && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) pr.accountLookup = ghUserLookup();
-  const r = analyzePr({ base, policyBase, pr });
+  // 基底から読む判定(gate-g5-base.yml): --head は PR の先頭を取得した参照(データとして読む)、--require-control-approval は
+  // 統制の設定の変更の承認(3c)を照らす(process-compass #371 / ADR-0115)
+  const head = arg('--head', null);
+  if (head && pr.head) {
+    const fetched = (() => {
+      try {
+        return execFileSync('git', ['rev-parse', '--verify', '--quiet', `${head}^{commit}`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        return '';
+      }
+    })();
+    if (fetched !== pr.head) {
+      fail(`取得した PR の先頭(${fetched.slice(0, 12) || '解決できない'})が、イベントの PR の先頭(${String(pr.head).slice(0, 12)})と一致しません。PR が更新されたため、最新の実行の結果を見る`);
+      process.exit(1);
+    }
+  }
+  const r = analyzePr({ base, policyBase, pr, head, requireControlApproval: argv.includes('--require-control-approval') });
   if (argv.includes('--json')) {
     console.log(JSON.stringify(r, null, 2));
   } else {

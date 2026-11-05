@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "81b44eb8b5b72855a3a081c93dd7ef7c069969b6",
+    "commit": "cea873e839a5a5d71234a1d2132a28ce7d747686",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1650,6 +1650,12 @@
       "range": "物理的な危険源・R1 の変更種別・本番到達・L2 以上のいずれか",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/#aiエージェント安全リスクアセスメント適用-物理的な危険源r1-の変更種別本番到達l2-以上のいずれか"
+    },
+    {
+      "title": "統制の設定の変更の承認",
+      "range": "統制の設定を変える変更",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#統制の設定の変更の承認適用-統制の設定を変える変更"
     },
     {
       "title": "確認の範囲と深さ",

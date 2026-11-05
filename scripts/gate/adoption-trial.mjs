@@ -1714,6 +1714,36 @@ function envCheck() {
     } else items.ruleset = { ...items.ruleset, detail: `${items.ruleset.detail}。旧来のブランチ保護と合わせても満たさない: ${bad.join('。')}` };
   }
 
+  // 1d. 基底から読む判定(標準 第4章 G-5「判定のコードの読み元」。process-compass #371 / ADR-0115 / EV-0233)。
+  //     既定ブランチに、既定ブランチの定義で動く判定(gate-g5-base.yml。pull_request_target)が置かれ、その結果(check run の名前 gate-g5-base)が
+  //     必須チェックとして効いているか。3値: satisfied(満たす)/ unsatisfied(満たさない)/ unconfirmed(確かめていない)。
+  //     満たさない構成は未達として開示する(出荷の証跡の集約の項目1)。全体の成否(allOk)には入れない(設定の値であり、運用の有効性の確認に代えない)
+  let baseJudge;
+  {
+    const fetchedAt = localIso();
+    const viaClassic = classicRead && classicRead.enforceAdmins ? classicRead.checks : [];
+    const required = rsRead ? [...new Set([...(rsRead.checks ?? []), ...viaClassic])].includes('gate-g5-base') : null;
+    let workflow = null;
+    if (repo) {
+      const w = ghJson(['api', `repos/${repo}/contents/.github/workflows/gate-g5-base.yml?ref=${encodeURIComponent(branch)}`]);
+      if (w.value && typeof w.value === 'object' && typeof w.value.content === 'string') {
+        const text = Buffer.from(w.value.content, 'base64').toString('utf8');
+        workflow = { present: true, prTarget: /^\s*pull_request_target\s*:/m.test(text), blobSha: typeof w.value.sha === 'string' ? w.value.sha : null };
+      } else if (w.http === 404) workflow = { present: false };
+      else workflow = { unreadable: w.why ?? 'ワークフローを読めない' };
+    }
+    const evidence = { rulesetIds: rsRead?.rulesetIds ?? [], workflowBlob: workflow?.blobSha ?? null, fetchedAt };
+    if (!repo) baseJudge = { status: 'unconfirmed', detail: '対象のリポジトリを特定できない', evidence };
+    else if (required === null || workflow?.unreadable) baseJudge = { status: 'unconfirmed', detail: `${required === null ? '既定ブランチに効いている規則を読めない' : ''}${required === null && workflow?.unreadable ? '。' : ''}${workflow?.unreadable ? `gate-g5-base.yml を読めない(${workflow.unreadable})` : ''}`, evidence };
+    else if (!workflow.present || !workflow.prTarget || !required) {
+      const bad = [];
+      if (!workflow.present) bad.push(`既定ブランチ ${branch} に .github/workflows/gate-g5-base.yml が無い`);
+      else if (!workflow.prTarget) bad.push('gate-g5-base.yml が pull_request_target で起動しない(既定ブランチの定義で動かない)');
+      if (!required) bad.push('必須チェックに gate-g5-base が無い(ルールセットの雛形を適用し直す)');
+      baseJudge = { status: 'unsatisfied', detail: `基底から読む判定が効いていない: ${bad.join('。')}。統制の設定を変える変更の承認を、PR の側から外せない形で求めていない(未達)`, evidence };
+    } else baseJudge = { status: 'satisfied', detail: `既定ブランチ ${branch} の gate-g5-base.yml(pull_request_target)の結果 gate-g5-base が必須チェックとして効いている。設定の値であり、止まるべきものが止まることは陰性の確認で確かめる`, evidence };
+  }
+
   // 1c. 効いている CODEOWNERS の所在と codeowners/errors(#315 R-4)。GitHub は .github/・根・docs/ の順に最初の1つだけを使う
   if (!repo) items.codeowners = noRepo();
   else {
@@ -1916,7 +1946,9 @@ function envCheck() {
     findings,
     performerAccount,
     performerAccountBySeat,
-    integrationId: '未確認(必須チェックの発行元 integration_id の固定は、実走で確かめてから規定にする。#315 R-4)',
+    // 基底から読む判定(3値。process-compass #371 / ADR-0115)
+    baseJudge,
+    integrationId: '確かめていない。必須チェックの送り手(integration_id)を GitHub Actions に固定しても、PR の側のワークフローの結果と区別されない(2026-11-05 の実機の確認)。送り手の固定は適合の手段に数えない(process-compass #371 / ADR-0115)',
     note: '実環境の gh で読んだ結果。結果は確認済み / 不一致 / 未確認(理由)/ 対象外の4値で、対象外は確認済みに数えない(#315 R-4)。項目が確認済みでない記録は、導入前の検証の記録と出荷の集約に「実環境の統制 未確認」と出続ける(附属書I I.11 要件⑦)。各項目の evidence は API の応答の識別(査察で GitHub の画面と突合する鍵)であり、識別の無い確認済みは読む側で未確認に倒れる。findings は記録用ブランチ(records)の所見で、確認済みの判定に入れない(人が読む。mismatch は強制層の縮小または保護の欠落)',
   };
   writeText(ENV_CHECK_FILE, JSON.stringify(record, null, 2) + '\n');
@@ -1937,6 +1969,12 @@ function envCheck() {
     if (pa.status === 'mismatch') warn(line);
     else notice(line);
     for (const st of pa.seats ?? []) if (st.status === 'mismatch') warn(`  ${st.name}: ${st.detail}`);
+  }
+  {
+    const word = { satisfied: '満たす', unsatisfied: '満たさない', unconfirmed: '確かめていない' }[baseJudge.status] ?? baseJudge.status;
+    const line = `基底から読む判定(gate-g5-base): ${word}(${baseJudge.detail})`;
+    if (baseJudge.status === 'satisfied') notice(line);
+    else warn(line);
   }
   const idText = envEvidenceText({ record, items: Object.entries(items).map(([id, it]) => ({ id, evidence: it.evidence ?? null })) });
   notice(`実環境の識別(査察で GitHub の画面と突合する鍵): ${idText ?? '無し(識別を返さない gh、または模擬。確認済みの項目は無い)'}`);

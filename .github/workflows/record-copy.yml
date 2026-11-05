@@ -35,10 +35,17 @@
 # 出荷の証跡の集約(aggregate-evidence.mjs)と next.mjs は、この写しを scripts/gate/records.mjs で読みます(段階 2)。
 # 基底ブランチへは、出荷判定(G-7)の PR(ship-evidence.yml)が docs/records/reviews/ へ複製して運びます。
 
+# **書き込みの権限(contents: write)を持つため、定義とスクリプトは既定ブランチから読みます**(pull_request_target。process-compass #371 /
+# ADR-0115 / 議長の裁定 AR-2)。pull_request の closed では、マージせずに閉じた PR が PR の側の定義(refs/pull/N/merge)で動き、
+# `if: merged` の条件を消した定義が contents: write の権限で動きました(2026-11-05 の実機の確認 E-5)。
+# pull_request_target は PR の基底に依らず既定ブランチの定義で動きます(E-15)。PR のコードを checkout しません。
+# マージした PR では、既定ブランチの先端はその PR の変更を含みます。このファイルを変える PR は統制の設定の変更であり、
+# 取り込む前に AI維持管理者本人の承認を要します(gate-g5-base.yml)。
+
 name: record-copy
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 permissions:
@@ -57,11 +64,15 @@ jobs:
     env:
       RECORDS_BRANCH: records
     steps:
-      # 既定ブランチの定義で動く(pull_request の closed は、マージ後の基底ブランチの定義を読む)。
-      # PR の先頭を checkout しない
+      # 既定ブランチの定義で動く(pull_request_target。PR の基底に依らず既定ブランチの定義とスクリプトを読む)。
+      # pull_request の closed では、マージせずに閉じた PR は PR の側の定義で動く(実機の確認 E-5)ため、使わない。
+      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない。
+      # 記録用ブランチへ push するため、checkout の資格情報を残す(このジョブは PR のコードを取り出さず、実行しない)
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          submodules: false
       # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
       # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
       - uses: actions/setup-node@v4

@@ -146,12 +146,13 @@ import {
   competenceState,
   readEnvCheck,
   ENV_CHECK_FILE,
+  BASE_JUDGE_TEXT,
   coreReviewText,
   qaAffiliationText,
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedOf } from './check-pr.mjs';
 import {
   exceptionReviewBacking,
   introducedBacking,
@@ -167,6 +168,8 @@ import {
   sgRecordPath,
   idMigrationRoster,
   lastCommitOfLine,
+  controlApprovalBacking,
+  CONTROL_APPROVAL_REQUIRED_SINCE,
 } from './material-attribution.mjs';
 import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
@@ -785,6 +788,38 @@ export function formAttribution(gateRecord, { judgeName = null, person = null, a
   const why = tries.map((t) => `${t.via}: ${t.r.why}`);
   if (!tries.length) why.push('様式を運んだ変更と、様式を足したコミットを、ホスティングの記録で確かめられない');
   return { backed: false, how: authorNote.how, note: `${why.join(' / ')}。${authorNote.note}`, clerical, selfAttested: true };
+}
+
+/**
+ * 統制の設定の変更の承認(標準 第4章 G-5「統制の設定の変更の承認」、G-7「保証の開示」項目1。process-compass #371 / ADR-0115 / IMPL-0457)。
+ * 出荷の範囲の PR(集約の prs の要素。control・material・mergedAt を持つ)のうち統制の設定を変えたものに、AI維持管理者の席の責任者本人の
+ * 承認のレビュー(名簿の数値の識別子、PR の先頭)があるかを、PR の時点の判定(gate-g5-base の check-pr 3c)と同じ関数で照らす。
+ * 承認の無い変更は記載の欠落(gaps)に数える。1名の体制の自己申告は欠落に数えず、件数を返す。規定の採用日(since)より前にマージした
+ * 変更は、照らした結果を beforeRule に返し、欠落に数えない。mergedAtOf(p) はマージの時刻(ホスティングの記録が無いときの代わり)
+ */
+export function controlApprovalSummary(prs, config, { since = CONTROL_APPROVAL_REQUIRED_SINCE, mergedAtOf = () => null } = {}) {
+  const out = { changes: [], review: 0, author: 0, selfAttested: 0, missing: [], beforeRule: [], gaps: [] };
+  for (const p of prs ?? []) {
+    if (!p?.control?.files?.length || !p.control.parentConfigured) continue;
+    const b = controlApprovalBacking(config, { reviews: p.material?.reviews ?? null, author: { login: p.material?.author ?? '', id: p.material?.authorId ?? null }, head: p.material?.head ?? null });
+    const at = p.mergedAt ?? mergedAtOf(p) ?? null;
+    const before = Boolean(at) && String(at).slice(0, 10) < since;
+    const item = { pr: p.number, files: p.control.files.slice(0, 10), backed: b.backed, how: b.how ?? null, selfAttested: Boolean(b.selfAttested), note: b.note ?? null, why: b.why ?? [], mergedAt: at };
+    out.changes.push(item);
+    if (b.backed) {
+      if (b.selfAttested) out.selfAttested++;
+      else if (b.how === 'author') out.author++;
+      else out.review++;
+    } else if (before) out.beforeRule.push(item);
+    else {
+      out.missing.push(item);
+      out.gaps.push(
+        `PR #${p.number}: 統制の設定(${item.files.slice(0, 3).join(', ')}${p.control.files.length > 3 ? ' ほか' : ''})を変えた変更に、AI維持管理者本人の承認のレビューがありません(${item.why.join('。')})。` +
+          '統制の設定を変える変更は、その変更自身が書き換えた検査に合格しただけでは取り込みません(第4章 G-5「統制の設定の変更の承認」)。本文の記名は承認に数えません'
+      );
+    }
+  }
+  return out;
 }
 
 // --- 集約の本体 ----------------------------------------------------------------
@@ -1783,6 +1818,17 @@ if (isMain) {
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
     const prFiles = git(['diff', '--name-only', `${hash}^1`, hash]).split('\n').filter(Boolean);
     const recordOnly = prFiles.length > 0 && notRecordReasons(hash, prFiles).length === 0;
+    // 統制の設定を変えた変更(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115)。マージの前の構成が設定済みのときだけ数える
+    const controlTouched = controlTouchedOf(prFiles.map((f) => ({ path: f })));
+    let parentConfigured = false;
+    if (controlTouched.length) {
+      try {
+        const c = JSON.parse(gitRaw(['show', `${hash}^1:process.config.json`]) ?? 'null');
+        parentConfigured = Boolean(c) && c.configured !== false;
+      } catch {
+        parentConfigured = false;
+      }
+    }
     // 承認は、取り込んだ PR の先頭の版に対するものだけを数える(#296)。PR の記録に先頭が無ければ、版を確かめられない。
     // PR の記録(gh)が無く写しで対応づけた PR は、写しの head(record-copy.yml の head_sha)を先頭とする(#321 との統合)
     const headOid = api ? (api.headRefOid ?? null) : (headOfCopy(copyEntry?.copy) ?? null);
@@ -1814,6 +1860,8 @@ if (isMain) {
       // 記録だけの PR(変更の単位に数えない)
       recordOnly,
       files: prFiles.length,
+      // 統制の設定を変えたファイルと、マージの前の構成が設定済みか(承認の照合は下の「統制の設定の変更の承認」。#371)
+      control: { files: controlTouched, parentConfigured },
       // 承認レビューの写し(所在・失効した承認・PR の記録との所見)。無ければ null
       copy: copyEntry
         ? {
@@ -2713,6 +2761,13 @@ if (isMain) {
       );
     }
   }
+
+  // --- 統制の設定の変更の承認(標準 第4章 G-5「統制の設定の変更の承認」、G-7「保証の開示」項目1。process-compass #371 / ADR-0115) ---
+  // 出荷の範囲の PR のうち統制の設定を変えたものに、AI維持管理者の席の責任者本人の承認のレビュー(名簿の数値の識別子、PR の先頭)があるかを、
+  // PR の時点の判定(gate-g5-base の check-pr 3c)と同じ関数で照らす。承認の無い変更は記載の欠落に数える。1名の体制の自己申告は欠落に
+  // 数えず、件数を項目1 に出す。規定の採用日(CONTROL_APPROVAL_REQUIRED_SINCE)より前にマージした変更は、照らした結果を項目1 に出し、欠落に数えない
+  const controlApproval = controlApprovalSummary(prs, config, { mergedAtOf: (p) => git(['log', '-1', '--format=%cI', p.mergeCommit]) || null });
+  gaps.push(...controlApproval.gaps);
 
   if (!period && config.gates.g7?.state !== 'omitted') {
     if (!exists(handoverFile)) gaps.push('運用引き継ぎ文書(docs/handover.md)がありません');
@@ -4140,8 +4195,25 @@ if (isMain) {
     autonomy = { error: String(e.message).split('\n')[0], types: [] };
   }
 
+  // 判定のコードの読み元と統制の設定の変更の承認(標準 第4章 G-5、G-7「保証の開示」項目1。process-compass #371 / ADR-0115 / EV-0233)。
+  // 層ごとの充足と未達を値で出す(評価を足さない)。必須チェックの構成は env-check の3値(満たす・満たさない・確かめていない)
+  const controls = {
+    baseJudge: envCheck.baseJudge ?? { status: 'unconfirmed', detail: '記録なし' },
+    approval: {
+      changes: controlApproval.changes.length,
+      review: controlApproval.review,
+      author: controlApproval.author,
+      selfAttested: controlApproval.selfAttested,
+      missing: controlApproval.missing.map((x) => x.pr),
+      beforeRule: controlApproval.beforeRule.map((x) => x.pr),
+      since: CONTROL_APPROVAL_REQUIRED_SINCE,
+      items: controlApproval.changes,
+    },
+  };
+
   const assurance = {
     independence,
+    controls,
     records: recordsDisclosure,
     autonomy,
     tailoring,
@@ -5041,6 +5113,26 @@ if (isMain) {
     }
     if (ch.withdrawnApprovals) {
       R.push(`| 承認の後に同じ人が変更要求を出した(取り下げた承認は数えていない) | ${ch.withdrawnApprovals} 件 | ${prev((p) => p.independence.changes.withdrawnApprovals ?? '値なし')} |`);
+    }
+    if (A.controls) {
+      // 判定のコードの読み元(層ごと)と、統制の設定の変更の承認(標準 第4章 G-5。process-compass #371 / ADR-0115 / IMPL-0455〜0460)。
+      // 層の値は準拠テンプレートの構成の事実(gate-g5.yml は pull_request、gate-g5-base.yml は pull_request_target)。評価を足さない
+      const cs = A.controls;
+      const bj = cs.baseJudge ?? { status: 'unconfirmed', detail: '記録なし' };
+      const ap = cs.approval;
+      const prevCs = (pick) => prev((p) => (p.controls ? pick(p.controls) : null));
+      R.push(
+        `| G-5 の判定のコードの読み元(定義 / 判定のスクリプト / PR のコードの実行 / 結果の送り手) | ` +
+          'PR 単位の検査(gate-g5-base): 定義・判定のスクリプト・構成とも既定ブランチ / PR のコードを実行しない(差分と本文をデータとして読む) / ジョブの結果(check run)。' +
+          'テスト・静的解析ほか(gate-g5): 定義・スクリプトとも PR の側 / PR のコードを実行する(結果は信頼しないデータとして扱う) / ジョブの結果。' +
+          '必須チェックの送り手を固定しても、PR の側のワークフローの結果と区別されない(送り手の固定は適合の手段に数えない) | — |'
+      );
+      R.push(`| 基底から読む判定が必須チェックとして効いているか(env-check。満たす / 満たさない / 確かめていない。満たさない・確かめていない構成は未達) | ${bj.status === 'satisfied' ? '' : '**'}${BASE_JUDGE_TEXT[bj.status] ?? bj.status}${bj.status === 'satisfied' ? '' : '**'}(${bj.detail}) | ${prevCs((c) => BASE_JUDGE_TEXT[c.baseJudge?.status] ?? null)} |`);
+      R.push(
+        `| 統制の設定を変えた変更の AI維持管理者の承認(本人の承認のレビュー / 作成者が本人で別の者が確認 / 1名の体制の自己申告 / 承認なし(欠落) / 規定の採用日 ${ap.since} より前で承認なし) | ` +
+          `${ap.changes} 件のうち ${ap.review} 件 / ${ap.author} 件 / ${ap.selfAttested} 件 / ${ap.missing.length ? `**${ap.missing.length} 件**(${ap.missing.map((n) => `#${n}`).join(', ')})` : '0 件'} / ${ap.beforeRule.length} 件${ap.beforeRule.length ? `(${ap.beforeRule.map((n) => `#${n}`).join(', ')})` : ''} | ` +
+          `${prevCs((c) => (c.approval ? `${c.approval.changes} 件 / 自己申告 ${c.approval.selfAttested} 件 / 欠落 ${(c.approval.missing ?? []).length} 件` : null))} |`
+      );
     }
     {
       // 承認レビューの写しと記録用ブランチ(#321 D5・D6 / IMPL-0125・0126・0128・0129)。読めない理由も値として出す
