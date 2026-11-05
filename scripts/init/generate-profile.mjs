@@ -43,6 +43,7 @@ import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
+import { reductionProblems } from '../gate/cl-judgment.mjs';
 import {
   isFilledValue,
   reviewersRequiredOf,
@@ -1407,6 +1408,7 @@ export function diffConfig(before, after) {
     'q-quality': ['quality-standard', 'quality-high', 'quality-regulated'],
   };
   let stageBack = false;
+  let criticalityLowered = null;
   for (const [k, v] of Object.entries(after.answers ?? {})) {
     const b = before.answers?.[k];
     if (b === v) continue;
@@ -1425,6 +1427,8 @@ export function diffConfig(before, after) {
       );
     } else {
       push(`回答 ${k}: ${b} → ${v}(区分を下げる。根拠の記録を要する)`, 1, 0);
+      // 安全重要度を下げる操作は、D-0 節16 の「区分の引き下げの根拠」の実在を、反映の前に確かめる(#373 / IMPL-0451)
+      if (k === 'q-criticality') criticalityLowered = { from: b, to: v };
     }
   }
 
@@ -2259,6 +2263,7 @@ export function diffConfig(before, after) {
     direction,
     departure,
     stageBack,
+    criticalityLowered,
     expired,
     arising,
     resolved,
@@ -5452,6 +5457,14 @@ if (isMain) {
       const inside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
       if (!inside || !/\.md$/i.test(file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
         refused.push(`sgRecord "${change.sgRecord}" は、docs/gates/ 配下の実在する判定記録(.md)ではありません。ステージ移行ゲート(SG)の判定記録の所在を書いてください`);
+      }
+    }
+    // 安全重要度を下げる変更は、D-0 節16 の安全重要度の判定の記録に、下げた後の区分と「区分の引き下げの根拠」があり、根拠が引く
+    // 判断記録(ADR)と機能仕様(F-NNN)が実在する場合に限って受け付ける(標準 第8章 軸E「設計によって区分を下げる」。#373 / IMPL-0451)。
+    // 中身(設計が帰結を下げたか、ADR の採らなかった選択肢、必須制約の妥当性)は確かめない
+    if (report.criticalityLowered) {
+      for (const p of reductionProblems(config, { to: report.criticalityLowered.to, root: ROOT })) {
+        refused.push(`安全重要度を下げる変更(${report.criticalityLowered.from} → ${report.criticalityLowered.to})の引き下げの根拠: ${p}`);
       }
     }
     // --- 委任の登録の錠と、決定と承認の同一人物(#288 第8巡 Y7) ---

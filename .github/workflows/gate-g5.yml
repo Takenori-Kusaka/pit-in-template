@@ -160,6 +160,9 @@ jobs:
       - run: node scripts/gate/test-name-confirmation-timing.mjs
       # 保証の開示の項目2(テーラリングの宣言): S1 の G-6 の範囲の限定と、旧い構成の G-7 の簡略の未適用の厳格化(標準 第4章 G-7。process-compass #374 / ADR-0112)
       - run: node scripts/gate/test-tailoring-declaration.mjs
+      # 安全重要度の判定の記録と確認(D-0 節16): 判定の記録の欄と判定者の記名で G-1 を止めること、確認者の記名と段、
+      # 区分を下げる変化点の引き下げの根拠、出荷の証跡の集約の未達と欠落(標準 第8章 軸E。process-compass #373 / ADR-0113)
+      - run: node scripts/gate/test-cl-judgment.mjs
       # 既存のリポジトリへの持ち込み: 適用の開始の境(第1親の連鎖)、開始より前の履歴の扱い、事前点検、フックの登録・@OWNER、
       # 構成の形式の版と移行、取り込んだテンプレートの記録(標準 第1章 1.10.1・1.10.3。process-compass #315 / ADR-0085)
       - run: node scripts/gate/test-adoption.mjs

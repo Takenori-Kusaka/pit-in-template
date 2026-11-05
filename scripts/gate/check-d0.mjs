@@ -12,6 +12,7 @@ import { d0SectionProblems, d0GovernanceProblems, d0OptionalSectionProblems, D0_
 import { readPolicy, continuityState } from './org-assurance.mjs';
 import { d0VerificationProblems } from './customer-voice.mjs';
 import { readGateRecords } from './config.mjs';
+import { clJudgmentState, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
 
 const config = loadConfig();
 const D0 = path.join(ROOT, 'docs/D-0-governance.md');
@@ -130,6 +131,25 @@ else for (const p of generated) warn(`${p}(旧い構成のため注意にとど�
         '決定権を委ねられていない担当(営業・企画・調査の委託先・受注側の担当者など)を書いていないかを人が確かめます(標準 第6章 D-0「表1 の列の決まり」、附属書H 観点24)。機械は失敗にしません'
     );
   }
+}
+
+// 安全重要度の判定の記録(節16。標準 第6章 テンプレ0 表10、第8章 軸E「判定の記録と確認」。process-compass #373 / ADR-0113 / IMPL-0449)。
+// 初期化の回答 q-criticality は仮の判定である。判定の欄と判定者の記名がそろうまで G-1 の審議を開始させない(本人が書ける欠落は止める)。
+// 確認者の欠落は他の人の手が要るため止めない(未達。出荷の証跡の集約が出す)。G-1 を通過済みの案件は遡って失敗させず注意にする。
+// --no-cl は next.mjs が使う(判定の記録の欠落を、D-0 の不備と分けて人の判断待ちに出すため)
+if (!process.argv.includes('--no-cl')) {
+  const st = clJudgmentState(config, { text, gateRecords: gateRecordsForCl() });
+  if (st.recordProblems.length) {
+    if (st.g1Passed) {
+      for (const p of st.recordProblems) warn(`${p}(G-1 を通過済みのため、遡って失敗させません。記録がそろうまで、出荷の証跡の集約が判定の確認を未達として出します)`);
+    } else {
+      problems.push(...st.recordProblems);
+      problems.push('初期化の回答 q-criticality は仮の判定です。安全重要度の判定の記録と判定者の記名がそろうまで、G-1 の審議を開始できません(標準 第2章 2.8、第8章 軸E)');
+    }
+  } else if (!st.confirmation.ok) {
+    warn(`安全重要度の判定の確認: ${clJudgmentText(st)}。G-1 は止めません(確認者は判定者と別の自然人。置けない間は未達として表示し続けます)`);
+  }
+  for (const n of st.notes) warn(n);
 }
 
 // 案件 ID(frontmatter の project_id)と構成(projectId)の一致(#288 第6巡 P)。生成側が様式の初期値を構成の値で埋める。

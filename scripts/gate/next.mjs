@@ -50,6 +50,7 @@ import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonom
 import { retiredDetectionTypes } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
+import { clJudgmentState, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
 
 /**
  * 直近の出荷の集約の出力(evidence/evidence.json。.gitignore の下。手元で集約を実行したときだけある)。
@@ -650,7 +651,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
       });
       projectBlocked = true;
     } else {
-      const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/gate/check-d0.mjs')], { cwd: ROOT, encoding: 'utf8' });
+      // D-0 の承認・生成区間の不備(判定の記録は下で分けて出すため --no-cl)。D-0 の承認が前提条件1、判定の記録が前提条件2 の順に出す
+      const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/gate/check-d0.mjs'), '--no-cl'], { cwd: ROOT, encoding: 'utf8' });
       if (r.status !== 0) {
         const why = `${r.stdout ?? ''}${r.stderr ?? ''}`.split('\n').find((l) => /error|失敗|ありません|空|過ぎ/.test(l)) ?? 'check-d0 が失敗';
         result.project.push({
@@ -667,6 +669,30 @@ export function computeNext({ fetch = true, network = true } = {}) {
           ],
         });
         projectBlocked = true;
+      }
+      // 安全重要度の判定の記録(D-0 節16。標準 第8章 軸E「判定の記録と確認」。process-compass #373 / IMPL-0449)。初期化の回答は仮の判定で、
+      // 判定の欄と判定者の記名がそろうまで G-1 の審議を開始しない。D-0 の不備と分けて、判定者の席の人の判断待ちとして出す。
+      // 確認者の欠落は段階を止めず、注記に出す(未達)。G-1 を通過済みの旧い構成は止めない
+      const cl = clJudgmentState(config, { text: fs.readFileSync(d0, 'utf8'), gateRecords: gateRecordsForCl({ branch: recBranch }) });
+      if (cl.recordProblems.length && !cl.g1Passed) {
+        result.project.push({
+          stage: '安全重要度の判定の記録と記名が無い(仮の判定)',
+          kind: 'human-wait',
+          what: `D-0 節16「安全重要度の判定の記録」の記入と判定者の記名(初期化の回答 ${config.answers?.['q-criticality'] ?? '未記入'} は仮の判定)`,
+          seat: seatOf(config, decider),
+          after: '判定者が記入した後に `node scripts/gate/check-d0.mjs` で確かめる。区分を変えるなら /process-change(種別 axis)',
+          detail: cl.recordProblems.slice(0, 2).join(' / ').slice(0, 300),
+          read: READ.artifact('00-d0-governance'),
+          roles: [
+            { role: decider, action: '最悪の帰結(対策の前)・1つ上の区分に当たらない理由・附属書F F.2 の回答を書き、判定者として記名する。判定者と別の自然人に確認を頼む' },
+            { role: 'ai-agent', action: '判定の欄・判定者・確認者を推測で埋めない(人が書く欄。AI の名義を書かない)' },
+          ],
+        });
+        projectBlocked = true;
+      } else if (cl.recordProblems.length) {
+        result.notes.push(`安全重要度の判定の記録に不備がある(G-1 を通過済みのため止めない。出荷の証跡の集約が判定の確認を未達として出す): ${cl.recordProblems.slice(0, 2).join(' / ')}`);
+      } else if (!cl.confirmation.ok) {
+        result.notes.push(`安全重要度の判定の確認: ${clJudgmentText(cl)}。確認者は判定者と別の自然人(チームの外の人は名簿へ外部の確認者として載せる)。AI が確認者を書かない`);
       }
     }
   }

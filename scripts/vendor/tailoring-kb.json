@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "efa58c5667b287fa7d08cbc20fd1c4430d8369e0",
+    "commit": "727f23c2488f52e307c06451a52188e9f02154e7",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -428,6 +428,31 @@
       ],
       "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある。独立した人の確認と、その欠落を差し戻す出荷判定を、事業ステージを理由に外さない。危害の深刻度は、体制の都合でも事業ステージの都合でも下がらない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
+      "priority": 50,
+      "sourceFile": "rules-criticality.yaml"
+    },
+    {
+      "id": "r-e-sra-conditions",
+      "when": {
+        "q-criticality": [
+          "cl0",
+          "cl1"
+        ]
+      },
+      "adjustments": [
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-plan-approval"
+          },
+          "action": "set",
+          "param": "safetyRiskAssessment",
+          "value": "conditional",
+          "note": "安全リスクアセスメント(第6章 テンプレ9)は、第6章の適用条件(物理的な危険源・R1 の変更種別・本番到達・AI自律レベル L2 以上)のいずれかに当たれば、企画承認の前提条件にする。該当の有無は人が判定する"
+        }
+      ],
+      "reason": "テンプレ9 は開発に使う AI エージェントの危害の評価であり、危害の大きさはエージェントの到達範囲で決まる。製品の安全重要度が低くても、本番へ到達する L2 のエージェントは本番の資源を壊しうる",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
     },

@@ -172,6 +172,7 @@ import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
+import { readClJudgment, clJudgmentText, gateRecordsForCl } from './cl-judgment.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -2883,6 +2884,14 @@ if (isMain) {
     reviewSourcing: u.reviewSourcing ?? null,
   }));
 
+  // --- 安全重要度の判定の確認(D-0 節16。標準 第8章 軸E「判定の記録と確認」、第4章 G-7「保証の開示」項目1。process-compass #373 / IMPL-0450) ---
+  // 確認者の欠落は未達として項目1 に出し、欠落に数えない(CL0 で規制業でない案件は G-8 の受容で出荷できる)。
+  // CL1 以上・規制業の案件と、附属書F F.2 の Q1 が「はい」で段3 の確認が欠ける案件は、記載の欠落に数える(G-8 の受容で代えない)。
+  // 判定の記録そのものの不備は G-1 の前提条件(D-0 の検査)が止める。G-1 を通過済みの旧い構成(記録を求める前の構成)は、
+  // 遡って止めず、記録がそろうまで未達として出し続ける
+  const clJudgment = readClJudgment(config, { root: ROOT, gateRecords: gateRecordsForCl({ root: ROOT, branch: recordsBranch }) });
+  if (clJudgment.shipBlocking) gaps.push(`安全重要度の判定の確認: ${clJudgment.shipBlockingReason}。${clJudgmentText(clJudgment)}(D-0 節16。第8章 軸E「判定の記録と確認」)`);
+
   // --- 代償措置つきの逸脱(未達と区別して載せる) ------------------------------
 
   // 区分(listed: 閉じた列挙の逸脱 / unlisted: 列挙に無い離脱。標準 第1章 1.10.2。process-compass #316)
@@ -3172,6 +3181,23 @@ if (isMain) {
         (samplerIsAuthor ? '(抜き取りは責任者本人が実施する。独立した確認に数えない)' : '(独立レビュアの席の責任者が事後に抜き取る)')
       : 'なし',
     g7: g7Status,
+    // 安全重要度の判定の確認(D-0 節16。#373 / IMPL-0450)。氏名は組織の内側の出力にだけ出す
+    clJudgment: {
+      text: clJudgmentText(clJudgment),
+      externalText: clJudgmentText(clJudgment, { external: true }),
+      present: clJudgment.present,
+      cls: clJudgment.cls,
+      provisional: clJudgment.answer,
+      judge: clJudgment.judge,
+      confirmer: clJudgment.confirmer,
+      requiredStep: clJudgment.confirmation.required,
+      recordedStep: clJudgment.confirmation.recorded,
+      countedStep: clJudgment.confirmation.effective,
+      unmet: !clJudgment.confirmation.ok,
+      unmetReasons: [...clJudgment.recordProblems, ...clJudgment.confirmation.unmet],
+      legacy: clJudgment.legacy,
+      blocking: clJudgment.shipBlocking,
+    },
     sameAccountable: sep.notIndependent,
     separationDeviations: seatDeviationLabels,
     seatsWithoutAccountable: sep.blank,
@@ -4941,6 +4967,11 @@ if (isMain) {
       }
     }
     R.push(`| G-7 出荷判定 | ${A.independence.g7} | ${prev((p) => p.independence.g7)} |`);
+    {
+      // 安全重要度の判定の確認(標準 第8章 軸E「判定の記録と確認」。#373 / IMPL-0450)。確認者の欠落は未達として出す
+      const cj = A.independence.clJudgment;
+      if (cj) R.push(`| 安全重要度の判定の確認(D-0 節16。判定者と別の自然人が、判定で外れる区分の段で確かめる) | ${external ? cj.externalText : cj.text} | ${prev((p) => (p.independence.clJudgment ? (p.independence.clJudgment.unmet ? '未達' : `確認あり(段${p.independence.clJudgment.countedStep})`) : null))} |`);
+    }
     R.push(`| 責任者が同一人物のため独立が成立しない組 | ${listOr(A.independence.sameAccountable)} | ${prev((p) => listOr(p.independence.sameAccountable))} |`);
     R.push(`| 成立しない兼務禁止の記録(1〜2名の体制。逸脱の閉じた列挙に無い) | ${listOr(A.independence.separationDeviations)} | ${prev((p) => listOr(p.independence.separationDeviations ?? []))} |`);
     {
@@ -5702,6 +5733,7 @@ if (isMain) {
   );
 
   for (const u of unmet) warn(`未達: ${u.label} — ${u.reason}`);
+  if (!clJudgment.confirmation.ok && !clJudgment.shipBlocking) warn(`未達: 安全重要度の判定の確認 — ${clJudgmentText(clJudgment)}`);
   for (const d of assurance.drift) warn(`宣言と実態のずれ: ${d}`);
   for (const g of gaps) fail(g);
 
