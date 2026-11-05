@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "08460bf03bd1baeac8c09a94d54b5b9a34ae1020",
+    "commit": "2f8a699da51ca09e359b6a8adcdd1bdf740da4ae",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -273,14 +273,6 @@
         },
         {
           "target": {
-            "type": "gate",
-            "id": "g-ship"
-          },
-          "action": "simplify",
-          "note": "出荷判定は簡略化する(記録は残す)。安全重要度 CL1 以上では簡略にしない"
-        },
-        {
-          "target": {
             "type": "practice",
             "id": "core-designation"
           },
@@ -431,7 +423,7 @@
             "id": "g-ship"
           },
           "action": "restore",
-          "note": "出荷判定は、事業ステージによる省略(S0)・簡略(S1)の対象にしない。G-6 の記録の欠落を読んで差し戻す席を残す"
+          "note": "出荷判定は、事業ステージによる省略(S0)の対象にしない。G-6 の記録の欠落を読んで差し戻す席を残す"
         }
       ],
       "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある。独立した人の確認と、その欠落を差し戻す出荷判定を、事業ステージを理由に外さない。危害の深刻度は、体制の都合でも事業ステージの都合でも下がらない",
@@ -749,6 +741,14 @@
             "type": "gate",
             "id": "g-ship"
           },
+          "action": "restore",
+          "note": "出荷判定は、事業ステージによる省略(S0)の対象にしない(軸C の強化が軸B の緩和に優先する)"
+        },
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-ship"
+          },
           "action": "strengthen",
           "note": "出荷判定に限定的な抜き取り確認を追加する"
         },
@@ -801,6 +801,14 @@
           "param": "recordFormat",
           "value": "audit",
           "note": "レビュー記録は監査対応書式で残す"
+        },
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-ship"
+          },
+          "action": "restore",
+          "note": "出荷判定は、事業ステージによる省略(S0)の対象にしない(軸C の強化が軸B の緩和に優先する)"
         },
         {
           "target": {

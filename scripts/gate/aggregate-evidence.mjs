@@ -3278,9 +3278,19 @@ if (isMain) {
 
   // 2. テーラリングの宣言(外した項目と理由)
   const STATE_TEXT = { simplified: '簡略化', omitted: '省略', unmet: '未達' };
-  const tailoring = Object.values(config.gates)
-    .filter((g) => g.state !== 'required')
-    .map((g) => ({ label: g.label, state: STATE_TEXT[g.state] ?? `統合(${g.state})`, why: g.why ?? [] }));
+  // 範囲を限って適用するゲート(S1 の G-6 のコア機能への限定)も、状態を変えたゲートと同じく宣言する。
+  // 規則の再導出で厳しくなるゲート(未適用の厳格化)は、その旨を状態に添える。旧い構成で簡略として記録された
+  // S1 の G-7 が当たる。CL0 では欠落に数えない(blocking は CL1 以上の G-6・G-7 だけ)(process-compass #374 / ADR-0112 決定1・決定4)
+  const scopeLimited = (key, g) => key === 'g6' && g.state === 'required' && g.params?.scope === 'core-only';
+  const tighteningOf = (key, from) => tightenings.find((t) => t.gate === key && t.from === from);
+  const tighteningTail = (t) => (t ? `。未適用の厳格化: 現行の規則の再導出では ${t.to}${t.blocking ? '。欠落に数えた' : '。欠落には数えない'}` : '');
+  const tailoring = Object.entries(config.gates)
+    .filter(([key, g]) => g.state !== 'required' || scopeLimited(key, g))
+    .map(([key, g]) =>
+      scopeLimited(key, g)
+        ? { label: g.label, state: `範囲の限定(コア機能)${tighteningTail(tighteningOf(key, 'core-only'))}`, why: g.why ?? [] }
+        : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${tighteningTail(tighteningOf(key, g.state))}`, why: g.why ?? [] }
+    );
   if (config.guard?.enabled === false) {
     tailoring.push({
       label: '強制層の書き込み遮断',

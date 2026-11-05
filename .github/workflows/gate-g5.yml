@@ -158,6 +158,8 @@ jobs:
       - run: node scripts/gate/test-loosening-decider.mjs
       # 氏名の確認と、確認した氏名の使用(任命・委任の席)を同じ変化点に含むときの評価の時点(標準 第4章 G-6。process-compass #375 / ADR-0111)
       - run: node scripts/gate/test-name-confirmation-timing.mjs
+      # 保証の開示の項目2(テーラリングの宣言): S1 の G-6 の範囲の限定と、旧い構成の G-7 の簡略の未適用の厳格化(標準 第4章 G-7。process-compass #374 / ADR-0112)
+      - run: node scripts/gate/test-tailoring-declaration.mjs
       # 既存のリポジトリへの持ち込み: 適用の開始の境(第1親の連鎖)、開始より前の履歴の扱い、事前点検、フックの登録・@OWNER、
       # 構成の形式の版と移行、取り込んだテンプレートの記録(標準 第1章 1.10.1・1.10.3。process-compass #315 / ADR-0085)
       - run: node scripts/gate/test-adoption.mjs

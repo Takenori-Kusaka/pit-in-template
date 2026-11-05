@@ -538,6 +538,13 @@ for (const cl of ['cl1', 'cl2', 'cl3']) {
   const oldCl0 = { ...cl0, gates: { ...cl0.gates, g7: { ...cl0.gates.g7, state: 'simplified' } } };
   const f0 = pendingTightenings(oldCl0);
   check('未適用の厳格化: CL0 の差は表示するが、欠落には数えない', f0.length === 1 && f0[0].blocking === false, JSON.stringify(f0));
+  // CL0 の S1 の G-7 は適用(簡略にしない。process-compass #374 / ADR-0112 決定1)。旧い構成(簡略で記録された G-7)は、
+  // 厳しくする向きの未適用の厳格化として表示し、欠落には数えない(決定4)
+  const s1 = build({ 'q-team-size': 'size-3-9', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes', 'q-criticality': 'cl0' }, team);
+  check('cl0・mvp: G-7 は適用(簡略にしない)。G-6 はコア機能に限る', s1.gates.g7.state === 'required' && s1.gates.g6.params?.scope === 'core-only', JSON.stringify([s1.gates.g6, s1.gates.g7.state]));
+  const oldS1 = { ...s1, gates: { ...s1.gates, g7: { ...s1.gates.g7, state: 'simplified' } } };
+  const fs1 = pendingTightenings(oldS1);
+  check('未適用の厳格化: CL0 の S1 で G-7 を簡略のまま残す旧い構成は、表示するが欠落には数えない', fs1.length === 1 && fs1[0].gate === 'g7' && fs1[0].from === 'simplified' && fs1[0].to === 'required' && fs1[0].blocking === false, JSON.stringify(fs1));
 }
 
 // エスカレーションの段階と判定する者(標準 第7章 7.6 / ADR-0095。process-compass #418)
