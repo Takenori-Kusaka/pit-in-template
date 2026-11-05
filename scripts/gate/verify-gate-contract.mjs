@@ -283,10 +283,10 @@ if (config.configured === false) {
   }
   const co = codeownersState(ROOT);
   if (co.owner.length) {
-    problems.push(`${co.effective} に雛形の所有者 @OWNER が残っています(${co.owner.join('・')} 行目)。不正な所有者の行は黙って飛ばされ、コードオーナーが誰もいません。実在のアカウントかチームへ置き換えてください(人が決める)`);
+    problems.push(`${co.effective} に雛形の所有者 @OWNER が残っています(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられません。誤りは CODEOWNERS の画面と API に出ますが、PR の失敗としては出ません。実在のアカウントかチームへ置き換えてください(人が決める)`);
   }
   if (co.places.length > 1) {
-    notes.push(`CODEOWNERS が ${co.places.length} か所にあります(${co.places.join(' / ')})。GitHub は最初の1つ(${co.effective})だけを使います。ほかは効いていません`);
+    notes.push(`CODEOWNERS が ${co.places.length} か所にあります(${co.places.join(' / ')})。GitHub は決まった順に探して最初に見つけた1つ(${co.effective})を使います。ほかは使われません`);
   }
   const drift = templateDrift(config, ROOT);
   if (!config.template) {

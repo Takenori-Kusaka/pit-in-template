@@ -185,7 +185,7 @@ export function preflight(root = ROOT) {
   const co = codeownersState(root);
   facts.codeowners = co;
   if (co.places.length > 1) {
-    stop('codeowners-places', co.places.join(' / '), `CODEOWNERS が ${co.places.length} か所にある。GitHub は最初の1つ(${co.effective})だけを使い、ほかは黙って無効になる`, `1か所(${CODEOWNERS_PLACES[0]} を推奨)へまとめ、ほかを消す`);
+    stop('codeowners-places', co.places.join(' / '), `CODEOWNERS が ${co.places.length} か所にある。GitHub は決まった順に探して最初に見つけた1つ(${co.effective})を使い、ほかは使われない。PR の失敗としては出ない`, `1か所(${CODEOWNERS_PLACES[0]} を推奨)へまとめ、ほかを消す`);
   }
   // 既存の CODEOWNERS(テンプレートの置き場でない、またはパスの並びがテンプレートと違う)は、資産「コードオーナーの定め」として
   // 一覧へ載せる(1.10.1 の要求事項1。#315 突合 X-14)。テンプレートの CODEOWNERS の所有者を置き換えただけのものは載せない
@@ -196,7 +196,7 @@ export function preflight(root = ROOT) {
     if (!isTemplate) asset('codeowners', 'コードオーナーの定め', co.effective, `既存の CODEOWNERS(パス ${patterns.length} 行)。テンプレートの CODEOWNERS と置き換えるか、残して並存させるか(効くのは1か所だけ)を決める`);
   }
   if (co.owner.length) {
-    stop('codeowners-owner', co.effective, `${co.effective} に雛形の所有者 @OWNER が残っている(${co.owner.join('・')} 行目)。不正な所有者の行は黙って飛ばされ、コードオーナーが誰もいない`, '@OWNER を実在のアカウントかチームへ置き換える(人が決める)');
+    stop('codeowners-owner', co.effective, `${co.effective} に雛形の所有者 @OWNER が残っている(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられない。誤りは CODEOWNERS の画面と API に出るが、PR の失敗としては出ない`, '@OWNER を実在のアカウントかチームへ置き換える(人が決める)');
   }
 
   // --- 止める: フックの登録 ---
