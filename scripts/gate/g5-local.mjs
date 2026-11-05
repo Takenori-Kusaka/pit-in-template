@@ -62,6 +62,7 @@ run('contract', 'test-records', node('test-records.mjs'));
 run('contract', 'test-next-records', node('test-next-records.mjs'));
 run('contract', 'test-aggregate-records', node('test-aggregate-records.mjs'));
 run('contract', 'test-records-history', node('test-records-history.mjs'));
+run('contract', 'test-gate-node', node('test-gate-node.mjs'));
 run('contract', 'test-env-findings', node('test-env-findings.mjs'));
 run('contract', 'test-init-g5', node('test-init-g5.mjs'));
 

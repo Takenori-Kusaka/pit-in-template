@@ -40,6 +40,11 @@ jobs:
       configured: ${{ steps.read.outputs.configured }}
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - id: read
         run: |
           v=$(node -e "const c=require('./process.config.json');console.log(c.configured===false?'false':'true')")
@@ -54,6 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       # 契約検査は、PR では基底ブランチの構成(process.config.json)と比べる。
       # 変化点の記録を経ない構成の書き換えを検出するためである。基底ブランチは GITHUB_BASE_REF から読む
       - if: github.event_name == 'pull_request'
@@ -85,6 +95,8 @@ jobs:
       - run: node scripts/gate/test-aggregate-records.mjs
       # 記録用ブランチの履歴の走査・先頭の固定・署名の要否・置き場の規則・書き込める主体の開示(process-compass #379 / ADR-0109)
       - run: node scripts/gate/test-records-history.mjs
+      # 検査の道具を動かす Node の版の固定(process-compass #377)
+      - run: node scripts/gate/test-gate-node.mjs
       - run: node scripts/gate/test-env-findings.mjs
       # 能力依存の定数の再評価待ち(契機は performer の変化点と暦だけ。#295)
       - run: node scripts/gate/test-recalibration.mjs
@@ -161,6 +173,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - uses: ./.github/actions/setup-stack
       - name: テスト
         id: test
@@ -207,6 +224,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - uses: ./.github/actions/setup-stack
       - name: 静的解析
         run: node scripts/gate/adapter.mjs run lint
@@ -220,6 +242,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - run: node scripts/gate/spec-lint.mjs
 
   # 基準6 文脈ファイルの形式検査のうち、リポジトリ内の参照切れ(相対リンクと取り込み @path)。構成に依存しないため常に走らせる。
@@ -229,6 +256,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - run: node scripts/gate/check-context-refs.mjs
 
   # 基準5 依存関係のライセンス検査(合否条件)
@@ -243,6 +275,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - uses: ./.github/actions/setup-stack
       - name: 依存関係のライセンス
         id: lic
@@ -269,6 +306,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - uses: ./.github/actions/setup-stack
         with:
           install: 'false'
@@ -285,6 +327,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - run: git fetch origin "${{ github.base_ref }}" --depth=50 || true
       - run: node scripts/gate/dependency-diff.mjs --base "origin/${{ github.base_ref }}"
       - uses: actions/upload-artifact@v4
@@ -310,6 +357,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       # 差分は PR の基底から取り、基準値・名簿・規則・台帳・停止の申し立ての解除は既定ブランチから読む(--policy-base)。
       # スタックの上の層では基底が下の層のブランチになり、既定ブランチへ入っていない下の層の基準値で判定しないためである
       # (標準 フェーズ5「スタック型 PR」・CI/CD ゲート構成の pr-rules。process-compass #294 / ADR-0078)

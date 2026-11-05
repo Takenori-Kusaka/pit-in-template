@@ -76,6 +76,11 @@ jobs:
           persist-credentials: false
           # 差し戻し率の窓(第5章 5.4.6)を既定ブランチの履歴から数える。浅い取得では判定できないものとして止まる
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
 
       # PR の題名・本文・ブランチ名は信頼できない入力である。シェルへ展開しない。
       # 渡すのは PR の番号とコミットの識別子だけで、残りはスクリプトが API から取得する
@@ -111,6 +116,11 @@ jobs:
           persist-credentials: false
           # 差し戻し率の窓(第5章 5.4.6)を既定ブランチの履歴から数える。浅い取得では判定できないものとして止まる
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
 
       # 判定し直してからマージする。判定した時点のコミットに固定してマージする(check-delegation.mjs)
       - name: 判定し直し、該当すればマージする

@@ -44,6 +44,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
 
       # 入力は日付の形だけを受け付ける。シェルへ展開する前に形を確かめる
       - name: 期間を決める

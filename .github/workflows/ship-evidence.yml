@@ -95,6 +95,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
 
       # (a) 記録用ブランチを fetch する。ローカルの参照 refs/heads/records と refs/remotes/origin/records の両方ができる。
       # 無い場合(初回のマージより前)は続行し、集約が「写しなし」を欠落として出す
@@ -297,6 +302,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
           fetch-depth: 0
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
 
       - name: 対象の PR を取り込む
         id: pr

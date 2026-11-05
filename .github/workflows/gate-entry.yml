@@ -29,6 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - id: check
         run: node scripts/gate/check-d0.mjs
 
@@ -55,5 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
+      # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
       - id: check
         run: node scripts/gate/check-g1.mjs
