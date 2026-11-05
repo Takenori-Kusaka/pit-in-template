@@ -370,6 +370,12 @@ export function controlTouchedOf(files, thresholdGlobs = THRESHOLD_FILES) {
  * 名前の変更の元(-M)、変更の前の版のアダプタの thresholdFiles、process.config.json の閾値の鍵(ci・task・guard)の変更を含む。
  * git は (args) => 文字列 | null。parent は変更の前の版(PR では基底との分岐点、集約ではマージのコミットの第1親)
  */
+/**
+ * 承認を要する統制の設定に数える構成の鍵。閾値・除外設定(ci・task・guard)に加え、AI レビューの有効化とフォークの扱い(aiReview)。
+ * aiReview を切る・フォークを許す変更も、指示を弱める変更と同じく、先に取り込んで後の PR のレビューを変える経路になる
+ * (process-compass #369 の突合 F-9)。閾値の同時変更の検査(製品のコードと同じ PR で変えない)には aiReview を入れない
+ */
+export const CONTROL_CONFIG_KEYS = ['ci', 'task', 'guard', 'aiReview'];
 export function controlTouchedBetween(git, parent, commit) {
   const json = (t) => {
     try {
@@ -385,7 +391,7 @@ export function controlTouchedBetween(git, parent, commit) {
   const adapter = stack ? json(git(['show', `${parent}:adapters/${stack}.json`])) : null;
   const globs = [...THRESHOLD_FILES, ...(Array.isArray(adapter?.thresholdFiles) ? adapter.thresholdFiles : [])];
   const touched = controlTouchedOf(entries, globs);
-  if (entries.some((e) => e.path === 'process.config.json' || e.from === 'process.config.json') && pc && pc.configured !== false && ['ci', 'task', 'guard'].some((k) => canonicalJson(pc[k] ?? null) !== canonicalJson(hc?.[k] ?? null))) touched.push('process.config.json');
+  if (entries.some((e) => e.path === 'process.config.json' || e.from === 'process.config.json') && pc && pc.configured !== false && CONTROL_CONFIG_KEYS.some((k) => canonicalJson(pc[k] ?? null) !== canonicalJson(hc?.[k] ?? null))) touched.push('process.config.json');
   return touched;
 }
 /**

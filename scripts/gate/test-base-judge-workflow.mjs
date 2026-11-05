@@ -24,8 +24,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { baseJudgeWorkflowProblems, baseJudgeLayers, recordCopyWorkflowProblems, aiReviewWorkflowProblems } from './base-judge.mjs';
-import { CONTROL_FILES, controlTouchedOf } from './check-pr.mjs';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { baseJudgeWorkflowProblems, baseJudgeLayers, recordCopyWorkflowProblems, aiReviewWorkflowProblems, aiReviewAllowlistProblems, aiReviewCheckPlan } from './base-judge.mjs';
+import { CONTROL_FILES, CONTROL_CONFIG_KEYS, controlTouchedOf } from './check-pr.mjs';
 
 let failures = 0;
 let n = 0;
@@ -89,11 +91,58 @@ check('record-copy.yml: pull_request_target の closed で、既定ブランチ�
 // AI レビューの指示を既定ブランチの版から読む(標準 第5章 5.8.6 の要求事項7、附属書H H.4 条件3。process-compass #369)。
 // #371 の「基底から読む」型に、プロンプトの注入の条件(read だけ、書き込みは別のジョブ、題名・本文を渡さない、PR のコードを
 // checkout しない、承認・合否条件にしない)を足した定義を、違反と適合の対で確かめる
-const ar = read('.github/workflows/ai-review.yml');
-// IMPL-0333:ok
-check('ai-review.yml: 既定ブランチの定義で動き、指示を既定ブランチの .github/ai-review/ から読み、書き込みを別のジョブに分ける', aiReviewWorkflowProblems(ar).length === 0, aiReviewWorkflowProblems(ar).join(' / '));
-check('ai-review.yml: 指示の置き場(.github/ai-review/instructions.md)が既定ブランチの側にある', fs.existsSync(path.join(ROOT, '.github/ai-review/instructions.md')));
+// AI レビューを無効にした構成(/process-init が ai-review.yml を消す)では、対象外として飛ばし、飛ばした件数を出す(#369 の突合 F-1)
 check('CONTROL_FILES に AI レビューの指示の置き場(.github/ai-review/**)がある(指示を変える PR は統制の設定の変更)', CONTROL_FILES.includes('.github/ai-review/**') && controlTouchedOf([{ path: '.github/ai-review/instructions.md' }]).length === 1, JSON.stringify(CONTROL_FILES));
+check('構成の aiReview(有効化・フォークの扱い)の変更は、承認を要する統制の設定に数える(#369 の突合 F-9)', CONTROL_CONFIG_KEYS.includes('aiReview'), JSON.stringify(CONTROL_CONFIG_KEYS));
+check('対象の判定: ai-review.yml があれば検査する', aiReviewCheckPlan({ exists: true, config: { aiReview: { enabled: false } } }).plan === 'check');
+check('対象の判定: 無効の構成で ai-review.yml が無ければ対象外', aiReviewCheckPlan({ exists: false, config: { aiReview: { enabled: false } } }).plan === 'skip');
+check('対象の判定: 有効の構成で ai-review.yml が無ければ不備', aiReviewCheckPlan({ exists: false, config: { aiReview: { enabled: true } } }).plan === 'missing');
+const arPath = path.join(ROOT, '.github/workflows/ai-review.yml');
+const arPlan = aiReviewCheckPlan({ exists: fs.existsSync(arPath), config: (() => { try { return JSON.parse(read('process.config.json')); } catch { return null; } })() });
+if (arPlan.plan === 'skip') console.log(`対象外 ai-review.yml の検査(${arPlan.why})。定義の試験と変異の試験を飛ばした`);
+else check('ai-review.yml がある(構成で AI レビューが有効)', arPlan.plan === 'check', arPlan.why ?? '');
+if (arPlan.plan === 'check') {
+const arActual = read('.github/workflows/ai-review.yml').replace(/\r\n/g, '\n');
+// IMPL-0333:ok
+check('ai-review.yml: 既定ブランチの定義で動き、指示を既定ブランチの .github/ai-review/ から読み、書き込みを別のジョブに分ける', aiReviewWorkflowProblems(arActual).length === 0, aiReviewWorkflowProblems(arActual).join(' / '));
+// 変異の足場。採用者が差し込みの手順の名前・run: を書き換えた案件でも変異の試験が足場を失わないよう、差し込みの手順の名前と run: を
+// テンプレートの雛形へ戻した写しへ変異を入れる(2026-11-06 の実機の確認 probe-369 で、run: を置き換えた案件で変異の試験2件が足場を失った)
+const ar = (() => {
+  const L = arActual.split('\n');
+  const at = L.indexOf('        id: review');
+  if (at < 1) return arActual;
+  L[at - 1] = '      - name: レビューの実行(未設定)';
+  const r = L.indexOf('        run: |', at);
+  if (r < 0) return arActual;
+  let e = r + 1;
+  while (e < L.length && (/^ {10}/.test(L[e]) || (L[e].trim() === '' && /^ {10}/.test(L[e + 1] ?? '')))) e++;
+  L.splice(r + 1, e - r - 1, '          echo "::notice::AI レビューの実装は未設定です。使いたい仕組みをこのステップへ追加してください(指示: ${AI_REVIEW_INSTRUCTIONS})"');
+  return L.join('\n');
+})();
+check('変異の足場: 差し込みの手順を雛形へ戻した写しも許す形に合う', aiReviewWorkflowProblems(ar).length === 0, aiReviewWorkflowProblems(ar).join(' / '));
+{
+  const replaced = ar.replace('          echo "::notice::AI レビューの実装は未設定です。', '          node tools/review.mjs\n          echo done\n          echo "::notice::AI レビューの実装は未設定です。');
+  const L = replaced.split('\n');
+  const at = L.indexOf('        id: review');
+  L[at - 1] = '      - name: レビュー';
+  const back = (() => { const M = [...L]; M[at - 1] = '      - name: レビューの実行(未設定)'; const r = M.indexOf('        run: |', at); let e = r + 1; while (e < M.length && /^ {10}/.test(M[e])) e++; M.splice(r + 1, e - r - 1, '          echo "::notice::AI レビューの実装は未設定です。使いたい仕組みをこのステップへ追加してください(指示: ${AI_REVIEW_INSTRUCTIONS})"'); return M.join('\n'); })();
+  check('変異の足場: 差し込みの手順の名前と run: を替えた写しも、雛形へ戻せる', back === ar);
+}
+check('ai-review.yml: 指示の置き場(.github/ai-review/instructions.md)が既定ブランチの側にある', fs.existsSync(path.join(ROOT, '.github/ai-review/instructions.md')));
+{
+  // 許す形の範囲の内側の書き換え(誤検出しない側)
+  const RUN = '          echo "::notice::AI レビューの実装は未設定です。';
+  const KEY = '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt';
+  const fine = [
+    ['差し込みの run: で依存を導入して道具を動かす', ar.replace(RUN, `          npm ci\n          node tools/review.mjs "$AI_REVIEW_INSTRUCTIONS" "$AI_REVIEW_DIFF" >> "$GITHUB_STEP_SUMMARY"\n${RUN}`)],
+    ['秘密情報を1つの名前ごとに env で渡す', ar.replace(KEY, `${KEY}\n          MODEL_API_KEY: \${{ secrets.MODEL_API_KEY }}`)],
+    ['actions/setup-node を足す', ar.replace('      - name: レビューの実行(未設定)', '      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n      - name: レビューの実行(未設定)')],
+  ];
+  for (const [what, text] of fine) {
+    // IMPL-0333:ok
+    check(`ai-review.yml の許す書き換え(${what})を不備にしない`, text !== ar && aiReviewWorkflowProblems(text).length === 0, aiReviewWorkflowProblems(text).join(' / '));
+  }
+}
 {
   const notice = '      - name: 位置づけを PR へ明記する\n        env:';
   const mutants = [
@@ -103,7 +152,7 @@ check('CONTROL_FILES に AI レビューの指示の置き場(.github/ai-review/
     ['指示の置き場を PR の作業の一時ファイルへ替える', ar.replace('AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md', 'AI_REVIEW_INSTRUCTIONS: ${{ runner.temp }}/ai-review/instructions.md'), /指示の置き場が/],
     ['AI レビューのジョブに書き込みの権限を与える', ar.replace('    permissions:\n      contents: read\n      pull-requests: read\n    outputs:', '    permissions:\n      contents: read\n      pull-requests: write\n    outputs:'), /AI レビューのジョブ\(ai-review\)が書き込みの権限/],
     ['トップレベルで書き込みの権限を与える', ar.replace('permissions:\n  contents: read\n  pull-requests: read\n\njobs:', 'permissions:\n  contents: read\n  pull-requests: write\n\njobs:'), /トップレベルの permissions/],
-    ['書き込みのジョブへ AI の出力を渡す', ar.replace("    if: needs.ai-review.outputs.enabled == 'yes'", "    if: needs.ai-review.outputs.enabled == 'yes' && needs.ai-review.outputs.findings != ''"), /前のジョブの出力 findings/],
+    ['書き込みのジョブへ AI の出力を渡す', ar.replace("    if: always() && needs.ai-review.outputs.enabled == 'yes'", "    if: always() && needs.ai-review.outputs.enabled == 'yes' && needs.ai-review.outputs.findings != ''"), /前のジョブの出力 findings/],
     ['書き込みのジョブが checkout する', ar.replace('    steps:\n      - name: 位置づけを PR へ明記する', '    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.repository.default_branch }}\n          persist-credentials: false\n      - name: 位置づけを PR へ明記する'), /書き込みのジョブ ai-review-notice が checkout する/],
     ['書き込みのジョブが秘密情報を参照する', ar.replace(notice, `${notice}\n          MODEL_KEY: \${{ secrets.MODEL_API_KEY }}`), /書き込みのジョブ ai-review-notice が秘密情報/],
     ['題名を run へ式展開する', ar.replace('          echo "::notice::AI レビューの実装は未設定です。', '          echo "${{ github.event.pull_request.title }}"\n          echo "::notice::AI レビューの実装は未設定です。'), /題名・本文/],
@@ -120,6 +169,66 @@ check('CONTROL_FILES に AI レビューの指示の置き場(.github/ai-review/
     const probs = aiReviewWorkflowProblems(text);
     // IMPL-0333:ng
     check(`ai-review.yml の変異(${what})を検出する`, text !== ar && probs.some((x) => re.test(x)), `変異が入っていない、または検出しない: ${probs.join(' / ')}`);
+  }
+}
+{
+  // #369 の独立の突合 F-2・F-3・F-5 の変異。否定のリストの外の書き方を、許す形の一覧の検査(aiReviewAllowlistProblems)が検出する
+  const RUN = '          echo "::notice::AI レビューの実装は未設定です。';
+  const ins = (lines) => ar.replace(RUN, `${lines}\n${RUN}`);
+  const KEY = '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt';
+  const mutants = [
+    ['FETCH_HEAD から PR の先頭の指示を読む', ins('          git show FETCH_HEAD:.github/ai-review/instructions.md > /tmp/i.md')],
+    ['変数を経由して PR の先頭の指示を読む', ins('          F=.github/ai-review/instructions.md\n          R=refs/remotes/pr/head\n          git show "$R:$F" > /tmp/i.md')],
+    ['PR の先頭の CLAUDE.md を読む', ins('          git show refs/remotes/pr/head:CLAUDE.md > /tmp/c.md')],
+    ['指示の置き場の外へ辿る', ar.replace('AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md', 'AI_REVIEW_INSTRUCTIONS: .github/ai-review/../../../tmp/x.md')],
+    ['git -c を挟んで PR の先頭を checkout する', ins('          git -c advice.detachedHead=false checkout refs/remotes/pr/head')],
+    ['read-tree で PR の先頭を作業ツリーへ展開する', ins('          git read-tree -u --reset refs/remotes/pr/head')],
+    ['archive で PR の先頭を展開する', ins('          git archive refs/remotes/pr/head | tar -x -C /tmp/pr')],
+    ['checkout の repository: にフォークを指定する', ar.replace('          ref: ${{ github.event.repository.default_branch }}', '          repository: ${{ github.event.pull_request.head.repo.full_name }}\n          ref: ${{ github.event.repository.default_branch }}')],
+    ['PR の先頭のスクリプトを書き出して実行する', ins('          git show refs/remotes/pr/head:tools/x.mjs > /tmp/x.mjs\n          node /tmp/x.mjs')],
+    ['toJSON で PR のイベントを渡す', ar.replace(KEY, `${KEY}\n          PR_JSON: \${{ toJSON(github.event.pull_request) }}`)],
+    ['添字の書き方で題名を渡す', ar.replace(KEY, `${KEY}\n          PR_T: \${{ github.event.pull_request['title'] }}`)],
+    ['GITHUB_EVENT_PATH から本文を読む', ins('          jq -r .pull_request.body "$GITHUB_EVENT_PATH" > /tmp/b.txt')],
+    ['gh pr view で題名と本文を読む', ins('          gh pr view "$PR_NUMBER" --json title,body > /tmp/b.json')],
+    ['gh api で PR を読む', ins('          gh api repos/o/r/pulls/1 > /tmp/p.json')],
+    ['artifact で AI の出力を書き込みのジョブへ渡す', ar.replace('      - name: 位置づけを PR へ明記する', '      - uses: actions/download-artifact@v4\n        with:\n          name: findings\n      - name: 位置づけを PR へ明記する')],
+    ['artifact へ AI の出力を上げる', ar.replace('      - name: レビューの失敗を表示する', '      - uses: actions/upload-artifact@v4\n        with:\n          name: findings\n          path: /tmp/f.md\n      - name: レビューの失敗を表示する')],
+    ['toJSON(secrets) で秘密情報を一括で渡す', ar.replace(KEY, `${KEY}\n          ALL: \${{ toJSON(secrets) }}`)],
+    ['フォークからの PR でも AI の手順を動かす(既定の切り替え)', ar.replace('            if [ "$HEAD_REPO" = "$REPO" ] || [ "$forks" = "yes" ]; then', '            if true; then')],
+    ['AI の手順の条件からフォークの判定を外す', ar.replace("        if: steps.gate.outputs.run_ai == 'yes' && steps.input.outputs.instructions == 'yes'", "        if: steps.gate.outputs.enabled == 'yes' && steps.input.outputs.instructions == 'yes'")],
+    ['失敗の表示を消す(差し込みの失敗が黙って消える)', ar.replace(/ {6}- name: レビューの失敗を表示する\n[\s\S]*?(?=\n\n {2}# 位置づけ)/, '')],
+    ['3つ目のジョブを足す', ar.replace('  ai-review-notice:\n', '  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x\n\n  ai-review-notice:\n')],
+    ['差し込みの手順の env に PR の内容に依る値を足す', ar.replace(KEY, `${KEY}\n          HEAD_REF: \${{ github.head_ref }}`)],
+    ['差し込みの run: が後の手順の環境を替える', ins('          echo "X=1" >> "$GITHUB_ENV"')],
+    ['書き込みのジョブの定型の文の中でヒアドキュメントを閉じる', ar.replace('          ### AI レビューの位置づけ', "          MD\n          )\"\n          gh pr comment \"$PR_NUMBER\" --repo \"$REPO\" --body \"$(cat <<'MD'\n          ### AI レビューの位置づけ")],
+    ['ジョブ ai-review が落ちたときに定型の文を出さない(always() を外す)', ar.replace("    if: always() && needs.ai-review.outputs.enabled == 'yes'", "    if: needs.ai-review.outputs.enabled == 'yes'")],
+    ['定型の文から「承認しない」を消す', ar.replace('          - 承認(approve)は行いません\n', '')],
+    ['書き込みのジョブの env を足す', ar.replace('          PR_NUMBER: ${{ github.event.pull_request.number }}\n        run: |\n          gh pr comment', '          PR_NUMBER: ${{ github.event.pull_request.number }}\n          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}\n        run: |\n          gh pr comment')],
+  ];
+  for (const [what, text] of mutants) {
+    const probs = aiReviewAllowlistProblems(text);
+    // IMPL-0333:ng
+    check(`ai-review.yml の変異(${what})を許す形の一覧の検査が検出する`, text !== ar && probs.length > 0, `変異が入っていない、または検出しない(${text === ar ? '変異なし' : '検出なし'})`);
+  }
+}
+}
+
+// ai-review.yml が無い構成の場面(突合 F-1): 写しの上でこの試験を動かす。無効の構成なら通り、有効の構成なら落ちる
+if (process.env.PIT_IN_AI_REVIEW_SUBTEST !== '1') {
+  for (const [enabled, expectOk] of [[false, true], [true, false]]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-ai-review-'));
+    try {
+      for (const d of ['scripts', '.github', 'adapters']) if (fs.existsSync(path.join(ROOT, d))) fs.cpSync(path.join(ROOT, d), path.join(dir, d), { recursive: true });
+      const cfg = JSON.parse(read('process.config.json'));
+      cfg.aiReview = { ...(cfg.aiReview ?? {}), enabled };
+      fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(cfg, null, 2));
+      fs.rmSync(path.join(dir, '.github/workflows/ai-review.yml'));
+      const r = spawnSync(process.execPath, ['scripts/gate/test-base-judge-workflow.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, PIT_IN_AI_REVIEW_SUBTEST: '1' } });
+      const ok = expectOk ? r.status === 0 && /対象外 ai-review\.yml/.test(r.stdout) : r.status !== 0 && /NG\s+ai-review\.yml がある/.test(r.stdout);
+      check(`ai-review.yml を消した構成(aiReview.enabled = ${enabled})で、この試験が${expectOk ? '対象外として通る' : '不備として落ちる'}`, ok, `終了コード ${r.status}: ${(r.stdout + r.stderr).split('\n').filter((l) => /^NG|Error/.test(l)).slice(0, 3).join(' / ')}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 

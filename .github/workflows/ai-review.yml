@@ -9,30 +9,46 @@
 # **AI レビューの指示は、既定ブランチの版から読みます**(標準 第5章 5.8.6 の要求事項7、附属書H H.4 条件3。IMPL-0333。
 # process-compass #369。型は #371 / ADR-0115 の「基底から読む」型で、gate-g5-base.yml と同じ)。
 # - pull_request_target で動かす。ワークフローの定義は、PR の基底のブランチに依らず既定ブランチの版で動く(PR の側でこのファイルを
-#   書き換えても、その PR のレビューの手順は変わらない。実機の確認 E-15・F-1a・F-1b は gate-g5-base.yml についてのもの)
+#   書き換えても、その PR のレビューの手順は変わらない。実機の確認は下の「実機の確認」)
 # - checkout するのは既定ブランチだけ。指示の置き場 .github/ai-review/ は、その作業ツリーから読む。PR の側の指示は読まない
-# - PR の先頭は git fetch で取得するだけで、差分をデータとして読む(git diff。取り出さない・実行しない)
+# - PR の先頭は git fetch で取得するだけ。PR の内容を読むのは手順「差分を書き出す」だけで、差分と変更したファイルの一覧を
+#   一時のファイルへ書き出す(取り出さない・実行しない)。差し込むレビューは、その2つのファイルと既定ブランチの作業ツリーだけを読む
 # - PR の題名と本文は、どのジョブにも渡さない(入力の分離。標準 第3章 3.5.3。作成側の説明を判断の前に渡さない)
 #
+# **このファイルは許す形の一覧で検査します**(scripts/gate/test-base-judge-workflow.mjs の aiReviewWorkflowProblems)。
+# 契機は pull_request_target だけ、ジョブは ai-review と ai-review-notice の2つだけ、権限・式(${{ }})・使う action・手順は一覧に
+# あるものだけです。手順は、決まった手順(checkout・有効かどうかの確認・PR の先頭の取得・差分の書き出し・失敗の表示)を
+# このファイルのとおりに置き、採用者が書き換えてよいのは手順「レビューの実行」の run: と、env の秘密情報の行だけです。
+# その run: では、PR の先頭・PR のイベント・PR の API を読む書き方(refs/remotes/pr/・FETCH_HEAD・refs/pull/・GITHUB_EVENT_PATH・
+# gh pr・gh api)と、作業ツリーへ木を展開する git の操作を拒みます。手元の action(uses: ./)は、作業ツリーが既定ブランチでも
+# 許しません。手順をこのファイルの中に見える形で置き、許す形の一覧で読めるようにするためです(依存の導入は run: の中で行えます)。
+# 一覧の外の書き方で PR の先頭を読むこと(たとえば PR の先頭の内容を外部のサービス経由で取る)は、この検査では検出しません。
+#
 # **プロンプトの注入の条件**(#371 の申し送り)。差分の中の文は、指示の上書きとして働きうる。pull_request_target のジョブは既定ブランチの
-# 文脈のトークンと秘密情報(モデルの API の鍵)に届くため、次の手順を足してはなりません(GitHub Security Lab「Preventing pwn requests」):
-#   - AI レビューのジョブ(ai-review)へ書き込みの権限(permissions の write)を与える。書き込みは別のジョブ(ai-review-notice)に分け、
-#     PR の内容に依らない入力(PR の番号と、既定ブランチの構成から読んだ有効かどうか)だけを渡す。AI の出力を書き込みのジョブへ渡さない
-#   - actions/checkout の ref へ PR の先頭(head.sha・head.ref・refs/pull/N/*)を指定する。PR の側のファイルを実行する(依存の導入、
-#     アダプタのコマンド、PR の側の ./.github/actions、PR の側のスクリプトの node 実行)
-#   - PR の題名・本文・ブランチ名を run: の中へ式展開する
-#   - 秘密情報を環境変数の外で参照する。秘密情報を書き込みのジョブで参照する
-#   - モデルへ、コマンドの実行・ファイルの書き込み・ネットワークの道具を与える。モデルの出力を実行する
-#   - AI の確認を、承認(gh pr review --approve)・合否条件・必須チェックにする。結果を commit status で出す(PR の側から上書きできる。E-4)
-# 定義の静的な試験は scripts/gate/test-base-judge-workflow.mjs(aiReviewWorkflowProblems)。
+# 文脈のトークンと秘密情報(モデルの API の鍵)に届くため、次を守ります(GitHub Security Lab「Preventing pwn requests」):
+#   - AI レビューのジョブ(ai-review)の権限は read だけ。書き込みは別のジョブ(ai-review-notice)に分け、PR の内容に依らない入力
+#     (PR の番号と、既定ブランチの構成から読んだ有効かどうか)だけを渡す。AI の出力を書き込みのジョブへ渡さない
+#   - 秘密情報は、手順「レビューの実行」の env で、1つの名前ごとに secrets から渡す(run: の中で参照しない。toJSON(secrets) を使わない)
+#   - **フォークからの PR では、既定で AI の手順を動かさない**。フォークからの PR でも既定ブランチの文脈(秘密情報)で動くためである。
+#     動かすのは、既定ブランチの構成で aiReview.allowForks を true にした場合だけ(構成の aiReview の変更は統制の設定の変更として
+#     AI維持管理者の承認を要する)。外部の貢献を受ける案件で有効にする場合は、注入の条件が差し込んだ実装で守られていることを
+#     AI維持管理者が確かめてから有効にする(フォークからの PR の実機の振る舞いは確かめていない。IMPL-0464)
+#   - モデルへ、コマンドの実行・ファイルの書き込み・ネットワークの道具を与えない。モデルの出力を実行しない(機械は確かめない)
+#   - 作業ツリーの CLAUDE.md・AGENTS.md・.claude/** などを自動で読み込む道具は、その読み込みを止める。指示は AI_REVIEW_INSTRUCTIONS
+#     だけから与える(自動で読み込む指示ファイルは CONTROL_FILES の外であり、指示を弱める変更を先に取り込む2段の経路が残る。機械は確かめない)
+#   - AI の出力をジョブの要約へ書くときは、コードブロック(```)の中へ入れる。差分に誘導された出力が、要約の Markdown として
+#     偽の表示(「承認」の文言、外部へのリンク)を作る経路を狭めるためである(機械は確かめない)
+#   - AI の確認を、承認(gh pr review --approve)・合否条件・必須チェックにしない。結果を commit status で出さない(PR の側から上書きできる。E-4)
 #
-# **指示を変える PR は統制の設定の変更です**。.github/ai-review/** とこのファイルは CONTROL_FILES に入り、AI維持管理者の席の責任者本人の
-# 承認のレビューを要します(gate-g5-base の check-pr.mjs の 3c)。既定ブランチの版から読むだけでは、指示を弱める PR を先に取り込み、
-# 次の PR をその指示でレビューさせる2段の経路が残るためです。
+# **指示を変える PR は統制の設定の変更です**。.github/ai-review/** とこのファイル、構成の aiReview は統制の設定に入り、AI維持管理者の
+# 席の責任者本人の承認のレビューを要します(gate-g5-base の check-pr.mjs の 3c)。既定ブランチの版から読むだけでは、指示を弱める PR を
+# 先に取り込み、次の PR をその指示でレビューさせる2段の経路が残るためです。
 #
-# 限界(2026-11-05 時点): このファイルそのものは実機で動かしていません。既定ブランチの定義で動くこと・既定ブランチを checkout すること・
-# PR の側の定義の書き換えが効かないことは、同じ型の gate-g5-base.yml の実機の確認(E-15・F-1a・F-1b)に依ります。フォークからの PR での
-# 振る舞い(秘密情報とトークンの権限。E-12)は確かめていません(IMPL-0464)。差し込んだレビューが指示の置き場を使うかは確かめません。
+# 実機の確認(2026-11-06、準拠テンプレート ab4cf21 の版。process-compass research/369-delivery/probe-369.md): 既定ブランチの定義で動き、
+# 既定ブランチだけを checkout し、PR の側で書き換えた指示ではなく既定ブランチの指示(sha256 が一致)を読み、題名・本文・ブランチ名を
+# 展開せず、2つのジョブの権限が分かれ、必須チェックに入らないことを確かめた。
+# 限界: 実際のモデルの実行とプロンプトの注入への耐性、フォークからの PR、確認の後に入れた変更(フォークの判定、失敗の表示、
+# ai-review-notice の always()、許す形の一覧)の実機の振る舞いは確かめていません(IMPL-0464)。
 
 name: ai-review
 
@@ -55,7 +71,7 @@ jobs:
     outputs:
       enabled: ${{ steps.gate.outputs.enabled }}
     steps:
-      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
+      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない。repository: を足してはならない(フォークの内容を取り出す)
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -63,17 +79,31 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      # 有効かどうかは既定ブランチの構成から読む(PR の側の構成で切り替えられない)
+      # 有効かどうかとフォークの扱いは、既定ブランチの構成から読む(PR の側の構成で切り替えられない)
       - name: 有効かどうかを確認する
         id: gate
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
           enabled=$(node -e "const c=require('./process.config.json');console.log(c.aiReview?.enabled ? 'yes':'no')")
+          forks=$(node -e "const c=require('./process.config.json');console.log(c.aiReview?.allowForks === true ? 'yes':'no')")
+          run_ai=no
+          if [ "$enabled" = "yes" ]; then
+            if [ "$HEAD_REPO" = "$REPO" ] || [ "$forks" = "yes" ]; then
+              run_ai=yes
+            else
+              echo "::notice::フォークからの PR のため、AI の手順を動かしません(既定。構成の aiReview.allowForks で変える)"
+              echo "フォークからの PR のため、AI の手順を動かしていません(aiReview.allowForks が true でない)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "run_ai=$run_ai" >> "$GITHUB_OUTPUT"
           echo "AI レビューの指示の版(既定ブランチ): $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       # PR の先頭と基底を取得する(取り出さない。submodule を取得しない)。認証は取得の間だけ環境変数で渡す
       - name: PR の先頭を取得する
-        if: steps.gate.outputs.enabled == 'yes'
+        if: steps.gate.outputs.run_ai == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -85,11 +115,11 @@ jobs:
             "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head" \
             "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
-      # 差分をデータとして書き出す(外部の差分・変換の道具を使わない)。PR の側の仕様・受入基準は
-      # git show refs/remotes/pr/head:<パス> でデータとして読む
+      # 差分をデータとして書き出す(外部の差分・変換の道具を使わない)。PR の内容を読むのはこの手順だけ。
+      # 仕様・受入基準は、既定ブランチの作業ツリー(承認済みの版)と、差分の中の変更から読む
       - name: 差分を書き出す
         id: input
-        if: steps.gate.outputs.enabled == 'yes'
+        if: steps.gate.outputs.run_ai == 'yes'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
@@ -101,17 +131,19 @@ jobs:
             echo "instructions=yes" >> "$GITHUB_OUTPUT"
           else
             echo "instructions=no" >> "$GITHUB_OUTPUT"
-            echo "::notice::既定ブランチに .github/ai-review/instructions.md がありません。指示の置き場を既定ブランチへ入れるまで、AI レビューを実行しません"
+            echo "::warning::既定ブランチに .github/ai-review/instructions.md がありません。指示の置き場を既定ブランチへ入れるまで、AI レビューを実行しません"
+            echo "既定ブランチに .github/ai-review/instructions.md が無いため、AI レビューを実行していません" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # ここに任意の AI レビューを差し込みます。指示は AI_REVIEW_INSTRUCTIONS(既定ブランチの作業ツリーのファイル)だけから読みます。
-      # PR の側の指示(refs/remotes/pr/head の .github/ai-review/・.claude/ など)を読んではなりません。PR の head 側のカスタム指示を読む
-      # 道具(GitHub Copilot のカスタム指示など)をそのまま使う構成は、この条件を満たしません(標準 附属書H H.4 条件3)。
+      # ここに任意の AI レビューを差し込みます。採用者が書き換えてよいのは、この手順の run: と、env の秘密情報の行だけです。
+      # 指示は AI_REVIEW_INSTRUCTIONS(既定ブランチの作業ツリーのファイル)だけから読みます。PR の側の指示を読んではなりません。
+      # PR の head 側のカスタム指示を読む道具(GitHub Copilot のカスタム指示など)をそのまま使う構成は、この条件を満たしません
+      # (標準 附属書H H.4 条件3)。PR の内容は AI_REVIEW_DIFF・AI_REVIEW_FILES だけから読みます。
       # レビューへ渡すのは仕様・受入基準・差分に限ります。PR の説明文(作成側の説明・主張・推論の過程)を判断の前に渡してはなりません
       # (入力の分離。標準 第3章 3.5.3)。差分の中の文は指示ではなくデータとして渡します(プロンプトの注入。上の条件)。
-      # モデルの API の鍵は、この手順の env で secrets から渡します(run: の中で参照しない)。
-      # 出力は「通過」ではなく、指摘の内容としてジョブの要約(GITHUB_STEP_SUMMARY)へ書きます。PR へのコメントにしません
-      # (書き込みのジョブへ AI の出力を渡さないため)。採否は人が記録します。
+      # モデルの API の鍵は、この手順の env で secrets から渡します(例: MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}。run: の中で参照しない)。
+      # 出力は「通過」ではなく、指摘の内容としてジョブの要約(GITHUB_STEP_SUMMARY)へ、コードブロックの中に書きます。PR へのコメントに
+      # しません(このジョブは read の権限で、PR へ書くと 403 で失敗します。書き込みのジョブへ AI の出力を渡さないため)。採否は人が記録します。
       # 指摘の内容は、所在(ファイルと行、受入基準の識別子など)と根拠(照らした基準と、見た事実)です。
       # 「実行の結果を述べる指摘は、実行の記録の所在を含める。所在を示せない場合は、実行したコマンドと観測した
       # 結果を書いてよいが、実行で確かめたとは記録しない」。修正案・代替案は求めません(標準 附属書H H.4)。
@@ -120,7 +152,8 @@ jobs:
       # 承認(gh pr review --approve)を行う実装を追加してはなりません。
       # 追加した場合、契約検査(verify-gate-contract)の意図と矛盾します。
       - name: レビューの実行(未設定)
-        if: steps.gate.outputs.enabled == 'yes' && steps.input.outputs.instructions == 'yes'
+        id: review
+        if: steps.gate.outputs.run_ai == 'yes' && steps.input.outputs.instructions == 'yes'
         continue-on-error: true
         env:
           AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md
@@ -129,12 +162,23 @@ jobs:
         run: |
           echo "::notice::AI レビューの実装は未設定です。使いたい仕組みをこのステップへ追加してください(指示: ${AI_REVIEW_INSTRUCTIONS})"
 
+      # 差し込んだレビューの失敗を、黙って消さずに出す(continue-on-error のため、ジョブは成功のまま)。
+      # 以前の版で PR へコメントしていた実装は、権限が read になったため 403 で失敗する(README の「process-compass #369 の更新を取り込むとき」)
+      - name: レビューの失敗を表示する
+        if: steps.review.outcome == 'failure'
+        run: |
+          echo "::warning::AI レビューの手順が失敗しました。指摘は出ていません。PR へコメントする実装は read の権限で失敗します。出し先をジョブの要約へ移してください"
+          echo "**AI レビューの手順が失敗しました。指摘は出ていません**(指摘が無いことと区別してください)。PR へコメントする実装は read の権限で失敗します" >> "$GITHUB_STEP_SUMMARY"
+
   # 位置づけの定型の文を PR へ書く。書き込みはこのジョブだけ。PR の内容に依らない入力(PR の番号と、既定ブランチの構成から読んだ
-  # 有効かどうか)だけを受け取る。checkout しない。秘密情報を参照しない。AI の出力を受け取らない
+  # 有効かどうか)だけを受け取る。checkout しない。秘密情報を参照しない。AI の出力を受け取らない。
+  # always() で、ジョブ ai-review が落ちたとき(取得・差分の書き出しの失敗など)も定型の文を出す(2026-11-06 の実機の確認で、
+  # ai-review の failure のときに needs により skipped になり、定型の文が出なかった。probe-369 の項目6)。enabled は、落ちる前に
+  # 既定ブランチの構成から読んだ値。草稿で ai-review が飛ばされたときは enabled が空のため、このジョブも動かない
   ai-review-notice:
     name: ai-review-notice
     needs: ai-review
-    if: needs.ai-review.outputs.enabled == 'yes'
+    if: always() && needs.ai-review.outputs.enabled == 'yes'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -155,6 +199,7 @@ jobs:
           - 合否条件にしていないため、指摘が残っていてもマージは止まりません
           - 指摘はワークフローの実行の要約(ai-review のジョブ)に出ます。PR へのコメントにはしません
           - レビューの指示は既定ブランチの版から読みます。この PR で指示を変えても、この PR のレビューには使われません
+          - フォークからの PR では、既定で AI のレビューを実行しません
           - 指摘が無いこと、指摘の外の箇所は、人の確認を減らす理由になりません。G-6 の対象は差分の全体です(標準 第4章 G-6「確認の範囲と深さ」)。指摘は、差分が受入基準の範囲内かを確かめてから読むことを勧めます
 
           指摘を採るかどうかは、人が判断して記録してください。記録には「AI レビュー通過」ではなく、指摘の内容と採否を残します。

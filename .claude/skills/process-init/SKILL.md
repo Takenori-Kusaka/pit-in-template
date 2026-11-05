@@ -174,7 +174,7 @@ node scripts/init/generate-profile.mjs --answers /tmp/answers.json --stack node 
 | 条件 | 操作 |
 | --- | --- |
 | `gates.g7.state === 'omitted'` | `.github/workflows/ship-evidence.yml` を削除してよいか確認する |
-| `aiReview.enabled === false` | `.github/workflows/ai-review.yml` を削除する |
+| `aiReview.enabled === false` | `.github/workflows/ai-review.yml` を削除する。指示の置き場 `.github/ai-review/` は残す(有効へ戻したときに既定ブランチの指示として使う。定義の試験は、ファイルの無い無効の構成を対象外として飛ばす) |
 | `ruleset` が `null` でない | ブランチ保護(`.github/rulesets/<ruleset>.json`)の適用コマンドを提示する(実行はしない) |
 | `ruleset` が `null` | 必須チェック(gate-g5)だけのルールセット(`.github/rulesets/checks-only.json`)の適用コマンドを提示する(実行はしない)。私有リポジトリでルールセットを使えないプランでは、事後の検出(出荷判定の証跡の集約)だけになることを伝える |
 | 常に | スカッシュのコミットのメッセージを「PR の題名と本文」にする設定のコマンドを提示する(実行はしない)。PR の様式の末尾の段落が、コミットのトレーラとして残る |

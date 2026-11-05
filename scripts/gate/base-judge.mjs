@@ -164,6 +164,10 @@ export const AI_REVIEW_INSTRUCTIONS_DIR = '.github/ai-review/';
  * 読むのは定義の文字列であり、GitHub 上の実際の振る舞いは確かめない
  */
 export function aiReviewWorkflowProblems(text) {
+  return [...new Set([...aiReviewAllowlistProblems(text), ...aiReviewDenylistProblems(text)])];
+}
+/** 否定のリストの検査(どの禁止に当たったかの説明。正は aiReviewAllowlistProblems) */
+function aiReviewDenylistProblems(text) {
   const body = stripComments(text);
   const p = [];
   const tr = triggersOf(body);
@@ -186,8 +190,9 @@ export function aiReviewWorkflowProblems(text) {
     if (/gh pr review|--approve|event=APPROVE|"event"\s*:\s*"APPROVE"/.test(j)) p.push(`ジョブ ${id} が承認・レビューを出す(AI の確認を承認にしない)`);
     if (/\/statuses\/|gh api[^\n]*statuses/.test(j) || perms.some((x) => x.scope === 'statuses')) p.push(`ジョブ ${id} が commit status を出す(PR の側から上書きできる)`);
     if (/uses:\s*\.\//.test(j)) p.push(`ジョブ ${id} が手元の action(uses: ./)を使う`);
-    if (/adapter\.mjs|npm (ci|install)|yarn|pnpm|pip install|setup-stack/.test(j)) p.push(`ジョブ ${id} が依存の導入・アダプタのコマンドを実行する(PR の側のファイルを実行しうる)`);
+    // 依存の導入(npm ci など)は拒まない。作業ツリーは既定ブランチであり、PR のコードの実行にならない(#369 の突合 F-2 の誤検出)
     for (const l of j.split('\n')) {
+      if (/^\s*repository:/.test(l)) p.push(`ジョブ ${id} の checkout が repository: を指定している(フォークの内容を取り出しうる。${l.trim()})`);
       if (/^\s*ref:/.test(l) && /head|refs\/pull|merge_commit_sha|github\.sha/.test(l)) p.push(`ジョブ ${id} の ref に PR の先頭・マージのコミットを指定している(${l.trim()})`);
       if (/refs\/pull\//.test(l) && !/fetch|refs\/remotes\/pr\/head/.test(l)) p.push(`ジョブ ${id} が PR の参照を取得(fetch)以外で使っている(${l.trim()})`);
       if (/git\s+(checkout|switch|worktree|reset|restore)\b/.test(l)) p.push(`ジョブ ${id} に作業ツリーを替える git の操作がある(${l.trim()})`);
@@ -229,6 +234,159 @@ export function aiReviewWorkflowProblems(text) {
     if (!new RegExp(`AI_REVIEW_INSTRUCTIONS:\\s*\\.?\\/?${dir}`).test(s)) p.push(`指示の置き場が ${AI_REVIEW_INSTRUCTIONS_DIR} の既定ブランチの作業ツリーでない`);
     if (!/continue-on-error:\s*true/.test(s)) p.push('AI レビューの手順が continue-on-error でない(AI の確認を合否条件にしない)');
   }
+  return p;
+}
+// ↑ 否定のリストの検査(禁止の列挙)。#369 の独立の突合 F-2 で、列挙の外の書き方(FETCH_HEAD、変数を経由した参照、checkout の
+// repository:、toJSON、GITHUB_EVENT_PATH、artifact など)を見逃した。下の許す形の一覧の検査(aiReviewAllowlistProblems)を正とし、
+// aiReviewWorkflowProblems はその結果と合わせて返す(否定のリストの文言は、どの禁止に当たったかの説明として残す)
+
+/** 行の末尾の空白と空行を除く(字下げは残す。字下げを替えて YAML の構造を変える書き方を同じ形と読まないため) */
+const normBlock = (s) => String(s).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()).join('\n');
+
+/**
+ * ai-review.yml の決まった部分(process-compass #369 の突合 F-2)。採用者が書き換えてよいのは、手順「レビューの実行」の run: と、
+ * その env の秘密情報の行(1つの名前ごとに secrets から)だけ。ほかはこの形と一致しなければならない。
+ * 値は stripComments の後の本文(コメント行を除き、字下げを残す)
+ */
+const AI_REVIEW_FIXED = {
+  checkout: "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.repository.default_branch }}\n          persist-credentials: false\n          fetch-depth: 0\n          submodules: false",
+  gate: "      - name: 有効かどうかを確認する\n        id: gate\n        env:\n          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}\n          REPO: ${{ github.repository }}\n        run: |\n          enabled=$(node -e \"const c=require('./process.config.json');console.log(c.aiReview?.enabled ? 'yes':'no')\")\n          forks=$(node -e \"const c=require('./process.config.json');console.log(c.aiReview?.allowForks === true ? 'yes':'no')\")\n          run_ai=no\n          if [ \"$enabled\" = \"yes\" ]; then\n            if [ \"$HEAD_REPO\" = \"$REPO\" ] || [ \"$forks\" = \"yes\" ]; then\n              run_ai=yes\n            else\n              echo \"::notice::フォークからの PR のため、AI の手順を動かしません(既定。構成の aiReview.allowForks で変える)\"\n              echo \"フォークからの PR のため、AI の手順を動かしていません(aiReview.allowForks が true でない)\" >> \"$GITHUB_STEP_SUMMARY\"\n            fi\n          fi\n          echo \"enabled=$enabled\" >> \"$GITHUB_OUTPUT\"\n          echo \"run_ai=$run_ai\" >> \"$GITHUB_OUTPUT\"\n          echo \"AI レビューの指示の版(既定ブランチ): $(git rev-parse HEAD)\" >> \"$GITHUB_STEP_SUMMARY\"",
+  fetch: "      - name: PR の先頭を取得する\n        if: steps.gate.outputs.run_ai == 'yes'\n        env:\n          GH_TOKEN: ${{ github.token }}\n          PR_NUMBER: ${{ github.event.pull_request.number }}\n          BASE_REF: ${{ github.base_ref }}\n        run: |\n          set -euo pipefail\n          auth=\"AUTHORIZATION: basic $(printf 'x-access-token:%s' \"$GH_TOKEN\" | base64 -w0)\"\n          git -c \"http.https://github.com/.extraheader=$auth\" fetch --no-tags --no-recurse-submodules origin \\\n            \"+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head\" \\\n            \"+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}\"",
+  input: "      - name: 差分を書き出す\n        id: input\n        if: steps.gate.outputs.run_ai == 'yes'\n        env:\n          BASE_REF: ${{ github.base_ref }}\n        run: |\n          set -euo pipefail\n          mkdir -p \"$RUNNER_TEMP/ai-review\"\n          git diff --no-ext-diff --no-textconv \"origin/${BASE_REF}...refs/remotes/pr/head\" > \"$RUNNER_TEMP/ai-review/diff.patch\"\n          git diff --no-ext-diff --no-textconv --name-status \"origin/${BASE_REF}...refs/remotes/pr/head\" > \"$RUNNER_TEMP/ai-review/files.txt\"\n          if [ -f .github/ai-review/instructions.md ]; then\n            echo \"instructions=yes\" >> \"$GITHUB_OUTPUT\"\n          else\n            echo \"instructions=no\" >> \"$GITHUB_OUTPUT\"\n            echo \"::warning::既定ブランチに .github/ai-review/instructions.md がありません。指示の置き場を既定ブランチへ入れるまで、AI レビューを実行しません\"\n            echo \"既定ブランチに .github/ai-review/instructions.md が無いため、AI レビューを実行していません\" >> \"$GITHUB_STEP_SUMMARY\"\n          fi",
+  failure: "      - name: レビューの失敗を表示する\n        if: steps.review.outcome == 'failure'\n        run: |\n          echo \"::warning::AI レビューの手順が失敗しました。指摘は出ていません。PR へコメントする実装は read の権限で失敗します。出し先をジョブの要約へ移してください\"\n          echo \"**AI レビューの手順が失敗しました。指摘は出ていません**(指摘が無いことと区別してください)。PR へコメントする実装は read の権限で失敗します\" >> \"$GITHUB_STEP_SUMMARY\"",
+  head: "    name: ai-review\n    if: '!github.event.pull_request.draft'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: read\n    outputs:\n      enabled: ${{ steps.gate.outputs.enabled }}",
+  noticeHead: "    name: ai-review-notice\n    needs: ai-review\n    if: always() && needs.ai-review.outputs.enabled == 'yes'\n    runs-on: ubuntu-latest\n    permissions:\n      pull-requests: write",
+  top: "name: ai-review\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, ready_for_review]\npermissions:\n  contents: read\n  pull-requests: read",
+  reviewHead: [
+    '        id: review',
+    "        if: steps.gate.outputs.run_ai == 'yes' && steps.input.outputs.instructions == 'yes'",
+    '        continue-on-error: true',
+    '        env:',
+    '          AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md',
+    '          AI_REVIEW_DIFF: ${{ runner.temp }}/ai-review/diff.patch',
+    '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt',
+  ],
+  noticeEnv: ['        env:', '          GH_TOKEN: ${{ github.token }}', '          REPO: ${{ github.repository }}', '          PR_NUMBER: ${{ github.event.pull_request.number }}'],
+  noticeRunFirst: '          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(cat <<\'MD\'',
+};
+/** 式(${{ }})として許すもの。secrets.<名前> は手順「レビューの実行」の env の行でだけ許す */
+const AI_REVIEW_EXPRESSIONS = new Set([
+  'steps.gate.outputs.enabled', 'github.event.repository.default_branch', 'github.event.pull_request.head.repo.full_name', 'github.repository',
+  'github.token', 'github.event.pull_request.number', 'github.base_ref', 'runner.temp',
+]);
+/** 手順「レビューの実行」の run: で拒む書き方(PR の先頭・PR のイベント・PR の API を読む、作業ツリーへ木を展開する、後の手順の環境を替える) */
+const AI_REVIEW_RUN_FORBIDDEN = [
+  [/refs\/remotes\/pr\b|refs\/pull\/|FETCH_HEAD|\bpr\/head\b/, 'PR の先頭の参照を読む'],
+  [/GITHUB_EVENT_PATH|GITHUB_EVENT\b/, 'PR のイベント(題名・本文を含む)を読む'],
+  [/\bgh\s+(pr|api|issue|run|search|repo|release|workflow|cache|secret|variable)\b/, 'gh で PR・リポジトリの API を呼ぶ(題名・本文の読み出しや書き込み)'],
+  [/api\.github\.com|\/repos\/[^\s]*\/pulls/, 'GitHub の API を直接呼ぶ'],
+  [/\bgit\s+(-c\s+\S+\s+)*(checkout|switch|worktree|reset|restore|read-tree|checkout-index|archive|stash|apply|am|merge|rebase|cherry-pick|show|cat-file|fetch|pull|clone|update-index|unpack-objects)\b/, '作業ツリーへ木を展開する・PR の内容を取り出す git の操作'],
+  [/GITHUB_ENV|GITHUB_PATH/, '後の手順の環境を替える'],
+  [/--approve|gh\s+pr\s+review/, '承認を出す'],
+];
+const ALLOWED_SETUP = /^ {6}- uses: actions\/setup-(node|python|go)@v\d+$/;
+const ALLOWED_SETUP_WITH = /^ {10}(node|python|go)-version: [\w.'"-]+$/;
+
+/**
+ * ai-review.yml の許す形の一覧の検査(空なら適合。process-compass #369 の突合 F-2)。契機・トップの権限・ジョブの集合と各ジョブの
+ * 見出し・決まった手順はこのファイルの形と一致すること。採用者が置ける手順は、actions/setup-* と、手順「レビューの実行」の run: と
+ * 秘密情報の env の行だけ。式は一覧にあるものだけ。読むのは定義の文字列であり、GitHub 上の実際の振る舞いは確かめない
+ */
+export function aiReviewAllowlistProblems(text) {
+  const body = stripComments(text);
+  const p = [];
+  const [topPart, ...rest] = body.split(/^jobs:[ \t]*$/m);
+  if (!rest.length) return ['jobs: が無い'];
+  if (normBlock(topPart) !== AI_REVIEW_FIXED.top) p.push('契機・名前・トップの権限が許す形と違う(契機は pull_request_target だけ、トップの権限は contents・pull-requests の read だけ)');
+  const after = rest.join('jobs:').split('\n').slice(1);
+  if (after.some((l) => /^\S/.test(l))) p.push('jobs: の後にトップレベルの鍵がある');
+  // 式の一覧
+  const lines = body.split('\n');
+  lines.forEach((l, i) => {
+    for (const m of l.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+      const e = m[1].trim();
+      if (AI_REVIEW_EXPRESSIONS.has(e)) continue;
+      if (/^secrets\.[A-Za-z0-9_]+$/.test(e) && /^ {10}[A-Z][A-Z0-9_]*: \$\{\{ secrets\.[A-Za-z0-9_]+ \}\}$/.test(l)) continue;
+      p.push(`許していない式 \${{ ${e} }}(${i + 1} 行。題名・本文・PR の先頭・秘密情報の一括の受け渡しを含む)`);
+    }
+    if (/\$\{\{/.test(l.replace(/\$\{\{[\s\S]*?\}\}/g, ''))) p.push(`閉じていない式(${i + 1} 行)`);
+  });
+  const jobs = jobsOf(body);
+  const ids = Object.keys(jobs);
+  if (ids.length !== 2 || !ids.includes('ai-review') || !ids.includes('ai-review-notice')) p.push(`ジョブは ai-review と ai-review-notice の2つだけ(実際: ${ids.join(', ') || 'なし'})`);
+  // AI レビューのジョブ
+  const rj = jobs['ai-review'];
+  if (rj !== undefined) {
+    const [h, ...st] = rj.split(/^ {4}steps:[ \t]*$/m);
+    if (normBlock(h) !== AI_REVIEW_FIXED.head) p.push('ジョブ ai-review の見出し(名前・条件・権限・出力)が許す形と違う(権限は contents・pull-requests の read だけ、出力は enabled だけ)');
+    if (st.length !== 1) p.push('ジョブ ai-review の steps: が1つでない');
+    const steps = stepsOf(st.join('')).map(normBlock);
+    const kinds = steps.map((s) => {
+      for (const k of ['checkout', 'gate', 'fetch', 'input', 'failure']) if (s === AI_REVIEW_FIXED[k]) return k;
+      const sl = s.split('\n');
+      if (ALLOWED_SETUP.test(sl[0]) && (sl.length === 1 || (sl[1] === '        with:' && sl.slice(2).every((x) => ALLOWED_SETUP_WITH.test(x))))) return 'setup';
+      if (/^ {6}- name: /.test(sl[0]) && sl[1] === AI_REVIEW_FIXED.reviewHead[0]) return 'review';
+      return 'other';
+    });
+    steps.forEach((s, i) => {
+      if (kinds[i] === 'other') p.push(`許していない手順(${s.split('\n')[0].trim()}。決まった手順は書き換えない。足せるのは actions/setup-* だけ)`);
+    });
+    const order = kinds.filter((k) => k !== 'setup' && k !== 'other');
+    if (order.join(',') !== 'checkout,gate,fetch,input,review,failure') p.push(`決まった手順の並びが違う(期待: checkout・有効かどうか・PR の先頭の取得・差分の書き出し・レビューの実行・失敗の表示。実際: ${order.join('・')})`);
+    if (kinds[0] !== 'checkout') p.push('最初の手順が既定ブランチの checkout でない');
+    for (const s of steps.filter((_, i) => kinds[i] === 'review')) p.push(...reviewStepProblems(s));
+  }
+  // 書き込みのジョブ
+  const nj = jobs['ai-review-notice'];
+  if (nj !== undefined) {
+    const [h, ...st] = nj.split(/^ {4}steps:[ \t]*$/m);
+    if (normBlock(h) !== AI_REVIEW_FIXED.noticeHead) p.push('ジョブ ai-review-notice の見出しが許す形と違う(needs は ai-review、条件は enabled だけ、権限は pull-requests: write だけ)');
+    const steps = stepsOf(st.join('')).map(normBlock);
+    if (steps.length !== 1) p.push(`ジョブ ai-review-notice の手順は1つだけ(実際: ${steps.length})`);
+    for (const s of steps) {
+      const sl = s.split('\n');
+      const envAt = sl.indexOf('        env:');
+      const ok = /^ {6}- name: \S/.test(sl[0]) && envAt === 1 && AI_REVIEW_FIXED.noticeEnv.every((x, k) => sl[envAt + k] === x)
+        && sl[envAt + 4] === '        run: |' && sl[envAt + 5] === AI_REVIEW_FIXED.noticeRunFirst && sl.at(-2) === '          MD' && sl.at(-1) === '          )"';
+      if (!ok) p.push('ジョブ ai-review-notice の手順が許す形と違う(env は GH_TOKEN・REPO・PR_NUMBER だけ、run: は定型の文を引用つきのヒアドキュメントで gh pr comment へ渡すだけ)');
+      const bodyLines = sl.slice(envAt + 6, -2);
+      // 定型の文の要の行(位置づけ・承認しない・合否条件にしない)。stripComments は見出しの行(# で始まる)を除くため、箇条で確かめる
+      for (const must of ['独立レビュー(G-6)の代替にはなりません', '承認(approve)は行いません', '合否条件にしていない']) {
+        if (!bodyLines.some((x) => x.includes(must))) p.push(`ジョブ ai-review-notice の定型の文に「${must}」が無い`);
+      }
+      if (bodyLines.some((x) => x.trim() === 'MD')) p.push('ジョブ ai-review-notice の定型の文の中でヒアドキュメントを閉じている');
+    }
+  }
+  return p;
+}
+/**
+ * ai-review.yml の検査の対象か(#369 の突合 F-1)。/process-init は AI レビューを無効にした構成で ai-review.yml を消す。
+ * 無効の構成でファイルが無ければ対象外(飛ばしたことを出す)、有効の構成でファイルが無ければ不備
+ */
+export function aiReviewCheckPlan({ exists, config }) {
+  if (exists) return { plan: 'check' };
+  if (config?.aiReview?.enabled === false) return { plan: 'skip', why: '構成で AI レビューを無効にし、ai-review.yml が無い' };
+  return { plan: 'missing', why: '構成で AI レビューが有効なのに .github/workflows/ai-review.yml が無い' };
+}
+
+/** 手順「レビューの実行」の不備 */
+function reviewStepProblems(s) {
+  const p = [];
+  const sl = s.split('\n');
+  const head = AI_REVIEW_FIXED.reviewHead;
+  if (!head.every((x, k) => sl[1 + k] === x)) p.push('手順「レビューの実行」の id・条件・continue-on-error・指示の置き場・差分の受け渡しが許す形と違う');
+  let i = 1 + head.length;
+  while (i < sl.length && /^ {10}[A-Z][A-Z0-9_]*: \$\{\{ secrets\.[A-Za-z0-9_]+ \}\}$/.test(sl[i])) i++;
+  if (/^ {8}timeout-minutes: \d+$/.test(sl[i] ?? '')) i++;
+  if (sl[i] !== '        run: |') p.push(`手順「レビューの実行」に、許していない鍵・env の行がある(${(sl[i] ?? '(なし)').trim()}。env に足せるのは、1つの名前ごとに secrets から渡す行だけ)`);
+  const run = sl.slice(i + 1);
+  if (run.some((x) => !/^ {10}/.test(x))) p.push('手順「レビューの実行」の run: の後に、別の鍵がある');
+  const runText = run.join('\n');
+  for (const [re, why] of AI_REVIEW_RUN_FORBIDDEN) {
+    const hit = run.find((x) => re.test(x));
+    if (hit) p.push(`手順「レビューの実行」の run: が${why}(${hit.trim()})`);
+  }
+  if (/secrets\./.test(runText)) p.push('手順「レビューの実行」の run: が秘密情報を参照する(env で渡す)');
   return p;
 }
 
