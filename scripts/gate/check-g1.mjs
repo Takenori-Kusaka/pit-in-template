@@ -14,6 +14,7 @@ import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './cov
 import { briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
+import { sraApprovalProblems } from './cl-judgment.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -184,6 +185,20 @@ const generalEmpty = lines
   .filter((l) => /^\|/.test(l) && !/^[|:-]+$/.test(l) && /\|\s*(TBD|未定|\?\?\?)\s*\|/i.test(l));
 if (generalEmpty.length) {
   problems.push(`企画書本文に未記入の欄が ${generalEmpty.length} 件あります(TBD / 未定 / ???)`);
+}
+
+// テンプレ9(安全リスクアセスメント表)の承認の欄(標準 第6章、第2章 2.8 の手順3b。process-compass #373 突合 X-8 / IMPL-0453)。
+// 表を置いた案件で、承認者が作成者と別の名簿の人で AI の名義でないことを確かめる。表の要否(第6章の4条件)は人が判定する。
+// G-1 を通過済みの案件は遡って失敗させず注意にする
+{
+  const sra = path.join(ROOT, 'docs/safety-risk-assessment.md');
+  if (fs.existsSync(sra)) {
+    const g1Passed = readGateRecords().some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+    for (const p of sraApprovalProblems(config, fs.readFileSync(sra, 'utf8'))) {
+      if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません)`);
+      else problems.push(`${p}(承認済みの安全リスクアセスメント表が G-1 の前提条件です。標準 第2章 2.8)`);
+    }
+  }
 }
 
 for (const p of problems) fail(p);

@@ -28,7 +28,11 @@ jobs:
     name: d0-check
     runs-on: ubuntu-latest
     steps:
+      # 安全重要度の判定の記録の判定者を、記録を入れたコミットの時点の決定者と照らすため、履歴をすべて取得する。
+      # 浅い取得では照らせず、check-d0 が欠落として失敗させる(process-compass #373 突合 X-4)
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
       # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
       - uses: actions/setup-node@v4

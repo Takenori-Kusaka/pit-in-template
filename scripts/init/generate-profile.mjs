@@ -5463,7 +5463,7 @@ if (isMain) {
     // 判断記録(ADR)と機能仕様(F-NNN)が実在する場合に限って受け付ける(標準 第8章 軸E「設計によって区分を下げる」。#373 / IMPL-0451)。
     // 中身(設計が帰結を下げたか、ADR の採らなかった選択肢、必須制約の妥当性)は確かめない
     if (report.criticalityLowered) {
-      for (const p of reductionProblems(config, { to: report.criticalityLowered.to, root: ROOT })) {
+      for (const p of reductionProblems(config, { to: report.criticalityLowered.to, from: report.criticalityLowered.from, root: ROOT })) {
         refused.push(`安全重要度を下げる変更(${report.criticalityLowered.from} → ${report.criticalityLowered.to})の引き下げの根拠: ${p}`);
       }
     }

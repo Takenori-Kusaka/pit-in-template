@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "727f23c2488f52e307c06451a52188e9f02154e7",
+    "commit": "5ad650620d4d06ed190273ea29043aaf12bdd268",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -436,7 +436,9 @@
       "when": {
         "q-criticality": [
           "cl0",
-          "cl1"
+          "cl1",
+          "cl2",
+          "cl3"
         ]
       },
       "adjustments": [
@@ -465,16 +467,6 @@
         ]
       },
       "adjustments": [
-        {
-          "target": {
-            "type": "gate",
-            "id": "g-plan-approval"
-          },
-          "action": "set",
-          "param": "safetyRiskAssessment",
-          "value": "required",
-          "note": "安全リスクアセスメント(第6章 テンプレ9)を企画承認の前提条件にする"
-        },
         {
           "target": {
             "type": "gate",
@@ -1228,8 +1220,8 @@
     {
       "id": "c-safety-assessment-not-omittable",
       "name": "安全リスクアセスメントは省略しない",
-      "description": "安全重要度CL2以上で、安全リスクアセスメント(テンプレ9)と安全適合性の検証記録を省略しない",
-      "rationale": "人員・期日の制約は、危害の深刻度を下げない。省略するなら安全重要度の判定自体を見直す",
+      "description": "第6章の適用条件に当たる案件で安全リスクアセスメント(テンプレ9)を省略しない。安全重要度CL2以上で安全適合性の検証記録を省略しない",
+      "rationale": "人員・期日の制約は、危害の深刻度を下げない。テンプレ9 の要否は第6章の4条件で決まり、安全重要度に依らない(ADR-0113 決定3)",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/deliverable-templates/"
     },
     {

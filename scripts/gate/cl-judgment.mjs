@@ -135,42 +135,87 @@ function g1PassedIn(gateRecords) {
  */
 export const CL_RECORD_REQUIRED_SINCE = '2026-11-05';
 
-/** G-1 を、判定の記録を求める前(CL_RECORD_REQUIRED_SINCE より前の判定日時)に通過したか */
-function g1PassedBeforeRule(gateRecords) {
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** YYYY-MM-DD だけの日付。ほかの書き方は null(判定者・確認者が直せる記録の欠陥として扱う。突合 X-2・X-13) */
+export function dateOnly(v) {
+  const s = clean(v).normalize('NFKC');
+  return DATE_ONLY.test(s) ? s : null;
+}
+/** ISO の日時(コミットの %cI)の日付の部分 */
+const dayOfIso = (iso) => String(iso ?? '').slice(0, 10);
+
+/**
+ * G-1 を、判定の記録を求める前に通過したか。判定記録の自己申告の判定日時に加えて、記録を入れたコミットの時刻(addedAt)も
+ * 境界より前であることを要件にする(議長の裁定 X-3。ADR-0109 の検出の原則)。コミットの時刻を導けない記録は数えない
+ */
+function g1PassedBeforeRule(gateRecords, since) {
   return (gateRecords ?? []).some((r) => {
     if (!/^G-1(?!\d)/.test(r.gate ?? '') || r.result !== '通過') return false;
     const d = String(r.judgedAt ?? '').normalize('NFKC').match(/(\d{4})-(\d{2})-(\d{2})/);
-    return Boolean(d) && `${d[1]}-${d[2]}-${d[3]}` < CL_RECORD_REQUIRED_SINCE;
+    const added = dayOfIso(r.addedAt);
+    return Boolean(d) && `${d[1]}-${d[2]}-${d[3]}` < since && /^\d{4}-\d{2}-\d{2}$/.test(added) && added < since;
   });
 }
 
+function gitIn(root, args) {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** 構成の決定者(D-0 表1「体制と運用形態」の決定者の席の責任者)。席が空なら null */
+function deciderOf(cfg) {
+  const seat = (cfg?.seats ?? []).find((s) => s.role === structureDeciderSeat(cfg));
+  return seat?.accountable ? resolveSigner(cfg, seat.accountable) : null;
+}
+
 /**
- * 判定日の時点の D-0 表1「体制と運用形態」の決定者(構成の履歴から導く。議長の裁定 J-12、ADR-0111 決定6 と同じ原則)。
- * 判定日の終わりまでに process.config.json を最後に変えたコミットの構成を読む。導けなければ null(理由つき)
+ * 判定の記録が作られた時点(議長の裁定 J-12・X-2・X-5)。自己申告の判定日ではなく、基底ブランチの履歴から導く。
+ * D-0 の節16 の「判定者」「判定日」の行を最後に変えたコミット(git blame)を記録の時点とし、そのコミットの構成
+ * (process.config.json)の決定者と照らす。同じ日の交代も、コミットの順で決まる。
+ *   - 行がまだコミットされていない: 記録は今つくられている。現在の構成で照らす(kind: 'working')
+ *   - 浅い取得: 履歴が欠けて照合できない。記録の欠落として扱う(kind: 'shallow'。議長の裁定 X-4)
+ *   - リポジトリが無い・D-0 を読めない: 導けない(kind: 'unknown'。注意)
  */
-export function deciderAt(root, date) {
-  const d = String(date ?? '').normalize('NFKC').match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (!d) return { person: null, why: `判定日(${date ?? '未記入'})を日付として読めない` };
-  const git = (args) => {
-    try {
-      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    } catch {
-      return null;
-    }
-  };
-  const rev = git(['log', '-1', '--format=%H', `--until=${d[1]}-${d[2]}-${d[3]} 23:59:59`, '--', 'process.config.json']);
-  if (!rev) return { person: null, why: `判定日 ${d[0]} までに構成(process.config.json)を記録したコミットが無い` };
-  const text = git(['show', `${rev}:process.config.json`]);
+export function recordPoint(root, rowTexts) {
+  if (!root) return { kind: 'unknown', why: '構成の履歴を読む場所が無い' };
+  if (gitIn(root, ['rev-parse', '--is-inside-work-tree']) !== 'true') return { kind: 'unknown', why: 'git のリポジトリではない' };
+  if (gitIn(root, ['rev-parse', '--is-shallow-repository']) === 'true') {
+    return { kind: 'shallow', why: '浅い取得(shallow clone)のため、記録を入れたコミットと、その時点の構成を確かめられない。履歴をすべて取得する(actions/checkout の fetch-depth: 0)' };
+  }
+  const blame = gitIn(root, ['blame', '--porcelain', '--', 'docs/D-0-governance.md']);
+  if (blame === null) return { kind: 'working', why: null };
+  // porcelain の出力: 行ごとに「<sha> <元の行> <行> [<数>]」の見出し、続く属性、タブで始まる本文
+  const shas = [];
+  let cur = null;
+  for (const l of blame.split('\n')) {
+    const h = l.match(/^([0-9a-f]{40}) \d+ \d+/);
+    if (h) cur = h[1];
+    else if (l.startsWith('\t') && rowTexts.some((t) => clean(l.slice(1)) === clean(t))) shas.push(cur);
+  }
+  if (!shas.length || shas.some((s) => /^0+$/.test(s))) return { kind: 'working', why: null };
+  // 複数の行が別のコミットなら、後のコミット(子孫)を記録の時点にする
+  let sha = shas[0];
+  for (const s of shas.slice(1)) if (s !== sha && gitIn(root, ['merge-base', '--is-ancestor', sha, s]) !== null) sha = s;
+  const at = gitIn(root, ['show', '-s', '--format=%cI', sha]);
+  const cfgText = gitIn(root, ['show', `${sha}:process.config.json`]);
   let cfg = null;
   try {
-    cfg = JSON.parse(text);
+    cfg = cfgText ? JSON.parse(cfgText) : null;
   } catch {
-    return { person: null, why: `判定日の時点の構成(${rev.slice(0, 8)})を読めない` };
+    cfg = null;
   }
-  const seat = (cfg.seats ?? []).find((s) => s.role === structureDeciderSeat(cfg));
-  const person = seat?.accountable ? resolveSigner(cfg, seat.accountable) : null;
-  if (!person) return { person: null, why: `判定日の時点の構成(${rev.slice(0, 8)})に決定者の席の責任者が無い` };
-  return { person, config: cfg, rev, why: null };
+  return { kind: 'commit', sha, at, config: cfg };
+}
+
+/** G-1 の判定記録を入れたコミットの時刻(基底ブランチの docs/gates/。最初に足したコミット) */
+function addedAtOf(root, file) {
+  const out = gitIn(root, ['log', '--diff-filter=A', '--format=%cI', '--', file]);
+  if (!out) return null;
+  const lines = out.split('\n').filter(Boolean);
+  return lines.at(-1) ?? null;
 }
 
 /**
@@ -183,7 +228,7 @@ export function deciderAt(root, date) {
  *   g1Passed / legacy(G-1 を通過済みで記録に不備がある旧い構成。遡って止めない)
  *   shipBlocking: 確認の欠落を記載の欠落に数えるか(CL1 以上・規制業、または F.2 の Q1 が「はい」で段3 が欠ける)
  */
-export function clJudgmentState(config, { text = null, gateRecords = [], root = null } = {}) {
+export function clJudgmentState(config, { text = null, gateRecords = [], root = null, since = CL_RECORD_REQUIRED_SINCE } = {}) {
   const parsed = text === null ? { present: false, values: {}, missingRows: Object.keys(CL_FIELDS) } : parseClRecord(text);
   const v = parsed.values;
   const answer = config?.answers?.['q-criticality'] ?? null;
@@ -219,39 +264,49 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
   const f2q1 = parsed.present && isFilledValue(v.f2) ? f2Q1Of(v.f2) : null;
   if (parsed.present && isFilledValue(v.f2) && f2q1 === null) recordProblems.push(`安全重要度の判定の記録の「附属書F F.2 の回答」を、Q1 の答え(はい / いいえ)で始めてください(${v.f2.slice(0, 40)})`);
 
-  // 判定者: D-0 表1「体制と運用形態」の決定者の席の責任者。AI の名義・名簿に無い記名を受け付けない
+  // 判定日は YYYY-MM-DD に限る(読めない書き方は判定者が直せる欠陥。突合 X-2)
+  const judgedAt = parsed.present && isFilledValue(v.judgedAt) ? dateOnly(v.judgedAt) : null;
+  if (parsed.present && isFilledValue(v.judgedAt) && !judgedAt) recordProblems.push(`安全重要度の判定の記録の「判定日」(${clean(v.judgedAt)})を YYYY-MM-DD の形で書いてください`);
+
+  // 判定者: 記録が作られた時点の D-0 表1「体制と運用形態」の決定者(議長の裁定 J-12・X-2・X-5・X-9、ADR-0111 決定6 と同じ原則)。
+  // 記録の時点は、自己申告の判定日ではなく、節16 の判定者・判定日の行を入れたコミットから導く。決定者の交代の前に正しく
+  // 作られた記録は効力を保つ(現在の名簿に居なくてよい)。時点で決定者でなかった人の記名と、時点で決定者の席が空の記名は拒否する。
+  // 浅い取得は欠落にする。履歴そのものを読めない場合に限り注意にする
   let judgePerson = null;
+  let point = null;
   if (parsed.present && isFilledValue(v.judge)) {
     judgePerson = resolveSigner(config, v.judge);
-    const deciderSeat = (config?.seats ?? []).find((s) => s.role === structureDeciderSeat(config));
-    const decider = deciderSeat?.accountable ? resolveSigner(config, deciderSeat.accountable) : null;
-    // 判定者の記名は、記録が作られた時点(判定日)の D-0 表1「体制と運用形態」の決定者と照らす(議長の裁定 J-12、ADR-0111 決定6 と同じ原則)。
-    // 現在の決定者と一致すれば足りる。一致しなければ、判定日の時点の構成から決定者を導く。決定者の交代の前に正しく作られた記録は
-    // 効力を保つ(現在の名簿に居なくてよい)。記録の時点で決定者でなかった人の記名は拒否する。時点を導けない場合に限り注意にする
-    let historic = null;
-    if (decider && judgePerson && decider.id === judgePerson.id) historic = null;
-    else if (decider) {
-      const at = root ? deciderAt(root, v.judgedAt) : { person: null, why: '構成の履歴を読む場所が無い' };
-      if (at.person) {
-        const same = resolveSigner(at.config, v.judge);
-        if (same && same.id === at.person.id) historic = at;
-        else {
-          recordProblems.push(
-            `安全重要度の判定の判定者(${v.judge})は、記録の時点(判定日 ${v.judgedAt}。構成 ${at.rev.slice(0, 8)})の D-0 表1「体制と運用形態」の決定者(${at.person.name})ではありません。` +
-              '判定者は、記録を作る時点の決定者です(第8章 軸E)'
-          );
-        }
+    const rows = String(text ?? '').split(/\r?\n/).filter((l) => /^\|\s*(判定者|判定日)\s*\|/.test(l));
+    point = recordPoint(root, rows);
+    let pointConfig = null;
+    if (point.kind === 'working') pointConfig = config;
+    else if (point.kind === 'commit') pointConfig = point.config;
+    if (point.kind === 'shallow') recordProblems.push(`安全重要度の判定の判定者を、記録の時点の決定者と照らせません: ${point.why}`);
+    else if (point.kind === 'unknown') {
+      const decider = deciderOf(config);
+      if (!decider || !judgePerson || decider.id !== judgePerson.id) {
+        notes.push(`安全重要度の判定の判定者(${v.judge})を、記録の時点の決定者と照らしていません(${point.why})。判定者は記録を作る時点の D-0 表1「体制と運用形態」の決定者です(第8章 軸E)`);
+      }
+    } else {
+      const decider = deciderOf(pointConfig);
+      const where = point.kind === 'commit' ? `記録を入れたコミット ${point.sha.slice(0, 8)}(${point.at})の時点` : '記録の時点(未コミット。現在の構成)';
+      if (!decider) {
+        // 初期化の直後(席が全部空)は、席の責任者の任免が先に人の判断待ちに出る。記録の側の不備としては出す(突合 X-9)
+        recordProblems.push(`安全重要度の判定の判定者(${v.judge})を照らす決定者がいません(${where}に D-0 表1「体制と運用形態」の決定者の席が空、または構成が無い)。席を埋めてから記名します`);
       } else {
-        notes.push(
-          `安全重要度の判定の判定者(${v.judge})が、現在の${structureDeciderLabel(config)}(${decider.name})ではありません。記録の時点の決定者を構成の履歴から導けないため、照らしていません(${at.why})。` +
-            '判定者は記録を作る時点の D-0 表1「体制と運用形態」の決定者です(第8章 軸E)'
-        );
+        const same = resolveSigner(pointConfig, v.judge);
+        if (!same || same.id !== decider.id) {
+          recordProblems.push(`安全重要度の判定の判定者(${v.judge})は、${where}の D-0 表1「体制と運用形態」の決定者(${decider.name})ではありません。判定者は、記録を作る時点の決定者です(第8章 軸E)`);
+        }
+        if (!judgePerson && same) judgePerson = same;
+      }
+      // 判定日は、記録を入れたコミットの日付より後にならない(遡らせるのは構わないが、記録の時点はコミットで決まる)
+      if (point.kind === 'commit' && judgedAt && judgedAt > dayOfIso(point.at)) {
+        recordProblems.push(`安全重要度の判定の記録の「判定日」(${judgedAt})が、記録を入れたコミットの日付(${dayOfIso(point.at)})より後です`);
       }
     }
-    // 名簿が未記入の間(初期化の直後)は名簿と照合しない。記録の時点の決定者と照らせた記名は、現在の名簿と照らし直さない
-    const problems = historic ? nameProblems(historic.config, v.judge) : nameProblems(config, v.judge);
-    for (const p of problems) recordProblems.push(`安全重要度の判定の判定者の記名を受け付けられません: ${p}`);
-    if (historic && !judgePerson) judgePerson = resolveSigner(historic.config, v.judge);
+    // 記録の時点の構成の名簿で照らす(交代・離任の後も、時点で正しい記名を照らし直さない)。名簿が未記入の間は照合しない
+    for (const p of nameProblems(pointConfig ?? config, v.judge)) recordProblems.push(`安全重要度の判定の判定者の記名を受け付けられません: ${p}`);
   }
 
   // 確認者: 判定者と別の自然人。AI の名義と判定者本人の記名は、記録の誤りとして止める。名簿に無い記名は確認に数えない(未達)
@@ -274,6 +329,8 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
     if (recorded === null) unmet.push('確認者の段が未記入');
     if (!isFilledValue(v.stepBasis)) unmet.push('段の根拠が未記入');
     if (!isFilledValue(v.confirmedAt)) unmet.push('確認日が未記入');
+    else if (!dateOnly(v.confirmedAt)) unmet.push(`確認日(${clean(v.confirmedAt)})を YYYY-MM-DD の形で読めない`);
+    else if (judgedAt && dateOnly(v.confirmedAt) < judgedAt) unmet.push(`確認日(${dateOnly(v.confirmedAt)})が判定日(${judgedAt})より前(判定より前の確認は、その判定の確認に数えない)`);
     effective = recorded;
     // 2名の体制で、体制の内の相手を確認者に数えてよいのは段1 に限る(第8章 軸E)
     if (confirmer && confirmer.external !== true && config?.answers?.['q-team-size'] === 'size-1-2' && effective !== null && effective > 1) effective = 1;
@@ -286,9 +343,12 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
   const ok = unmet.length === 0 && recordProblems.length === 0;
   // 出荷で欠落に数えるかは、記録の区分と構成の回答の高いほうで決める(構成が区分を上げた後も、CL1 以上の未達は出荷しない)
   const effCls = [cls, answer].filter((c) => CL_ORDER.includes(c)).sort((a, b) => CL_ORDER.indexOf(b) - CL_ORDER.indexOf(a))[0] ?? null;
-  // 旧い構成(判定の記録を求める前に G-1 を通過した構成)だけが、判定の記録の不備を未達として表示する。それ以外は、判定の記録と
-  // 判定者の記名の不備を出荷の証跡の集約で欠落に数える(議長の裁定 J-10。G-1 の後に記録を消す・書き換える経路を塞ぐ)
-  const legacy = g1PassedBeforeRule(gateRecords) && recordProblems.length > 0;
+  // 旧い構成(判定の記録を求める前に G-1 を通過した構成。判定日時とそれを入れたコミットの時刻の両方で決める)のうち、
+  // CL0 で規制業でなく、F.2 の Q1 が「いいえ」と読める案件だけが、判定の記録の不備を未達として表示する。それ以外は、判定の記録と
+  // 判定者の記名の不備を出荷の証跡の集約で欠落に数える(議長の裁定 J-10・X-1。記録を消して出荷の止めを外す経路を塞ぐ)。
+  // 記録が無く F.2 の回答を読めない旧い構成は、緩い扱いに当たらない
+  const legacyConfig = g1PassedBeforeRule(gateRecords, since);
+  const legacy = legacyConfig && recordProblems.length > 0 && effCls === 'cl0' && !regulated && f2q1 === false;
   const recordGap = recordProblems.length > 0 && !legacy;
   const confirmGap = parsed.present && recordProblems.length === 0 && !ok && (f2q1 === true || ['cl1', 'cl2', 'cl3'].includes(effCls) || regulated);
   const shipBlocking = recordGap || confirmGap;
@@ -305,7 +365,9 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
     notes,
     confirmation: { ok, required: req.step, reasons: req.reasons, recorded, effective, unmet },
     g1Passed,
+    legacyConfig,
     legacy,
+    point,
     shipBlocking,
     shipBlockingReason: !shipBlocking
       ? null
@@ -332,8 +394,14 @@ export function gateRecordsForCl({ root = ROOT, branch = undefined } = {}) {
       b = null;
     }
   }
-  const forms = (b?.available ? b.gates : []).map((g) => recordFromForm(g.text, g.file, 'branch'));
-  return [...base, ...forms];
+  // 記録を入れたコミットの時刻(旧い構成の境界を自己申告の判定日時だけで決めない。議長の裁定 X-3)
+  const g1 = (r) => /^G-1(?!\d)/.test(r.gate ?? '');
+  const baseWithTime = base.map((r) => (g1(r) ? { ...r, addedAt: addedAtOf(root, r.file) } : r));
+  const forms = (b?.available ? b.gates : []).map((g) => {
+    const r = recordFromForm(g.text, g.file, 'branch');
+    return g1(r) ? { ...r, addedAt: g.added ? gitIn(root, ['show', '-s', '--format=%cI', g.added]) : null } : r;
+  });
+  return [...baseWithTime, ...forms];
 }
 
 /** 案件の D-0 を読んで状態を出す(root は一時の置き場の試験のため) */
@@ -358,6 +426,39 @@ export function clJudgmentText(st, { external = false } = {}) {
   return `${base}。**未達**(${c.unmet.join('。')})${st.shipBlocking ? `。**${st.shipBlockingReason}**` : ''}`;
 }
 
+/**
+ * テンプレ9(docs/safety-risk-assessment.md)の「承認」の欄(標準 第6章「AIエージェント安全リスクアセスメント」。#373 突合 X-8 / IMPL-0453)。
+ * 承認者が記入され、作成者と別の名簿の人で、AI の名義でなく、承認日が YYYY-MM-DD で、承認した版が書かれていること。
+ * 表の要否(第6章の4条件)と、危険源の洗い出しの中身は確かめない(人が判定する)
+ */
+export function sraApprovalProblems(config, text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const start = lines.findIndex((l) => /^##\s+承認\s*$/.test(l));
+  if (start < 0) return ['安全リスクアセスメント表に「承認」の欄がありません(templates/09-safety-risk-assessment.md の様式から写す)'];
+  const rows = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i]) || /^```/.test(lines[i])) break;
+    if (!/^\|/.test(lines[i]) || /^\|[\s|:-]+\|?\s*$/.test(lines[i])) continue;
+    rows.push(lines[i].split('|').slice(1, -1).map((c) => clean(c)));
+  }
+  const data = rows.filter((r) => r[0] !== '作成者');
+  const row = data.find((r) => r.some((c) => isFilledValue(c)));
+  if (!row) return ['安全リスクアセスメント表の「承認」の欄が未記入です(作成者・承認者・承認日・承認した版)'];
+  const [creator, approver, approvedAt, version] = row;
+  const out = [];
+  if (!isFilledValue(creator)) out.push('安全リスクアセスメント表の「承認」の作成者が未記入です');
+  if (!isFilledValue(approver)) out.push('安全リスクアセスメント表の承認者が未記入です(作成者と別の自然人)');
+  else {
+    for (const p of nameProblems(config, approver)) out.push(`安全リスクアセスメント表の承認者の記名を受け付けられません: ${p}`);
+    const a = resolveSigner(config, approver);
+    const c = isFilledValue(creator) ? resolveSigner(config, creator) : null;
+    if ((a && c && a.id === c.id) || clean(approver) === clean(creator)) out.push(`安全リスクアセスメント表の承認者(${approver})が作成者と同じ人です。承認者は作成者と別の自然人です`);
+  }
+  if (!dateOnly(approvedAt)) out.push(`安全リスクアセスメント表の承認日(${approvedAt || '未記入'})を YYYY-MM-DD の形で書いてください`);
+  if (!isFilledValue(version)) out.push('安全リスクアセスメント表の承認した版が未記入です');
+  return out;
+}
+
 /** ADR の識別子(ADR-NNNN)が context/decisions/ に実在するか */
 function adrExists(root, id) {
   const n = Number(id);
@@ -376,7 +477,16 @@ function specExists(root, id) {
  * 下げた後の区分が記録の区分と一致し、「区分の引き下げの根拠」の欄に記入があり、欄が引く ADR と機能仕様が実在すること。
  * 設計が実際に帰結を下げたか、ADR が採らなかった選択肢を含むか、必須制約が設計を表すかは確かめない
  */
-export function reductionProblems(config, { to, root = ROOT } = {}) {
+function establishedAt(root, from) {
+  if (!from) return true;
+  const committed = gitIn(root, ['show', 'HEAD:docs/D-0-governance.md']);
+  if (committed === null) return false;
+  const p = parseClRecord(committed);
+  if (!p.present) return false;
+  return classOf(p.values.cls) === from && isFilledValue(p.values.judge);
+}
+
+export function reductionProblems(config, { to, from = null, root = ROOT } = {}) {
   const file = path.join(root, 'docs/D-0-governance.md');
   if (!fs.existsSync(file)) return ['D-0(docs/D-0-governance.md)が無く、安全重要度の判定の記録の「区分の引き下げの根拠」を読めない'];
   const parsed = parseClRecord(fs.readFileSync(file, 'utf8'));
@@ -385,6 +495,10 @@ export function reductionProblems(config, { to, root = ROOT } = {}) {
   const v = parsed.values;
   const cls = classOf(v.cls);
   if (cls !== to) out.push(`安全重要度の判定の記録の「判定した区分」(${v.cls ?? '欄なし'})が、下げた後の区分(${CL_LABEL[to] ?? to})ではない。記録を先に改める`);
+  // 仮の判定(初期化の回答)から最初の判定の記録へ移るときは、引き下げの根拠を求めない。最初の記録はすでに「1つ上の区分に
+  // 当たらない理由」を持つ。求めるのは、判定の記録が成立した後(基底ブランチの D-0 に、下げる前の区分の判定の記録と判定者の
+  // 記名がある)の引き下げに限る(議長の裁定 X-10)
+  if (!establishedAt(root, from)) return out;
   const r = clean(v.reduction);
   if (!isFilledValue(r) || /^該当なし/.test(r)) {
     out.push('安全重要度の判定の記録の「区分の引き下げの根拠」が未記入(低減の前後の区分、根拠となる設計、判断記録 ADR-NNNN、必須制約を書いた機能仕様 F-NNN を書く)');
