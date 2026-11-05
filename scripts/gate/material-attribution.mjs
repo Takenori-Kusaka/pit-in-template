@@ -363,19 +363,14 @@ export function lastCommitOfFile(git, rev, file) {
 }
 
 /**
- * 統制の設定の変更の承認を出荷の証跡の集約が欠落に数える境(ADR-0115 の採用日)。この日より前にマージした変更は、照らした結果を
- * 保証の開示の項目1 に出し、欠落に数えない(規定の前に取り込んだ変更に、承認のレビューを後から付ける手段が無いため)
- */
-export const CONTROL_APPROVAL_REQUIRED_SINCE = '2026-11-05';
-
-/**
  * 統制の設定を変える変更の AI維持管理者の承認(標準 第4章 G-5「統制の設定の変更の承認」、第1章 1.4 の効力を持つ記録。
  * process-compass #371 / ADR-0115)。AI維持管理者の席の責任者本人のアカウントによる、PR の先頭のコミットへの承認のレビューで成立する。
  * 本文の記名は数えない。書き手の条件は (A) と同じ(reviewerCheck: 名簿の数値の識別子、AI・bot の名義でない、PR の作成者でない、
  * 書き手以外の編集なし、対象のコミットが先頭と一致)。書き手ごとの最後の状態が承認であるものに限る。
  * 席の責任者が AI の担い手と名義を共有する場合は、本人の承認に加えて帰属の確認を要する(IMPL-0427 と同じ)。
  * 席の責任者が PR の作成者である場合(本人は自分の PR を承認できない)は、席の責任者以外で名義を共有していない名簿の人の承認
- * (帰属の確認)を要する。その人が名簿にいない体制(1名の体制)では、自己申告として受け付け、selfAttested を付けて返す
+ * (帰属の確認)を要する。その人が名簿にいない体制(1名の体制)では、席の責任者本人のアカウントの PR の先頭へのレビュー(意見のレビュー
+ * を含む)を数値の識別子で照らして自己申告として受け付け、selfAttested を付けて返す。本文の記名・作成の事実だけでは受け付けない(突合 C-6)
  * (ADR-0106 決定3 と同じ扱い。ADR-0115 / 議長の裁定 AR-3)。PR の時点の判定(check-pr.mjs の 3c)と出荷の証跡の集約が同じ関数を使う。
  * 返り値: { backed, how: 'review' | 'author' | 'self-attested', selfAttested?, sharedAccount?, maintainer, review?, note, why: [] }
  */
@@ -427,13 +422,30 @@ export function controlApprovalBacking(config, { reviews = null, author = null, 
     if (conf.length) return { backed: true, how: 'author', ...(sh ? { sharedAccount: true } : {}), maintainer: maintainer.name, note: `PR の作成者が AI維持管理者 ${maintainer.name} 本人。帰属の確認 @${conf[0].login}(${conf[0].person.name})の承認`, why: [] };
     const alone = !(Array.isArray(config.people) ? config.people : []).some((p) => p && p.id !== maintainer.id && p.appointer !== true);
     if (alone || (sh && !sh.confirmable)) {
+      // 自己申告は、席の責任者本人のアカウントの操作(PR の先頭へのレビュー。本人は承認を出せないため、意見のレビューを含む)を
+      // 名簿の数値の識別子で照らして成立させる。本文の記名・作成の事実だけでは数えない(process-compass #371 突合 C-6、実機の確認 F-5)
+      const own = list.find((r) => {
+        if (!r.login || r.isBot || r.state === 'DISMISSED' || !r.state) return false;
+        if (r.commitId !== head || !head) return false;
+        if (r.editedBy === undefined || (r.editedBy && accountKey(r.editedBy) !== accountKey(r.login))) return false;
+        return identifyAccount(config, refOf({ login: r.login, id: r.accountId })).person?.id === maintainer.id;
+      });
+      if (!own) {
+        why.push(
+          `PR の作成者が AI維持管理者 ${maintainer.name} 本人で、名簿に${sh ? '名義を共有していない' : '席の責任者以外の'}人がいない(1名の体制)。自己申告は、本人のアカウントのレビュー(意見のレビューでよい)を PR の先頭${head ? `(${String(head).slice(0, 7)})` : ''}に出して成立させる。本文の記名だけでは数えない`
+        );
+        return { backed: false, maintainer: maintainer.name, why };
+      }
       return {
         backed: true,
         how: 'self-attested',
         selfAttested: true,
         ...(sh ? { sharedAccount: true } : {}),
         maintainer: maintainer.name,
-        note: `PR の作成者が AI維持管理者 ${maintainer.name} 本人で、名簿に${sh ? '名義を共有していない' : '席の責任者以外の'}人がいない。作成者は自分の PR を承認できず、別の者の承認を得られないため、承認が自己申告である`,
+        review: { id: own.id, login: own.login, submittedAt: own.submittedAt, commitId: own.commitId, state: own.state },
+        note:
+          `PR の作成者が AI維持管理者 ${maintainer.name} 本人で、名簿に${sh ? '名義を共有していない' : '席の責任者以外の'}人がいない。作成者は自分の PR を承認できず、別の者の承認を得られないため、` +
+          `本人のアカウントのレビュー(@${own.login}、${own.state})を自己申告として受け付けた${sh ? '。名義を AI の担い手と共有するため、この操作が AI のものでありうる' : ''}`,
         why: [],
       };
     }

@@ -26,6 +26,11 @@
 # 限界(2026-11-05 時点): フォークからの PR での GITHUB_TOKEN の権限(E-12)、別のアカウントの承認の振る舞い(E-7 の本題・E-13)は
 # 実機で確かめていません。判定のジョブが起動しない間(pending)と、起動の契機の漏れの扱いも確かめていません。
 # 個人所有・無償のプランで使えたのは、この形(pull_request_target の check run を必須にする)だけです(E-8〜E-10)。
+# 承認の取り下げ(DISMISSED)・変更要求は、このワークフローを起動しません(pull_request_review は PR の側の定義で動くため使わない)。
+# 承認の後に成功した gate-g5-base は、次の push・本文の編集まで成功のまま残ります。出荷の証跡の集約は最後の状態で照らすため、
+# 事後(G-7)には検出されます(突合 C-8)。
+# 1名の体制の自己申告は、席の責任者本人のアカウントのレビュー(意見のレビューを含む。PR の先頭へのもの)を名簿の数値の識別子で
+# 照らして成立させます。本文の記名だけでは通りません(突合 C-6)。
 # このファイルは強制層です。変更は AI維持管理者の承認を要し、その承認もこのワークフローの既定ブランチの版が照らします。
 
 name: gate-g5-base
@@ -53,6 +58,17 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           submodules: false
+      # 判定に使った版を出す(突合 C-7)。定義はイベントの時点の既定ブランチのコミット(GITHUB_SHA)から、スクリプトは checkout した
+      # 既定ブランチの先端から読まれる。承認の後の再実行で既定ブランチが進んでいれば、2つは違う版になる(どちらも既定ブランチであり、
+      # PR の側からは替えられない)。違えばその旨を出す
+      - name: 判定のコードの版
+        run: |
+          used=$(git rev-parse HEAD)
+          echo "::notice::判定のコードの版: 定義 ${GITHUB_SHA} / スクリプト ${used}"
+          if [ "$used" != "$GITHUB_SHA" ]; then
+            echo "::warning::定義(${GITHUB_SHA})とスクリプト(${used})が既定ブランチの違う版です(再実行の間に既定ブランチが進んだ)。新しい版で判定し直すには PR の本文を編集するか push する"
+          fi
+          echo "判定のコードの版: 定義 ${GITHUB_SHA} / スクリプト ${used}" >> "$GITHUB_STEP_SUMMARY"
       # 検査の道具を動かす Node の版(既定ブランチの .github/gate-node-version)
       - uses: actions/setup-node@v4
         with:

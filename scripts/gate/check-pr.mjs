@@ -47,7 +47,8 @@
 //   3c. 統制の設定の変更の承認(標準 第4章 G-5。process-compass #371 / ADR-0115。--require-control-approval のときだけ): 統制の設定
 //      (CONTROL_FILES と閾値・除外設定。追加・削除を含む)を変える PR は、AI維持管理者の席の責任者本人のアカウント(名簿の数値の識別子)
 //      による、PR の先頭のコミットへの承認のレビューを要する。本文の記名は承認に数えない。席の責任者が作成者なら、席の責任者以外の
-//      名簿の人の承認を要し、その人が名簿にいない体制(1名の体制)では自己申告として受け付けて出す。照らす関数は material-attribution.mjs
+//      名簿の人の承認を要し、その人が名簿にいない体制(1名の体制)では、本人のアカウントの PR の先頭へのレビュー(意見のレビューでよい)を
+//      照らして自己申告として受け付けて出す(本文の記名だけでは通さない)。照らす関数は material-attribution.mjs
 //      の controlApprovalBacking(出荷の証跡の集約と同じ)
 //   4. 既存のテストの変更: 基底にあるテスト(.claude/guard.json の testPatterns)の削除・名前の変更・行の削除を
 //      一覧にする。独立レビュー(G-6)の材料であり、合否には使わない。--comment で PR へ出す
@@ -359,6 +360,30 @@ export function controlTouchedOf(files, thresholdGlobs = THRESHOLD_FILES) {
     for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f)) out.add(f);
   }
   return [...out];
+}
+
+/**
+ * 2つの版の間で統制の設定を変えたファイル(PR の時点の判定 3c と出荷の証跡の集約が同じ範囲で数える。process-compass #371 突合 C-4)。
+ * 名前の変更の元(-M)、変更の前の版のアダプタの thresholdFiles、process.config.json の閾値の鍵(ci・task・guard)の変更を含む。
+ * git は (args) => 文字列 | null。parent は変更の前の版(PR では基底との分岐点、集約ではマージのコミットの第1親)
+ */
+export function controlTouchedBetween(git, parent, commit) {
+  const json = (t) => {
+    try {
+      return t ? JSON.parse(t) : null;
+    } catch {
+      return null;
+    }
+  };
+  const entries = parseNumstatZ(git(['diff', '--numstat', '-z', '-M', parent, commit]));
+  const pc = json(git(['show', `${parent}:process.config.json`]));
+  const hc = json(git(['show', `${commit}:process.config.json`]));
+  const stack = pc?.adapters?.stack ?? hc?.adapters?.stack ?? null;
+  const adapter = stack ? json(git(['show', `${parent}:adapters/${stack}.json`])) : null;
+  const globs = [...THRESHOLD_FILES, ...(Array.isArray(adapter?.thresholdFiles) ? adapter.thresholdFiles : [])];
+  const touched = controlTouchedOf(entries, globs);
+  if (entries.some((e) => e.path === 'process.config.json' || e.from === 'process.config.json') && pc && pc.configured !== false && ['ci', 'task', 'guard'].some((k) => canonicalJson(pc[k] ?? null) !== canonicalJson(hc?.[k] ?? null))) touched.push('process.config.json');
+  return touched;
 }
 /**
  * 「統制の設定の陰性の確認」の節。通した違反の場面・結果(止まった / 止まらなかった / 外した)・確かめた者。節が無ければ present: false。
@@ -1458,8 +1483,8 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   // (名簿の数値の識別子)による、PR の先頭のコミットへの承認のレビューを要する。本文の記名(「受け入れた者」)は承認に数えない。
   // 向きに依らず掛ける(機械は緩める向きか強める向きかを判定しない)。依存の更新の bot の PR も対象にする(ワークフローの action の更新を含む)
   if (requireControlApproval) {
-    const touched = controlTouchedOf(all, thresholdGlobs);
-    if (all.some((e) => e.path === 'process.config.json') && thresholdChanges.some((x) => x.startsWith('process.config.json'))) touched.push('process.config.json');
+    // 範囲は出荷の証跡の集約と同じ関数で決める(突合 C-4)
+    const touched = controlTouchedBetween(git, mergeBase, HEADREF);
     result.controlApproval = { changed: touched, backing: null };
     if (touched.length && policyConfigured) {
       const b = controlApprovalBacking(policyConfig, { reviews: pr.reviews ?? null, author: { login: pr.author ?? '', id: pr.authorId ?? null }, head: prHead });

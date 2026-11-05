@@ -61,6 +61,7 @@ import { fileURLToPath } from 'node:url';
 import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
+import { baseJudgeWorkflowProblems } from './base-judge.mjs';
 
 export const TRIAL_DIR = 'docs/adoption-trial';
 export const CRITERIA_FILE = `${TRIAL_DIR}/criteria.md`;
@@ -1728,20 +1729,22 @@ function envCheck() {
       const w = ghJson(['api', `repos/${repo}/contents/.github/workflows/gate-g5-base.yml?ref=${encodeURIComponent(branch)}`]);
       if (w.value && typeof w.value === 'object' && typeof w.value.content === 'string') {
         const text = Buffer.from(w.value.content, 'base64').toString('utf8');
-        workflow = { present: true, prTarget: /^\s*pull_request_target\s*:/m.test(text), blobSha: typeof w.value.sha === 'string' ? w.value.sha : null };
+        // 定義の中身も、静的な試験と同じ観点で読む(PR の先頭の checkout・承認の照合の引数・権限ほか。突合 C-9)
+        workflow = { present: true, prTarget: /^\s*pull_request_target\s*:/m.test(text), problems: baseJudgeWorkflowProblems(text), blobSha: typeof w.value.sha === 'string' ? w.value.sha : null };
       } else if (w.http === 404) workflow = { present: false };
       else workflow = { unreadable: w.why ?? 'ワークフローを読めない' };
     }
     const evidence = { rulesetIds: rsRead?.rulesetIds ?? [], workflowBlob: workflow?.blobSha ?? null, fetchedAt };
     if (!repo) baseJudge = { status: 'unconfirmed', detail: '対象のリポジトリを特定できない', evidence };
     else if (required === null || workflow?.unreadable) baseJudge = { status: 'unconfirmed', detail: `${required === null ? '既定ブランチに効いている規則を読めない' : ''}${required === null && workflow?.unreadable ? '。' : ''}${workflow?.unreadable ? `gate-g5-base.yml を読めない(${workflow.unreadable})` : ''}`, evidence };
-    else if (!workflow.present || !workflow.prTarget || !required) {
+    else if (!workflow.present || !workflow.prTarget || workflow.problems.length || !required) {
       const bad = [];
       if (!workflow.present) bad.push(`既定ブランチ ${branch} に .github/workflows/gate-g5-base.yml が無い`);
       else if (!workflow.prTarget) bad.push('gate-g5-base.yml が pull_request_target で起動しない(既定ブランチの定義で動かない)');
+      else if (workflow.problems.length) bad.push(`gate-g5-base.yml の定義に不備がある(${workflow.problems.slice(0, 3).join('。')})`);
       if (!required) bad.push('必須チェックに gate-g5-base が無い(ルールセットの雛形を適用し直す)');
       baseJudge = { status: 'unsatisfied', detail: `基底から読む判定が効いていない: ${bad.join('。')}。統制の設定を変える変更の承認を、PR の側から外せない形で求めていない(未達)`, evidence };
-    } else baseJudge = { status: 'satisfied', detail: `既定ブランチ ${branch} の gate-g5-base.yml(pull_request_target)の結果 gate-g5-base が必須チェックとして効いている。設定の値であり、止まるべきものが止まることは陰性の確認で確かめる`, evidence };
+    } else baseJudge = { status: 'satisfied', detail: `既定ブランチ ${branch} の gate-g5-base.yml(pull_request_target)の結果 gate-g5-base が必須チェックとして効いている。定義の中身は静的な試験と同じ観点で読んだ(実際の振る舞いは確かめていない)。設定の値であり、止まるべきものが止まることは陰性の確認で確かめる`, evidence };
   }
 
   // 1c. 効いている CODEOWNERS の所在と codeowners/errors(#315 R-4)。GitHub は .github/・根・docs/ の順に最初の1つだけを使う

@@ -10,16 +10,19 @@
 //   - analyzePr の --head(基底から読む判定): 作業ツリー(既定ブランチ)ではなく、取得した PR の先頭をデータとして読む
 //   - analyzePr の --require-control-approval(3c): 統制の設定を変える PR は承認のレビューが無ければ落ち、本文の記名だけでも落ちる。
 //     CONTROL_FILES に足した .github/actions/**・.github/gate-node-version と、新しいワークフローの追加も統制の設定の変更に数える
-//   - 出荷の証跡の集約(controlApprovalSummary): 承認の無い変更を欠落に数え、自己申告と規定の採用日より前の変更は欠落に数えない
+//   - 1名の体制の自己申告は、本人のアカウントのレビュー(意見のレビューでよい)を数値の識別子で照らして成立させる。本文の記名だけでは通さない
+//   - PR の時点の判定と出荷の集約が、統制の設定を変えたファイルを同じ範囲で数える(controlTouchedBetween)
+//   - 出荷の証跡の集約(controlApprovalSummary): 承認の無い変更を欠落に数え、自己申告と規定を取り込む前の変更は欠落に数えない。
+//     規定を取り込む前かは、基底ブランチの第1親の連鎖で gate-g5-base.yml を初めて足したコミットで決める(controlRuleBoundary。日付に依らない)
 // GitHub へ問い合わせません。実際の GitHub 上での承認の振る舞い(別のアカウントの承認。実機の確認 E-7・E-13)は確かめていません。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { analyzePr, CONTROL_FILES, controlTouchedOf } from './check-pr.mjs';
-import { controlApprovalBacking, CONTROL_APPROVAL_REQUIRED_SINCE } from './material-attribution.mjs';
-import { controlApprovalSummary } from './aggregate-evidence.mjs';
+import { analyzePr, CONTROL_FILES, controlTouchedOf, controlTouchedBetween } from './check-pr.mjs';
+import { controlApprovalBacking } from './material-attribution.mjs';
+import { controlApprovalSummary, controlRuleBoundary, CONTROL_RULE_FILE } from './aggregate-evidence.mjs';
 
 let failures = 0;
 let n = 0;
@@ -82,8 +85,15 @@ const yamadaAuthor = { login: 'yamada', id: UID.yamada };
   const selfConf = controlApprovalBacking(cfg, { reviews: [review('sato')], author: suzukiAuthor, head: HEAD });
   check('作成者が AI維持管理者本人なら、別の名簿の人の承認で成立する(帰属の確認)', selfConf.backed && selfConf.how === 'author', JSON.stringify(selfConf));
   const alone = { configured: true, people: [people[1]], seats: [{ role: 'ai-maintainer', accountable: '鈴木 一郎' }], changeLog: [] };
-  const selfAlone = controlApprovalBacking(alone, { reviews: [], author: suzukiAuthor, head: HEAD });
-  check('1名の体制で作成者が AI維持管理者本人なら、自己申告として受け付ける(AR-3)', selfAlone.backed && selfAlone.selfAttested && selfAlone.how === 'self-attested', JSON.stringify(selfAlone));
+  // IMPL-0456:ng(1名の体制でも、本文の記名だけ・本人の操作の無い自己申告は数えない。突合 C-6、実機の確認 F-5)
+  const selfNone = controlApprovalBacking(alone, { reviews: [], author: suzukiAuthor, head: HEAD });
+  check('1名の体制でも、本人のアカウントのレビューが無ければ自己申告は成立しない(本文の記名だけでは通さない)', !selfNone.backed && /本文の記名だけでは数えない/.test(selfNone.why.join()), JSON.stringify(selfNone));
+  const selfAlone = controlApprovalBacking(alone, { reviews: [review('suzuki', { state: 'COMMENTED', body: '承認します' })], author: suzukiAuthor, head: HEAD });
+  check('1名の体制で、本人が PR の先頭に意見のレビューを出せば、自己申告として受け付ける(AR-3・C-6)', selfAlone.backed && selfAlone.selfAttested && selfAlone.how === 'self-attested' && selfAlone.review?.state === 'COMMENTED', JSON.stringify(selfAlone));
+  const selfStale = controlApprovalBacking(alone, { reviews: [review('suzuki', { state: 'COMMENTED', commit: 'c'.repeat(40) })], author: suzukiAuthor, head: HEAD });
+  check('1名の体制で、本人のレビューが PR の先頭でなければ自己申告は成立しない', !selfStale.backed, JSON.stringify(selfStale));
+  const selfWrongId = controlApprovalBacking(alone, { reviews: [review('suzuki', { state: 'COMMENTED', id: 9999 })], author: suzukiAuthor, head: HEAD });
+  check('1名の体制で、ログイン名だけが一致する(数値の識別子が違う)レビューは本人の操作に数えない', !selfWrongId.backed, JSON.stringify(selfWrongId));
   const botAuthor = controlApprovalBacking(cfg, { reviews: [review('suzuki')], author: { login: 'dependabot[bot]', id: 49699333 }, head: HEAD });
   check('依存の更新の bot の PR も、AI維持管理者本人の承認で成立する', botAuthor.backed, JSON.stringify(botAuthor));
 }
@@ -174,26 +184,102 @@ const hasErr = (r, re) => r.errors.some((e) => re.test(e));
   check('PR の側で動く判定(--require-control-approval なし)は承認を照らさない', !r.controlApproval && !hasErr(r, /統制の設定の変更の承認/), JSON.stringify(r.errors));
 }
 
+{
+  // 2つの照合の範囲の一致(突合 C-4): アダプタの thresholdFiles、process.config.json の閾値の鍵、名前の変更の元を、PR の時点の判定と
+  // 出荷の集約(controlTouchedBetween)が同じに数える
+  git('switch', '-q', 'main');
+  write('adapters/node.json', { thresholdFiles: ['vitest.config.js'] });
+  write('vitest.config.js', 'export default {};\n');
+  write('scripts/gate/old.mjs', '// old\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: adapter');
+  const r = pr('範囲の一致', () => {
+    write('vitest.config.js', 'export default { coverage: {} };\n');
+    git('mv', 'scripts/gate/old.mjs', 'src/moved.mjs');
+    const c = JSON.parse(fs.readFileSync(path.join(TMP, 'process.config.json'), 'utf8'));
+    write('process.config.json', { ...c, task: { ...c.task, maxChangedLines: 800 } });
+  });
+  const between = controlTouchedBetween((a) => {
+    try {
+      return git(...a);
+    } catch {
+      return null;
+    }
+  }, 'main', `pr-${k}`).sort();
+  const atPr = [...(r.controlApproval?.changed ?? [])].sort();
+  check('範囲: アダプタの閾値・構成の閾値・名前の変更の元を、PR の時点の判定と出荷の集約が同じに数える', JSON.stringify(atPr) === JSON.stringify(between) && ['vitest.config.js', 'scripts/gate/old.mjs', 'process.config.json'].every((f) => between.includes(f)), `${JSON.stringify(atPr)} / ${JSON.stringify(between)}`);
+}
+{
+  // 1名の体制の PR の時点の判定(突合 C-6、実機の確認 F-5): 本文の記名だけでは通さず、本人の意見のレビューで自己申告として通す
+  git('switch', '-q', 'main');
+  const c = JSON.parse(fs.readFileSync(path.join(TMP, 'process.config.json'), 'utf8'));
+  write('process.config.json', { ...c, people: [people[1]], seats: [{ role: 'ai-maintainer', accountable: '鈴木 一郎' }] });
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: alone');
+  const r1 = pr('1名の体制・本文の記名だけ', () => write('.github/workflows/gate-g5.yml', 'name: gate-g5\non: pull_request\njobs: { x: {} }\n'), { body: BODY(REMOVED), author: 'suzuki' });
+  check('1名の体制: 本文の記名(受け入れた者)だけでは gate-g5-base の承認の検査を通さない', hasErr(r1, /統制の設定の変更の承認/) && hasErr(r1, /本文の記名だけでは数えない/), JSON.stringify(r1.errors));
+  const r2 = pr('1名の体制・本人の意見のレビュー', () => write('.github/workflows/gate-g5.yml', 'name: gate-g5\non: pull_request\njobs: { y: {} }\n'), { author: 'suzuki', reviews: [review('suzuki', { state: 'COMMENTED' })] });
+  check('1名の体制: 本人のアカウントの意見のレビュー(PR の先頭)で、自己申告として通す', !hasErr(r2, /統制の設定の変更の承認/) && r2.controlApproval?.backing?.selfAttested === true, JSON.stringify(r2.errors));
+}
+
 // ---------------------------------------------------------------- 出荷の証跡の集約(controlApprovalSummary)
 {
-  const p = (number, { files = ['.github/workflows/gate-g5.yml'], reviews = [], author = 'yamada', mergedAt = '2026-11-10T00:00:00Z', parentConfigured = true } = {}) => ({
+  const p = (number, { files = ['.github/workflows/gate-g5.yml'], reviews = [], author = 'yamada', parentConfigured = true, before = false } = {}) => ({
     number,
     control: { files, parentConfigured },
-    mergedAt,
+    before,
     material: { reviews, head: HEAD, author, authorId: UID[author] ?? null },
   });
+  const beforeRuleOf = (x) => x.before;
   // IMPL-0457:ng
-  const s = controlApprovalSummary([p(1), p(2, { reviews: [review('suzuki')] }), p(3, { files: [] }), p(4, { mergedAt: '2026-10-01T00:00:00Z' }), p(5, { parentConfigured: false })], cfg);
+  const s = controlApprovalSummary([p(1), p(2, { reviews: [review('suzuki')] }), p(3, { files: [] }), p(4, { before: true }), p(5, { parentConfigured: false })], cfg, { beforeRuleOf });
   check('集約: 統制の設定を変えた変更に承認が無ければ欠落に数える', s.missing.map((x) => x.pr).join() === '1' && s.gaps.length === 1 && /PR #1/.test(s.gaps[0]), JSON.stringify(s.gaps));
   // IMPL-0457:ok
   check('集約: 承認のレビューがある変更は欠落に数えない', s.review === 1 && !s.missing.some((x) => x.pr === 2));
-  check(`集約: 規定の採用日(${CONTROL_APPROVAL_REQUIRED_SINCE})より前の変更は欠落に数えず、別に数える`, s.beforeRule.map((x) => x.pr).join() === '4');
+  check('集約: 規定を取り込む前の変更は欠落に数えず、別に数える', s.beforeRule.map((x) => x.pr).join() === '4');
   check('集約: 統制の設定に触れない変更と、マージの前の構成が未設定の変更は数えない', s.changes.length === 3);
   const alone = { configured: true, people: [people[1]], seats: [{ role: 'ai-maintainer', accountable: '鈴木 一郎' }] };
-  const s2 = controlApprovalSummary([p(7, { author: 'suzuki' })], alone);
-  check('集約: 1名の体制の自己申告は欠落に数えず、件数を出す', s2.selfAttested === 1 && !s2.gaps.length, JSON.stringify(s2));
-  const s3 = controlApprovalSummary([p(8, { reviews: [], author: 'yamada' })], cfg, { mergedAtOf: () => null });
-  check('集約: マージの時刻を読めない変更は、採用日より前に数えない(欠落)', s3.missing.length === 1);
+  const s2 = controlApprovalSummary([p(7, { author: 'suzuki', reviews: [review('suzuki', { state: 'COMMENTED' })] })], alone);
+  check('集約: 1名の体制の自己申告(本人の意見のレビューあり)は欠落に数えず、件数を出す', s2.selfAttested === 1 && !s2.gaps.length, JSON.stringify(s2));
+  const s2b = controlApprovalSummary([p(9, { author: 'suzuki' })], alone);
+  check('集約: 1名の体制でも、本人の操作の無い変更は欠落に数える', s2b.missing.length === 1 && s2b.gaps.length === 1, JSON.stringify(s2b));
+}
+{
+  // 規定を取り込んだ境(議長の裁定 J-5、突合 C-2): 基底ブランチの第1親の連鎖で gate-g5-base.yml を初めて足したコミット。日付に依らない
+  const T2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-control-boundary-'));
+  const g2 = (...a) => execFileSync('git', a, { cwd: T2, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const g2n = (a) => {
+    try {
+      return g2(...a);
+    } catch {
+      return null;
+    }
+  };
+  const w2 = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(T2, rel)), { recursive: true });
+    fs.writeFileSync(path.join(T2, rel), text);
+  };
+  g2('init', '-q', '-b', 'main');
+  g2('config', 'user.email', 't@example.com');
+  g2('config', 'user.name', 'tester');
+  const commit = (msg, date) => {
+    g2('add', '-A');
+    execFileSync('git', ['commit', '-q', '-m', msg], { cwd: T2, env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } });
+    return g2('rev-parse', 'HEAD').trim();
+  };
+  w2('a.txt', '1\n');
+  const before = commit('before', '2026-09-01T00:00:00Z');
+  const none = controlRuleBoundary(g2n, 'HEAD');
+  check('境: gate-g5-base.yml を一度も取り込んでいない構成は、すべて規定の前', none.boundary === null && none.beforeRule(before) === true);
+  w2(CONTROL_RULE_FILE, 'name: gate-g5-base\n');
+  const intro = commit('introduce', '2026-09-02T00:00:00Z');
+  w2('a.txt', '2\n');
+  // 日付を規定の前へ偽った後のコミット(第1親の連鎖の順で決まり、日付に依らない)
+  const after = commit('after-with-old-date', '2020-01-01T00:00:00Z');
+  const b = controlRuleBoundary(g2n, 'HEAD');
+  check('境: 取り込んだコミット以前は規定の前、後は規定の後(コミットの日付を偽っても後)', b.boundary === intro && b.beforeRule(before) === true && b.beforeRule(intro) === true && b.beforeRule(after) === false, JSON.stringify({ boundary: b.boundary }));
+  check('境: 連鎖に無いコミットは規定の後に数える', b.beforeRule('0'.repeat(40)) === false);
+  fs.rmSync(T2, { recursive: true, force: true });
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

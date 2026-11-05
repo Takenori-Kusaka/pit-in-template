@@ -152,7 +152,8 @@ if (process.platform === 'win32') {
   // 基底から読む判定(gate-g5-base)の3値(process-compass #371 / ADR-0115)。全体の成否には入れない
   {
     const wfKey = `api repos/${R}/contents/.github/workflows/gate-g5-base.yml?ref=main`;
-    const wfBody = { sha: 'b'.repeat(40), content: Buffer.from('on:\n  pull_request_target:\n    types: [opened]\n').toString('base64') };
+    const wfText = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5-base.yml'), 'utf8');
+    const wfBody = { sha: 'b'.repeat(40), content: Buffer.from(wfText).toString('base64') };
     const rulesBase = [{ ...RULES_TEAM[0], parameters: { required_status_checks: [{ context: 'gate-g5' }, { context: 'gate-g5-base' }] } }, RULES_TEAM[1]];
     // IMPL-0458:ok
     const sat = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: rulesBase }, [wfKey]: { stdout: wfBody } }));
@@ -163,6 +164,8 @@ if (process.platform === 'win32') {
     check('基底から読む判定: ワークフローがあっても必須チェックに無ければ「満たさない」', noReq.record?.baseJudge?.status === 'unsatisfied' && /必須チェックに gate-g5-base が無い/.test(noReq.record?.baseJudge?.detail ?? ''), JSON.stringify(noReq.record?.baseJudge));
     const prSide = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: rulesBase }, [wfKey]: { stdout: { ...wfBody, content: Buffer.from('on:\n  pull_request:\n').toString('base64') } } }));
     check('基底から読む判定: ワークフローが pull_request で動くなら「満たさない」', prSide.record?.baseJudge?.status === 'unsatisfied' && /pull_request_target/.test(prSide.record?.baseJudge?.detail ?? ''), JSON.stringify(prSide.record?.baseJudge));
+    const headCo = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: rulesBase }, [wfKey]: { stdout: { ...wfBody, content: Buffer.from(wfText.replace('ref: ${{ github.event.repository.default_branch }}', 'ref: ${{ github.event.pull_request.head.sha }}')).toString('base64') } } }));
+    check('基底から読む判定: 定義が PR の先頭を checkout するなら「満たさない」(中身を読む。突合 C-9)', headCo.record?.baseJudge?.status === 'unsatisfied' && /定義に不備/.test(headCo.record?.baseJudge?.detail ?? ''), JSON.stringify(headCo.record?.baseJudge));
     const unread = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' }, [wfKey]: { stdout: wfBody } }));
     check('基底から読む判定: 規則を読めなければ「確かめていない」', unread.record?.baseJudge?.status === 'unconfirmed', JSON.stringify(unread.record?.baseJudge));
     const legacy = { ...sat.record };
