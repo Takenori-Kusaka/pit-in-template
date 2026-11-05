@@ -493,6 +493,26 @@ export function nameConfirmationState(config, person) {
   return rec ? 'self' : 'unrecorded';
 }
 
+/**
+ * 確認待ちの氏名の id(2名以上の名簿で、本人の記名の記録だけがある確認)。本人の記名の記録は、体制の内の人が1名の名簿でだけ
+ * 受け付けられる(2名以上では拒否する)ため、この人が記名した既存の記録は、記名した時点では効いていた。
+ * 既存の記録の記名者を、氏名の確認の状態の移り変わり(自己申告 → 確認待ち → 確認済み)を理由に照らし直さないために使う
+ * (process-compass #375 追加の裁定 2 の AR-4)。新しい記録の記名者の資格には使わない
+ */
+export function awaitingConfirmationIds(config) {
+  const recs = confirmedNames(config);
+  return (Array.isArray(config?.people) ? config.people : [])
+    .filter((p) => p?.id && p.nameConfirmed === true && aiNameReason(p.name) && recs.get(p.id)?.self === true && nameConfirmationState(config, p) === 'invalid')
+    .map((p) => p.id);
+}
+
+/** 既存の記録の記名者を、その記録が作られた時点の効力で照らすための構成(AR-4)。確認待ちの氏名を効かせる。構成へは書かない */
+export function recordSignerContext(config) {
+  const ids = awaitingConfirmationIds(config);
+  if (!ids.length) return config;
+  return { ...config, nameConfirmPending: [...new Set([...(Array.isArray(config.nameConfirmPending) ? config.nameConfirmPending : []), ...ids])] };
+}
+
 /** 名簿の人の氏名の確認が効くか */
 export function nameConfirmedValid(config, person) {
   const st = nameConfirmationState(config, person);
@@ -1774,7 +1794,7 @@ function missingBasis(basis) {
   return out;
 }
 
-export function changeTypeProblems(config, { checkRegistrant = true, only = null } = {}) {
+export function changeTypeProblems(config, { checkRegistrant = true, only = null, existingConfig = null } = {}) {
   const list = config.delegation?.changeTypes;
   if (list === undefined) return [];
   if (!Array.isArray(list)) return ['delegation.changeTypes が配列ではない'];
@@ -1794,8 +1814,10 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
       out.push(`${at}: 変更種別 "${id}" に、登録した者(registeredBy)または登録日(registeredAt。実在する日付を YYYY-MM-DD で書く)がない`);
       return;
     }
-    if (aiNameBlocked(config, t.registeredBy)) {
-      out.push(`${at}: 変更種別 "${id}" を登録した者 "${t.registeredBy}" は ${aiNameBlocked(config, t.registeredBy)}。AI の名義の記名を受け付けない`);
+    // 照らす対象に入らない既存の登録は、existingConfig(登録した時点の効力。AR-4)で照らす
+    const nameCtx = only && !only.has(id) && existingConfig ? existingConfig : config;
+    if (aiNameBlocked(nameCtx, t.registeredBy)) {
+      out.push(`${at}: 変更種別 "${id}" を登録した者 "${t.registeredBy}" は ${aiNameBlocked(nameCtx, t.registeredBy)}。AI の名義の記名を受け付けない`);
       return;
     }
     if (only && !only.has(id)) return;

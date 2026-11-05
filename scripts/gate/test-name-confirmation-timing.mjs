@@ -266,6 +266,7 @@ try {
     fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(blank12), null, 2) + '\n');
     git('add', '-A');
     git('commit', '-q', '-m', 'chore: init 1-2');
+    git('tag', 'blank12');
     const all = (n) => Object.fromEntries(Object.keys(SEATS3).map((k) => [k, { accountable: n }]));
     const solo = run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
     check('確認待ちの前提: 1名の体制の本人の記名による確認(自己申告)を受け付ける', solo.ok, solo.out);
@@ -285,6 +286,40 @@ try {
       'AR-2: 次の変化点で本人以外(足した2人目)が確認すれば、確認待ちが解け、契約検査の名義の行が落ちない',
       conf.ok && JSON.stringify(cfg().changeLog.at(-1).nameConfirmations) === JSON.stringify([{ id: 'dupont' }]) && !/確認待ち/.test(k3.out) && !/::error::.*(nameConfirmed|Dupont|記名)/.test(k3.out),
       `${conf.out}\n----\n${k3.out}`
+    );
+
+    // AR-4: 1名の体制で本人が決めた委任の規則と、登録した変更種別は、確認待ちを解く変化点で照らし直さない(記録した時点の効力を保つ)
+    resetTo('blank12');
+    const DTYPES = [{ ...TYPES[0], registeredBy: 'Claude Dupont' }];
+    const DRULE = { ...RULE, decidedBy: 'Claude Dupont' };
+    const DQ = { ...Q('Claude Dupont'), performedBy: 'Claude Dupont' };
+    const solo2 = run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+    const dele = run({ kind: 'mode', summary: '委任', seats: { 'dev-verifier': { mode: 'delegated', performer: P, fallback: 'human', qualification: DQ } }, delegation: { rules: [DRULE], changeTypes: DTYPES }, ruleApprovedBy: 'Claude Dupont', decidedBy: 'Claude Dupont', reason: '委任する' });
+    check('AR-4 の前提: 1名の体制で、本人が委任の規則を決めて承認し、変更種別を登録し、開発者の席を委任にする', solo2.ok && dele.ok && seatOf('dev-verifier').mode === 'delegated', `${solo2.out}\n----\n${dele.out}`);
+    const add2 = run({ summary: '高橋が加わった', people: [DUPONT, TAKAHASHI], decidedBy: 'Claude Dupont', reason: '2人目' });
+    const unlock = run({ summary: 'Dupont の氏名を確認', people: [DUPONT, TAKAHASHI], decidedBy: '高橋 次郎', reason: '氏名を確認した' });
+    const after4 = cfg();
+    const k4 = contract();
+    check(
+      'AR-4: 確認待ちを解く変化点で、本人が記録した委任の規則と変更種別を照らし直さず受け付ける。規則・種別・委任の席は保たれる',
+      add2.ok &&
+        unlock.ok &&
+        after4.delegation.rules.some((r) => r.id === 'DR-001' && r.decidedBy === 'Claude Dupont') &&
+        after4.delegation.changeTypes.some((t) => t.registeredBy === 'Claude Dupont') &&
+        seatOf('dev-verifier').mode === 'delegated' &&
+        !/確認待ち/.test(k4.out),
+      `${add2.out}\n----\n${unlock.out}\n----\n${k4.out}`
+    );
+
+    // AR-5: 確認待ちの本人が記名した確認の記録は、後で数えられないため拒否する
+    resetTo('blank12');
+    run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+    const before5 = raw();
+    const gem = run({ summary: 'Gemini を足す', people: [DUPONT, GEMINI], decidedBy: 'Claude Dupont', reason: '2人目' });
+    check(
+      'AR-5: 確認待ちになる本人が記名した、他の人の氏名の確認を拒否する(構成を書き換えない)',
+      !gem.ok && /記名者 "Claude Dupont" は、この変化点で氏名の確認が確認待ちになる本人です/.test(gem.out) && raw() === before5,
+      gem.out
     );
   }
 } finally {

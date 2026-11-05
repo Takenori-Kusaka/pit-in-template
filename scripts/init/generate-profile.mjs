@@ -94,6 +94,7 @@ import {
   structureDeciderLabel,
   DEFAULT_STRUCTURE_DECIDER,
   qualificationAuthorityProblems,
+  recordSignerContext,
   changeTypeProblems,
   protectedPathsProblems,
   CHAINED_SCHEMA_VERSION,
@@ -704,7 +705,9 @@ export function clampSeats(seats, delegation, people = [], governance = null, { 
   //   類B 記名・承認する者の資格(委任の規則の決定者・承認者): 変化点の前の構成
   // 確認待ちの氏名(AR-2)は、その変化点の評価に限り、両方の類で効かせる(前の名簿で効いていた確認であるため)
   const ctx = { seats, people, delegation, governance, changeLog, ...(nameConfirmPending.length ? { nameConfirmPending } : {}) };
-  const ctxPrior = { ...ctx, changeLog: priorChangeLog };
+  // 規則の成立は、既存の規則・変更種別の記名者を、記録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。
+  // 追加の裁定 2 の AR-4)。この変化点で追加・変更した規則の記名者は、/process-change が前の構成で別に照らして拒否する
+  const ctxPrior = recordSignerContext({ ...ctx, changeLog: priorChangeLog });
   for (const s of seats) {
     let limit = s.modeCeiling;
     let why = '席の上限(第5章 5.5.6)';
@@ -5268,7 +5271,8 @@ if (isMain) {
     }
     const priorTypes = new Set((prior.delegation?.changeTypes ?? []).map((t) => JSON.stringify(t)));
     const newTypes = new Set((config.delegation.changeTypes ?? []).filter((t) => !priorTypes.has(JSON.stringify(t))).map((t) => String(t?.id ?? '').trim()));
-    for (const p of changeTypeProblems(cfgB, { only: newTypes })) refused.push(`標準変更カタログ: ${p}`);
+    // 既存の登録の登録者は、登録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。AR-4)
+    for (const p of changeTypeProblems(cfgB, { only: newTypes, existingConfig: recordSignerContext(cfgB) })) refused.push(`標準変更カタログ: ${p}`);
     // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
     if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
     // 登録する者がリリース判定会(B-4)のとき、機械が確かめるのは、登録した者が名簿にいることだけである
@@ -5387,6 +5391,14 @@ if (isMain) {
         }
         for (const p of nameProblems(cfgB, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
         const by = personKey(config, change.decidedBy);
+        // 確認待ちの本人の記名による確認は、後で数えられない(記名者の名義が AI を示す語を含み、本人の氏名も確認待ちのため)。
+        // 効かない確認の記録を受け付けない(追加の裁定 2 の AR-5)
+        if (awaiting.includes(by)) {
+          refused.push(
+            `氏名の確認(${report.nameConfirmItems.map((i) => i.name).join(', ')})の記名者 "${change.decidedBy}" は、この変化点で氏名の確認が確認待ちになる本人です。` +
+              'この記名による確認は、後の変化点で数えられません。本人の氏名を本人以外が確認した後の変化点で、確認されていない氏名の確認を出します'
+          );
+        }
         // 体制の内の人が1名の名簿では、本人の記名を受け付ける(自己申告の氏名として記録し、開示する)
         const single = insiderCount(config) === 1;
         for (const i of report.nameConfirmItems) {
