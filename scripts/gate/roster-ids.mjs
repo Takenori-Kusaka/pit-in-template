@@ -9,7 +9,10 @@
 // (records/reviews/pr-*.json の reviews[].user.id・author.id)と基底ブランチの複製(docs/records/reviews/)から識別子を集めて
 // 提案する。
 //   - 写しどうしで、同じログイン名に別の識別子が現れたアカウントは提案しない(改名の後に他人が取得した疑い)。所見に出す
-//   - --lookup では、写しに現れないアカウントを gh api users/<login> で引く。写しの値と現在の値が異なるアカウントは提案しない
+//   - 提案の源は写しの数値の識別子とし(ADR-0108 決定2)、ホスティングの今の値(gh api users/<login>)と一致するものだけを提案する。
+//     食い違うもの・引けないものは提案せず所見に出す(写しは書き込みの権限を持つ者が書ける。process-compass #379)。ホスティングを
+//     読めない実行(gh を使えない)では写しから提案し、照合していない旨を出す
+//   - --lookup では、写しに現れないアカウントも gh api users/<login> で引いて提案する
 //   - 名簿に識別子を持つアカウントで、写しに同じログイン名の別の識別子が現れたものも所見に出す
 // 名簿を書き換えない。提案を確かめたうえで、人が /process-change(種別 accountable)で名簿へ書く。AI は名簿を書き換えない。
 // 提案の値が本人のアカウントかは機械で確かめない(写しは承認の時点のホスティングの値であり、名簿の記載の正しさは監査の観点6)
@@ -50,10 +53,14 @@ export function observationsOfCopy(copy, where) {
 }
 
 /**
- * 提案を作る。sources は [{ where, copy }]。lookup は (login) => 数値の識別子 | null(--lookup のときだけ渡す)。
+ * 提案を作る。sources は [{ where, copy }]。lookup は (login) => 数値の識別子 | null(--lookup のときだけ渡す。写しに現れない
+ * アカウントも提案する)。verify は写しの値をホスティングで照合する関数(同じ形。既定は lookup)。
+ * 提案は、ホスティングで照合した値に限る(process-compass #379 / ADR-0109 決定4)。写しは書き込みの権限を持つ者が書けるため、
+ * 写しにだけある書き手・ホスティングと識別子が食い違う写しを提案の根拠にしない。verify も lookup も無ければ、写しの値を提案せず
+ * 「ホスティングで照合していない」として出す。
  * 返り値: { proposals: [{ person, login, id, from }], findings: [文], unresolved: [{ person, login, why }], withId: 件数 }
  */
-export function proposeRosterIds(config, { sources = [], lookup = null } = {}) {
+export function proposeRosterIds(config, { sources = [], lookup = null, verify = lookup } = {}) {
   const seen = new Map(); // accountKey → Map<id, where[]>
   let excluded = 0;
   let unassociated = 0;
@@ -93,8 +100,14 @@ export function proposeRosterIds(config, { sources = [], lookup = null } = {}) {
       }
       if (ids.size === 1) {
         const [[id, where]] = [...ids];
-        if (lookup) {
-          const now = lookup(login);
+        const check = verify ?? lookup;
+        if (!check) {
+          // ホスティングを読めない実行: 写しから提案し、照合していない旨を出す(ADR-0108 決定2。process-compass #379 突合 M-5)
+          proposals.push({ person: p.name, personId: p.id, login, id, unverified: true, from: `写し(${where.slice(0, 2).join('・')}${where.length > 2 ? ` ほか ${where.length - 2} 件` : ''})。ホスティングで照合していない(gh を使える環境で実行し直すと照合する)` });
+          continue;
+        }
+        {
+          const now = check(login);
           if (now === null) {
             findings.push(`${p.name} @${login}: 写しの数値の識別子は ${id} だが、gh api users/${login} で現在の値を引けない(削除・改名の疑い)。提案しない`);
             unresolved.push({ person: p.name, login, why: '現在の値を引けない' });
@@ -106,7 +119,7 @@ export function proposeRosterIds(config, { sources = [], lookup = null } = {}) {
             continue;
           }
         }
-        proposals.push({ person: p.name, personId: p.id, login, id, from: `写し(${where.slice(0, 2).join('・')}${where.length > 2 ? ` ほか ${where.length - 2} 件` : ''})${lookup ? '。現在の値と一致' : ''}` });
+        proposals.push({ person: p.name, personId: p.id, login, id, from: `写し(${where.slice(0, 2).join('・')}${where.length > 2 ? ` ほか ${where.length - 2} 件` : ''})。ホスティングの現在の値と一致` });
         continue;
       }
       if (lookup) {
@@ -157,6 +170,16 @@ export function copySources(root = ROOT, { fetch = true } = {}) {
   return { sources, notes };
 }
 
+/** gh でホスティングを読めるか(gh api rate_limit が通るか) */
+export function ghAvailable() {
+  try {
+    execFileSync('gh', ['api', 'rate_limit', '--jq', '.resources.core.limit'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** gh api users/<login> の id。引けなければ null */
 export function ghUserId(login) {
   try {
@@ -172,7 +195,10 @@ if (isMain) {
   const argv = process.argv.slice(2);
   const config = loadConfig();
   const { sources, notes } = copySources(ROOT);
-  const r = proposeRosterIds(config, { sources, lookup: argv.includes('--lookup') ? ghUserId : null });
+  // 写しの値は、--lookup の有無に依らずホスティング(gh api users/<login>)で照合する(process-compass #379)
+  const hostOk = ghAvailable();
+  const r = proposeRosterIds(config, { sources, lookup: argv.includes('--lookup') && hostOk ? ghUserId : null, verify: hostOk ? ghUserId : null });
+  if (!hostOk) notes.push('gh でホスティングを読めないため、写しの値をホスティングの今の値で照合していない(提案に「照合していない」と付けた)');
   if (argv.includes('--json')) {
     console.log(JSON.stringify({ ...r, notes, people: rosterWithProposals(config, r.proposals) }, null, 2));
     process.exit(0);
@@ -187,7 +213,7 @@ if (isMain) {
   else if (!r.proposals.length && !r.unresolved.length && !r.findings.length) L.push('  名簿のアカウントはすべて数値の識別子を持ち、写しとの食い違いはありません');
   if (r.proposals.length) {
     L.push('', '提案(名簿へ書くのは人。提案の値が本人のアカウントかを確かめてから書く):');
-    for (const x of r.proposals) L.push(`  - ${x.person} @${x.login} → id ${x.id}(${x.from})`);
+    for (const x of r.proposals) L.push(`  - ${x.person} @${x.login} → id ${x.id}(${x.from})${x.unverified ? '。**ホスティングで照合していない**' : ''}`);
   }
   if (r.unresolved.length) {
     L.push('', '提案できないアカウント:');

@@ -30,10 +30,11 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay } from './config.mjs';
+import { ROOT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
-import { readRecordsBranch, parseCopy, judgementsFromCopy, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
+import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
+import { ghHosting, introducedBacking, lastCommitOfFile, signerSharing } from './material-attribution.mjs';
 
 /** 準拠テンプレートが支えるレベル。L2 は上限の値としてだけ現れる */
 export const LEVELS = ['L1', 'L2', 'L3'];
@@ -407,24 +408,112 @@ export function rejectionsFromReviewCopies(copies) {
     for (const j of judgementsFromCopy(copy)) {
       if (j.gate !== 'G-6' || j.result !== '差し戻し') continue;
       const t = Date.parse(j.submittedAt ?? '');
-      out.push({ file, date: Number.isNaN(t) ? null : localDay(new Date(t)), target: pr !== null ? `PR #${pr}` : '', cited: j.criteria.length > 0, source: 'review' });
+      out.push({
+        file,
+        date: Number.isNaN(t) ? null : localDay(new Date(t)),
+        target: pr !== null ? `PR #${pr}` : '',
+        cited: j.criteria.length > 0,
+        source: 'review',
+        // 帰属の照合の入力(写しの値。ホスティングの記録に照らす。process-compass #379)
+        pr: pr !== null ? Number(pr) : null,
+        reviewId: j.reviewId,
+        login: j.login,
+        userId: j.userId,
+        commitId: j.commitId,
+        submittedAt: j.submittedAt,
+      });
     }
   }
   return out;
 }
 
+/** 手元の作業木のリポジトリ(owner/name)。GITHUB_REPOSITORY、無ければ git remote の GitHub の URL。特定できなければ null */
+function repoOf(root) {
+  if (process.env.GITHUB_REPOSITORY) return process.env.GITHUB_REPOSITORY;
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const m = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url);
+    return m ? `${m[1]}/${m[2]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 委任の判定が数える G-6 の差し戻しの記録の帰属(標準 第4章「判定記録を基底ブランチへ入れる操作」の効力を持つ記録。
+ * process-compass #379 / ADR-0109 決定4)。数えるのは、判定の時点にホスティングの記録で帰属を確かめたものだけである。
+ * 帰属を確かめられない記録(偽の差し戻しを含む)は数えない。数えないことは差し戻し率を下げ、5.4.6 の引き下げの側へ倒れる。
+ *   レビューを媒体とする差し戻し: 写しではなく、対象の PR の上のレビュー(hosting.pullOf の REST の記録)で確かめる。レビューの識別子・
+ *     書き手の数値の識別子・対象のコミットが写しと一致し、ホスティングの本文の宣言行も G-6 の差し戻しで、書き手が名簿の人(AI・bot・
+ *     担い手の専用の名義でなく、書き込みの権限を持つ関係)で、PR の作成者と異なること。G-6 の承認の数え方と対称に、席の責任者に限らない
+ *     (突合 M-3)。書き手が名義を共有する場合は、記名者以外で名義を共有していない人の承認を要する(ADR-0107。突合 M-2)
+ *   様式の差し戻し: 判定記録の帰属の裏づけ(introducedBacking)。記録用ブランチの様式は様式を足したコミット(hosting.commitOf。署名を
+ *     検証した、committer・author とも記名者のコミット)、基底ブランチの様式は今の中身を入れた変更(hosting.prOfCommit)。帰属の確認者を
+ *     置けない体制の自己申告は数えない
+ * 返り値: { counted: boolean, why }
+ */
+export function attributeRejection(rej, { config, hosting, text = null, addedSha = null, baseSha = null } = {}) {
+  if (!hosting) return { counted: false, why: 'ホスティングの記録を読めない実行(帰属を確かめられない)' };
+  if (rej.source === 'review') {
+    const pull = rej.pr != null ? hosting.pullOf?.(rej.pr) : null;
+    if (!pull || !Array.isArray(pull.reviews)) return { counted: false, why: `PR #${rej.pr ?? '?'} をホスティングで引けない(存在しない PR 番号の写しを含む)` };
+    const h = pull.reviews.find((r) => r?.id != null && String(r.id) === String(rej.reviewId));
+    if (!h) return { counted: false, why: `レビュー ${rej.reviewId ?? '(id なし)'} がホスティングの記録に無い(写しにだけあるレビュー)` };
+    const hId = numericAccountId(h.user?.id ?? null);
+    if (hId === null || hId !== numericAccountId(rej.userId ?? null)) return { counted: false, why: `レビュー ${rej.reviewId} の書き手の数値の識別子が、ホスティングの記録と一致しない、または読めない` };
+    if ((h.commit_id ?? h.commitId ?? null) !== (rej.commitId ?? null)) return { counted: false, why: `レビュー ${rej.reviewId} の対象のコミットが、ホスティングの記録と一致しない` };
+    const d = parseDeclaration(h.body);
+    if (!d || d.gate !== 'G-6' || d.result !== '差し戻し') return { counted: false, why: `レビュー ${rej.reviewId} のホスティングの本文の宣言行が G-6 の差し戻しでない` };
+    const login = h.user?.login ?? null;
+    if (String(h.user?.type ?? '') === 'Bot' || aiNameBlocked(config, login)) return { counted: false, why: `書き手 @${login ?? '?'} が AI・bot の名義` };
+    const who = identifyAccount(config, { login, id: hId });
+    if (!who.person || who.person.appointer === true) return { counted: false, why: `書き手 @${login ?? '?'} が人の名簿の人へ対応づかない${who.problem ? `(${who.problem})` : ''}` };
+    // 書き込みの権限を持たない関係のアカウントのレビューは数えない(G-6 の承認の数え方と対称。IMPL-0425。突合 M-3)
+    if (hasWriteAssociation(h) === false) return { counted: false, why: `書き手 @${login} のリポジトリとの関係が ${h.author_association}(書き込みの権限を持たない)` };
+    if (dedicatedSeatOf(config, { login, id: hId })) return { counted: false, why: `書き手 @${login} が AI の担い手の専用の名義` };
+    const authorId = numericAccountId(pull.author?.id ?? null);
+    if (authorId === null || authorId === hId) return { counted: false, why: authorId === null ? `PR #${rej.pr} の作成者を読めない` : `書き手 @${login} が PR #${rej.pr} の作成者である` };
+    // 名義の共有(標準 第3章 3.5.3、ADR-0107。突合 M-2): 書き手が AI の担い手と名義を共有する場合、書き手のアカウントの操作だけでは
+    // 帰属に数えない。記名者以外で名義を共有していない人の承認(帰属の確認。対象の PR の上の承認)を要する。確認者を置けない体制の
+    // 自己申告は数えない
+    const sh = signerSharing(config, who.person);
+    if (sh) {
+      const confirmer = pull.reviews.some((r) => {
+        if (String(r?.state ?? '').toUpperCase() !== 'APPROVED' || String(r?.user?.type ?? '') === 'Bot' || hasWriteAssociation(r) === false) return false;
+        const rid = numericAccountId(r?.user?.id ?? null);
+        if (rid === null || rid === hId || rid === authorId) return false;
+        const p = identifyAccount(config, { login: r?.user?.login ?? '', id: rid }).person;
+        return Boolean(p) && p.appointer !== true && p.id !== who.person.id && !sharingOf(config, p) && !aiNameBlocked(config, r?.user?.login ?? '');
+      });
+      if (!confirmer) return { counted: false, why: `書き手 ${who.person.name} は AI の担い手と名義を共有し、記名者以外で名義を共有していない人の承認(帰属の確認)が PR #${rej.pr} に無い${sh.confirmable ? '' : '(確認者を置けない体制の自己申告は数えない)'}` };
+    }
+    return { counted: true, why: null };
+  }
+  const name = text !== null ? judgeOfForm(text) : null;
+  const signer = name ? resolveSigner(config, name) : null;
+  if (!signer) return { counted: false, why: `判定者 "${name ?? '未記入'}" が人の名簿の人へ対応づかない` };
+  const info = addedSha ? hosting.commitOf?.(addedSha) : baseSha ? hosting.prOfCommit?.(baseSha) : null;
+  const b = introducedBacking(config, signer, info, { what: '差し戻しの判定記録' });
+  if (b.backed && !b.selfAttested) return { counted: true, why: null };
+  return { counted: false, why: b.backed ? `記名が自己申告(${b.note})` : b.why };
+}
+
 /**
  * G-6 の差し戻しの判定記録を、4つの置き場から読む。様式は docs/gates/ と記録用ブランチの records/gates/(同じファイル名は
  * 1件に数える。ship-evidence.yml は basename のまま複製する)。写しは記録用ブランチの records/reviews/ と基底ブランチの
- * docs/records/reviews/(同じ PR 番号は1件に数える。記録用ブランチを優先する)。記録用ブランチを読めなければ、その旨を notes へ出す
+ * docs/records/reviews/(同じ PR 番号は1件に数える。記録用ブランチを優先する)。記録用ブランチを読めなければ、その旨を notes へ出す。
+ * config を渡すと、各記録の帰属を attributeRejection で確かめ、確かめたものだけを rejections に入れる(数えなかったものは
+ * unattributed と notes に件数を出す)。hosting を省くと、gh(GITHUB_REPOSITORY または git remote のリポジトリ)で引く。
+ * config を渡さない呼び出し(試験の読み取りの確認)は、帰属を確かめずに返す
  */
-export function readRejectionRecords({ root = ROOT, fetch = true, branch = null } = {}) {
+export function readRejectionRecords({ root = ROOT, fetch = true, branch = null, config = null, hosting = undefined } = {}) {
   const notes = [];
   const rejections = [];
+  const unattributed = [];
   const forms = new Map();
   const dir = path.join(root, GATES_DIR);
   if (fs.existsSync(dir)) {
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.md'))) forms.set(f, { file: `${GATES_DIR}/${f}`, text: fs.readFileSync(path.join(dir, f), 'utf8') });
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.md'))) forms.set(f, { file: `${GATES_DIR}/${f}`, text: fs.readFileSync(path.join(dir, f), 'utf8'), base: true });
   }
   let rb = branch;
   if (!rb) {
@@ -446,7 +535,7 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null 
   if (rb?.available) {
     for (const g of rb.gates ?? []) {
       const base = g.file.split('/').pop();
-      if (!forms.has(base)) forms.set(base, { file: g.file, text: g.text });
+      if (!forms.has(base)) forms.set(base, { file: g.file, text: g.text, addedSha: g.added?.hash ?? null });
     }
     for (const [n, copy] of rb.reviews ?? []) copies.set(n, { file: `${BRANCH_REVIEWS_DIR}/pr-${n}.json`, copy });
   } else {
@@ -454,12 +543,33 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null 
       `記録用ブランチを読めないため(${rb?.reason ?? '理由の記録なし'})、G-6 の差し戻しの判定記録は基底ブランチ(${GATES_DIR}/・${BASE_COPIES_DIR}/)だけを数えた。出荷前のレビューを媒体とした差し戻しは数えていない(数え漏れは差し戻し率を下げ、停止の側へ倒れる)`,
     );
   }
-  for (const { file, text } of forms.values()) {
-    const r = parseRejection(text, file);
-    if (r) rejections.push({ ...r, source: 'form' });
+  const found = [];
+  for (const f of forms.values()) {
+    const r = parseRejection(f.text, f.file);
+    if (r) found.push({ rej: { ...r, source: 'form' }, form: f });
   }
-  rejections.push(...rejectionsFromReviewCopies([...copies.values()]));
-  return { rejections, notes };
+  for (const r of rejectionsFromReviewCopies([...copies.values()])) found.push({ rej: r, form: null });
+  if (!config) return { rejections: found.map((x) => x.rej), unattributed, notes };
+  const host = hosting === undefined ? (() => { const repo = repoOf(root); return repo ? ghHosting(repo) : null; })() : hosting;
+  const gitRun = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return null;
+    }
+  };
+  for (const { rej, form } of found) {
+    const a = attributeRejection(rej, { config, hosting: host, text: form?.text ?? null, addedSha: form?.addedSha ?? null, baseSha: form?.base ? lastCommitOfFile(gitRun, 'HEAD', form.file) : null });
+    if (a.counted) rejections.push(rej);
+    else unattributed.push({ file: rej.file, target: rej.target, source: rej.source, why: a.why });
+  }
+  if (unattributed.length) {
+    notes.push(
+      `G-6 の差し戻しの記録のうち ${unattributed.length} 件は、帰属をホスティングの記録で確かめられず、差し戻し率に数えていない(${unattributed.slice(0, 3).map((u) => `${u.file}: ${u.why}`).join(' / ')}${unattributed.length > 3 ? ' ほか' : ''})。` +
+        '数えないことは差し戻し率を下げ、引き下げの側へ倒れる(第4章「判定記録を基底ブランチへ入れる操作」の効力を持つ記録)'
+    );
+  }
+  return { rejections, unattributed, notes };
 }
 
 function git(args, root) {
@@ -555,7 +665,7 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
   // G-6 の差し戻しの判定記録(様式と、レビューを媒体とした判定の写し)。登録した種別が無ければ読まない
   let rejections = [];
   if (types.length) {
-    const rr = readRejectionRecords({ root, fetch });
+    const rr = readRejectionRecords({ root, fetch, config });
     rejections = rr.rejections;
     notes.push(...rr.notes);
   }

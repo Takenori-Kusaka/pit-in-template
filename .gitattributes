@@ -1,0 +1,7 @@
+# 判定記録と承認レビューの写しの置き場を、改行の変換の対象から外す(process-compass #379 / ADR-0109)。
+# 置き場の成立した記録の変更は、出荷判定の集約が書き換えとして欠落に数える。改行の変換(core.autocrlf・text=auto)が
+# 記録を書き換えると、正当な操作が書き換えとして検出される(誤検出)。記録はバイト列のまま扱う。
+# 記録用ブランチ records の側は、record-copy.yml が初期化のときに同じ設定(* -text)を置く
+records/** -text
+docs/records/** -text
+docs/gates/** -text

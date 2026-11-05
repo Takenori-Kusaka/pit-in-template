@@ -227,6 +227,10 @@ export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {})
           },
         ]
       : []),
+    // 判定記録の置き場(記録用ブランチ)の履歴の書き換えと削除を、ホスティングの規則で止めていない構成(process-compass #379 突合 M-8)
+    ...(recordsProtectionState(config).status === 'mismatch'
+      ? [{ label: `判定記録の置き場の履歴の書き換えと削除を、ホスティングの規則で止めていない(${recordsProtectionState(config).detail})`, derived: 'records-protection' }]
+      : []),
   ];
   const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
   const blockers = [];
@@ -819,6 +823,24 @@ const performerEnvCache = new Map();
  * 構成に performerEnvCheck(試験・呼び出し側が渡す値。null は記録なし)があればそれを使う。鮮度は env-check の記録と同じく
  * 作業ツリーの記録をそのまま読み、期限を置かない。専用の確認は、記録の時点の申告と現在の申告のアカウントが一致するときだけ効く
  */
+/**
+ * 記録用ブランチの規則の適用の状態(実環境の統制の確認の所見 recordsBranch。adoption-trial.mjs env-check が書く)。
+ * { status: 'confirmed' | 'mismatch' | 'unconfirmed', detail }。mismatch は、ブランチがあるのに履歴の書き換えと削除を規則で止めて
+ * いない(ルールセットを使えないプランを含む)構成で、標準 第1章 1.10.2 の列挙に無い離脱に当たる(第4章「判定記録を基底ブランチへ
+ * 入れる操作」の置き場の要求の1つ目を満たさない。process-compass #379 突合 M-8)。構成に recordsProtection があればそれを読む(試験)
+ */
+export function recordsProtectionState(config, { root = ROOT } = {}) {
+  if (config && typeof config === 'object' && 'recordsProtection' in config) return config.recordsProtection ?? { status: 'unconfirmed', detail: '記録なし' };
+  try {
+    const rec = JSON.parse(fs.readFileSync(path.join(root, PERFORMER_ENV_RECORD), 'utf8'));
+    const f = rec?.findings?.recordsBranch;
+    if (!f) return { status: 'unconfirmed', detail: '実環境の統制の確認の記録に、記録用ブランチの所見が無い' };
+    return { status: ['confirmed', 'mismatch'].includes(f.status) ? f.status : 'unconfirmed', detail: String(f.detail ?? '') };
+  } catch {
+    return { status: 'unconfirmed', detail: `実環境の統制の確認の記録(${PERFORMER_ENV_RECORD})が無い、または読めない` };
+  }
+}
+
 export function performerEnvRecord(config, { root = ROOT } = {}) {
   if (config && typeof config === 'object' && 'performerEnvCheck' in config) return config.performerEnvCheck ?? null;
   const p = path.join(root, PERFORMER_ENV_RECORD);

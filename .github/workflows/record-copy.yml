@@ -2,20 +2,26 @@
 #
 # 写しは、人の判断を含まない機械の複製です。要約と評価を足しません。
 # 承認レビューの本文は編集でき、監査ログは 180 日で消え、承認者が退会すると user が ghost になります。
-# 写しをマージと同じ時期に取り出し、記名者と判定される側が書き換えられない場所へ置くことで、
-# 出荷判定(G-7)の時点で、ホスティングから引き直した承認レビューと突き合わせられるようにします。
+# 写しをマージと同じ時期に取り出し、成立した記録を記録を残さずには書き換えられない場所(履歴の書き換えと削除を規則で止めた
+# 記録用ブランチ)へ置くことで、出荷判定(G-7)の時点で、ホスティングから引き直した承認レビューと突き合わせられるようにします。
+# 置き場は書き換えを防ぎません。書き込みの権限を持つ者とジョブのトークンは新しいコミットで記録を変えられ、変えた事実は履歴に残ります。
+# 出荷の集約が、履歴の走査とホスティングとの突合で書き換えを検出して欠落に数えます(process-compass #379 / ADR-0109)。
 #
 # 置き場は、既定ブランチではなく、同じリポジトリの記録用ブランチ `records` です(`.github/rulesets/README.md`「記録用ブランチ」)。
 # 既定ブランチのルールセットは一切緩めません。bypass actor を足さず、`exempt` を使いません。
 # `records` ブランチには `pull_request` の規則が無いため、GITHUB_TOKEN(contents: write)の push が通ります
 # (2026-10-23 の実機確認: orphan ブランチの初期化と push。committer は github-actions[bot])。
 #
-# 書き込みは追記だけです。既存のファイルを書き換えません(同じ PR の写しが既にあれば、何もせずに終えます)。
+# 書き込みは追記だけです。既存のファイルを書き換えません。同じ PR の写しが既にあれば、比べる欄(マージの時刻までのレビューの識別子・
+# 状態・commit_id・submitted_at・user.id・本文と、マージのコミット・head)を今取り出した写しと比べ、一致すれば何もせずに成功で終えます(再実行)。
+# 状態と本文も比べるのは、マージの後に先回りで置いた写しの状態・本文の差し替えを、再実行と見なさないためです(process-compass #379 突合 H-2)。
+# 食い違えば、取り出した写しを records/conflicts/ へ衝突の記録として追記し、失敗します(既にある写しを、警告だけで正しい写しとして残さない)。
 #
 # 署名を必須にする構成(records-signed.json。`required_signatures`)では、git push のコミットは署名を持たないため止まります。
 # その構成では GraphQL `createCommitOnBranch` で書きます(GitHub が署名する。`gh api graphql`)。経路の判定:
-#   1. 構成 process.config.json に `records.signed`(真偽値)があればその値(段階 2 の時点で /process-init はこの値を書かない。将来の /process-change 用)
-#   2. 無ければ、リポジトリの変数 RECORDS_SIGNED(Settings > Variables)が `true` のとき GraphQL 経路、それ以外は git push
+#   構成の回答が規制業(q-quality が quality-regulated)または安全重要度 CL2 以上(q-criticality が cl2・cl3)なら GraphQL 経路、
+#   それ以外は git push(scripts/gate/records.mjs の recordsSignatureRequired。集約・開示・ship-evidence.yml と同じ判定。
+#   リポジトリの変数には頼らない。process-compass #379 突合 M-7)
 # `createCommitOnBranch` は `expectedHeadOid`(ブランチの現在の先頭)を要するため、ブランチが無いときは先に作ります。
 # 初期化は git 経路(空の README を持つ orphan コミットの push)で行います。署名が要る構成では、この初期化の push が止まるため、
 # 理由を出して失敗します。その場合は人が署名コミットで `records` ブランチを作ります(`.github/rulesets/README.md`「記録用ブランチの初期化」)。
@@ -131,18 +137,13 @@ jobs:
           ' /tmp/record-copy/pr.json > /dev/null || { echo "::error::写しの最小の組(pr・merge_commit_sha・head_sha・copied_at・author{id,login}・reviews[].{id,state,commit_id,submitted_at,user{id,login,type},body})が揃っていません"; exit 1; }
           echo "::notice::PR #$PR のレビュー $(jq '.reviews | length' /tmp/record-copy/pr.json) 件を写しました"
 
+      # 署名の要否は、構成の回答(規制業・安全重要度 CL2 以上)から1つの関数で導く。集約の欠落・保証の開示と同じ判定
+      # (scripts/gate/records.mjs の recordsSignatureRequired。リポジトリの変数に頼らない。process-compass #379)
       - name: 署名の要否を決める
         id: signed
-        env:
-          RECORDS_SIGNED_VAR: ${{ vars.RECORDS_SIGNED }}
         run: |
-          signed=$(jq -r 'if (.records.signed|type)=="boolean" then .records.signed else empty end' process.config.json 2>/dev/null || true)
-          if [ -z "$signed" ]; then
-            if [ "${RECORDS_SIGNED_VAR:-}" = "true" ]; then signed=true; else signed=false; fi
-            echo "::notice::構成に records.signed が無いため、変数 RECORDS_SIGNED(${RECORDS_SIGNED_VAR:-未設定})で判定: 署名 $signed"
-          else
-            echo "::notice::構成 records.signed: 署名 $signed"
-          fi
+          signed=$(node scripts/gate/records.mjs --signature-required)
+          echo "::notice::構成の回答から導いた署名の要否: $signed(規制業・CL2 以上で true。true の構成は records-signed.json を適用する)"
           echo "signed=$signed" >> "$GITHUB_OUTPUT"
 
       - name: 記録用ブランチへ追記する(git push)
@@ -160,14 +161,30 @@ jobs:
             git checkout --orphan "$RECORDS_BRANCH"
             git rm -rf --quiet . || true
             printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録の様式(records/gates/)を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
-            git add README.md
+            # 置き場を改行の変換の対象から外す(変換が記録を書き換え、書き換えとして誤検出されるのを避ける。process-compass #379)
+            printf '* -text\n' > .gitattributes
+            git add README.md .gitattributes
             git commit -m "chore: 記録用ブランチを初期化する"
           fi
           dest="records/reviews/pr-$PR.json"
           if [ -e "$dest" ]; then
-            # 追記だけを行う。既存の写しは書き換えない(書き換えは、成立済みの記録の書き換えとして集約が所見に出す対象)
-            echo "::warning::$dest は既にあります。書き換えません"
-            exit 0
+            # 追記だけを行う。既存の写しは書き換えない(書き換えは、成立した記録の書き換えとして集約が欠落に出す対象)。
+            # 既にある写しと今取り出した写しの比べる欄を比べ、一致すれば再実行として成功で終える。食い違えば、取り出した写しを
+            # 衝突の記録として records/conflicts/ へ追記して失敗する(マージより前に置かれた写しの疑い。process-compass #379 / ADR-0109 決定4)。
+            # 比べるレビューはマージの時刻までに提出されたものに限る(マージの後のレビューで、正当な再実行を失敗させない)
+            shape='(.merged_at // "") as $m | {pr, merge_commit_sha, head_sha, reviews: [(.reviews // [])[] | select($m == "" or .submitted_at == null or .submitted_at <= $m) | {id, state, commit_id, submitted_at, user: {id: .user.id}, body}] | sort_by(.id)}'
+            if jq -S "$shape" "$dest" > /tmp/record-copy/have.json 2>/dev/null && jq -S "$shape" /tmp/record-copy/pr.json > /tmp/record-copy/now.json && cmp -s /tmp/record-copy/have.json /tmp/record-copy/now.json; then
+              echo "::notice::$dest は既にあり、比べる欄(レビューの識別子・状態・commit_id・submitted_at・user.id・本文・マージのコミット・head)が今取り出した写しと一致します(再実行)。書き換えません"
+              exit 0
+            fi
+            conflict="records/conflicts/pr-$PR-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}.json"
+            mkdir -p "$(dirname "$conflict")"
+            cp /tmp/record-copy/pr.json "$conflict"
+            git add "$conflict"
+            git commit -m "records: PR #$PR の写しの取り出しの衝突を記録する(既にある写しと比べる欄が食い違う)"
+            git push origin "$RECORDS_BRANCH"
+            echo "::error::$dest は既にあり、今取り出した写しと比べる欄が食い違います。既にある写しは書き換えず、取り出した写しを $conflict に記録しました。出荷の集約はこの PR の写しを欠落に数えます"
+            exit 1
           fi
           mkdir -p "$(dirname "$dest")"
           cp /tmp/record-copy/pr.json "$dest"
@@ -193,7 +210,8 @@ jobs:
             git checkout --orphan "$RECORDS_BRANCH"
             git rm -rf --quiet . || true
             printf '# 記録用ブランチ\n\n承認レビューの写し(records/reviews/)と判定記録の様式(records/gates/)を置きます。追記だけを行い、既存のファイルを書き換えません。\n' > README.md
-            git add README.md
+            printf '* -text\n' > .gitattributes
+            git add README.md .gitattributes
             git commit -m "chore: 記録用ブランチを初期化する"
             if git push origin "$RECORDS_BRANCH"; then
               echo "::notice::記録用ブランチを初期化しました(署名なしの初期コミット。ルールセット records-signed.json はこの後に適用する)"
@@ -203,14 +221,28 @@ jobs:
               exit 1
             fi
           fi
-          # 既にあれば書き換えない(追記だけ)
-          if gh api "repos/$REPO/contents/$dest?ref=$RECORDS_BRANCH" --jq '.sha' >/dev/null 2>&1; then
-            echo "::warning::$dest は既にあります。書き換えません"
-            exit 0
+          # 既にあれば書き換えない(追記だけ)。比べる欄が一致すれば再実行として成功、食い違えば衝突を records/conflicts/ へ追記して失敗する
+          # (git push の経路と同じ。process-compass #379 / ADR-0109 決定4)
+          headline="records: PR #$PR の承認レビューの写しを置く"
+          if gh api "repos/$REPO/contents/$dest?ref=$RECORDS_BRANCH" --jq '.content' > /tmp/record-copy/have.b64 2>/dev/null; then
+            shape='(.merged_at // "") as $m | {pr, merge_commit_sha, head_sha, reviews: [(.reviews // [])[] | select($m == "" or .submitted_at == null or .submitted_at <= $m) | {id, state, commit_id, submitted_at, user: {id: .user.id}, body}] | sort_by(.id)}'
+            if base64 -d /tmp/record-copy/have.b64 > /tmp/record-copy/have-raw.json 2>/dev/null \
+              && jq -S "$shape" /tmp/record-copy/have-raw.json > /tmp/record-copy/have.json && jq -S "$shape" /tmp/record-copy/pr.json > /tmp/record-copy/now.json \
+              && cmp -s /tmp/record-copy/have.json /tmp/record-copy/now.json; then
+              echo "::notice::$dest は既にあり、比べる欄が今取り出した写しと一致します(再実行)。書き換えません"
+              exit 0
+            fi
+            conflict=1
+            dest="records/conflicts/pr-$PR-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}.json"
+            headline="records: PR #$PR の写しの取り出しの衝突を記録する(既にある写しと比べる欄が食い違う)"
           fi
           jq -n --arg repo "$REPO" --arg branch "$RECORDS_BRANCH" --arg head "$head" --arg path "$dest" \
-            --arg contents "$(base64 -w0 /tmp/record-copy/pr.json)" --arg headline "records: PR #$PR の承認レビューの写しを置く" \
+            --arg contents "$(base64 -w0 /tmp/record-copy/pr.json)" --arg headline "$headline" \
             '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}",
               variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:$branch},message:{headline:$headline},expectedHeadOid:$head,fileChanges:{additions:[{path:$path,contents:$contents}]}}}}' > /tmp/record-copy/body.json
           oid=$(gh api graphql --input /tmp/record-copy/body.json --jq '.data.createCommitOnBranch.commit.oid')
           echo "::notice::署名つきのコミット $oid で $dest を置きました(createCommitOnBranch)"
+          if [ "${conflict:-0}" = "1" ]; then
+            echo "::error::records/reviews/pr-$PR.json は既にあり、今取り出した写しと比べる欄が食い違います。既にある写しは書き換えず、取り出した写しを $dest に記録しました。出荷の集約はこの PR の写しを欠落に数えます"
+            exit 1
+          fi

@@ -106,6 +106,18 @@ function main() {
     }
   }
 
+  // 1b. 追記だけの置き場(判定記録と写しの置き場)。既にあるファイルへの書き込み(編集)を拒否する。新しいファイルは拒否しない。
+  // 成立した記録の変更は、出荷の集約が書き換えとして欠落に数える(process-compass #379 / ADR-0109)。強制層そのものの遮断と同じく
+  // guard.enabled の一時緩和で外す
+  if (guard.enabled !== false) {
+    for (const item of guard.appendOnlyPatterns ?? []) {
+      const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
+      const p = isObj ? item.pattern : item;
+      const reason = isObj ? (item.reason ?? guard.appendOnlyReason) : guard.appendOnlyReason;
+      if (match(p, rel) && fs.existsSync(path.join(ROOT, rel))) deny(reason ?? '成立した記録は書き換えません。訂正は元の記録を指す訂正の記録を人が足します', 'append-only');
+    }
+  }
+
   // 2. 自己修正ループ中のテスト。guard.enabled に依らず適用する
   const lockRel = guard.selfHealLockFile ?? '.claude/.self-heal';
   if (rel === lockRel) {

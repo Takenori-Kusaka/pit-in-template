@@ -140,7 +140,9 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
     { where: 'docs/records/reviews/pr-3.json', copy: { pr: 3, reviews: [{ id: 9, user: { login: 'sato', id: 8888 }, state: 'APPROVED' }] } },
   ];
   check('提案: 写しの reviews[].user と author から (login, id) を集める', observationsOfCopy(sources[0].copy, 'x').length === 3);
-  const r = proposeRosterIds(roster, { sources });
+  // 写しの値はホスティングで照合した値に限って提案する(process-compass #379)。照合の関数は gh api users/<login> の代わり
+  const hostNow = (login) => ({ yamada: 1001, suzuki: 1002, sato: 1003, ito: 5005 })[login] ?? null;
+  const r = proposeRosterIds(roster, { sources, verify: hostNow });
   const prop = (login) => r.proposals.find((x) => x.login === login);
   // IMPL-0426:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('提案: 写しに1つの識別子で現れるアカウントを提案する', prop('yamada')?.id === 1001 && prop('suzuki')?.id === 1002, JSON.stringify(r.proposals));
@@ -148,6 +150,13 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   check('提案: 写しどうしで識別子が食い違うアカウントは提案せず、所見に出す', !prop('sato') && r.findings.some((x) => /@sato/.test(x) && /提案しない/.test(x)), JSON.stringify(r));
   check('提案: 写しに現れないアカウントは、--lookup が無ければ提案しない(理由を出す)', !prop('takahashi') && r.unresolved.some((x) => x.login === 'takahashi' && /--lookup/.test(x.why)));
   check('提案: 名簿に識別子を持つアカウントで、写しに同じログイン名の別の識別子が現れたら所見に出す', r.findings.some((x) => /@ito/.test(x) && /7777/.test(x)));
+  const unverified = proposeRosterIds(roster, { sources });
+  check('提案: ホスティングを読めない実行では、写しの値から提案し、照合していない旨を付ける(ADR-0108 決定2)', unverified.proposals.some((x) => x.login === 'yamada' && x.id === 1001 && x.unverified === true && /照合していない/.test(x.from)), JSON.stringify(unverified));
+  // IMPL-0441:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  const forged = proposeRosterIds(roster, { sources: [copy(4, { login: 'yamada', id: 6666 }, [])], verify: hostNow });
+  check('提案: 写しの識別子がホスティングの現在の値と食い違えば提案しない(偽の写し)', !forged.proposals.length && forged.findings.some((x) => /@yamada/.test(x) && /6666/.test(x)), JSON.stringify(forged));
+  // IMPL-0441:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('提案: ホスティングで照合した値は提案し、出所に照合した旨を書く', prop('yamada')?.id === 1001 && /ホスティングの現在の値と一致/.test(prop('yamada').from), JSON.stringify(r.proposals));
   const looked = proposeRosterIds(roster, { sources, lookup: (login) => ({ takahashi: 4004, yamada: 1001, suzuki: 2222 })[login] ?? null });
   const lp = (login) => looked.proposals.find((x) => x.login === login);
   check('提案(--lookup): 写しに現れないアカウントを gh api users/<login> の値で提案する(出所を書く)', lp('takahashi')?.id === 4004 && /gh api users/.test(lp('takahashi').from));
@@ -169,11 +178,12 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
 {
   const roster = { people: [{ id: 'p1', name: '山田 太郎', accounts: ['yamada'] }] };
   const src = (assoc) => [{ where: 'records:records/reviews/pr-9.json', copy: { pr: 9, reviews: [{ id: 1, user: { login: 'yamada', id: 9999 }, state: 'COMMENTED', ...(assoc ? { author_association: assoc } : {}) }] } }];
-  const none = proposeRosterIds(roster, { sources: src('NONE') });
+  const now9 = () => 9999;
+  const none = proposeRosterIds(roster, { sources: src('NONE'), verify: now9 });
   check('提案(M-3): リポジトリとの関係が書き込みの権限を持たない書き手の観測を、提案の根拠にしない', !none.proposals.length && none.excluded === 1, JSON.stringify(none));
-  const member = proposeRosterIds(roster, { sources: src('MEMBER') });
+  const member = proposeRosterIds(roster, { sources: src('MEMBER'), verify: now9 });
   check('提案(M-3): 関係が MEMBER の書き手の観測は提案する', member.proposals[0]?.id === 9999 && member.excluded === 0);
-  const old = proposeRosterIds(roster, { sources: src(null) });
+  const old = proposeRosterIds(roster, { sources: src(null), verify: now9 });
   check('提案(M-3): 関係の値の無い古い写しはそのまま読み、件数を返す(出力の注記)', old.proposals[0]?.id === 9999 && old.unassociated === 1);
 }
 {

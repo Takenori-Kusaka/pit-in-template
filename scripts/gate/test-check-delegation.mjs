@@ -473,6 +473,101 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   }
 }
 
+// 委任の判定が数える G-6 の差し戻しの記録の帰属(効力を持つ記録。process-compass #379 / ADR-0109 決定4)。
+// 帰属をホスティングの記録で確かめた記録だけを差し戻し率に数える。偽の差し戻し(写しにだけあるレビュー・書き手の食い違い・
+// 帰属の無い様式)を数えないことは差し戻し率を下げ、引き下げの側へ倒れる
+{
+  const tmpRoot = fs.mkdtempSync(path.join(ROOT, 'evidence/.rejection-attr-test-'));
+  try {
+    const cfg = {
+      people: [
+        { id: 'p1', name: 'レビュア 甲', accounts: [{ login: 'reviewer-a', id: 9 }] },
+        { id: 'p2', name: '開発 乙', accounts: [{ login: 'dev-b', id: 11 }] },
+      ],
+      roles: [{ id: 'independent-reviewer', gatesOwned: ['g6'] }],
+      seats: [{ role: 'independent-reviewer', accountable: 'p1' }],
+    };
+    const form = (target, judge) => ['| 項目 | 値 |', '| --- | --- |', '| ゲート | G-6 独立レビュー |', `| 対象 | ${target} |`, `| 判定者 | ${judge} |`, '| 判定日時 | 2026-08-07 10:00 |', '| 結果 | 差し戻し |', '', '## 差し戻しの理由', '', '基準3を満たしていません。'].join('\n');
+    const hostReview = (over = {}) => ({ id: 7, user: { login: 'reviewer-a', id: 9, type: 'User' }, body: 'G-6: 差し戻し / 基準 1', state: 'CHANGES_REQUESTED', commit_id: 'a'.repeat(40), submitted_at: '2026-08-07T01:00:00Z', ...over });
+    const pulls = {
+      60: { author: { login: 'dev-b', id: 11 }, reviews: [hostReview()] },
+      61: { author: { login: 'dev-b', id: 11 }, reviews: [hostReview({ user: { login: 'reviewer-a', id: 4242, type: 'User' } })] },
+      63: { author: { login: 'reviewer-a', id: 9 }, reviews: [hostReview()] },
+      64: { author: { login: 'dev-b', id: 11 }, reviews: [hostReview({ body: 'G-6: 通過' })] },
+    };
+    const hosting = {
+      pullOf: (n) => (pulls[n] ? { number: n, ...pulls[n] } : null),
+      commitOf: (sha) => (sha === 's'.repeat(40) ? { number: null, verified: true, authorLogin: 'reviewer-a', authorId: 9, committerLogin: 'reviewer-a', committerId: 9 } : sha === 'u'.repeat(40) ? { number: null, verified: false, authorLogin: 'reviewer-a', authorId: 9, committerLogin: 'reviewer-a', committerId: 9 } : null),
+      prOfCommit: () => null,
+    };
+    const branch = {
+      available: true,
+      gates: [
+        { file: 'records/gates/g6-PR-70-2026-08-07.md', text: form('PR #70', 'レビュア 甲'), added: { hash: 's'.repeat(40) } },
+        { file: 'records/gates/g6-PR-71-2026-08-07.md', text: form('PR #71', 'レビュア 甲'), added: { hash: 'u'.repeat(40) } },
+      ],
+      reviews: new Map([60, 61, 62, 63, 64].map((n) => [n, reviewCopy('G-6: 差し戻し / 基準 1', n).copy])),
+    };
+    const rr = readRejectionRecords({ root: tmpRoot, branch, config: cfg, hosting });
+    const counted = rr.rejections.map((r) => r.target).sort();
+    // IMPL-0440:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+    check('差し戻しの帰属: ホスティングのレビュー(識別子・書き手・対象のコミット・宣言行が写しと一致し、書き手が G-6 の席の責任者で PR の作成者と異なる)と、署名を検証した様式を数える', counted.join() === ['PR #60', 'PR #70'].sort().join(), counted.join());
+    // IMPL-0440:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+    const why = Object.fromEntries(rr.unattributed.map((u) => [u.target, u.why]));
+    check('差し戻しの帰属: 書き手の数値の識別子がホスティングと食い違う写し(偽の差し戻し)は数えない', /数値の識別子/.test(why['PR #61'] ?? ''), JSON.stringify(why));
+    check('差し戻しの帰属: ホスティングで PR を引けない写し(存在しない PR 番号を含む)は数えない', /引けない/.test(why['PR #62'] ?? ''), JSON.stringify(why));
+    check('差し戻しの帰属: PR の作成者自身のレビューは数えない', /作成者/.test(why['PR #63'] ?? ''), JSON.stringify(why));
+    check('差し戻しの帰属: ホスティングの本文の宣言行が差し戻しでないレビューは数えない', /宣言行/.test(why['PR #64'] ?? ''), JSON.stringify(why));
+    check('差し戻しの帰属: 署名をホスティングが検証していない様式は数えない', Boolean(why['PR #71']), JSON.stringify(why));
+    check('差し戻しの帰属: 数えなかった件数を注記に出す(引き下げの側へ倒れる旨)', rr.notes.some((x) => /5 件/.test(x) && /引き下げの側へ倒れる/.test(x)), JSON.stringify(rr.notes));
+    const offline = readRejectionRecords({ root: tmpRoot, branch, config: cfg, hosting: null });
+    check('差し戻しの帰属: ホスティングを読めない実行では、どの記録も数えない(停止の側へ倒れる)', offline.rejections.length === 0 && offline.unattributed.length === 7);
+
+    // 書き手を G-6 の席の責任者に限らない(承認の数え方と対称。突合 M-3)。名義の共有は帰属の確認を要する(ADR-0107。突合 M-2)
+    const cfg2 = {
+      people: [...cfg.people, { id: 'p3', name: 'レビュア 丙', accounts: [{ login: 'reviewer-c', id: 13 }] }, { id: 'p4', name: '確認 丁', accounts: [{ login: 'confirm-d', id: 14 }] }],
+      roles: cfg.roles,
+      seats: [
+        { role: 'independent-reviewer', accountable: 'p1' },
+        { role: 'dev-verifier', name: '開発者', accountable: 'p3', performer: { model: 'm-1', instructions: 'v1', permissions: 'p' }, performerAccount: { kind: 'shared', person: 'p3' } },
+      ],
+    };
+    const byC = (over = {}) => hostReview({ user: { login: 'reviewer-c', id: 13, type: 'User' }, author_association: 'COLLABORATOR', ...over });
+    const pulls2 = {
+      80: { author: { login: 'dev-b', id: 11 }, reviews: [hostReview({ author_association: 'COLLABORATOR' })] },
+      81: { author: { login: 'dev-b', id: 11 }, reviews: [byC()] },
+      82: { author: { login: 'dev-b', id: 11 }, reviews: [byC(), { id: 99, user: { login: 'confirm-d', id: 14, type: 'User' }, state: 'APPROVED', author_association: 'COLLABORATOR', commit_id: 'a'.repeat(40), body: '挙動要約: 確認した' }] },
+      83: { author: { login: 'dev-b', id: 11 }, reviews: [hostReview({ author_association: 'NONE' })] },
+    };
+    const hosting2 = { pullOf: (n) => (pulls2[n] ? { number: n, ...pulls2[n] } : null), commitOf: () => null, prOfCommit: () => null };
+    const copyBy = (n, user) => {
+      const c = reviewCopy('G-6: 差し戻し / 基準 1', n).copy;
+      c.reviews[0].user = user;
+      return c;
+    };
+    const branch2 = {
+      available: true,
+      gates: [],
+      reviews: new Map([
+        [80, reviewCopy('G-6: 差し戻し / 基準 1', 80).copy],
+        [81, copyBy(81, { login: 'reviewer-c', id: 13 })],
+        [82, copyBy(82, { login: 'reviewer-c', id: 13 })],
+        [83, reviewCopy('G-6: 差し戻し / 基準 1', 83).copy],
+      ]),
+    };
+    const rr2 = readRejectionRecords({ root: tmpRoot, branch: branch2, config: cfg2, hosting: hosting2 });
+    const why2 = Object.fromEntries(rr2.unattributed.map((u) => [u.target, u.why]));
+    const counted2 = rr2.rejections.map((r) => r.target).sort();
+    check('差し戻しの帰属: G-6 の席の責任者でない名簿の人の差し戻しも数える(承認の数え方と対称)', counted2.includes('PR #80') || counted2.includes('PR #82'), JSON.stringify({ counted2, why2 }));
+    check('差し戻しの帰属: 書き手が AI の担い手と名義を共有し、帰属の確認(名義を共有していない人の承認)が無ければ数えない', /名義を共有/.test(why2['PR #81'] ?? ''), JSON.stringify(why2));
+    check('差し戻しの帰属: 名義を共有する書き手でも、名義を共有していない人の承認があれば数える', counted2.includes('PR #82'), JSON.stringify({ counted2, why2 }));
+    check('差し戻しの帰属: 書き込みの権限を持たない関係の書き手の差し戻しは数えない', /関係/.test(why2['PR #83'] ?? ''), JSON.stringify(why2));
+    check('差し戻しの帰属: 席の責任者の差し戻しは数える', counted2.includes('PR #80'), JSON.stringify({ counted2, why2 }));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 console.log('');
 if (failed) {
   console.log(`::error::委任の経路の試験: ${failed} 件が期待と一致しません`);

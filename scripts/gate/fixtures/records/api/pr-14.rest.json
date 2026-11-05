@@ -1,0 +1,29 @@
+[
+  {
+    "id": 5627550001,
+    "user": { "login": "suzuki", "id": 30000001, "type": "User" },
+    "state": "DISMISSED",
+    "commit_id": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+    "submitted_at": "2026-10-24T01:00:00Z",
+    "author_association": "COLLABORATOR",
+    "body": "挙動要約: 設定画面の保存ボタンを二重送信できないようにする変更。保存中は無効化する。\n問題なし"
+  },
+  {
+    "id": 5627550002,
+    "user": { "login": "ghost", "id": 10137, "type": "User" },
+    "state": "COMMENTED",
+    "commit_id": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+    "submitted_at": "2026-10-24T01:05:00Z",
+    "author_association": "NONE",
+    "body": "G-4: 通過(判定者の申告を転記)\n確認した項目: 基準1"
+  },
+  {
+    "id": 5627550003,
+    "user": { "login": "sato", "id": 40000002, "type": "User" },
+    "state": "APPROVED",
+    "commit_id": "e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3",
+    "submitted_at": "2026-10-24T05:00:00Z",
+    "author_association": "COLLABORATOR",
+    "body": "挙動要約: 写しの後に提出した承認。二重送信の抑止を確かめた。"
+  }
+]

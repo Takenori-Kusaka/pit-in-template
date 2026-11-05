@@ -38,16 +38,21 @@
 - 記録用ブランチへ書くのは、マージを契機に走るワークフロー `record-copy.yml`(承認レビューの写し `records/reviews/pr-<番号>.json`。`GITHUB_TOKEN` の `contents: write` で足り、App の鍵を要しません)と、判定者本人(様式 `records/gates/<ゲート>-<対象>-<日付>.md`。直接 push する。PR も他者の承認も要らない。`.claude/skills/gate/reference/recording.md`「様式の届け方」)です
 - 記録用ブランチの内容を基底ブランチへ入れるのは、遅くとも出荷判定(G-7)です。`ship-evidence.yml` が出荷のブランチ `ship/<日付>` を 1 本 push し、`records/reviews/` を `docs/records/reviews/` へ、`records/gates/` を `docs/gates/` へ複製します。PR を開くのは出荷判定者です(下記「出荷の PR」)。入れる操作に、記名者(出荷判定者)以外の承認を課しません
 
-### 署名を必須にする構成(`records-signed.json`)と変数 `RECORDS_SIGNED`
+#### 記録用ブランチが防がないことと、検出(process-compass #379 / ADR-0109)
 
-`records-signed.json` を適用する構成では、`git push` のコミットは署名を持たないため止まります。この構成では、`record-copy.yml` と `ship-evidence.yml` が GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書きます。経路の判定は次のとおりです。
+記録用ブランチの規則が止めるのは、履歴の書き換え(force push)とブランチの削除だけです。**書き込みの権限を持つ者とジョブのトークン(`GITHUB_TOKEN`)は、新しいコミットで写しと様式を追加・変更・削除できます**。ジョブのトークンはどのワークフローにも同じ名義で出るため、書き込みを `record-copy.yml` に限れません。ホスティングの管理者(個人所有のリポジトリでは所有者)は、規則そのものを外せます。標準は置き場を「成立した記録を、記録を残さずには書き換えられない場所」と定め、書き込みの防止を課しません。
 
-1. 構成 `process.config.json` に `records.signed`(真偽値)があればその値。2026-10-23 時点で `/process-init` はこの値を書きません(将来の `/process-change` の入力)
-2. 無ければ、リポジトリの変数 **`RECORDS_SIGNED`**(Settings > Secrets and variables > Actions > Variables)が `true` のとき API 経由、それ以外は `git push`
+- 出荷の集約(`aggregate-evidence.mjs`)が記録用ブランチの履歴を走査し、`records/` の下の追加以外の変更(変更・削除・名前の変更)と、PR のマージより前に置かれた写しを、成立した記録の書き換えとして欠落に数えます(IMPL-0432)
+- 出荷ごとに、集約が読んだ先頭を出荷の PR で `docs/records/heads/` へ残します。次の集約は、それが今の先頭の祖先であることを確かめます。規則を外していた間の履歴の書き換えは、祖先関係の破れとして出ます(IMPL-0433)
+- `records-signed.json` を適用する構成(規制業・CL2 以上)では、署名をホスティングが検証していない書き込みを欠落に数えます(IMPL-0434)
+- 写しの不変の欄(レビューの識別子・`user.id`・`commit_id`・`submitted_at`)は、ホスティングの記録を正として突き合わせます。写しにだけあるレビューは欠落です。ホスティングで照合できなかった写しでは G-6 を数えません(IMPL-0435)
+- 訂正は、元の記録を指す訂正の記録を足す形に限ります。起きた書き換えは、例外承認でだけ受け入れます
+- 書き込める主体を限れないことは、保証の開示の項目1 に構成ごとの定型の文で出し、外へ渡す開示にも載せます(IMPL-0439)。検出の件数が 0 であることは、書き換えを防いだことを示しません
+- 置き場は改行の変換と整形の対象から外します(`.gitattributes`・`.prettierignore`。記録用ブランチの側は `record-copy.yml` が初期化のときに `.gitattributes` を置く)。AI の担い手による置き場の既にある記録の編集は、強制層のフック(`guard.json` の `appendOnlyPatterns`。記録用ブランチを作業木に取り出した `records/**`)が拒否します。フックは Write・Edit の道具だけに効き、Bash による編集は止めません(抑止の層)
 
-```bash
-gh variable set RECORDS_SIGNED --body true     # records-signed.json を適用する構成で設定する
-```
+### 署名を必須にする構成(`records-signed.json`)
+
+`records-signed.json` を適用する構成では、`git push` のコミットは署名を持たないため止まります。この構成では、`record-copy.yml` と `ship-evidence.yml` が GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書きます。経路の判定は、構成の回答だけから導きます。規制業(`q-quality` が `quality-regulated`)または安全重要度 CL2 以上(`q-criticality` が `cl2`・`cl3`)なら API 経由、それ以外は `git push` です(`scripts/gate/records.mjs` の `recordsSignatureRequired`)。集約の欠落(署名の無い書き込み)と保証の開示の文も同じ判定を使います。リポジトリの変数には頼りません(process-compass #379)。署名を要する構成では、`records-signed.json` を適用します。
 
 - `ship-evidence.yml` は、既定ブランチのルールセットが `safety.json` / `regulated.json`(署名を必須にする)の構成でも API 経由で書きます(出荷の PR のコミットが既定ブランチの署名の規則で止まらないため)
 - **`createCommitOnBranch` と `required_signatures` の組は、2026-10-23 時点で実機で確かめていません**(E0)。初回のマージと初回の出荷で、Actions の実行の記録を確かめてください
@@ -98,7 +103,7 @@ GitHub のルールセットは、パス単位の免除を持ちません。`tea
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team.json
 ```
 
-記録用ブランチのルールセットも、同じ形で適用します(規制業・CL2 以上は `records-signed.json`。あわせて変数 `RECORDS_SIGNED` を `true` にする)。ブランチ `records` 自体は、最初のマージで `record-copy.yml` が作ります。ルールセットはブランチが無くても適用できますが、`records-signed.json` は初期化の後に適用します(前掲「記録用ブランチの初期化」)。
+記録用ブランチのルールセットも、同じ形で適用します(規制業・CL2 以上は `records-signed.json`。ワークフローは構成の回答から署名の要否を導く)。ブランチ `records` 自体は、最初のマージで `record-copy.yml` が作ります。ルールセットはブランチが無くても適用できますが、`records-signed.json` は初期化の後に適用します(前掲「記録用ブランチの初期化」)。
 
 ```bash
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json
@@ -114,7 +119,7 @@ gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json
 gh api repos/{owner}/{repo}/rulesets --jq '.[] | "\(.id) \(.name) \(.enforcement)"'
 ```
 
-私有リポジトリでルールセットを使えないプラン(2026-10 時点の無料のプラン)では、記録用ブランチも保護できません。その構成では、写しと判定記録の書き換えを止められず、記録の日時は自己申告になります。出荷の PR の verify ジョブは `records` ブランチと複製の一致を検査しますが、`records` ブランチ自体の書き換えは検出できません(テンプレートの README「ブランチ保護を適用する」)。
+私有リポジトリでルールセットを使えないプラン(2026-10 時点の無料のプラン)では、記録用ブランチも保護できません。その構成では、写しと判定記録の履歴の書き換えも止められず、記録の日時は自己申告になります。出荷の集約は、新しいコミットによる書き換えを履歴の走査で、履歴の書き換えを前回の出荷で残した先頭(`docs/records/heads/`)との祖先関係の破れで検出します。最初の出荷より前に履歴を書き換えた場合は、検出できません(テンプレートの README「ブランチ保護を適用する」)。ルールセットを適用した構成でも、書き込める主体は限れません(前掲「記録用ブランチが防がないことと、検出」)。
 
 ## なぜここに置くか
 

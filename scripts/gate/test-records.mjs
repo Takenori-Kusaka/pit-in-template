@@ -124,16 +124,21 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const base = { hash: 'abcdef0123456789', authorName: '鈴木 一郎', authorEmail: '30000001+suzuki@users.noreply.github.com', authorLogin: 'suzuki', date: '2026-10-20T14:00:00+09:00' };
   const a1 = recordAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎' });
   check('帰属: 名前の一致だけ → 自己申告(backed=false, author-name)', a1.backed === false && a1.how === 'author-name', JSON.stringify(a1));
+  // 署名の無い author の一致は、帰属の裏づけに数えない(process-compass #379 / ADR-0109 決定3)。手元の署名の検証(%G?)も数えない
+  // (判定される側が鍵束を用意できる。署名はホスティングの検証で確かめる。aggregate-evidence.mjs の formAttribution)
   const a2 = recordAttribution(rec({ ...base, signed: false }), { judgeName: '鈴木 一郎', judgeLogin: 'suzuki' });
-  check('帰属: 署名なし + login の一致 → 弱い裏づけ(author-login)', a2.backed === true && a2.how === 'author-login', JSON.stringify(a2));
+  check('帰属: 署名なし + login の一致 → 裏づけに数えない(author-login・自己申告)', a2.backed === false && a2.how === 'author-login' && /数えない/.test(a2.note), JSON.stringify(a2));
   const a3 = recordAttribution(rec({ ...base, signed: false }), { judgeEmail: '30000001+SUZUKI@users.noreply.github.com' });
-  check('帰属: 署名なし + email の一致(大文字小文字を問わない) → author-email', a3.backed === true && a3.how === 'author-email', JSON.stringify(a3));
+  check('帰属: 署名なし + email の一致(大文字小文字を問わない) → 裏づけに数えない(author-email)', a3.backed === false && a3.how === 'author-email', JSON.stringify(a3));
   const a4 = recordAttribution(rec({ ...base, signed: true }), { judgeName: '鈴木 一郎', judgeLogin: 'suzuki' });
-  check('帰属: 署名あり + author が記名者 → signed-commit', a4.backed === true && a4.how === 'signed-commit', JSON.stringify(a4));
+  check('帰属: 手元の署名の検証(%G?)が通っても、この層では裏づけに数えない(ホスティングの検証は集約が行う)', a4.backed === false && a4.how === 'author-login', JSON.stringify(a4));
   const a5 = recordAttribution(rec({ ...base, signed: true }), { judgeName: '鈴木 一郎', judgeLogin: 'sato' });
   check('帰属: 署名ありでも login が別人なら、名前の一致は自己申告', a5.backed === false && a5.how === 'author-name', JSON.stringify(a5));
   const a6 = recordAttribution(rec({ ...base, signed: true }), { judgeName: '鈴木 一郎' });
-  check('帰属: 署名あり + 名前だけを渡した(login・email を知らない) → signed-commit', a6.backed === true && a6.how === 'signed-commit', JSON.stringify(a6));
+  check('帰属: 署名あり + 名前だけを渡した → 名前の一致(自己申告)', a6.backed === false && a6.how === 'author-name', JSON.stringify(a6));
+  // 様式を足したコミット(added)があれば、最後に触ったコミットより先に読む
+  const a9 = recordAttribution({ ...rec({ ...base, authorLogin: 'someone', authorEmail: 'x@example.com', authorName: 'x' }), added: { ...base } }, { judgeName: '鈴木 一郎', judgeLogin: 'suzuki' });
+  check('帰属: 様式を足したコミット(added)を読む', a9.how === 'author-login' && a9.backed === false, JSON.stringify(a9));
   const a7 = recordAttribution(rec({ ...base, signed: false }), { judgeName: '佐藤 花子', judgeLogin: 'sato', judgeEmail: 'sato@example.com' });
   check('帰属: 何も一致しない → backed=false, how=null', a7.backed === false && a7.how === null, JSON.stringify(a7));
   const a8 = recordAttribution(rec(null), { judgeName: '鈴木 一郎' });
@@ -266,7 +271,9 @@ try {
   const [j12] = judgementsFromCopy(r.reviews.get(12));
   check('一続き: 写しの判定と head の一致', j12?.result === '通過' && headMatches(r.reviews.get(12), j12).match === true);
   const att = recordAttribution(g7, { judgeName: '鈴木 一郎', judgeLogin: 'suzuki' });
-  check('一続き: 様式の帰属(署名なし + login) → author-login', att.how === 'author-login' && att.backed === true, JSON.stringify(att));
+  check('一続き: 様式の帰属(署名なし + login) → author-login(裏づけに数えない)', att.how === 'author-login' && att.backed === false, JSON.stringify(att));
+  check('読み取り: 様式を足したコミット(added)を読む(committer も)', g7?.added?.hash === g7?.commit?.hash && g7.added.authorLogin === 'suzuki' && g7.added.committerName === 'tester' && /^\d{4}-\d{2}-\d{2}T/.test(g7.added.committedAt), JSON.stringify(g7?.added));
+  check('読み取り: 衝突の記録が無ければ conflicts は空', Array.isArray(r.conflicts) && r.conflicts.length === 0 && r.rev === `refs/heads/${RECORDS_REF}`);
   const attSelf = recordAttribution(g8, { judgeName: '佐藤 花子', judgeLogin: 'sato' });
   check('一続き: 様式の帰属(名前だけ) → 自己申告', attSelf.how === 'author-name' && attSelf.backed === false, JSON.stringify(attSelf));
   const s = summarizeRecords(r);

@@ -409,6 +409,8 @@ export function ghHosting(repo, { run = null } = {}) {
             number: pr.number,
             author: pr.user?.login ?? null,
             authorId: numericAccountId(pr.user?.id ?? null),
+            // PR の head のブランチ名。出荷の PR(ship/*)の機械の複製のコミットを見分ける(process-compass #379)
+            headRef: pr.head?.ref ?? null,
             approvers: approverAccounts(bound),
             commitAuthors: Array.isArray(commits) ? commits.map((c) => (c?.author?.login ? { login: c.author.login, id: numericAccountId(c.author.id ?? null) } : null)) : null,
           };
@@ -428,6 +430,43 @@ export function ghHosting(repo, { run = null } = {}) {
       }
       cache.set(sha, info);
       return info;
+    },
+    /**
+     * コミットのホスティングの検証(PR を経たかを問わない)。{ verified, authorLogin, authorId, committerLogin, committerId }。
+     * 記録用ブランチへの書き込みの署名の確認と、様式を足したコミットの帰属に使う(process-compass #379)。読めなければ null
+     */
+    commitOf(sha) {
+      if (!repo || !sha) return null;
+      const k = `commit:${sha}`;
+      if (cache.has(k)) return cache.get(k);
+      let out = null;
+      try {
+        const c = call(['api', `repos/${repo}/commits/${sha}`]);
+        out = c && typeof c === 'object' ? { number: null, verified: c?.commit?.verification?.verified === true, authorLogin: c?.author?.login ?? null, authorId: numericAccountId(c?.author?.id ?? null), committerLogin: c?.committer?.login ?? null, committerId: numericAccountId(c?.committer?.id ?? null) } : null;
+      } catch {
+        out = null;
+      }
+      cache.set(k, out);
+      return out;
+    },
+    /**
+     * PR のレビューの一次記録(REST。数値の id・user.id・commit_id・submitted_at を持つ)と PR の作成者・マージの時刻。
+     * 写しとの突合と、委任の判定が数える差し戻しの帰属に使う(process-compass #379)。PR を引けなければ null
+     */
+    pullOf(number) {
+      if (!repo || !number) return null;
+      const k = `pullOf:${number}`;
+      if (cache.has(k)) return cache.get(k);
+      let out = null;
+      try {
+        const pr = call(['api', `repos/${repo}/pulls/${number}`]);
+        const reviews = call(['api', '--paginate', `repos/${repo}/pulls/${number}/reviews`]);
+        out = pr && typeof pr === 'object' && pr.number != null ? { number: pr.number, author: { login: pr.user?.login ?? null, id: numericAccountId(pr.user?.id ?? null) }, mergedAt: pr.merged_at ?? null, reviews: Array.isArray(reviews) ? reviews : null } : null;
+      } catch {
+        out = null;
+      }
+      cache.set(k, out);
+      return out;
     },
     /** PR のコミットの作成者([{ login, id }])。PR の時点の検査が、検査する PR 自身の帰属を確かめるときに使う(#428)。読めなければ null */
     pullCommitAuthors(number) {
@@ -454,9 +493,14 @@ export function ghHosting(repo, { run = null } = {}) {
 export function fixedHosting(commits, pulls = null) {
   const m = commits && typeof commits === 'object' ? commits : {};
   const p = pulls && typeof pulls === 'object' ? pulls : {};
+  const own = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, String(k));
   return {
-    prOfCommit: (sha) => (sha && Object.prototype.hasOwnProperty.call(m, sha) ? m[sha] : null),
-    pullCommitAuthors: (number) => (number != null && Object.prototype.hasOwnProperty.call(p, String(number)) ? (p[String(number)]?.commitAuthors ?? null) : null),
+    prOfCommit: (sha) => (sha && own(m, sha) ? m[sha] : null),
+    // PR を経ないコミットの情報(number: null)だけを返す。PR を経たコミットの検証は、この fixture では読まない
+    commitOf: (sha) => (sha && own(m, sha) && m[sha]?.number == null ? m[sha] : null),
+    pullCommitAuthors: (number) => (own(p, number) ? (p[String(number)]?.commitAuthors ?? null) : null),
+    // pulls の { author, mergedAt, reviews }(REST の形)。無ければ null(PR を引けない)
+    pullOf: (number) => (own(p, number) && p[String(number)]?.reviews !== undefined ? { number: Number(number), author: p[String(number)].author ?? null, mergedAt: p[String(number)].mergedAt ?? null, reviews: p[String(number)].reviews } : null),
   };
 }
 

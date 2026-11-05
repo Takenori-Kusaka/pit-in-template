@@ -44,8 +44,9 @@
 # 再検査だけなら workflow_dispatch(入力 verify_pr に PR の番号)でも起動でき、結果は PR のコメントに出します(ステータスチェックには付きません)。
 #
 # 署名を必須にする構成(records-signed.json、または既定ブランチが safety.json / regulated.json)では、ship ブランチのコミットを
-# GraphQL createCommitOnBranch で作ります(GitHub が署名する)。それ以外は git push です。判定は record-copy.yml と同じ
-# (構成 process.config.json の records.signed、無ければリポジトリの変数 RECORDS_SIGNED)。
+# GraphQL createCommitOnBranch で作ります(GitHub が署名する)。それ以外は git push です。記録用ブランチの署名の要否は record-copy.yml と
+# 同じ判定(構成の回答から導く。scripts/gate/records.mjs --signature-required)。既定ブランチのルールセットが safety・regulated
+# (既定ブランチが署名を課す)の構成でも、出荷のブランチを署名つきで作る(これは既定ブランチの規則の都合で、記録用ブランチの判定ではない)。
 #
 # **このワークフローは、2026-10-23 時点で、実際の GitHub 上で通しで実行して確かめていません**。確かめたのは、構文と、
 # gh を模擬した呼び出しの形までです。初回の出荷では、Actions の実行の記録で、取り込みの行と出荷の PR の差分を確かめてください。
@@ -162,7 +163,8 @@ jobs:
           if-no-files-found: error
 
       # (b) 出荷のブランチを push し、PR を開く URL を出す。基底ブランチ(既定ブランチ)から ship/<日付> を切り、records の写しと様式を複製し、
-      # 品質レポートを置く。既存のファイルは上書きしない(基底にあるファイルと中身が違えば、集約が「成立済みの記録の書き換え」として所見に出す対象)
+      # 品質レポートと記録用ブランチの先頭を置く。既存のファイルは上書きしない(基底にあるファイルと中身が違えば、集約が基底ブランチの
+      # 複製を正として、記録用ブランチの側を成立した記録の書き換えとして欠落に出す。process-compass #379)
       - name: 出荷のブランチを push し、出荷判定者が PR を開く URL を出す
         env:
           GH_TOKEN: ${{ github.token }}
@@ -171,7 +173,6 @@ jobs:
           FROM: ${{ inputs.from }}
           TO: ${{ inputs.to }}
           RUN_NUMBER: ${{ github.run_number }}
-          RECORDS_SIGNED_VAR: ${{ vars.RECORDS_SIGNED }}
         run: |
           set -euo pipefail
           # 範囲。タグの push では終点がそのタグ。手動実行では入力(無ければ HEAD)
@@ -209,13 +210,19 @@ jobs:
           [ -e "$out" ] && out="docs/evidence/$day-$safe-$RUN_NUMBER.md"
           mkdir -p docs/evidence && cp evidence/quality-report.md "$out" && git add -f "$out"
           added=$((added+1))
-          echo "::notice::複製 $added 件(上書きしなかったもの $skipped 件)。保証の開示は $out"
-          # 署名の要否(record-copy.yml と同じ判定)。既定ブランチが署名を課す構成(safety / regulated)でも GitHub が署名する経路を使う
-          signed=$(jq -r 'if (.records.signed|type)=="boolean" then .records.signed else empty end' process.config.json 2>/dev/null || true)
-          ruleset=$(jq -r '.ruleset // empty' process.config.json 2>/dev/null || true)
-          if [ -z "$signed" ]; then
-            if [ "${RECORDS_SIGNED_VAR:-}" = "true" ] || [ "$ruleset" = "safety" ] || [ "$ruleset" = "regulated" ]; then signed=true; else signed=false; fi
+          # 集約が読んだ記録用ブランチの先頭(完全な識別子)を、出荷の証跡として基底ブランチへ残す。次の集約は、これが今の先頭の
+          # 祖先であることを確かめる(置き場の規則を外していた間の履歴の書き換えを検出する。process-compass #379 / ADR-0109 決定1)
+          if [ -e evidence/records-head.json ]; then
+            heads="docs/records/heads/$day-$safe.json"
+            [ -e "$heads" ] && heads="docs/records/heads/$day-$safe-$RUN_NUMBER.json"
+            mkdir -p docs/records/heads && cp evidence/records-head.json "$heads" && git add -f "$heads"
+            added=$((added+1))
           fi
+          echo "::notice::複製 $added 件(上書きしなかったもの $skipped 件)。保証の開示は $out"
+          # 署名の要否(record-copy.yml と同じ判定。構成の回答から導く)。既定ブランチが署名を課す構成(safety / regulated)でも GitHub が署名する経路を使う
+          signed=$(node scripts/gate/records.mjs --signature-required)
+          ruleset=$(jq -r '.ruleset // empty' process.config.json 2>/dev/null || true)
+          if [ "$ruleset" = "safety" ] || [ "$ruleset" = "regulated" ]; then signed=true; fi
           headline="docs: 出荷の証跡 $range の判定記録・写し・保証の開示を基底ブランチへ入れる"
           if [ "$signed" = "true" ]; then
             # GraphQL createCommitOnBranch(GitHub が署名する)。ブランチを createRef で基底の先頭から作り、追加のファイルを 1 コミットで置く
@@ -392,6 +399,12 @@ jobs:
               docs/evidence/*.md)
                 # 集約の出力は実行の時刻を含むため、内容の一致は検査しない。出荷の PR では上の再実行が通ることを検査している
                 note "$p: 保証の開示(内容の一致は検査しない。再実行の成否で確かめる)" ;;
+              docs/records/heads/*.json)
+                # 記録用ブランチの先頭の記録。記録した先頭が記録用ブランチの履歴にあることを確かめる(process-compass #379)
+                h=$(jq -r '.head // empty' "/tmp/pr/$p" 2>/dev/null || true)
+                if [ "$SHIP" != "true" ]; then fail "$p: 記録用ブランチの先頭を運ぶのは出荷の PR(ship/<日付>)だけ"
+                elif [ "$have_records" = "true" ] && [ -n "$h" ] && git merge-base --is-ancestor "$h" "$RECORDS_BRANCH" 2>/dev/null; then note "$p: 記録用ブランチの先頭 ${h:0:12} は記録用ブランチの履歴にある"
+                else fail "$p: 記録した先頭(${h:-無い})が記録用ブランチの履歴に無い"; fi ;;
               *) note "$p: 検査の対象外" ;;
             esac
           done < /tmp/changes.txt

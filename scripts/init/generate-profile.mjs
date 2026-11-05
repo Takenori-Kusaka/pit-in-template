@@ -2839,7 +2839,9 @@ export function bumpD0Version(v) {
 /**
  * 記録の置き場と、その所有者にする席(CODEOWNERS の案。#54)。記録だけの PR の承認者を記名者の席へ誘導する誘導層であり、
  * 遮断に数えない。出荷の PR(ship-evidence.yml が push する ship/<日付> から出荷判定者が開く)は records ブランチの様式を docs/gates/ へ、承認レビューの写しを
- * docs/records/reviews/ へ複製し、保証の開示を docs/evidence/ へ置く。その承認者は出荷判定者本人(標準 第4章「判定記録を基底ブランチへ入れる操作」)。
+ * docs/records/reviews/ へ複製し、保証の開示を docs/evidence/ へ置く。出荷の PR を開くのは出荷判定者で、承認するのは開いた人以外の人である。
+ * その承認は転記の確認であり、記録の中身の判定ではない。承認者を出荷判定者の本人と書かない(標準 第4章「判定記録を基底ブランチへ入れる操作」、
+ * ADR-0106 決定6。process-compass #379 で、承認者を出荷判定者本人と書いていた注記を改めた)。
  * docs/gates/ には停止の解除・例外承認・SG の記録も先に入る(記名者はそのゲートの判定者)。パス単位でさらに分けるなら人が足す
  */
 export const CODEOWNER_RECORD_PATHS = [
@@ -5698,6 +5700,14 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     { "pattern": "CODEOWNERS", "reason": "PR の自動アサインと承認ルール" },
     { "pattern": ".github/CODEOWNERS", "reason": "PR の自動アサインと承認ルール" }
   ];
+  // 追記だけの置き場(判定記録と写しの置き場)。既にあるファイルの編集を、フック guard-write.mjs が拒否する(新しいファイルは拒否しない。
+  // 草案の文脈が新しい様式の機械が出す欄を埋める経路は残す)。成立した記録の変更は、出荷の集約が書き換えとして欠落に数える
+  // (process-compass #379 / ADR-0109)
+  const appendOnlyPatterns = [
+    // 置き場は記録用ブランチ(作業木に取り出した records/)に限る(裁定 R-1。基底ブランチの docs/ は対象にしない。突合 L-3)。
+    // フックは Write・Edit の道具だけに効き、Bash による編集(sed -i・リダイレクト)は止めない(抑止の層)
+    { "pattern": "records/**", "reason": "判定記録と承認レビューの写しの置き場(記録用ブランチ)。成立した記録は書き換えません。訂正は元の記録を指す訂正の記録を人が足します" }
+  ];
 
   const standardSecrets = [
     "Read(./.env)",
@@ -5812,6 +5822,7 @@ function tailorGuardAndSettings(config, guardSource, settingsSource) {
     // 事業ステージに依らず、エージェント用ガードを有効化（enabled: true）し、
     // 標準規定に基づき検査コードやワークフロー（Category C）への厳格な書き込み制限（ロックダウン）を有効にします
     guardObj.enabled = true;
+    guardObj.appendOnlyPatterns = appendOnlyPatterns;
 
     guardObj.protectedPatterns = [
       ...baseProtectedPatterns,

@@ -1318,7 +1318,7 @@ function recordsFindings({ repo, branch, latestPr }) {
           ? { status: 'mismatch', detail: `ブランチ records(${sha.slice(0, 7)})に効いているルールセットが無い(.github/rulesets/records.json または records-signed.json を人が適用する)`, evidence }
           : bad.length
             ? { status: 'mismatch', detail: `ブランチ records(${sha.slice(0, 7)})の保護が記録用ブランチの形と一致しない: ${bad.join('。')}`, evidence }
-            : { status: 'confirmed', detail: `ブランチ records(${sha.slice(0, 7)})に ${p.types.join('/')} が効き、bypass actor は無い${p.types.includes('required_signatures') ? '(署名を必須にする構成。record-copy.yml は変数 RECORDS_SIGNED=true で GraphQL 経路を使う)' : ''}`, evidence };
+            : { status: 'confirmed', detail: `ブランチ records(${sha.slice(0, 7)})に ${p.types.join('/')} が効き、bypass actor は無い${p.types.includes('required_signatures') ? '(署名を必須にする構成。record-copy.yml は構成の回答(規制業・CL2 以上)から GraphQL 経路を使う)' : ''}`, evidence };
       }
     }
   }
@@ -1335,7 +1335,7 @@ function recordsFindings({ repo, branch, latestPr }) {
       if (w.value.state !== 'active') f.recordCopy = { status: 'mismatch', detail: `record-copy.yml の状態が ${w.value.state}(active でない)`, evidence };
       else if (!last) f.recordCopy = unconfirmed(runs.why ? `record-copy.yml の実行の一覧を読めない(${runs.why})` : 'record-copy.yml の実行がまだ無い(最初のマージの後に確かめる)');
       else if (last.conclusion === 'success') f.recordCopy = { status: 'confirmed', detail: `record-copy.yml は active。直近の実行 ${last.databaseId} は成功(${last.createdAt ?? '時刻なし'})`, evidence };
-      else f.recordCopy = { status: 'mismatch', detail: `record-copy.yml の直近の実行 ${last.databaseId} が ${last.conclusion ?? last.status ?? '不明'}(${last.url ?? 'URL なし'}。署名を必須にする構成で変数 RECORDS_SIGNED が無い、または records ブランチの初期化が止まった、など)`, evidence };
+      else f.recordCopy = { status: 'mismatch', detail: `record-copy.yml の直近の実行 ${last.databaseId} が ${last.conclusion ?? last.status ?? '不明'}(${last.url ?? 'URL なし'}。署名を必須にするルールセットを、構成の回答が署名を要しない構成で適用している、または records ブランチの初期化が止まった、など)`, evidence };
     }
   }
 

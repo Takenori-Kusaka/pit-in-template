@@ -83,6 +83,8 @@ jobs:
       - run: node scripts/gate/test-records.mjs
       - run: node scripts/gate/test-next-records.mjs
       - run: node scripts/gate/test-aggregate-records.mjs
+      # 記録用ブランチの履歴の走査・先頭の固定・署名の要否・置き場の規則・書き込める主体の開示(process-compass #379 / ADR-0109)
+      - run: node scripts/gate/test-records-history.mjs
       - run: node scripts/gate/test-env-findings.mjs
       # 能力依存の定数の再評価待ち(契機は performer の変化点と暦だけ。#295)
       - run: node scripts/gate/test-recalibration.mjs

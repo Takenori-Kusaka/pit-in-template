@@ -124,10 +124,9 @@ gh api -X PATCH repos/{owner}/{repo} -f squash_merge_commit_title=PR_TITLE -f sq
 ```bash
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records.json          # 既定
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/records-signed.json   # 規制業・CL2 以上(署名を必須にする)
-gh variable set RECORDS_SIGNED --body true                                           # records-signed.json の構成で。ワークフローが GitHub の署名する API 経由で書く
 ```
 
-`records-signed.json` の構成では、変数 `RECORDS_SIGNED` を `true` にします。`record-copy.yml` と `ship-evidence.yml` が、`git push` の代わりに GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書くようになります。ブランチ `records` が無い状態ではこの経路で初期化できないため、`records-signed.json` は最初のマージの後に適用するか、人が署名コミットで `records` を作ります(`.github/rulesets/README.md`「記録用ブランチの初期化」)。API 経由の書き込みと `required_signatures` の組は、2026-10-23 時点で実機で確かめていません。
+規制業・CL2 以上の構成(構成の回答から導く。`records-signed.json` を適用する構成)では、`record-copy.yml` と `ship-evidence.yml` が、`git push` の代わりに GitHub が署名する API 経由のコミット(GraphQL `createCommitOnBranch`)で書くようになります。ブランチ `records` が無い状態ではこの経路で初期化できないため、`records-signed.json` は最初のマージの後に適用するか、人が署名コミットで `records` を作ります(`.github/rulesets/README.md`「記録用ブランチの初期化」)。API 経由の書き込みと `required_signatures` の組は、2026-10-23 時点で実機で確かめていません。
 
 **ルールセットを使えない場合**: 私有リポジトリでルールセット(ブランチ保護)を使えるかは、GitHub のプランに依ります(2026-10 時点で、無料のプランでは公開リポジトリに限られます)。使えない場合、G-5 が落ちた PR も、G-5 を経ない直接の push もマージを止められません。このテンプレートが代わりに行えるのは**事後の検出だけ**です。出荷判定(G-7)の証跡の集約が、gate-g5 の成功を持たない PR(結果の記録が無い PR を含む)と、トレーラ `Risk`・`Verification` を持たない PR を経ないコミットを、欠落として失敗させます。止めることはできず、出荷の時点まで気づかない点を受け入れて運用してください。記録用ブランチも同じく保護できません。写しと判定記録の書き換え(force push・削除)を止められず、判定記録の日時は判定者の自己申告になります。出荷の PR の検査は、複製と `records` ブランチの一致までしか確かめられません。この点は保証の開示に出します。
 

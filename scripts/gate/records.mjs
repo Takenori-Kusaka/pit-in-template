@@ -10,13 +10,20 @@
 //     宣言行の無いレビューは取り込みの事務であり、判定に数えない(`.claude/skills/gate/reference/recording.md`)
 //   - 同じゲートに同じ人が複数のレビューを出していれば、提出の最後の 1 件だけを判定として読む(承認者ごとの最後の状態。D8)
 //   - 対象の版はレビューの commit_id。写しの head とずれた判定は「確定していない版を取り込んだ」になる(D4)
-//   - 様式の帰属の裏づけは、記名者本人の操作(署名コミット、または author が記名者)。名前の一致だけなら自己申告(D6)
+//   - 様式の帰属の裏づけは、ホスティングの記録で確かめた記名者本人のアカウントの操作に限る(呼び出し側が gh で確かめる)。
+//     この層は、記録用ブランチで様式を足したコミット(addedCommitOf)を返すだけで、手元の署名の検証(%G?)と、署名の無い
+//     author の名前・email の一致を裏づけに数えない(process-compass #379 / ADR-0109 決定3)
+//   - 記録用ブランチの履歴を走査し、成立した記録の変更・削除・名前の変更を列挙する(scanRecordsHistory・classifyRecordsHistory。
+//     process-compass #379 / ADR-0109 決定1)。記録用ブランチの規則(non_fast_forward・deletion)が止めるのは履歴の書き換えと削除だけで、
+//     書き込みの権限を持つ者とジョブのトークンは新しいコミットで既存の記録を変えられる。変えた事実は履歴に残る
 //   - 読めない写し(壊れた JSON、名前の形が違うファイル)は黙って落とさず skipped に出す
 //
 // この層が決めないこと: 判定の成否・欠落の判定・名簿との照合。呼び出し側(next.mjs・aggregate-evidence.mjs)が行う。
 // GitHub へ問い合わせない。記録用ブランチが手元に無ければ、fetch を 1 回だけ試す。
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 /** 記録用ブランチの名前(`.github/workflows/record-copy.yml` の RECORDS_BRANCH、`.github/rulesets/records.json`) */
 export const RECORDS_REF = 'records';
@@ -24,6 +31,13 @@ export const RECORDS_REF = 'records';
 export const REVIEWS_DIR = 'records/reviews';
 /** 様式の置き場。`records/gates/<ゲート>-<対象>-<日付>.md` */
 export const GATES_DIR = 'records/gates';
+/**
+ * 写しの取り出しの衝突の記録の置き場。`records/conflicts/pr-<番号>-<実行の識別子>.json`。record-copy.yml が、既にある写しと
+ * 不変の欄が食い違う写しを取り出したときに追記する(既にある写しは書き換えない。process-compass #379 / ADR-0109 決定4)
+ */
+export const CONFLICTS_DIR = 'records/conflicts';
+/** 記録の置き場の全体(履歴の走査の対象) */
+export const RECORDS_ROOT = 'records';
 
 /**
  * 宣言行。本文の 1 行目にだけ現れる。結果は 2 値の語の完全一致(注記を足した値は通さない)。
@@ -77,8 +91,9 @@ function loginOfEmail(email) {
 }
 
 /**
- * ファイルを最後に触ったコミット(author と署名の検証結果)。rev は読む版(記録用ブランチの参照、基底なら 'HEAD')。
- * 読めなければ null。様式の帰属の裏づけ(recordAttribution)の入力であり、集約(aggregate-evidence.mjs)も基底の様式に同じ形で使う
+ * ファイルを最後に触ったコミット(author と、手元の署名の検証結果)。rev は読む版(記録用ブランチの参照、基底なら 'HEAD')。
+ * 読めなければ null。signed は手元の鍵束による検証(%G?)であり、帰属の裏づけに使わない(判定される側が鍵束を用意できる。
+ * 帰属はホスティングの検証で確かめる。process-compass #379 / ADR-0109 決定3)。表示と試験のために返す
  */
 export function lastCommitOf(cwd, rev, file) {
   const out = gitIn(cwd, ['log', '-1', '--format=%H%x00%an%x00%ae%x00%aI%x00%G?', rev, '--', file]);
@@ -87,6 +102,131 @@ export function lastCommitOf(cwd, rev, file) {
   // %G?: G=有効な署名 / U=有効だが信頼の無い鍵 / E=検証できない / N=署名なし / B=不正な署名 / X・Y・R=鍵の失効・期限切れ
   const signed = sig === 'G' || sig === 'U' ? true : sig === 'N' ? false : null;
   return { hash, authorName, authorEmail, authorLogin: loginOfEmail(authorEmail), date, signed, signature: sig ?? null };
+}
+
+/**
+ * ファイルを足したコミット(rev の履歴で、そのパスを最後に足したもの)。様式の帰属は、置き場で様式を足したコミットで照らす
+ * (足した後の変更は、履歴の走査が成立した記録の書き換えとして出す)。読めなければ null
+ */
+export function addedCommitOf(cwd, rev, file) {
+  const out = gitIn(cwd, ['log', '-1', '--diff-filter=A', '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%cI', rev, '--', file]);
+  if (!out || !out.trim()) return null;
+  const [hash, authorName, authorEmail, committerName, committerEmail, committedAt] = out.trim().split('\0');
+  return { hash, authorName, authorEmail, authorLogin: loginOfEmail(authorEmail), committerName, committerEmail, committedAt };
+}
+
+/**
+ * 記録用ブランチの履歴を読む(process-compass #379 / ADR-0109 決定1)。from(前回の出荷で残した先頭)を渡すと from..rev、
+ * 渡さなければ rev の最初のコミットから読む。浅い取得(shallow)では履歴の全体を読めないため available=false。
+ * 返り値の commits は古い順で、changes は records/ の下の変更([{ status, path, from? }]。status は git の
+ * name-status の 1 文字目。A・M・D・R・C・T)。マージコミットは第1の親との差分で読む(--diff-merges=first-parent)。
+ * マージの解決で既存の記録を変えたコミットも、変更として出す。--full-history で、パスの簡略化による枝の省略をしない
+ */
+export function scanRecordsHistory(cwd, { rev, from = null } = {}) {
+  if (!rev) return { available: false, reason: '記録用ブランチの先頭が無い', commits: [] };
+  const shallow = gitIn(cwd, ['rev-parse', '--is-shallow-repository']);
+  if (shallow !== null && shallow.trim() === 'true') return { available: false, reason: '浅い取得(shallow)で、記録用ブランチの履歴の全体を読めない', commits: [] };
+  const range = from ? `${from}..${rev}` : rev;
+  const out = gitIn(cwd, ['log', '--reverse', '--full-history', '--diff-merges=first-parent', '-M', '--name-status', '--format=%x1e%H%x09%cI%x09%an%x09%ae%x09%cn%x09%ce', range, '--', `${RECORDS_ROOT}/`]);
+  if (out === null) return { available: false, reason: `記録用ブランチの履歴(${range})を読めない(git log が失敗)`, commits: [] };
+  const commits = [];
+  for (const block of out.split('\x1e').filter((b) => b.trim())) {
+    const [head, ...rest] = block.split('\n');
+    const [hash, committedAt, authorName, authorEmail, committerName, committerEmail] = head.split('\t');
+    const changes = [];
+    for (const line of rest) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const status = parts[0].charAt(0);
+      if (status === 'R' || status === 'C') changes.push({ status, from: parts[1], path: parts[2] });
+      else changes.push({ status, path: parts[1] });
+    }
+    commits.push({ hash, committedAt, authorName, authorEmail, authorLogin: loginOfEmail(authorEmail), committerName, committerEmail, changes });
+  }
+  return { available: true, reason: null, range, commits };
+}
+
+/**
+ * 履歴の走査の結果を、成立した記録の書き換えとマージより前に置かれた写しへ分ける(純粋な関数。試験が直接呼ぶ)。
+ *   rewrites   追加以外の変更(変更・削除・名前の変更・複製・種別の変更)。訂正は元の記録を指す記録を足す形に限るため、
+ *              既存のファイルを変えたコミットはすべて書き換えに数える
+ *   premature  写し(records/reviews/pr-N.json)を、その PR のマージより前の時刻に足したコミット。mergedAtOf(N) は
+ *              ホスティングの記録のマージの時刻(読めなければ null。null の写しは比べない)
+ *   additions  追加の件数
+ * 時刻はコミットの committer の時刻であり、書き手が設定できる(早く気づく手段。主の防御はホスティングとの突合)
+ */
+export function classifyRecordsHistory(scan, { mergedAtOf = () => null } = {}) {
+  const rewrites = [];
+  const premature = [];
+  // 走査の範囲で足された写しの取り出しの衝突の記録(records/conflicts/)。前回の出荷の先頭より後に限って数える
+  const conflicts = [];
+  let additions = 0;
+  const seen = new Set();
+  for (const c of scan?.commits ?? []) {
+    for (const ch of c.changes ?? []) {
+      if (ch.status !== 'A') {
+        rewrites.push({ hash: c.hash, status: ch.status, path: ch.path, from: ch.from ?? null, committedAt: c.committedAt, author: c.authorName });
+        continue;
+      }
+      // マージコミットは、取り込んだ枝で足したファイルを第1の親との差分で再び「追加」と出す。同じパスの追加は1件に数える
+      if (seen.has(ch.path)) continue;
+      seen.add(ch.path);
+      additions++;
+      if (String(ch.path).startsWith(`${CONFLICTS_DIR}/`)) {
+        const m = String(ch.path).slice(CONFLICTS_DIR.length + 1).match(/^pr-(\d+)-/);
+        conflicts.push({ hash: c.hash, path: ch.path, pr: m ? Number(m[1]) : null, committedAt: c.committedAt });
+        continue;
+      }
+      const m = String(ch.path).match(/^records\/reviews\/pr-(\d+)\.json$/);
+      if (!m) continue;
+      const mergedAt = mergedAtOf(Number(m[1]));
+      const t = Date.parse(c.committedAt ?? '');
+      const mt = Date.parse(mergedAt ?? '');
+      if (Number.isFinite(t) && Number.isFinite(mt) && t < mt) premature.push({ hash: c.hash, path: ch.path, pr: Number(m[1]), committedAt: c.committedAt, mergedAt });
+    }
+  }
+  return { rewrites, premature, conflicts, additions };
+}
+
+/**
+ * 記録用ブランチのルールセット(.github/rulesets/records.json・records-signed.json)が、置き場の要求を満たす形かを確かめる
+ * (標準 第4章「判定記録を基底ブランチへ入れる操作」。process-compass #379 / IMPL-0353)。履歴の書き換え(non_fast_forward)と
+ * 置き場そのものの削除(deletion)を止め、bypass actor を置かないこと。書き込める主体を限ることは求めない。問題の文の配列を返す
+ */
+export function recordsRulesetProblems(ruleset, { signed = false } = {}) {
+  const name = ruleset?.name ?? '(名前なし)';
+  const include = ruleset?.conditions?.ref_name?.include ?? [];
+  const problems = [];
+  if (!include.includes(`refs/heads/${RECORDS_REF}`)) problems.push(`${name}: 対象が記録用ブランチ refs/heads/${RECORDS_REF} でない`);
+  const types = new Set((Array.isArray(ruleset?.rules) ? ruleset.rules : []).map((r) => r?.type));
+  if (!types.has('non_fast_forward')) problems.push(`${name}: 履歴の書き換え(non_fast_forward)を止めていない`);
+  if (!types.has('deletion')) problems.push(`${name}: 置き場の削除(deletion)を止めていない`);
+  if (signed && !types.has('required_signatures')) problems.push(`${name}: 署名を要する構成で、書き込みの署名(required_signatures)を課していない`);
+  if (Array.isArray(ruleset?.bypass_actors) && ruleset.bypass_actors.length) problems.push(`${name}: bypass actor が ${ruleset.bypass_actors.length} 件ある`);
+  if (ruleset?.enforcement !== undefined && ruleset.enforcement !== 'active') problems.push(`${name}: enforcement が ${ruleset.enforcement}(active でない)`);
+  return problems;
+}
+
+/**
+ * 記録用ブランチへの書き込みごとに署名を要する構成か(規制業(第8章 軸C)と安全重要度 CL2 以上(軸E)。標準 第4章
+ * 「判定記録を基底ブランチへ入れる操作」)。構成の回答 q-quality・q-criticality だけから導く(リポジトリの変数に頼らない)。
+ * 集約の欠落・保証の開示の文・record-copy.yml・ship-evidence.yml が同じ判定を使う(process-compass #379 突合 M-7)。
+ * ワークフローからは `node scripts/gate/records.mjs --signature-required` で呼ぶ(true / false を出す)
+ */
+export function recordsSignatureRequired(config) {
+  return config?.answers?.['q-quality'] === 'quality-regulated' || ['cl2', 'cl3'].includes(config?.answers?.['q-criticality']);
+}
+
+/** a が b の祖先(または同じコミット)か。読めないコミットがあれば null */
+export function isAncestorCommit(cwd, a, b) {
+  if (!a || !b) return null;
+  if (gitIn(cwd, ['cat-file', '-e', `${a}^{commit}`]) === null || gitIn(cwd, ['cat-file', '-e', `${b}^{commit}`]) === null) return null;
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', a, b], { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -183,7 +323,7 @@ export function recordFromForm(text, file, source) {
  * 出す。黙って通さない)。ファイルはブランチを checkout せず、`git ls-tree` と `git show` で読む
  */
 export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetch = true } = {}) {
-  const result = { available: false, reason: null, ref, head: null, reviews: new Map(), gates: [], skipped: [] };
+  const result = { available: false, reason: null, ref, rev: null, head: null, reviews: new Map(), gates: [], conflicts: [], skipped: [] };
   const candidates = [`refs/remotes/origin/${ref}`, `refs/heads/${ref}`];
   let rev = null;
   let head = null;
@@ -208,6 +348,7 @@ export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetc
     return result;
   }
   result.available = true;
+  result.rev = rev;
   result.head = head;
 
   const listed = gitIn(cwd, ['ls-tree', '-r', '--name-only', '-z', rev]);
@@ -236,7 +377,12 @@ export function readRecordsBranch({ cwd = process.cwd(), ref = RECORDS_REF, fetc
         result.skipped.push({ file, reason: '読めない(git show が失敗)' });
         continue;
       }
-      result.gates.push({ file, text, commit: lastCommitOf(cwd, rev, file) });
+      // commit は最後に触ったコミット(表示用)、added は置き場で様式を足したコミット(帰属を照らすコミット)
+      result.gates.push({ file, text, commit: lastCommitOf(cwd, rev, file), added: addedCommitOf(cwd, rev, file) });
+    } else if (file.startsWith(`${CONFLICTS_DIR}/`)) {
+      // 写しの取り出しの衝突の記録(record-copy.yml)。呼び出し側が、その PR の写しを欠落に数える
+      const m = file.slice(CONFLICTS_DIR.length + 1).match(/^pr-(\d+)-/);
+      result.conflicts.push({ file, pr: m ? Number(m[1]) : null });
     }
   }
   return result;
@@ -289,27 +435,25 @@ export function headMatches(copy, judgement) {
 const sameText = (a, b) => a != null && b != null && String(a).replace(/\s+/g, '').toLowerCase() === String(b).replace(/\s+/g, '').toLowerCase();
 
 /**
- * 様式の帰属の裏づけ(D6)。記名者本人の操作で置かれたかを、ファイルを最後に触ったコミットから読む。
- *   signed-commit  署名の検証が通り、author が記名者(login・email のどちらかが一致。両方を渡していなければ名前で)
- *   author-login   署名は無いが author の login が記名者(弱い裏づけ)
- *   author-email   署名は無いが author の email が記名者(弱い裏づけ)
- *   author-name    author の名前だけが一致。自己申告(backed=false)
- *   null           一致するものが無い、またはコミットを読めない
+ * 様式を置いたコミットの author と記名者の一致(D6 の表示)。**帰属の裏づけに数えない**(backed は常に false)。
+ * Git の author と committer は書き手が任意に設定でき、名前・email・email から推したログイン名の一致は認証ではない。
+ * 署名の無い author の一致を「弱い裏づけ」として数えていた形を、process-compass #379 / ADR-0109 決定3 で改めた。
+ * 帰属の裏づけは、ホスティングの記録で確かめる(aggregate-evidence.mjs の formAttribution)。この関数は、自己申告の注記に
+ * author との一致を添えるためだけに使う。読むのは様式を足したコミット(added)、無ければ最後に触ったコミット(commit)
+ *   author-login / author-email / author-name  author が記名者と一致する(自己申告。署名の無い一致)
+ *   null                                       一致するものが無い、またはコミットを読めない
  */
 export function recordAttribution(gateRecord, { judgeName = null, judgeLogin = null, judgeEmail = null } = {}) {
-  const c = gateRecord?.commit;
+  const c = gateRecord?.added ?? gateRecord?.commit;
   if (!c) return { backed: false, how: null, note: '様式を置いたコミットを読めない。帰属を裏づけられない' };
   const loginMatch = judgeLogin != null && c.authorLogin != null && sameText(judgeLogin, c.authorLogin);
   const emailMatch = judgeEmail != null && c.authorEmail != null && sameText(judgeEmail, c.authorEmail);
   const nameMatch = judgeName != null && c.authorName != null && sameText(judgeName, c.authorName);
-  const identified = loginMatch || emailMatch || (judgeLogin == null && judgeEmail == null && nameMatch);
-  if (c.signed === true && identified) {
-    return { backed: true, how: 'signed-commit', note: `署名の検証が通ったコミット ${c.hash.slice(0, 7)} の author が記名者` };
-  }
-  if (loginMatch) return { backed: true, how: 'author-login', note: `コミット ${c.hash.slice(0, 7)} の author の login が記名者(署名なし。弱い裏づけ)` };
-  if (emailMatch) return { backed: true, how: 'author-email', note: `コミット ${c.hash.slice(0, 7)} の author の email が記名者(署名なし。弱い裏づけ)` };
-  if (nameMatch) return { backed: false, how: 'author-name', note: `コミット ${c.hash.slice(0, 7)} の author の名前だけが記名者と一致。記名は自己申告` };
-  return { backed: false, how: null, note: `コミット ${c.hash.slice(0, 7)} の author(${c.authorName} <${c.authorEmail}>)は記名者と一致しない。記名は自己申告` };
+  const short = String(c.hash ?? '').slice(0, 7);
+  if (loginMatch) return { backed: false, how: 'author-login', note: `コミット ${short} の author の login が記名者と一致する。署名の無い author の一致は裏づけに数えない(記名は自己申告)` };
+  if (emailMatch) return { backed: false, how: 'author-email', note: `コミット ${short} の author の email が記名者と一致する。署名の無い author の一致は裏づけに数えない(記名は自己申告)` };
+  if (nameMatch) return { backed: false, how: 'author-name', note: `コミット ${short} の author の名前だけが記名者と一致。記名は自己申告` };
+  return { backed: false, how: null, note: `コミット ${short} の author(${c.authorName} <${c.authorEmail}>)は記名者と一致しない。記名は自己申告` };
 }
 
 /** 様式の冒頭の表の「ゲート」欄の先頭の語(G-1〜G-8・SG)。無ければ null */
@@ -336,4 +480,16 @@ export function summarizeRecords(records) {
   }
   for (const g of records?.gates ?? []) bump(gateOfRecord(g.text));
   return { reviewCount: records?.reviews?.size ?? 0, judgementCount, gateCount: records?.gates?.length ?? 0, byGate };
+}
+
+// ワークフローの入口: `node scripts/gate/records.mjs --signature-required` は、作業木の process.config.json から
+// 署名を要する構成か(true / false)を出す。構成を読めなければ false を出し、理由を標準エラーへ出す
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url && process.argv.includes('--signature-required')) {
+  let config = null;
+  try {
+    config = JSON.parse(readFileSync('process.config.json', 'utf8'));
+  } catch (e) {
+    process.stderr.write(`process.config.json を読めない(${e.message})。署名を要しない構成として扱う\n`);
+  }
+  process.stdout.write(`${recordsSignatureRequired(config)}\n`);
 }
