@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "5e5a498eecc6b03829a25b30486c3e64e368f4e4",
+    "commit": "04ea20f5ba764eaa20822d851a4b1e6ddf4a2fc4",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1800,6 +1800,12 @@
       "range": "事業ステージ S0 で、標準品質かつ CL0 の構成",
       "unit": "per-project",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#s0-の省略が成立する前提適用-事業ステージ-s0-で標準品質かつ-cl0-の構成"
+    },
+    {
+      "title": "委託の体制の人数と、軸A との組み合わせ",
+      "range": "開発形態が受託",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#委託の体制の人数と軸a-との組み合わせ適用-開発形態が受託"
     },
     {
       "title": "判定の結果を受け取る者を決める",
