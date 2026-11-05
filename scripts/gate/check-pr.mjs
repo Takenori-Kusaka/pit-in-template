@@ -346,6 +346,9 @@ export const CONTROL_FILES = [
   // 判定のコードの読み込み先(標準 第4章 G-5「判定のコードの読み元」)。ワークフローが使う手元の action と、検査の道具を動かす
   // Node の版。書き換えれば判定のコードを替えられる(process-compass #371 / ADR-0115)
   '.github/actions/**', '.github/gate-node-version',
+  // AI レビューの指示の置き場(標準 第5章 5.8.6 の要求事項7)。ai-review.yml は既定ブランチの版から読むため、その PR 自身のレビューは
+  // 変えられない。それでも、指示を弱める PR を先に取り込み、次の PR をその指示でレビューさせる2段の経路が残る(process-compass #369)
+  '.github/ai-review/**',
 ];
 
 /**
