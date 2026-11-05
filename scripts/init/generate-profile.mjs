@@ -334,6 +334,25 @@ export function pendingTightenings(config) {
   return out;
 }
 
+/**
+ * 構成の回答から、あるゲートの設定(param)を決めた規則の注記だけを返す(保証の開示の項目2 の理由。process-compass #374 突合 X-7)。
+ * 構成の why はゲートの全注記を持つため、範囲の限定の理由として読ませる行に、別の設定の注記が混ざらないようにする
+ */
+export function paramNotes(config, gateKey, param) {
+  if (!config?.answers) return [];
+  let result;
+  try {
+    result = evaluate(KB, config.answers);
+  } catch {
+    return [];
+  }
+  const id = Object.entries(GATE_KEY).find(([, k]) => k === gateKey)?.[0];
+  return result.trace
+    .filter((e) => e.status === 'applied' && e.action === 'set' && e.param === param && e.target?.type === 'gate' && e.target?.id === id)
+    .map((e) => e.note)
+    .filter(Boolean);
+}
+
 /** engine の state → 構成ファイルのゲート状態 */
 function toGateState(state) {
   if (!state || state === 'standard' || state === 'strengthen') return 'required';

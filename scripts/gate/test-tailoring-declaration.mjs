@@ -85,18 +85,30 @@ const gapLines = (r) => `${r.report}\n${r.out}`.split('\n').filter((l) => /未�
   const rows = item2(r.report);
   check('試験の前提: 品質レポートに項目2 の節が出る', rows.length > 0, r.out.slice(-1200));
   // 項目2 に範囲の限定を載せる(process-compass #374 / ADR-0112 決定1)
+  // IMPL-0448:ok(違反と適合の対。標準の実装マーク。process-compass #374)
   check('S1 で G-6 の範囲をコア機能に限る構成は、項目2 に範囲の限定として載る', rows.some((l) => /^\| G-6 独立レビュー \| 範囲の限定\(コア機能\) \|/.test(l)), rows.join('\n'));
   check('S1 の G-7 は適用であり、項目2 に載らない', !rows.some((l) => /^\| G-7 /.test(l)), rows.join('\n'));
+  // 突合 X-7: 範囲の限定の行の理由は、範囲の設定の注記だけ。レビューの方式など別の設定の注記を混ぜない
+  const g6 = rows.find((l) => /^\| G-6 /.test(l)) ?? '';
+  check('範囲の限定の行の理由は、範囲の設定の注記だけ', /コア機能のみ実施する/.test(g6) && !/作成者と分離して実施する/.test(g6), g6);
 }
 {
   const r = run((c) => ({ ...c, gates: { ...c.gates, g7: { ...c.gates.g7, state: 'simplified' } } }));
   const rows = item2(r.report);
+  // 突合 X-5: 状態は日本語の語で出す(内部の値 required を出さない)
+  // IMPL-0448:ng(違反と適合の対。旧い構成の G-7 の簡略を、未適用の厳格化として表示する。process-compass #374)
   check(
     '旧い構成(簡略で記録された S1 の G-7)は、項目2 に未適用の厳格化として載る',
-    rows.some((l) => /^\| G-7 出荷判定 \| 簡略化。未適用の厳格化: 現行の規則の再導出では required。欠落には数えない \|/.test(l)),
+    rows.some((l) => /^\| G-7 出荷判定 \| 簡略化。未適用の厳格化: 現行の規則の再導出では適用。欠落には数えない \|/.test(l)) && !rows.some((l) => /required/.test(l)),
     rows.join('\n')
   );
   check('CL0 の旧い構成の G-7 の未適用の厳格化は、欠落に数えない', gapLines(r).length === 0, gapLines(r).join('\n'));
+}
+{
+  // 突合 X-3: 項目2 に未適用の厳格化を添えるのは、簡略で記録された G-7 に限る。ほかのゲートの旧い状態には添えない
+  const r = run((c) => ({ ...c, gates: { ...c.gates, g2: { ...c.gates.g2, state: 'omitted' } } }));
+  const g2 = item2(r.report).find((l) => /^\| G-2 /.test(l)) ?? '';
+  check('G-7 以外のゲートの旧い状態には、項目2 で未適用の厳格化を添えない', /^\| G-2 要件合意 \| 省略 \|/.test(g2) && !/未適用の厳格化/.test(g2), g2 || item2(r.report).join('\n'));
 }
 {
   const r = run((c) => ({ ...c, gates: { ...c.gates, g6: { ...c.gates.g6, params: { ...c.gates.g6.params, scope: 'all' } } } }));

@@ -127,7 +127,7 @@ import {
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
-import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes } from '../init/generate-profile.mjs';
 import { discouragedText, deviationTagHits } from './org-assurance.mjs';
 import {
   readPolicy,
@@ -3278,18 +3278,21 @@ if (isMain) {
 
   // 2. テーラリングの宣言(外した項目と理由)
   const STATE_TEXT = { simplified: '簡略化', omitted: '省略', unmet: '未達' };
-  // 範囲を限って適用するゲート(S1 の G-6 のコア機能への限定)も、状態を変えたゲートと同じく宣言する。
-  // 規則の再導出で厳しくなるゲート(未適用の厳格化)は、その旨を状態に添える。旧い構成で簡略として記録された
-  // S1 の G-7 が当たる。CL0 では欠落に数えない(blocking は CL1 以上の G-6・G-7 だけ)(process-compass #374 / ADR-0112 決定1・決定4)
+  // 範囲を限って適用するゲート(S1 の G-6 のコア機能への限定)も、状態を変えたゲートと同じく宣言する。理由は範囲の設定の注記だけ。
+  // 旧い構成で簡略として記録された G-7 は、未適用の厳格化として状態に添える(欠落の計上は変えない。CL0 では数えない)。
+  // 表示を広げるのは裁定の範囲(簡略で記録された G-7)に限る(process-compass #374 / ADR-0112 決定1・決定4、突合 X-3・X-5・X-7)
+  const GATE_STATE_TEXT = { required: '適用', simplified: '簡略', omitted: '省略', unmet: '未達' };
   const scopeLimited = (key, g) => key === 'g6' && g.state === 'required' && g.params?.scope === 'core-only';
-  const tighteningOf = (key, from) => tightenings.find((t) => t.gate === key && t.from === from);
-  const tighteningTail = (t) => (t ? `。未適用の厳格化: 現行の規則の再導出では ${t.to}${t.blocking ? '。欠落に数えた' : '。欠落には数えない'}` : '');
+  const g7Tightening = tightenings.find((t) => t.gate === 'g7' && t.from === 'simplified');
+  const g7Tail = g7Tightening
+    ? `。未適用の厳格化: 現行の規則の再導出では${GATE_STATE_TEXT[g7Tightening.to] ?? g7Tightening.to}${g7Tightening.blocking ? '。欠落に数えた' : '。欠落には数えない'}`
+    : '';
   const tailoring = Object.entries(config.gates)
     .filter(([key, g]) => g.state !== 'required' || scopeLimited(key, g))
     .map(([key, g]) =>
       scopeLimited(key, g)
-        ? { label: g.label, state: `範囲の限定(コア機能)${tighteningTail(tighteningOf(key, 'core-only'))}`, why: g.why ?? [] }
-        : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${tighteningTail(tighteningOf(key, g.state))}`, why: g.why ?? [] }
+        ? { label: g.label, state: '範囲の限定(コア機能)', why: paramNotes(config, 'g6', 'scope') }
+        : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${key === 'g7' && g.state === 'simplified' ? g7Tail : ''}`, why: g.why ?? [] }
     );
   if (config.guard?.enabled === false) {
     tailoring.push({
