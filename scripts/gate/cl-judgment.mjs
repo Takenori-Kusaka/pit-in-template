@@ -6,15 +6,17 @@
 // 未達として表示する(出荷の証跡の集約)。CL1 以上・規制業の案件と、附属書F F.2 の Q1 が「はい」で段3 の確認が欠ける
 // 案件は、記載の欠落として出荷させない。
 //
-// 機械が確かめるもの: 欄の空欄と様式の説明のまま、判定者が D-0 表1「体制と運用形態」の決定者の席の責任者であること、
-// 判定者・確認者が AI の名義でないこと、確認者が判定者と別の名簿の人であること、記録した段と求める段の比較、
-// 区分を下げる操作の引き下げの根拠(記入と、引く ADR・機能仕様の実在)。
+// 機械が確かめるもの: 欄の空欄と様式の説明のまま、判定者が記録の時点(判定日)の D-0 表1「体制と運用形態」の決定者で
+// あること(構成の履歴から導く。導けなければ注意)、判定者・確認者が AI の名義でないこと、確認者が判定者と別の名簿の人で
+// あること、記録した段と求める段の比較、区分を下げる操作の引き下げの根拠(記入と、引く ADR・機能仕様の実在)。
 // 確かめないもの: 理由・帰結・F.2 の回答の中身の妥当性、段2 以上の距離そのもの(名簿に直属の上長・法人・部門・
 // リリースの権限の欄が無い。#357 / IMPL-0452)
 //
-// 旧い構成(判定の記録を求める前に G-1 を通過した案件)は遡って止めない。記録がそろうまで、判定の確認を未達として
-// 表示し続ける(legacy)。
+// 旧い構成(判定の記録を求める前、CL_RECORD_REQUIRED_SINCE より前に G-1 を通過した案件)は遡って止めない。記録がそろうまで、
+// 判定の確認を未達として表示し続ける(legacy)。それ以外の構成の判定の記録と判定者の記名の不備は、G-1 の前は D-0 の検査が、
+// G-1 の後は出荷の証跡の集約が欠落として止める(議長の裁定 J-10)。
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -128,6 +130,50 @@ function g1PassedIn(gateRecords) {
 }
 
 /**
+ * 判定の記録を求めた日(ADR-0113 の採用日)。この日より前に G-1 を通過した構成だけを旧い構成として扱い、判定の記録の欠落を
+ * 未達として表示する(議長の裁定 J-10)。この日以後に G-1 を通過した構成と、G-1 の判定日時を読めない構成は、旧い構成に数えない
+ */
+export const CL_RECORD_REQUIRED_SINCE = '2026-11-05';
+
+/** G-1 を、判定の記録を求める前(CL_RECORD_REQUIRED_SINCE より前の判定日時)に通過したか */
+function g1PassedBeforeRule(gateRecords) {
+  return (gateRecords ?? []).some((r) => {
+    if (!/^G-1(?!\d)/.test(r.gate ?? '') || r.result !== '通過') return false;
+    const d = String(r.judgedAt ?? '').normalize('NFKC').match(/(\d{4})-(\d{2})-(\d{2})/);
+    return Boolean(d) && `${d[1]}-${d[2]}-${d[3]}` < CL_RECORD_REQUIRED_SINCE;
+  });
+}
+
+/**
+ * 判定日の時点の D-0 表1「体制と運用形態」の決定者(構成の履歴から導く。議長の裁定 J-12、ADR-0111 決定6 と同じ原則)。
+ * 判定日の終わりまでに process.config.json を最後に変えたコミットの構成を読む。導けなければ null(理由つき)
+ */
+export function deciderAt(root, date) {
+  const d = String(date ?? '').normalize('NFKC').match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!d) return { person: null, why: `判定日(${date ?? '未記入'})を日付として読めない` };
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const rev = git(['log', '-1', '--format=%H', `--until=${d[1]}-${d[2]}-${d[3]} 23:59:59`, '--', 'process.config.json']);
+  if (!rev) return { person: null, why: `判定日 ${d[0]} までに構成(process.config.json)を記録したコミットが無い` };
+  const text = git(['show', `${rev}:process.config.json`]);
+  let cfg = null;
+  try {
+    cfg = JSON.parse(text);
+  } catch {
+    return { person: null, why: `判定日の時点の構成(${rev.slice(0, 8)})を読めない` };
+  }
+  const seat = (cfg.seats ?? []).find((s) => s.role === structureDeciderSeat(cfg));
+  const person = seat?.accountable ? resolveSigner(cfg, seat.accountable) : null;
+  if (!person) return { person: null, why: `判定日の時点の構成(${rev.slice(0, 8)})に決定者の席の責任者が無い` };
+  return { person, config: cfg, rev, why: null };
+}
+
+/**
  * 判定の記録と確認の状態。
  *   text: D-0 の本文(null は D-0 が無い)。gateRecords: readGateRecords() の結果
  * 返す値:
@@ -137,7 +183,7 @@ function g1PassedIn(gateRecords) {
  *   g1Passed / legacy(G-1 を通過済みで記録に不備がある旧い構成。遡って止めない)
  *   shipBlocking: 確認の欠落を記載の欠落に数えるか(CL1 以上・規制業、または F.2 の Q1 が「はい」で段3 が欠ける)
  */
-export function clJudgmentState(config, { text = null, gateRecords = [] } = {}) {
+export function clJudgmentState(config, { text = null, gateRecords = [], root = null } = {}) {
   const parsed = text === null ? { present: false, values: {}, missingRows: Object.keys(CL_FIELDS) } : parseClRecord(text);
   const v = parsed.values;
   const answer = config?.answers?.['q-criticality'] ?? null;
@@ -176,19 +222,36 @@ export function clJudgmentState(config, { text = null, gateRecords = [] } = {}) 
   // 判定者: D-0 表1「体制と運用形態」の決定者の席の責任者。AI の名義・名簿に無い記名を受け付けない
   let judgePerson = null;
   if (parsed.present && isFilledValue(v.judge)) {
-    // 名簿が未記入の間(初期化の直後)は名簿と照合しない。席の責任者の任免が先に人の判断待ちとして出る(next.mjs)
-    for (const p of nameProblems(config, v.judge)) recordProblems.push(`安全重要度の判定の判定者の記名を受け付けられません: ${p}`);
     judgePerson = resolveSigner(config, v.judge);
     const deciderSeat = (config?.seats ?? []).find((s) => s.role === structureDeciderSeat(config));
     const decider = deciderSeat?.accountable ? resolveSigner(config, deciderSeat.accountable) : null;
-    // 現在の決定者と異なる記名は注意にとどめる。決定者を交代した後も、交代の前の決定者が記名した判定の記録を無効にしない
-    // (成立した記録を書き換えない)。区分を変えるときは、変化点の決定者(現在の決定者)が記録を改めて記名する
-    if (decider && judgePerson && decider.id !== judgePerson.id) {
-      notes.push(
-        `安全重要度の判定の判定者(${v.judge})が、現在の${structureDeciderLabel(config)}(${decider.name})ではありません。` +
-          '判定者は D-0 表1「体制と運用形態」の決定者です(第8章 軸E)。決定者の交代の前の判定なら記録は有効です。交代の前の判定でなければ、現在の決定者が記名し直します'
-      );
+    // 判定者の記名は、記録が作られた時点(判定日)の D-0 表1「体制と運用形態」の決定者と照らす(議長の裁定 J-12、ADR-0111 決定6 と同じ原則)。
+    // 現在の決定者と一致すれば足りる。一致しなければ、判定日の時点の構成から決定者を導く。決定者の交代の前に正しく作られた記録は
+    // 効力を保つ(現在の名簿に居なくてよい)。記録の時点で決定者でなかった人の記名は拒否する。時点を導けない場合に限り注意にする
+    let historic = null;
+    if (decider && judgePerson && decider.id === judgePerson.id) historic = null;
+    else if (decider) {
+      const at = root ? deciderAt(root, v.judgedAt) : { person: null, why: '構成の履歴を読む場所が無い' };
+      if (at.person) {
+        const same = resolveSigner(at.config, v.judge);
+        if (same && same.id === at.person.id) historic = at;
+        else {
+          recordProblems.push(
+            `安全重要度の判定の判定者(${v.judge})は、記録の時点(判定日 ${v.judgedAt}。構成 ${at.rev.slice(0, 8)})の D-0 表1「体制と運用形態」の決定者(${at.person.name})ではありません。` +
+              '判定者は、記録を作る時点の決定者です(第8章 軸E)'
+          );
+        }
+      } else {
+        notes.push(
+          `安全重要度の判定の判定者(${v.judge})が、現在の${structureDeciderLabel(config)}(${decider.name})ではありません。記録の時点の決定者を構成の履歴から導けないため、照らしていません(${at.why})。` +
+            '判定者は記録を作る時点の D-0 表1「体制と運用形態」の決定者です(第8章 軸E)'
+        );
+      }
     }
+    // 名簿が未記入の間(初期化の直後)は名簿と照合しない。記録の時点の決定者と照らせた記名は、現在の名簿と照らし直さない
+    const problems = historic ? nameProblems(historic.config, v.judge) : nameProblems(config, v.judge);
+    for (const p of problems) recordProblems.push(`安全重要度の判定の判定者の記名を受け付けられません: ${p}`);
+    if (historic && !judgePerson) judgePerson = resolveSigner(historic.config, v.judge);
   }
 
   // 確認者: 判定者と別の自然人。AI の名義と判定者本人の記名は、記録の誤りとして止める。名簿に無い記名は確認に数えない(未達)
@@ -223,7 +286,12 @@ export function clJudgmentState(config, { text = null, gateRecords = [] } = {}) 
   const ok = unmet.length === 0 && recordProblems.length === 0;
   // 出荷で欠落に数えるかは、記録の区分と構成の回答の高いほうで決める(構成が区分を上げた後も、CL1 以上の未達は出荷しない)
   const effCls = [cls, answer].filter((c) => CL_ORDER.includes(c)).sort((a, b) => CL_ORDER.indexOf(b) - CL_ORDER.indexOf(a))[0] ?? null;
-  const shipBlocking = parsed.present && recordProblems.length === 0 && !ok && (f2q1 === true || ['cl1', 'cl2', 'cl3'].includes(effCls) || regulated);
+  // 旧い構成(判定の記録を求める前に G-1 を通過した構成)だけが、判定の記録の不備を未達として表示する。それ以外は、判定の記録と
+  // 判定者の記名の不備を出荷の証跡の集約で欠落に数える(議長の裁定 J-10。G-1 の後に記録を消す・書き換える経路を塞ぐ)
+  const legacy = g1PassedBeforeRule(gateRecords) && recordProblems.length > 0;
+  const recordGap = recordProblems.length > 0 && !legacy;
+  const confirmGap = parsed.present && recordProblems.length === 0 && !ok && (f2q1 === true || ['cl1', 'cl2', 'cl3'].includes(effCls) || regulated);
+  const shipBlocking = recordGap || confirmGap;
   return {
     present: parsed.present,
     values: v,
@@ -237,11 +305,13 @@ export function clJudgmentState(config, { text = null, gateRecords = [] } = {}) 
     notes,
     confirmation: { ok, required: req.step, reasons: req.reasons, recorded, effective, unmet },
     g1Passed,
-    legacy: g1Passed && recordProblems.length > 0,
+    legacy,
     shipBlocking,
     shipBlockingReason: !shipBlocking
       ? null
-      : f2q1 === true
+      : recordGap
+        ? `判定の記録または判定者の記名に不備がある(${recordProblems.length} 件。${recordProblems[0]})。判定者本人が書ける欠落であり、記載の欠落に数える(第8章 軸E「判定の記録と確認」)`
+        : f2q1 === true
         ? '附属書F F.2 の Q1 が「はい」の案件で、段3 の確認が欠けている。G-8 の受容で代えない(第4章 G-7 の記載の欠落)'
         : '安全重要度 CL1 以上、または規制業の案件で、判定の確認が未達である。未達のまま出荷しない(第8章「再実行の時点と向き」)',
   };
@@ -270,7 +340,7 @@ export function gateRecordsForCl({ root = ROOT, branch = undefined } = {}) {
 export function readClJudgment(config, { root = ROOT, gateRecords = [] } = {}) {
   const file = path.join(root, 'docs/D-0-governance.md');
   const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-  return clJudgmentState(config, { text, gateRecords });
+  return clJudgmentState(config, { text, gateRecords, root });
 }
 
 /** 判定の確認の状態を1行の文にする(保証の開示の項目1・/pit の注記)。external は氏名を出さない */

@@ -673,8 +673,8 @@ export function computeNext({ fetch = true, network = true } = {}) {
       // 安全重要度の判定の記録(D-0 節16。標準 第8章 軸E「判定の記録と確認」。process-compass #373 / IMPL-0449)。初期化の回答は仮の判定で、
       // 判定の欄と判定者の記名がそろうまで G-1 の審議を開始しない。D-0 の不備と分けて、判定者の席の人の判断待ちとして出す。
       // 確認者の欠落は段階を止めず、注記に出す(未達)。G-1 を通過済みの旧い構成は止めない
-      const cl = clJudgmentState(config, { text: fs.readFileSync(d0, 'utf8'), gateRecords: gateRecordsForCl({ branch: recBranch }) });
-      if (cl.recordProblems.length && !cl.g1Passed) {
+      const cl = clJudgmentState(config, { text: fs.readFileSync(d0, 'utf8'), gateRecords: gateRecordsForCl({ branch: recBranch }), root: ROOT });
+      if (cl.recordProblems.length && !cl.legacy) {
         result.project.push({
           stage: '安全重要度の判定の記録と記名が無い(仮の判定)',
           kind: 'human-wait',
@@ -690,7 +690,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
         });
         projectBlocked = true;
       } else if (cl.recordProblems.length) {
-        result.notes.push(`安全重要度の判定の記録に不備がある(G-1 を通過済みのため止めない。出荷の証跡の集約が判定の確認を未達として出す): ${cl.recordProblems.slice(0, 2).join(' / ')}`);
+        result.notes.push(`安全重要度の判定の記録に不備がある(判定の記録を求める前に G-1 を通過した旧い構成のため止めない。出荷の証跡の集約が判定の確認を未達として出す): ${cl.recordProblems.slice(0, 2).join(' / ')}`);
       } else if (!cl.confirmation.ok) {
         result.notes.push(`安全重要度の判定の確認: ${clJudgmentText(cl)}。確認者は判定者と別の自然人(チームの外の人は名簿へ外部の確認者として載せる)。AI が確認者を書かない`);
       }

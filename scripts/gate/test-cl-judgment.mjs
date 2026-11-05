@@ -76,7 +76,10 @@ const d0 = (rows = {}, { drop = [] } = {}) => {
     .map(([k, val]) => `| ${k} | ${val} |`);
   return `# D-0\n\n## 15. 組織継続の状態の受容\n\n本文\n\n## 16. 安全重要度の判定の記録\n\n| 項目 | 記載 |\n| --- | --- |\n${lines.join('\n')}\n\n- 注記\n`;
 };
-const G1_PASSED = [{ gate: 'G-1 企画承認', result: '通過' }];
+// 判定の記録を求める前(ADR-0113 の採用日 2026-11-05 より前)に G-1 を通過した旧い構成と、採用日の後に通過した構成
+const G1_PASSED = [{ gate: 'G-1 企画承認', result: '通過', judgedAt: '2026-09-01 10:00' }];
+const G1_PASSED_AFTER = [{ gate: 'G-1 企画承認', result: '通過', judgedAt: '2026-11-05 10:00' }];
+const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt: '' }];
 
 // --- IMPL-0449: 判定の記録と判定者の記名 ---
 {
@@ -94,8 +97,8 @@ const G1_PASSED = [{ gate: 'G-1 企画承認', result: '通過' }];
   check('記録: 判定者の記名が無ければ記録の不備にする', st.recordProblems.some((p) => /「判定者」が未記入/.test(p)), JSON.stringify(st.recordProblems));
   st = clJudgmentState(config, { text: d0({ 判定者: '青木 一郎' }) });
   check(
-    '記録: 判定者が現在の D-0 表1「体制と運用形態」の決定者でなければ注意を出す(決定者の交代の前の判定を無効にしない)',
-    st.recordProblems.length === 0 && st.notes.some((n) => /ではありません/.test(n) && /交代の前の判定なら記録は有効/.test(n)),
+    '記録: 判定者が現在の決定者でなく、記録の時点の決定者を構成の履歴から導けなければ、注意にとどめる',
+    st.recordProblems.length === 0 && st.notes.some((n) => /ではありません/.test(n) && /構成の履歴から導けない/.test(n)),
     JSON.stringify({ p: st.recordProblems, n: st.notes })
   );
   st = clJudgmentState(config, { text: d0({ 判定者: '佐藤 七郎' }) });
@@ -113,7 +116,14 @@ const G1_PASSED = [{ gate: 'G-1 企画承認', result: '通過' }];
   st = clJudgmentState(config, { text: d0({ '附属書F F.2 の回答': '人身への危害は無い' }) });
   check('記録: F.2 の回答は Q1 の答え(はい / いいえ)で始める', st.recordProblems.some((p) => /はい \/ いいえ/.test(p)), JSON.stringify(st.recordProblems));
   st = clJudgmentState(config, { text: d0({ 判定者: '' }), gateRecords: G1_PASSED });
-  check('記録: G-1 を通過済みの旧い構成は legacy(遡って止めない)', st.legacy === true && st.g1Passed === true && !st.shipBlocking, JSON.stringify(st));
+  check('記録: 判定の記録を求める前に G-1 を通過した旧い構成は legacy(遡って止めず、欠落に数えない)', st.legacy === true && st.g1Passed === true && !st.shipBlocking, JSON.stringify(st));
+  // 議長の裁定 J-10: 旧い構成のほかは、判定の記録と判定者の記名の不備を、出荷の証跡の集約で欠落に数える
+  st = clJudgmentState(config, { text: d0({ 判定者: '' }), gateRecords: G1_PASSED_AFTER });
+  check('記録: 判定の記録を求めた日以後に G-1 を通過した構成は旧い構成に数えず、記録の不備を欠落に数える', st.legacy === false && st.g1Passed === true && st.shipBlocking && /判定者本人が書ける欠落/.test(st.shipBlockingReason), JSON.stringify({ l: st.legacy, b: st.shipBlocking, r: st.shipBlockingReason }));
+  st = clJudgmentState(config, { text: d0({ 判定者: '' }), gateRecords: G1_PASSED_NODATE });
+  check('記録: G-1 の判定日時を読めない構成は旧い構成に数えない', st.legacy === false && st.shipBlocking, JSON.stringify({ l: st.legacy, b: st.shipBlocking }));
+  st = clJudgmentState(config, { text: d0({ 判定者: '' }) });
+  check('記録: G-1 の前の構成の記録の不備も、出荷の証跡の集約では欠落に数える', st.shipBlocking, JSON.stringify({ b: st.shipBlocking }));
   // IMPL-0449:ok(違反と適合の対。標準の実装マーク。process-compass #373)
   st = clJudgmentState(config, { text: d0() });
   check('記録: 欄がそろい、判定者が決定者で、区分が回答と一致すれば記録の不備なし', st.recordProblems.length === 0 && st.cls === 'cl0' && st.f2q1 === false, JSON.stringify(st.recordProblems));
@@ -200,8 +210,15 @@ try {
     '# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-1 企画承認 |\n| 対象 | P-001 |\n| 判定者 | 大野 五郎 |\n| 判定日時 | 2026-09-01 10:00 |\n| 結果 | 通過 |\n'
   );
   r = run('scripts/gate/check-d0.mjs');
-  const g1Passed = /G-1 を通過済みのため、遡って失敗させません/.test(r.out);
+  const g1Passed = /「判定者」が未記入です[^\n]*判定の記録を求める前に G-1 を通過した旧い構成のため、遡って失敗させません/.test(r.out);
   check('IMPL-0449:ok G-1 を通過済みの旧い構成は、判定の記録の不備で D-0 の検査を失敗させず注意にする', g1Passed && !/::error::.*「判定者」が未記入/.test(r.out), r.out);
+  // 議長の裁定 J-10: 判定の記録を求めた日以後に G-1 を通過した構成で記録を消した・空にした場合は、G-1 を通過済みでも失敗させる
+  fs.writeFileSync(
+    path.join(dir, 'docs/gates/g1-P-001-2026-09-01.md'),
+    '# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-1 企画承認 |\n| 対象 | P-001 |\n| 判定者 | 大野 五郎 |\n| 判定日時 | 2026-11-05 10:00 |\n| 結果 | 通過 |\n'
+  );
+  r = run('scripts/gate/check-d0.mjs');
+  check('D-0 の検査: 判定の記録を求めた日以後に G-1 を通過した構成は、判定者の記名が無ければ失敗する(遡りの扱いに乗せない)', r.status !== 0 && /::error::.*「判定者」が未記入/.test(r.out), r.out);
   fs.rmSync(path.join(dir, 'docs/gates'), { recursive: true, force: true });
   writeD0({});
   r = run('scripts/gate/check-d0.mjs');
@@ -237,6 +254,37 @@ try {
   r = lower();
   check('区分を下げる変化点: 根拠がそろえば受け付ける', r.status === 0 && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).answers['q-criticality'] === 'cl0', r.out);
 
+  // 議長の裁定 J-12: 判定者の記名は、記録の時点(判定日)の決定者と照らす。構成の履歴(process.config.json のコミット)から導く
+  {
+    const hist = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-cl-history-'));
+    try {
+      const hgit = (...a) => execFileSync('git', a, { cwd: hist, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      hgit('init', '-q', '-b', 'main');
+      hgit('config', 'user.email', 't@example.com');
+      hgit('config', 'user.name', 'tester');
+      const before = configOf(); // 事業決裁者は大野
+      fs.writeFileSync(path.join(hist, 'process.config.json'), JSON.stringify(before, null, 2));
+      hgit('add', '-A');
+      execFileSync('git', ['commit', '-q', '-m', 'chore: 大野が決定者'], { cwd: hist, env: { ...process.env, GIT_AUTHOR_DATE: '2026-09-15T10:00:00+09:00', GIT_COMMITTER_DATE: '2026-09-15T10:00:00+09:00' }, stdio: 'ignore' });
+      const after = configOf({}, { seats: seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p0' }) });
+      fs.writeFileSync(path.join(hist, 'process.config.json'), JSON.stringify(after, null, 2));
+      hgit('add', '-A');
+      execFileSync('git', ['commit', '-q', '-m', 'chore: 決定者を青木へ'], { cwd: hist, env: { ...process.env, GIT_AUTHOR_DATE: '2026-10-15T10:00:00+09:00', GIT_COMMITTER_DATE: '2026-10-15T10:00:00+09:00' }, stdio: 'ignore' });
+      // IMPL-0449:ok(違反と適合の対。記録の時点の決定者の記名。process-compass #373)
+      let st = clJudgmentState(after, { text: d0({ 判定者: '大野 五郎', 判定日: '2026-10-01' }), root: hist });
+      check('判定者: 決定者の交代の前に、その時点の決定者が記名した記録は効力を保つ', st.recordProblems.length === 0 && !st.notes.some((n) => /判定者/.test(n)), JSON.stringify({ p: st.recordProblems, n: st.notes }));
+      // IMPL-0449:ng(違反と適合の対。記録の時点で決定者でなかった人の記名。process-compass #373)
+      st = clJudgmentState(after, { text: d0({ 判定者: '江藤 四郎', 判定日: '2026-10-01', 確認者: '大野 五郎' }), root: hist });
+      check('判定者: 記録の時点で決定者でなかった人の記名を拒否する', st.recordProblems.some((p) => /記録の時点\(判定日 2026-10-01。構成 [0-9a-f]{8}\)の D-0 表1「体制と運用形態」の決定者\(大野 五郎\)ではありません/.test(p)), JSON.stringify(st.recordProblems));
+      st = clJudgmentState(after, { text: d0({ 判定者: '大野 五郎', 判定日: '2026-10-20' }), root: hist });
+      check('判定者: 交代の後の日付で前の決定者が記名した記録を拒否する', st.recordProblems.some((p) => /決定者\(青木 一郎\)ではありません/.test(p)), JSON.stringify(st.recordProblems));
+      st = clJudgmentState(after, { text: d0({ 判定者: '大野 五郎', 判定日: '2026-09-01' }), root: hist });
+      check('判定者: 判定日までに構成の記録が無く時点を導けないときだけ、注意にする', st.recordProblems.length === 0 && st.notes.some((n) => /構成の履歴から導けない/.test(n)), JSON.stringify({ p: st.recordProblems, n: st.notes }));
+    } finally {
+      fs.rmSync(hist, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
+
   // 出荷の証跡の集約: CL0 の確認の未達は欠落に数えず項目1 に出す。F.2 の Q1 が「はい」で段3 が欠ければ欠落に数える
   fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(configOf()), null, 2) + '\n');
   const aggregate = () => {
@@ -259,9 +307,19 @@ try {
   check('集約: 求める段で確かめた判定は、確認ありと出し欠落に数えない', /確認者: 江藤 四郎/.test(clRow(a.report)) && !/\*\*未達\*\*/.test(clRow(a.report)) && !clGap(a.out), clRow(a.report));
   const ext = fs.readFileSync(path.join(dir, 'evidence/assurance-disclosure.external.md'), 'utf8');
   check('集約: 組織の外へ渡す保証の開示は、判定者と確認者の氏名を出さない', /安全重要度の判定の確認/.test(ext) && !/江藤 四郎|大野 五郎/.test(clRow(ext)), clRow(ext));
+  writeD0({ 判定者: '' });
+  a = aggregate();
+  check('集約: 旧い構成でなければ、判定者の記名の欠落を欠落に数える(G-1 の後に記録を空にする経路を塞ぐ)', clGap(a.out) && /判定者本人が書ける欠落/.test(a.out), a.out.slice(-1500));
   fs.rmSync(d0Path);
   a = aggregate();
-  check('集約: 判定の記録が無い構成(旧い構成)は、未達と出し、欠落に数えない(急に止めない)', /判定の記録なし/.test(clRow(a.report)) && !clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
+  check('集約: 旧い構成でなければ、判定の記録が無い構成も欠落に数える', /判定の記録なし/.test(clRow(a.report)) && clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
+  fs.mkdirSync(path.join(dir, 'docs/gates'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'docs/gates/g1-P-001-2026-09-01.md'),
+    '# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-1 企画承認 |\n| 対象 | P-001 |\n| 判定者 | 大野 五郎 |\n| 判定日時 | 2026-09-01 10:00 |\n| 結果 | 通過 |\n'
+  );
+  a = aggregate();
+  check('集約: 判定の記録を求める前に G-1 を通過した旧い構成は、判定の記録が無くても未達と出し、欠落に数えない(急に止めない)', /判定の記録を求める前に G-1 を通過した旧い構成/.test(clRow(a.report)) && !clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

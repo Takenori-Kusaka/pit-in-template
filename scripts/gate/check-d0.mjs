@@ -138,10 +138,12 @@ else for (const p of generated) warn(`${p}(旧い構成のため注意にとど�
 // 確認者の欠落は他の人の手が要るため止めない(未達。出荷の証跡の集約が出す)。G-1 を通過済みの案件は遡って失敗させず注意にする。
 // --no-cl は next.mjs が使う(判定の記録の欠落を、D-0 の不備と分けて人の判断待ちに出すため)
 if (!process.argv.includes('--no-cl')) {
-  const st = clJudgmentState(config, { text, gateRecords: gateRecordsForCl() });
+  const st = clJudgmentState(config, { text, gateRecords: gateRecordsForCl(), root: ROOT });
   if (st.recordProblems.length) {
-    if (st.g1Passed) {
-      for (const p of st.recordProblems) warn(`${p}(G-1 を通過済みのため、遡って失敗させません。記録がそろうまで、出荷の証跡の集約が判定の確認を未達として出します)`);
+    // 遡って失敗させないのは、判定の記録を求める前に G-1 を通過した旧い構成に限る(議長の裁定 J-10)。G-1 の後に記録を消した・
+    // 書き換えた構成は、G-1 を通過済みでも失敗させる
+    if (st.legacy) {
+      for (const p of st.recordProblems) warn(`${p}(判定の記録を求める前に G-1 を通過した旧い構成のため、遡って失敗させません。記録がそろうまで、出荷の証跡の集約が判定の確認を未達として出します)`);
     } else {
       problems.push(...st.recordProblems);
       problems.push('初期化の回答 q-criticality は仮の判定です。安全重要度の判定の記録と判定者の記名がそろうまで、G-1 の審議を開始できません(標準 第2章 2.8、第8章 軸E)');
