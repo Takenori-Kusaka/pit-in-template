@@ -67,6 +67,7 @@ import {
   enforcementDigestsWith,
   DIRECTION_LABEL,
   directionLabel,
+  rowKindsSummary,
   modeRank,
   performerKey,
   qualificationProblems,
@@ -2213,14 +2214,16 @@ export function diffConfig(before, after) {
  */
 export const SPLIT_CHANGE_POINT_HINT =
   'この変化点のすべての行(任免・緩める・名簿の表記の変更)の要件を満たす記名者が、名簿にいません。1つの変化点の記名者は、すべての行の要件を満たす1人に限ります(標準 第3章 3.13.3)。' +
-  '変化点を分けて出します。決定者その人を替える変化点と、組織上の任命権者が記名する変化点には、緩める向きの行を入れません(緩める向きの行を生む任命は、後の変化点へ回します)。' +
-  '緩める向きの行は、新しい決定者が記名する後の変化点で決めます';
+  '緩める向きの行を除けば記名できる者がいるため、変化点を分けて出します。先の変化点には、緩める向きの行を入れません(決定者その人を替える変化点と、組織上の任命権者が記名する変化点が当たります。' +
+  '緩める向きの行を生む任命は、後の変化点へ回します)。緩める向きの行は、後の変化点で、その行を決定できる者(決定者を替えた場合は新しい決定者)が記名して決めます';
 
 export function deciderProblems(config, report, decidedBy, before = null) {
   const out = deciderRowProblems(config, report, decidedBy, before);
-  // 任免・名簿の表記の変更の行と緩める向きの行を両方含み、名簿のだれの記名でも全行の要件を満たせないときに限り、分け方を案内する
+  // 任免・名簿の表記の変更の行と緩める向きの行を両方含み、名簿のだれの記名でも全行の要件を満たせないときに限り、分け方を案内する。
+  // 緩める向きの行を除いても記名できる者がいないとき(任免の段そのものが通らないとき)は、分けても通らないため案内しない(突合 F-5)
   const mixed = Boolean((report.appointItems?.length || report.renameItems?.length) && report.loosenItems?.length);
-  if (out.length && mixed && !(config.people ?? []).some((p) => !deciderRowProblems(config, report, p.name, before).length)) {
+  const passes = (r) => (config.people ?? []).some((p) => !deciderRowProblems(config, r, p.name, before).length);
+  if (out.length && mixed && !passes(report) && passes({ ...report, loosenItems: [] })) {
     out.push(SPLIT_CHANGE_POINT_HINT);
   }
   return out;
@@ -2538,7 +2541,7 @@ export function performerAccountCell(config, s) {
   return '**未申告**(席の責任者と共有として扱う。列挙に無い離脱)';
 }
 
-export function renderD0Section(key, config, { legacy = false, before430 = false } = {}) {
+export function renderD0Section(key, config, { legacy = false, before430 = false, before376 = false } = {}) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
   const blank = config.configured === false;
@@ -2691,10 +2694,13 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
     L.push('');
     L.push(...renderAutonomyTable(config, blank));
   } else if (key === 'history') {
+    // 変更の行ごとの種類の欄(第3章 3.13.4 記録7。#376)を置く前の生成区間は、欄の無い形で出す(旧い D-0 を失敗させない)
+    const kindsCol = !(legacy || before430 || before376);
     L.push(
-      '| 日付 | 変化点の種別 | 概要 | 変更前後の版 | 兼務禁止と独立性の再判定の結果 | 無効になった確認(やり直しの要否) | 失効した確認と例外(再確認の期日) | 決定した者(理由) | 通知先と通知日(即時の通知を要する事象) |'
+      '| 日付 | 変化点の種別 | 概要 | 変更前後の版 | 兼務禁止と独立性の再判定の結果 | 無効になった確認(やり直しの要否) | 失効した確認と例外(再確認の期日) | 決定した者(理由) | 通知先と通知日(即時の通知を要する事象) |' +
+        (kindsCol ? ' 変更の行ごとの種類 |' : '')
     );
-    L.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    L.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |' + (kindsCol ? ' --- |' : ''));
     const log = blank ? [] : (config.changeLog ?? []);
     log.forEach((e, i) => {
       // 個別の値の変更は体制の変化点ではない。構成の変更記録(changeLog[])にだけ残す。
@@ -2725,7 +2731,7 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
           ? '決定なし(発生)'
           : '—';
       L.push(
-        `| ${String(e.date).slice(0, 10)} | ${kind} | ${cell(summary)} | ${e.d0Before ?? '—'} → ${e.d0After ?? '—'} | ${cell(e.separationRecheck ?? '—')} | ${cell(invalidated || '—')} | ${cell(lapsed || '—')} | ${cell(decided)} | ${cell(noticeText(config, i))} |`
+        `| ${String(e.date).slice(0, 10)} | ${kind} | ${cell(summary)} | ${e.d0Before ?? '—'} → ${e.d0After ?? '—'} | ${cell(e.separationRecheck ?? '—')} | ${cell(invalidated || '—')} | ${cell(lapsed || '—')} | ${cell(decided)} | ${cell(noticeText(config, i))} |` + (kindsCol ? ` ${rowKindsSummary(e)} |` : '')
       );
     });
     if (!log.length) L.push('| | | | | | | | | |');
@@ -2787,7 +2793,9 @@ export function d0SectionProblems(text, config) {
       // 表5-2 の列(#312)を置く前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない。/pit が再生成を勧める)
       norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true })) &&
       // 表5-2 のアカウントの数値の識別子と表7 の担い手の名義の列(#430)を置く前の生成区間も受け付ける(/pit が再生成を勧める)
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before430: true }))
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before430: true })) &&
+      // 節13 の変更の行ごとの種類の欄(#376)を置く前の生成区間も受け付ける(/pit が再生成を勧める)
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before376: true }))
     ) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
@@ -2812,7 +2820,13 @@ export function d0LegacyOnlySections(text, config) {
     const e = text.indexOf(end);
     if (b < 0 || e < 0 || e < b) continue;
     const body = norm(text.slice(b + begin.length, e));
-    if (body !== norm(renderD0Section(key, config)) && (body === norm(renderD0Section(key, config, { legacy: true })) || body === norm(renderD0Section(key, config, { before430: true })))) out.push(NAMES[key]);
+    if (
+      body !== norm(renderD0Section(key, config)) &&
+      (body === norm(renderD0Section(key, config, { legacy: true })) ||
+        body === norm(renderD0Section(key, config, { before430: true })) ||
+        body === norm(renderD0Section(key, config, { before376: true })))
+    )
+      out.push(NAMES[key]);
   }
   return out;
 }
@@ -5476,6 +5490,13 @@ if (isMain) {
       report.loosenItems.push(item);
       report.loosens.push(item.line);
       ruleActivated.push(item.intent);
+      // 差分の承認の行を緩める行として記録する。行が無ければ足す(突合 F-3。向きと行ごとの種類を食い違わせない)
+      const at = report.diff.findIndex((l) => String(l).startsWith(`委任の規則 ${r.id}: AI維持管理者の承認 `));
+      if (at >= 0) report.rowKinds[at] = 'loosen';
+      else {
+        report.diff.push(item.line);
+        report.rowKinds.push('loosen');
+      }
     }
     if (report.loosens.length) report.direction = 'loosen';
     const heldDecision = intentApplied[0] ?? widenApplied[0] ?? ruleActivated[0] ?? null;

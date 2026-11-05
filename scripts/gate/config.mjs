@@ -338,7 +338,41 @@ export function rowKindsProblems(e, i) {
   if (e.rowKinds.length !== n) out.push(`changeLog[${i}]: rowKinds(差分の行ごとの種類)が ${e.rowKinds.length} 件で、差分の行(${n} 件)と数が合いません(第3章 3.13.4)`);
   const unknown = [...new Set(e.rowKinds.filter((k) => !(k in ROW_KIND_LABEL)))];
   if (unknown.length) out.push(`changeLog[${i}]: rowKinds に不明な種類があります(${unknown.join(', ')})`);
+  // 要約の向きと行ごとの種類の整合(突合 F-3)。緩める向きの記録は緩める行を、任免の決定の記録は任免か名簿の表記の変更の行を持つ
+  if (e.direction === 'loosen' && !e.rowKinds.includes('loosen')) out.push(`changeLog[${i}]: 向きが緩めるなのに、rowKinds に緩める行がありません`);
+  if (e.direction === 'appoint' && !e.rowKinds.some((k) => k === 'appoint' || k === 'rename')) out.push(`changeLog[${i}]: 向きが任免の決定なのに、rowKinds に任免・名簿の表記の変更の行がありません`);
   return out;
+}
+
+/** 行ごとの種類を持たない種別(体制の変化点の手続を経ない記録。構成の生成・形式の移行・テンプレートの取り込み) */
+export const ROW_KINDS_EXEMPT = ['init', 'migrate', 'intake'];
+
+/**
+ * 変化点の記録の並び全体の行ごとの種類の問題(突合 F-8)。旧い記録は、欄の有無ではなく並びの位置で見分ける。
+ * 最初に rowKinds を持つ記録より前は旧い記録として問わない。それより後の記録(ROW_KINDS_EXEMPT を除く)が欄を欠けば問題にする
+ */
+export function rowKindsLogProblems(log) {
+  const list = Array.isArray(log) ? log : [];
+  const out = [];
+  const first = list.findIndex((e) => e && e.rowKinds !== undefined);
+  list.forEach((e, i) => {
+    out.push(...rowKindsProblems(e, i));
+    if (first >= 0 && i > first && e && e.rowKinds === undefined && !ROW_KINDS_EXEMPT.includes(e.kind)) {
+      out.push(`changeLog[${i}]: 行ごとの種類(rowKinds)がありません。changeLog[${first}] から後の変化点の記録は、差分の行ごとの種類を持ちます(第3章 3.13.4 記録7)`);
+    }
+  });
+  return out;
+}
+
+/** D-0 の改訂履歴の欄「変更の行ごとの種類」の表示(種類ごとの行の数。欄の無い旧い記録は「—」) */
+export function rowKindsSummary(e) {
+  if (!Array.isArray(e?.rowKinds)) return '—';
+  const parts = Object.keys(ROW_KIND_LABEL)
+    .filter((k) => k !== 'none')
+    .map((k) => [k, e.rowKinds.filter((x) => x === k).length])
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${ROW_KIND_LABEL[k]} ${n}`);
+  return parts.length ? parts.join(' / ') : '区分する行なし';
 }
 
 export function modeRank(mode) {
@@ -1621,8 +1655,8 @@ export function configIntegrityProblems(config) {
     if (SIGNED_DIRECTIONS.includes(e?.direction) && !(e.decidedBy && e.reason)) {
       out.push(`changeLog[${i}]: ${DIRECTION_LABEL[e.direction]}向きの変更に、決定した者の記名または理由がありません(第3章 3.13.3)`);
     }
-    out.push(...rowKindsProblems(e, i));
   });
+  out.push(...rowKindsLogProblems(config.changeLog));
   return out;
 }
 

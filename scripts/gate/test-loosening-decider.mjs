@@ -261,9 +261,19 @@ try {
       return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
     };
     const cfg = () => JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    return { d, run, cfg, raw: () => fs.readFileSync(cfgPath, 'utf8'), profile: () => fs.readFileSync(path.join(d, 'PROCESS-PROFILE.md'), 'utf8') };
+    const contract = () => {
+      const r = spawnSync(process.execPath, ['scripts/gate/verify-gate-contract.mjs'], { cwd: d, encoding: 'utf8', env });
+      return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    /** 構成を書き換えて封印を付け直す(検査の入口に、壊れた記録を読ませる) */
+    const tamper = (fn) => {
+      const c = cfg();
+      fn(c);
+      fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(c), null, 2) + '\n');
+    };
+    return { d, run, cfg, contract, tamper, d0: () => fs.readFileSync(path.join(d, 'docs/D-0-governance.md'), 'utf8'), raw: () => fs.readFileSync(cfgPath, 'utf8'), profile: () => fs.readFileSync(path.join(d, 'PROCESS-PROFILE.md'), 'utf8') };
   };
-  const hinted = (out) => /すべての行\(任免・緩める・名簿の表記の変更\)の要件を満たす記名者が、名簿にいません/.test(out) && /新しい決定者が記名する後の変化点で決めます/.test(out);
+  const hinted = (out) => /すべての行\(任免・緩める・名簿の表記の変更\)の要件を満たす記名者が、名簿にいません/.test(out) && /その行を決定できる者\(決定者を替えた場合は新しい決定者\)が記名して決めます/.test(out);
 
   // (b) 決定者の交代と緩める向きの行を1つの変化点に含む(2名 mvp cl0。前任の決定者は AI維持管理者の席に残らない)
   const wb = workspace('pit-in-376b-');
@@ -279,6 +289,13 @@ try {
       'IMPL-0444:ng 決定者の交代と緩める向きの行を1つの変化点に含むと、前任・新任のどちらの記名でも拒否し、変化点を分ける案内を出す',
       !byPrior.ok && !byNew.ok && hinted(byPrior.out) && hinted(byNew.out) && wb.raw() === before,
       `${byPrior.out}\n----\n${byNew.out}`
+    );
+    // 前任の決定者が AI維持管理者の席に残る形では、前任の記名で全行の要件を満たせる。新任の記名は拒否するが、分け方は案内しない(突合 F-5)
+    const keep = wb.run({ summary: '決定者の交代と確認者', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 0, 1]), decidedBy: P[1].name, reason: '決定者を交代する' });
+    check(
+      '#376: 全行の要件を満たす者が名簿にいれば、記名者が違っても拒否だけを出し、分け方は案内しない',
+      !keep.ok && !hinted(keep.out) && /席の責任者の任免/.test(keep.out) && wb.raw() === before,
+      keep.out
     );
     // 分ける: (i) 決定者の交代だけ(前任の記名)→ (ii) 残りの任免と緩める向きの行(新しい決定者の記名)
     const s1 = wb.run({ summary: '決定者の交代', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '決定者を交代する' });
@@ -310,6 +327,27 @@ try {
       '#376: 緩める向きの行と任免の行を両方含む記録は、体制の変化点の記録(PROCESS-PROFILE.md)の向きに「緩める(任免を含む)」と出す(要約の向きは loosen のまま)',
       /\| 緩める\(任免を含む\) \|/.test(wb.profile()) && /\| 任免の決定 \|/.test(wb.profile()),
       wb.profile().split('\n').filter((l) => /^\| 20/.test(l)).join('\n')
+    );
+    check(
+      '#376: D-0 の改訂履歴(節13)に「変更の行ごとの種類」の欄を出し、種類ごとの行の数を書く(第3章 3.13.4 記録7)',
+      /\| 通知先と通知日\(即時の通知を要する事象\) \| 変更の行ごとの種類 \|/.test(wb.d0()) && /\| 任免 3 \/ 緩める 1 \/ 厳しくする 3 \|/.test(wb.d0()),
+      wb.d0().split('\n').filter((l) => /^\| 20/.test(l)).join('\n')
+    );
+    const clean = wb.contract();
+    check('#376: 行ごとの種類の揃った記録は、契約検査の行ごとの種類の問題に出ない', !/rowKinds|行ごとの種類/.test(clean.out), clean.out);
+    // IMPL-0445:ng 契約検査(verify-gate-contract)の入口が、数の合わない記録と、欄の欠けた新しい記録を問題にする
+    wb.tamper((c) => {
+      c.changeLog.at(-1).rowKinds = c.changeLog.at(-1).rowKinds.slice(1);
+    });
+    const short = wb.contract();
+    wb.tamper((c) => {
+      delete c.changeLog.at(-1).rowKinds;
+    });
+    const missing = wb.contract();
+    check(
+      'IMPL-0445:ng 契約検査が、差分の行と数の合わない rowKinds と、rowKinds を持つ記録より後で欄を欠く記録を、問題にする',
+      !short.ok && /rowKinds\(差分の行ごとの種類\)が \d+ 件で、差分の行\(\d+ 件\)と数が合いません/.test(short.out) && !missing.ok && /行ごとの種類\(rowKinds\)がありません/.test(missing.out),
+      `${short.out}\n----\n${missing.out}`
     );
   } finally {
     fs.rmSync(wb.d, { recursive: true, force: true });
@@ -344,6 +382,21 @@ try {
     fs.rmSync(wa.d, { recursive: true, force: true });
   }
 
+  // 前任の決定者が離脱し、組織上の任命権者が名簿にいない。任免の段を記名できる者がいないため、分けても通らない。案内しない(突合 F-5)
+  const wc = workspace('pit-in-376c-');
+  try {
+    const fill = wc.run({ summary: '体制を記入', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
+    const leave = wc.run({ summary: '1人目が離脱', people: [P[1]], seats: seatsBy(SEAT_IDS.map(() => null)) });
+    const none = wc.run({ summary: '後任の任命と確認者', people: [P[1], P[2]], seats: seatsBy([1, 1, 1, 1, 2, 1, 1, 1, 2]), decidedBy: P[1].name, reason: '前任の離脱に伴う後任の任命' });
+    check(
+      '#376: 任免の段を記名できる者が名簿にいないときは、緩める向きの行を含んでも分け方を案内しない(任免の拒否だけを出す)',
+      fill.ok && leave.ok && !none.ok && !hinted(none.out) && /組織上の任命権者/.test(none.out),
+      `${fill.out}\n${leave.out}\n${none.out}`
+    );
+  } finally {
+    fs.rmSync(wc.d, { recursive: true, force: true });
+  }
+
   // 複合のラベルと、行ごとの種類の欄の検査(欄の無い旧い記録は受け付ける)
   const legacy = { direction: 'loosen', diff: ['独立レビュア: 責任者 山田 太郎 → 佐藤 花子', 'カバレッジの下限: 90% → 80%'] };
   check(
@@ -351,9 +404,10 @@ try {
     directionLabel(legacy) === '緩める' && rowKindsProblems(legacy, 0).length === 0 && directionLabel({ direction: 'appoint', rowKinds: ['appoint'] }) === '任免の決定' &&
       directionLabel({ ...legacy, rowKinds: ['appoint', 'loosen'] }) === '緩める(任免を含む)' && directionLabel({ ...legacy, rowKinds: ['none', 'loosen'] }) === '緩める'
   );
-  // IMPL-0445:ng 欄がある記録で、diff の行と数が合わない(または不明な種類がある)ものを検査が問題にする
+  // 関数の単位: 数の合わない記録、不明な種類、向きと種類の食い違い(突合 F-3)
   check(
-    'IMPL-0445:ng 行ごとの種類の数が差分の行と合わない記録、不明な種類を含む記録を、検査が問題にする',
+    '#376: 行ごとの種類の数が差分の行と合わない記録、不明な種類を含む記録、向きが緩めるなのに緩める行の無い記録を、検査の関数が問題にする',
+    rowKindsProblems({ ...legacy, rowKinds: ['appoint', 'none'] }, 0).some((p) => /緩める行がありません/.test(p)) &&
     rowKindsProblems({ ...legacy, rowKinds: ['loosen'] }, 4).some((p) => /changeLog\[4\].*数が合いません/.test(p)) && rowKindsProblems({ ...legacy, rowKinds: ['appoint', 'widen'] }, 0).some((p) => /不明な種類/.test(p))
   );
 }
