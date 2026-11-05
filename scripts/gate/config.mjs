@@ -480,20 +480,23 @@ export function confirmedNames(config) {
  *   'self'        本人が記名した記録がある。体制の内の人が1名の名簿でだけ効き、自己申告の氏名として開示する
  *   'unrecorded'  記録が無い(#296 より前に書いた確認を含む)。体制の内の人が1名の名簿では効かせ、未記録として出す
  *   'invalid'     2名以上の名簿で、本人以外の記名の記録が無い(効かない。契約検査が落とす)
+ *   'pending'     確認待ち。体制の内の人が1名から2名以上へ移る変化点で、前の名簿で効いていた本人の自己申告(本人の記名・未記録)の確認。
+ *                 その変化点の評価に限って効かせる(/process-change が評価用の構成へ nameConfirmPending を載せる。構成へは書かない)。
+ *                 書き出した構成では 'invalid' になり、契約検査と出荷の証跡の集約が欠落として扱う(process-compass #375 追加の裁定 AR-2)
  */
 export function nameConfirmationState(config, person) {
   if (person?.nameConfirmed !== true || !person.id) return null;
   const rec = confirmedNames(config).get(person.id);
   if (rec && !rec.self) return 'other';
   const single = insiderCount(config) === 1;
-  if (!single) return 'invalid';
+  if (!single) return Array.isArray(config?.nameConfirmPending) && config.nameConfirmPending.includes(person.id) ? 'pending' : 'invalid';
   return rec ? 'self' : 'unrecorded';
 }
 
 /** 名簿の人の氏名の確認が効くか */
 export function nameConfirmedValid(config, person) {
   const st = nameConfirmationState(config, person);
-  return st === 'other' || st === 'self' || st === 'unrecorded';
+  return st === 'other' || st === 'self' || st === 'unrecorded' || st === 'pending';
 }
 
 const RECORD_NAME_CONFIRMATION = '/process-change(種別 accountable)で、名簿をそのまま渡し、決定した者の記名(decidedBy)と理由を付けて記録します';
@@ -505,8 +508,9 @@ export function nameConfirmationProblems(config) {
     if (p?.nameConfirmed !== true || !aiNameReason(p.name)) continue;
     if (nameConfirmationState(config, p) === 'invalid') {
       out.push(
-        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)に、本人以外が記名した変化点の記録がありません。体制の内の人が2名以上の名簿では、この確認は効かず、名義は AI の名義として拒否されます。` +
-          `${RECORD_NAME_CONFIRMATION}。記名するのは本人以外の名簿の人です(#296 より前に書いた確認も、記名し直します)`
+        `人の名簿 ${p.name} の氏名の確認(nameConfirmed)は確認待ちです。本人以外が記名した変化点の記録がありません。体制の内の人が2名以上の名簿では、この確認は効かず、名義は AI の名義として拒否されます` +
+          '(1名の体制の本人の記名と未記録の確認は、2人目が名簿に加わると確認待ちになります)。確認されるまで、契約検査と出荷の証跡の集約は欠落として扱います。' +
+          `次の変化点で確認します: ${RECORD_NAME_CONFIRMATION}。記名するのは本人以外の、その変化点より前から名簿にいる人です(2人目を足した変化点と同じ PR に入れてかまいません。#296 より前に書いた確認も、記名し直します)`
       );
     }
   }
@@ -577,7 +581,7 @@ function performerStrings(config) {
  * AI の名義として拒否した記名の案内。原因(名簿に無い / 確認の旨が無い / 確認の旨に有効な記録が無い)ごとに分ける。
  * 確認はその人を席に置くのと同じ変化点で出せること、確認の記名者の要件を案内する(process-compass #375 / ADR-0111 決定1・2)
  */
-const NAME_CONFIRM_SIGNER = '確認の記名者は、確認される本人以外で、AI の名義でない名簿の人に限る(/process-change では、その変化点より前から名簿にいる人)';
+const NAME_CONFIRM_SIGNER = '確認の記名者は、確認される本人以外で、AI の名義でない名簿の人に限る(/process-change では、その変化点より前から名簿にいる人。初回の記入を除く)';
 function aiNameHint(config, name) {
   const person = findPerson(config, name);
   if (!person) return `(同じ語を含む実在の氏名の場合は、名簿へ足し、人が実在を確かめたうえで nameConfirmed: true を書く。${NAME_CONFIRM_SIGNER})`;
@@ -1646,6 +1650,8 @@ export function configIntegrityProblems(config) {
   out.push(...chain.problems);
   out.push(...answersRosterProblems(config), ...headcountProblems(config), ...shipBlockedProblems(config));
   for (const p of namingProblems(config)) out.push(`記名を受け付けられません: ${p}`);
+  // 確認待ちの氏名(本人以外の記名の記録が無い確認)も欠落として扱う(process-compass #375 追加の裁定 AR-2)
+  out.push(...nameConfirmationProblems(config));
   // AI の担い手の名義の申告(第3章 3.5.3。#430)。名簿の人のアカウントを専用と申告した構成などを、集約の時点でも確かめる
   for (const p of performerAccountProblems(config).problems) out.push(`担い手の名義: ${p}`);
   for (const s of config.seats ?? []) {

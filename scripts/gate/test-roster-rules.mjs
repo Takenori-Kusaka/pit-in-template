@@ -249,7 +249,11 @@ for (const size of ['size-3-9', 'size-10plus']) {
   const soloBefore = { configured: true, gates: {}, seats: [], people: solo.people };
   check('1名の体制: 未記録の確認は、次の変化点で記名して記録する項目になる', diffConfig(soloBefore, soloBefore).nameConfirmItems.length === 1);
   check('1名の体制: 本人の記名の記録がある確認は、再び項目にしない', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, changeLog: soloSelf.changeLog }).nameConfirmItems.length === 0);
-  check('2人目が加わると、本人の記名だけの確認は本人以外の記名を要する項目になる', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, { ...soloBefore, people: [devin, other], changeLog: soloSelf.changeLog }).nameConfirmItems.length === 1);
+  // 2人目を足す変化点そのものでは確認待ちとし、記名を求めない(1つの変化点の記名者は1人で、同じ変化点で2人目が確認できないため)。
+  // 2名以上の名簿になった後の変化点で、本人以外の記名を要する項目になる(process-compass #375 追加の裁定 AR-2)
+  const twoAfter = { ...soloBefore, people: [devin, other], changeLog: soloSelf.changeLog };
+  check('2人目を足す変化点では、本人の記名だけの確認を確認待ちとし、項目にしない', diffConfig({ ...soloBefore, changeLog: soloSelf.changeLog }, twoAfter).nameConfirmItems.length === 0);
+  check('2名以上になった後の変化点では、本人の記名だけの確認は本人以外の記名を要する項目になる', diffConfig(twoAfter, twoAfter).nameConfirmItems.length === 1);
   const before = { configured: true, gates: {}, people: [{ id: 'd', name: 'Devin Smith' }, other], seats: [] };
   const after = { ...before, people: [devin, other] };
   const rep = diffConfig(before, after);

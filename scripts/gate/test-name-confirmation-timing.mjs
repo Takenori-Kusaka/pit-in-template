@@ -10,13 +10,16 @@
 //     確認・同じ変化点で名簿へ足した人による確認は、同じ変化点でも数えず、拒否する(ADR-0111 決定2。IMPL-0446:ng)
 //   - 委任の席(clampSeats)の責任者の名義は、変化点の記録を足した後の構成で照らす。前の変化点・同じ変化点の確認のどちらでも
 //     委任の席に置ける。記名なしでは、委任の席は緩まない(ADR-0111 決定3)
+//   - 確認の記名者の資格の例外は、第3章 3.13.3 の初回の記入に限る(追加の裁定 AR-1)。外部の人だけが前の名簿にいる初回でない変化点では数えない
+//   - 1名の体制に2人目を足す変化点は、本人の自己申告を確認待ちとして受け付け、確認待ちのままでは契約検査と集約が欠落として扱い、
+//     次の変化点で本人以外が確認すれば解ける(追加の裁定 AR-2)
 // 一時の置き場で試し、GitHub へ問い合わせません。日付は過去(2026-10-01)に固定します。
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, sealChangeLog } from './config.mjs';
+import { ROOT, sealChangeLog, configIntegrityProblems } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
@@ -90,6 +93,7 @@ try {
   fs.copyFileSync(path.join(dir, 'templates/00-d0-governance.md'), path.join(dir, 'docs/D-0-governance.md'));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: init');
+  git('tag', 'blank');
   const run = (obj) => {
     fs.writeFileSync(path.join(dir, 'change.json'), JSON.stringify({ kind: 'accountable', date: DAY, ...obj }));
     const r = spawnSync(process.execPath, ['scripts/init/generate-profile.mjs', '--change', 'change.json'], { cwd: dir, encoding: 'utf8', env });
@@ -221,8 +225,67 @@ try {
     const before = raw();
     const r = run({ kind: 'mode', summary: '委任', seats: { 'dev-verifier': DELEGATE }, delegation: { rules: [RULE], changeTypes: TYPES }, ruleApprovedBy: '山田 太郎' });
     check('委任の席: 記名と理由の無い委任の宣言は受け付けず、席を緩めない', !r.ok && raw() === before && seatOf('dev-verifier').mode !== 'delegated', r.out);
-    const d = run({ kind: 'mode', summary: '担い手の識別', seats: { 'dev-verifier': { performer: P, fallback: 'human', qualification: Q('Claude Dupont') } } });
-    check('委任の席: 運用形態を宣言しない変化点では、確認が数えられても席は委任へ変わらない', seatOf('dev-verifier').mode !== 'delegated', d.out);
+  }
+  // 委任の宣言が規則の承認待ちで協働に留まった席は、記名の無い後の変化点で委任へ変わらない(突合 X-6)
+  resetTo('dupont-dev');
+  {
+    const held = run({ kind: 'mode', summary: '委任(規則は承認待ち)', seats: { 'dev-verifier': DELEGATE }, delegation: { rules: [RULE], changeTypes: TYPES }, decidedBy: 'Claude Dupont', reason: '委任する' });
+    const heldSeat = seatOf('dev-verifier');
+    check('委任の席: 規則の承認待ちの委任の宣言は受け付け、席は協働に留まる(宣言を保持する)', held.ok && heldSeat.mode !== 'delegated' && heldSeat.intent?.mode === 'delegated', `${held.out}\n${JSON.stringify(heldSeat)}`);
+    const unsigned = run({ summary: '鈴木の所属', people: [PEOPLE3[0], PEOPLE3[1], { ...PEOPLE3[2], team: '品質' }, PEOPLE3[3], DUPONT] });
+    check('委任の席: 留まった席は、記名の無い後の変化点(規則の承認を含まない)を受け付けても委任へ変わらない', unsigned.ok && seatOf('dev-verifier').mode !== 'delegated', unsigned.out);
+  }
+
+  // 初回の記入の例外(追加の裁定 AR-1)。どの席にも責任者が記入されたことのない状態から、D-0 表1 の決定者の席に記入する人が記名する
+  // 変化点では、確認の記名者をその変化点の名簿で照らす。自己確認の経路は開かない
+  {
+    resetTo('blank');
+    const r = run({ summary: '3名と Dupont', people: [...PEOPLE3, DUPONT], seats: SEATS3, decidedBy: '山田 太郎', reason: '初期の体制を記入する' });
+    const st = r.ok ? cfg().changeLog.at(-1) : {};
+    check('初回の記入: 同じ変化点で記入する決定者の記名で、Dupont の氏名の確認を数える', r.ok && JSON.stringify(st.nameConfirmations) === JSON.stringify([{ id: 'dupont' }]) && (st.nameOverrides ?? []).includes('Claude Dupont'), r.out);
+    resetTo('blank');
+    const self = run({ summary: '3名と Dupont', people: [...PEOPLE3, DUPONT], seats: { ...SEATS3, 'biz-approver': { accountable: 'Claude Dupont' } }, decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+    check('初回の記入: 2名以上の名簿で本人の記名による確認は、初回でも拒否する', !self.ok && /Claude Dupont の氏名の確認を、本人の記名では確定できません/.test(self.out), self.out);
+    resetTo('blank');
+    const mutual = run({ summary: '3名と2名', people: [...PEOPLE3, DUPONT, GEMINI], seats: { ...SEATS3, 'biz-approver': { accountable: 'Gemini Sato' } }, decidedBy: 'Gemini Sato', reason: '初期の体制を記入する' });
+    check('初回の記入: AI を示す語を含む名義どうしの確認は、初回でも拒否する', !mutual.ok && /Gemini Sato の氏名の確認を、本人の記名では確定できません/.test(mutual.out), mutual.out);
+    // 境界: 外部の人だけが前の名簿にいる、初回の記入でない変化点(席を記入しない)では、同じ変化点で足した人の確認を数えない
+    resetTo('blank');
+    const org = run({ summary: '任命権者', people: [PEOPLE3[3]] });
+    const before = raw();
+    const add = run({ summary: '高橋と Dupont', people: [PEOPLE3[3], TAKAHASHI, DUPONT], decidedBy: '高橋 次郎', reason: '氏名を確認した' });
+    check('初回の記入の境界: 外部の人だけが前の名簿にいる変化点で、同じ変化点で足した人の確認を数えず拒否する', org.ok && !add.ok && /記名者 "高橋 次郎" は、この変化点で名簿へ足した人です/.test(add.out) && raw() === before, `${org.out}\n----\n${add.out}`);
+  }
+
+  // 確認待ち(追加の裁定 AR-2)。1名の体制(AI を示す語を含む氏名の本人の自己申告)に2人目を足す変化点は、確認待ちとして受け付ける。
+  // 確認待ちのままでは契約検査が欠落として落とし、次の変化点で本人以外が確認すれば落ちない
+  {
+    resetTo('blank');
+    const answers12 = { ...answers, 'q-team-size': 'size-1-2', 'q-external-reviewer': 'reviewer-yes' };
+    const blank12 = quiet(() => buildConfig(answers12, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
+    fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(blank12), null, 2) + '\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: init 1-2');
+    const all = (n) => Object.fromEntries(Object.keys(SEATS3).map((k) => [k, { accountable: n }]));
+    const solo = run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+    check('確認待ちの前提: 1名の体制の本人の記名による確認(自己申告)を受け付ける', solo.ok, solo.out);
+    const two = run({ summary: '高橋が加わった', people: [DUPONT, TAKAHASHI], seats: { 'independent-reviewer': { accountable: '高橋 次郎' } }, decidedBy: 'Claude Dupont', reason: '確認者を置く' });
+    const c2 = cfg();
+    const k2 = contract();
+    check(
+      'AR-2: 1名から2名へ移る変化点を、本人の自己申告を確認待ちとして受け付け、確認待ちと次の手順を案内する。構成へ確認待ちの印を書かない',
+      two.ok && /\[確認待ち\] Claude Dupont の氏名の確認/.test(two.out) && /本人以外の名簿の人/.test(two.out) && c2.nameConfirmPending === undefined && !JSON.stringify(c2.changeLog.at(-1)).includes('nameConfirmPending'),
+      two.out
+    );
+    check('AR-2: 確認待ちのままでは、契約検査が欠落として落とす', !k2.ok && /Claude Dupont の氏名の確認\(nameConfirmed\)は確認待ちです/.test(k2.out), k2.out);
+    check('AR-2: 確認待ちのままでは、出荷の証跡の集約の構成の検査(configIntegrityProblems)が欠落として出す', configIntegrityProblems(c2).some((p) => /Claude Dupont の氏名の確認\(nameConfirmed\)は確認待ちです/.test(p)));
+    const conf = run({ summary: 'Dupont の氏名を確認', people: [DUPONT, TAKAHASHI], decidedBy: '高橋 次郎', reason: '氏名を確認した' });
+    const k3 = contract();
+    check(
+      'AR-2: 次の変化点で本人以外(足した2人目)が確認すれば、確認待ちが解け、契約検査の名義の行が落ちない',
+      conf.ok && JSON.stringify(cfg().changeLog.at(-1).nameConfirmations) === JSON.stringify([{ id: 'dupont' }]) && !/確認待ち/.test(k3.out) && !/::error::.*(nameConfirmed|Dupont|記名)/.test(k3.out),
+      `${conf.out}\n----\n${k3.out}`
+    );
   }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });

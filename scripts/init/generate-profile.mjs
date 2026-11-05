@@ -696,13 +696,14 @@ export function ruleStanding(ctx, rule) {
  * 席を委任にできるのは、有効な規則が1つ以上ある場合である。未承認の規則を足しても、承認済みの
  * 既存の規則による委任は協働へ落とさない。承認待ちになるのは、足した・広げた規則だけである
  */
-export function clampSeats(seats, delegation, people = [], governance = null, { changeLog = [], priorChangeLog = changeLog } = {}) {
+export function clampSeats(seats, delegation, people = [], governance = null, { changeLog = [], priorChangeLog = changeLog, nameConfirmPending = [] } = {}) {
   const clamps = [];
   clamps.inactiveRules = [];
   // 評価の時点は2類に分ける(process-compass #375 / ADR-0111 決定2・3)。
   //   類A 付与される者の前提条件(席の責任者・適合性確認の実施者と承認者に置かれる人の名義): この変化点の記録を足した後の構成
   //   類B 記名・承認する者の資格(委任の規則の決定者・承認者): 変化点の前の構成
-  const ctx = { seats, people, delegation, governance, changeLog };
+  // 確認待ちの氏名(AR-2)は、その変化点の評価に限り、両方の類で効かせる(前の名簿で効いていた確認であるため)
+  const ctx = { seats, people, delegation, governance, changeLog, ...(nameConfirmPending.length ? { nameConfirmPending } : {}) };
   const ctxPrior = { ...ctx, changeLog: priorChangeLog };
   for (const s of seats) {
     let limit = s.modeCeiling;
@@ -809,6 +810,7 @@ export function buildConfig(answers, opts = {}) {
   const clamps = clampSeats(seats, delegation, people, governance, {
     changeLog: opts.pendingRecord ? [...priorLog, opts.pendingRecord] : priorLog,
     priorChangeLog: priorLog,
+    nameConfirmPending: Array.isArray(opts.nameConfirmPending) ? opts.nameConfirmPending : [],
   });
 
   const accountableOf = (role) => seats.find((s) => s.role === role)?.accountable ?? null;
@@ -1311,11 +1313,32 @@ const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
  */
 export function pendingNameConfirmations(before, after) {
   const out = [];
+  // 確認待ち(1名から2名以上へ移る変化点の、本人の自己申告の確認)は、この変化点では記名を求めない。後の変化点で本人以外が確認する(AR-2)
+  const awaiting = new Set(awaitingSelfConfirmations(before, after));
   for (const p of Array.isArray(after?.people) ? after.people : []) {
-    if (!p?.id || p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    if (!p?.id || p.nameConfirmed !== true || !aiNameReason(p.name) || awaiting.has(p.id)) continue;
     const st = nameConfirmationState({ ...after, changeLog: before?.changeLog ?? [] }, p);
     if (st === 'other' || st === 'self') continue;
     out.push({ id: p.id, name: p.name });
+  }
+  return out;
+}
+
+/**
+ * 確認待ちの氏名(process-compass #375 追加の裁定 AR-2)。名簿の体制の内の人が1名から2名以上へ移る変化点で、前の名簿で効いていた
+ * 本人の自己申告の確認(本人の記名・未記録)の id の一覧。1つの変化点の記名者は1人であり、同じ変化点で2人目が本人の氏名を確認する形は
+ * 成り立たないため、その変化点では確認待ちとして受け付ける。書き出した構成では効かず(invalid)、契約検査と出荷の証跡の集約が欠落として扱う
+ */
+export function awaitingSelfConfirmations(before, after) {
+  if (insiderCount(before) !== 1 || insiderCount(after) < 2) return [];
+  const now = new Map((Array.isArray(after?.people) ? after.people : []).map((p) => [p?.id, p]));
+  const out = [];
+  for (const p of Array.isArray(before?.people) ? before.people : []) {
+    if (!p?.id || p.external === true || p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    const st = nameConfirmationState(before, p);
+    if (st !== 'self' && st !== 'unrecorded') continue;
+    const q = now.get(p.id);
+    if (q?.nameConfirmed === true && q.name === p.name) out.push(p.id);
   }
   return out;
 }
@@ -4625,6 +4648,9 @@ if (isMain) {
     ? { decidedBy: change.decidedBy ?? null, nameConfirmations: pendingNameConfirmations(prior, { people: peopleInput }).map(({ id }) => ({ id })) }
     : null;
   const logWithThis = (log) => [...(Array.isArray(log) ? log : []), ...(thisRecord ? [thisRecord] : [])];
+  // 確認待ちの氏名(AR-2)。この変化点の評価に限り、前の名簿で効いていた本人の自己申告の確認を効かせる。構成へは書かない
+  const awaiting = change && prior ? awaitingSelfConfirmations(prior, { people: peopleInput }) : [];
+  const withAwaiting = (c) => (awaiting.length ? { ...c, nameConfirmPending: awaiting } : c);
   const priorSeat = Object.fromEntries((prior?.seats ?? []).map((s) => [s.role, s]));
 
   // 委任の規則の承認(ADR-0038)。追加・拡大した規則と、承認待ちの規則へ、今回の承認者を記録する。
@@ -4765,7 +4791,7 @@ if (isMain) {
           why.push(`確認日(${iq.confirmedAt})が、旧い記録の確認日(${p.qualification.confirmedAt})より後でない。旧い記録の使い回しは受け付けない`);
         }
         // 実施者・承認者に置かれる人の名義は類A(この変化点の記録を足した後の構成で照らす。ADR-0111 決定2)
-        const authority = qualificationAuthorityProblems({ ...ctxNow, changeLog: logWithThis(prior?.changeLog) }, { ...s, qualification: iq });
+        const authority = qualificationAuthorityProblems(withAwaiting({ ...ctxNow, changeLog: logWithThis(prior?.changeLog) }), { ...s, qualification: iq });
         if (authority.length) why.push(authority[0]);
         if (why.length) {
           s.qualification = null;
@@ -4841,6 +4867,7 @@ if (isMain) {
       changeLog: prior?.changeLog,
       // 席の責任者の名義(類A)を照らすための、この変化点の記録(ADR-0111 決定3)。構成へは書かない
       pendingRecord: thisRecord,
+      nameConfirmPending: awaiting,
       reviewSourcing: { ...Object.fromEntries((prior?.unmet ?? []).map((u) => [u.gate, u.reviewSourcing])), ...(S.reviewSourcing ?? {}) },
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
@@ -5168,7 +5195,17 @@ if (isMain) {
     if (thisRecord && JSON.stringify(thisRecord.nameConfirmations) !== JSON.stringify((report.nameConfirmItems ?? []).map(({ id }) => ({ id })))) {
       reject('内部の誤り: 氏名の確認の記録と差分が一致しません(評価と書き出しは同じ記録から作ります)');
     }
-    const withThis = { ...config, changeLog: logWithThis(config.changeLog) };
+    const withThis = withAwaiting({ ...config, changeLog: logWithThis(config.changeLog) });
+    // 類B の評価に使う構成。記録は変化点の前のまま。確認待ちの氏名(AR-2)は、前の名簿で効いていたため効かせる
+    const cfgB = withAwaiting(config);
+    for (const id of awaiting) {
+      const p = findPerson(config, id);
+      console.log(
+        `[確認待ち] ${p?.name ?? id} の氏名の確認は、1名の体制の本人の自己申告でした。体制の内の人が2名以上になるため、この変化点の後は確認待ちになります。` +
+          '確認されるまで、契約検査と出荷の証跡の集約は欠落として扱います。次の変化点で、本人以外の名簿の人(この変化点で足した2人目を含む)が記名して確認します' +
+          '(/process-change 種別 accountable で名簿をそのまま渡し、decidedBy と reason を付ける。同じ PR に入れてかまいません)'
+      );
+    }
     // 記名の欄(名簿、席の責任者、適合性確認の承認者)。AI の名義と、名簿に無い名義を拒否する
     for (const p of namingProblems(withThis)) refused.push(`記名を受け付けられません: ${p}`);
     // 離脱した人が責任者だった席。後任か、未記入かを、入力で示してもらう
@@ -5181,7 +5218,7 @@ if (isMain) {
       }
     }
     if (change.decidedBy) {
-      for (const p of nameProblems(config, change.decidedBy)) refused.push(`決定した者の記名を受け付けられません: ${p}`);
+      for (const p of nameProblems(cfgB, change.decidedBy)) refused.push(`決定した者の記名を受け付けられません: ${p}`);
     }
     // この変化点で出された適合性確認。実施は AI維持管理者の席の責任者、承認は当該の席の責任者に限る(第3章 3.4.2)
     for (const s of config.seats) {
@@ -5211,13 +5248,13 @@ if (isMain) {
       // 要件を満たさなくなった場合(責任者の交代、変更種別の登録の削除など)は、変化点を止めず、
       // 席を協働へ下げて表示する
       if (!sameRule(priorRule[r.id], r)) {
-        for (const p of [...found, ...ruleDeciderProblems(config, r)]) refused.push(`委任の規則 ${id}: ${p}`);
+        for (const p of [...found, ...ruleDeciderProblems(cfgB, r)]) refused.push(`委任の規則 ${id}: ${p}`);
       } else if (!seat || !seat.delegable) {
         staleRules.push(`委任の規則 ${id}: ${found[0]}`);
       }
       // 承認待ちとして保持した範囲の拡大も、書き込む前に要件を確かめる
       if (r.pendingChange && JSON.stringify(priorRule[r.id]?.pendingChange ?? null) !== JSON.stringify(r.pendingChange)) {
-        for (const p of [...delegationRuleProblems(r.pendingChange, config), ...ruleDeciderProblems(config, r.pendingChange)]) refused.push(`委任の規則 ${id}(範囲の拡大): ${p}`);
+        for (const p of [...delegationRuleProblems(r.pendingChange, config), ...ruleDeciderProblems(cfgB, r.pendingChange)]) refused.push(`委任の規則 ${id}(範囲の拡大): ${p}`);
       }
       if (!sameRule(priorRule[r.id], r) || r.pendingChange) {
         const target = r.pendingChange ?? r;
@@ -5231,7 +5268,7 @@ if (isMain) {
     }
     const priorTypes = new Set((prior.delegation?.changeTypes ?? []).map((t) => JSON.stringify(t)));
     const newTypes = new Set((config.delegation.changeTypes ?? []).filter((t) => !priorTypes.has(JSON.stringify(t))).map((t) => String(t?.id ?? '').trim()));
-    for (const p of changeTypeProblems(config, { only: newTypes })) refused.push(`標準変更カタログ: ${p}`);
+    for (const p of changeTypeProblems(cfgB, { only: newTypes })) refused.push(`標準変更カタログ: ${p}`);
     // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
     if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
     // 登録する者がリリース判定会(B-4)のとき、機械が確かめるのは、登録した者が名簿にいることだけである
@@ -5246,7 +5283,7 @@ if (isMain) {
 
     if (change.ruleApprovedBy) {
       // 規則の承認者は、AI維持管理者の席の責任者に限る。委任を決定した者と同一人物でもよい
-      for (const p of nameProblems(config, change.ruleApprovedBy, { requireRoster: true })) {
+      for (const p of nameProblems(cfgB, change.ruleApprovedBy, { requireRoster: true })) {
         refused.push(`規則の承認者の記名を受け付けられません: ${p}`);
       }
       const maintainer = config.seats.find((s) => s.role === RULE_APPROVER_SEAT)?.accountable;
@@ -5267,10 +5304,10 @@ if (isMain) {
       if (qaDeptOnly) {
         // 出荷判定者の席・前任者・決定者がいずれも無く、品質保証部門の通知先だけが定まっている
       } else if (!toPerson) {
-        for (const p of nameProblems(config, change.notice.to, { requireRoster: true })) refused.push(`通知先の記名を受け付けられません: ${p}`);
-        if (!nameProblems(config, change.notice.to, { requireRoster: true }).length) refused.push(`通知先の記名 "${change.notice.to}" を、名簿の人へ対応づけられません`);
+        for (const p of nameProblems(cfgB, change.notice.to, { requireRoster: true })) refused.push(`通知先の記名を受け付けられません: ${p}`);
+        if (!nameProblems(cfgB, change.notice.to, { requireRoster: true }).length) refused.push(`通知先の記名 "${change.notice.to}" を、名簿の人へ対応づけられません`);
       } else {
-        for (const p of nameProblems(config, toPerson.name, { requireRoster: true })) refused.push(`通知先の記名を受け付けられません: ${p}`);
+        for (const p of nameProblems(cfgB, toPerson.name, { requireRoster: true })) refused.push(`通知先の記名を受け付けられません: ${p}`);
       }
       if (!qaDeptOnly) {
         if (!qa) {
@@ -5337,15 +5374,18 @@ if (isMain) {
         );
       } else {
         // 確認の記名者の資格は類B(変化点の前の構成で照らす。ADR-0111 決定2)。この変化点で名簿へ足した人による確認は数えない。
-        // 変化点の前の名簿に体制の内の人がいない場合(名簿を初めて記入する変化点)は、記名できる前の名簿の人がいないため、この変化点の名簿で照らす
+        // 例外は第3章 3.13.3 の初回の記入に限る(追加の裁定 AR-1): どの席にも責任者が記入されたことのない状態からの記入で、
+        // この変化点で D-0 表1「体制と運用形態」の決定者の席に記入する人が記名する場合(任免の決定者の初回の例外と同じ判定)
         const priorSigner = findPerson(prior, change.decidedBy);
-        if (!priorSigner && findPerson(config, change.decidedBy) && insiderCount(prior) > 0) {
+        const firstDeciderKey = personKey(config, (config.seats ?? []).find((s) => s.role === structureDeciderSeat(config))?.accountable);
+        const firstFill = report.allBlankBefore && Boolean(firstDeciderKey) && firstDeciderKey === personKey(config, change.decidedBy);
+        if (!priorSigner && findPerson(config, change.decidedBy) && !firstFill) {
           refused.push(
             `氏名の確認(${report.nameConfirmItems.map((i) => i.name).join(', ')})の記名者 "${change.decidedBy}" は、この変化点で名簿へ足した人です。` +
               'この変化点で名簿へ足した人による確認は数えません。この変化点より前から名簿にいる、確認される本人以外の人が記名します(確認と任命は同じ変化点で出せます)'
           );
         }
-        for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
+        for (const p of nameProblems(cfgB, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
         const by = personKey(config, change.decidedBy);
         // 体制の内の人が1名の名簿では、本人の記名を受け付ける(自己申告の氏名として記録し、開示する)
         const single = insiderCount(config) === 1;
@@ -5362,7 +5402,7 @@ if (isMain) {
             '記名できるのは、そのアカウントの本人以外の、人の名簿の人です。AI が決めてはなりません'
         );
       } else {
-        for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`アカウント名の確認の記名を受け付けられません: ${p}`);
+        for (const p of nameProblems(cfgB, change.decidedBy, { requireRoster: true })) refused.push(`アカウント名の確認の記名を受け付けられません: ${p}`);
         const by = personKey(config, change.decidedBy);
         for (const i of report.accountConfirmItems) {
           if (by === i.id) refused.push(`アカウント ${i.account} の確認を、本人(${i.name})の記名では確定できません。本人以外の人の名簿の人が記名します`);
@@ -5372,7 +5412,7 @@ if (isMain) {
     if ((openItems.length || report.appointItems.length || report.renameItems.length) && signedNow) {
       // 緩める向きを決定できるのは、対象の席の責任者、または D-0 表1「体制と運用形態」の決定者に限る。
       // 任免は、変更前の決定者(体制から外れていれば、組織上の任命権者)に限る
-      for (const p of deciderProblems(config, { ...report, loosenItems: openItems }, change.decidedBy, prior)) if (!refused.includes(p)) refused.push(p);
+      for (const p of deciderProblems(cfgB, { ...report, loosenItems: openItems }, change.decidedBy, prior)) if (!refused.includes(p)) refused.push(p);
     }
     // ステージを前へ戻す変更の判定記録は、docs/gates/ 配下の実在する判定記録を指す
     if (report.stageBack && change.sgRecord) {
