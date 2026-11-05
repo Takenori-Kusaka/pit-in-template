@@ -156,6 +156,8 @@ jobs:
       - run: node scripts/gate/test-spec-lint.mjs
       # 外部の確認者の記名による緩める向きの決定を、変化点の入口が拒否すること(標準 第3章 3.13.3。process-compass #314 / ADR-0084)
       - run: node scripts/gate/test-loosening-decider.mjs
+      # 氏名の確認と、確認した氏名の使用(任命・委任の席)を同じ変化点に含むときの評価の時点(標準 第4章 G-6。process-compass #375 / ADR-0111)
+      - run: node scripts/gate/test-name-confirmation-timing.mjs
       # 既存のリポジトリへの持ち込み: 適用の開始の境(第1親の連鎖)、開始より前の履歴の扱い、事前点検、フックの登録・@OWNER、
       # 構成の形式の版と移行、取り込んだテンプレートの記録(標準 第1章 1.10.1・1.10.3。process-compass #315 / ADR-0085)
       - run: node scripts/gate/test-adoption.mjs

@@ -573,18 +573,27 @@ function performerStrings(config) {
  * requireRoster が真のときは、名簿に無い名義を拒否する。名簿が1件でも記入されていれば、
  * requireRoster によらず照合する。名簿が空のあいだは、未記入として表示するにとどめる。
  */
+/**
+ * AI の名義として拒否した記名の案内。原因(名簿に無い / 確認の旨が無い / 確認の旨に有効な記録が無い)ごとに分ける。
+ * 確認はその人を席に置くのと同じ変化点で出せること、確認の記名者の要件を案内する(process-compass #375 / ADR-0111 決定1・2)
+ */
+const NAME_CONFIRM_SIGNER = '確認の記名者は、確認される本人以外で、AI の名義でない名簿の人に限る(/process-change では、その変化点より前から名簿にいる人)';
+function aiNameHint(config, name) {
+  const person = findPerson(config, name);
+  if (!person) return `(同じ語を含む実在の氏名の場合は、名簿へ足し、人が実在を確かめたうえで nameConfirmed: true を書く。${NAME_CONFIRM_SIGNER})`;
+  if (person.nameConfirmed !== true) {
+    return `(同じ語を含む実在の氏名の場合は、人が実在を確かめたうえで、名簿の該当者へ nameConfirmed: true を書く。${NAME_CONFIRM_SIGNER}。確認は、その人を席に置くのと同じ変化点で出せる)`;
+  }
+  return `(名簿の nameConfirmed: true に、確認される本人以外が記名した変化点の記録が無い。${NAME_CONFIRM_SIGNER}。確認は、その人を席に置くのと同じ変化点で出せる)`;
+}
+
 export function nameProblems(config, name, { requireRoster = false, checkRoster = true } = {}) {
   const n = normName(name);
   if (!n) return ['記名がない'];
   const out = [];
   // 名簿の id で書かれた記名は、名簿の氏名で確かめる
   const ai = aiNameBlocked(config, n);
-  if (ai) {
-    out.push(
-      `"${n}" は ${ai}。記名は自然人の氏名に限る。AI の名義を受け付けない` +
-        '(同じ語を含む実在の氏名の場合は、人が確認したうえで、名簿の該当者へ nameConfirmed: true を書く)'
-    );
-  }
+  if (ai) out.push(`"${n}" は ${ai}。記名は自然人の氏名に限る。AI の名義を受け付けない${aiNameHint(config, n)}`);
   if (performerStrings(config).has(n)) {
     out.push(`"${n}" は担い手の識別(performer)と同じ文字列である。担い手を責任者・決定者・承認者にできない`);
   }

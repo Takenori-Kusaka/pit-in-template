@@ -696,18 +696,22 @@ export function ruleStanding(ctx, rule) {
  * 席を委任にできるのは、有効な規則が1つ以上ある場合である。未承認の規則を足しても、承認済みの
  * 既存の規則による委任は協働へ落とさない。承認待ちになるのは、足した・広げた規則だけである
  */
-export function clampSeats(seats, delegation, people = [], governance = null) {
+export function clampSeats(seats, delegation, people = [], governance = null, { changeLog = [], priorChangeLog = changeLog } = {}) {
   const clamps = [];
   clamps.inactiveRules = [];
-  const ctx = { seats, people, delegation, governance };
+  // 評価の時点は2類に分ける(process-compass #375 / ADR-0111 決定2・3)。
+  //   類A 付与される者の前提条件(席の責任者・適合性確認の実施者と承認者に置かれる人の名義): この変化点の記録を足した後の構成
+  //   類B 記名・承認する者の資格(委任の規則の決定者・承認者): 変化点の前の構成
+  const ctx = { seats, people, delegation, governance, changeLog };
+  const ctxPrior = { ...ctx, changeLog: priorChangeLog };
   for (const s of seats) {
     let limit = s.modeCeiling;
     let why = '席の上限(第5章 5.5.6)';
     let pendingApproval = false;
     if (limit === 'delegated') {
       const rules = delegation.rules.filter((r) => r.seat === s.role);
-      // 委任の範囲を定めるのは人である。規則の形式、決定した者の記名、AI維持管理者の承認を確かめる
-      const standing = rules.map((r) => ({ id: r.id ?? '(id なし)', ...ruleStanding(ctx, r) }));
+      // 委任の範囲を定めるのは人である。規則の形式、決定した者の記名、AI維持管理者の承認を確かめる(類B)
+      const standing = rules.map((r) => ({ id: r.id ?? '(id なし)', ...ruleStanding(ctxPrior, r) }));
       const inactive = standing.filter((x) => x.problems.length);
       for (const x of inactive) clamps.inactiveRules.push({ id: x.id, seat: s.role, seatName: s.name, reason: x.problems[0], pending: x.pending });
       let block = null;
@@ -799,7 +803,13 @@ export function buildConfig(answers, opts = {}) {
   };
   const delegation = buildDelegation(answers, opts.delegation);
   const seats = buildSeats(opts.seats);
-  const clamps = clampSeats(seats, delegation, people, governance);
+  // 席の責任者の名義(類A)は、この変化点の記録(opts.pendingRecord。氏名の確認と記名者)を足した後の構成で照らす。
+  // 規則の決定者・承認者の資格(類B)は、変化点の前の記録で照らす(process-compass #375 / ADR-0111 決定3)
+  const priorLog = Array.isArray(opts.changeLog) ? opts.changeLog : [];
+  const clamps = clampSeats(seats, delegation, people, governance, {
+    changeLog: opts.pendingRecord ? [...priorLog, opts.pendingRecord] : priorLog,
+    priorChangeLog: priorLog,
+  });
 
   const accountableOf = (role) => seats.find((s) => s.role === role)?.accountable ?? null;
   const author = personKey({ people }, accountableOf('dev-verifier'));
@@ -1293,6 +1303,23 @@ const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
  * 人の離脱などで統制が成立しなくなった変化は、緩める向きの決定ではなく、未達・逸脱・列挙に無い離脱の
  * 発生である。arising へ入れ、記名を待たずに反映する(第3章 3.13.3)。
  */
+/**
+ * この変化点で記名して記録する氏名の確認(nameConfirmed)の対象。{ id, name } の一覧。
+ * 記録で効いている確認(本人以外の記名、1名の体制の本人の記名)は含めない。未記録の確認と、2名以上になって本人の記名では
+ * 足りなくなった確認を含める(process-compass #296 裁定 8 の付記と追加の裁定)。
+ * 差分(diffConfig の nameConfirmItems)と、変化点の記録の nameConfirmations は、この1つの関数から作る(#375 / ADR-0111 決定2)
+ */
+export function pendingNameConfirmations(before, after) {
+  const out = [];
+  for (const p of Array.isArray(after?.people) ? after.people : []) {
+    if (!p?.id || p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
+    const st = nameConfirmationState({ ...after, changeLog: before?.changeLog ?? [] }, p);
+    if (st === 'other' || st === 'self') continue;
+    out.push({ id: p.id, name: p.name });
+  }
+  return out;
+}
+
 export function diffConfig(before, after) {
   const diff = [];
   const loosenItems = [];
@@ -1581,15 +1608,10 @@ export function diffConfig(before, after) {
   // 氏名の確認(nameConfirmed)。有効な記録(本人以外の記名)が無いまま true の確認は、この変化点で本人以外の記名を要する
   // (#296 より前に書いた確認を含む。nameConfirmItems。process-compass #296 裁定 8 の付記)
   const nameConfirmItems = [];
-  for (const [id, p] of Object.entries(ap)) {
-    if (p.nameConfirmed !== true || !aiNameReason(p.name)) continue;
-    // 記録で効いている確認(本人以外の記名、1名の体制の本人の記名)は項目にしない。未記録の確認と、2名以上になって本人の記名では
-    // 足りなくなった確認は、この変化点で記名して記録する(追加の裁定。1名の体制は本人の記名を受け付ける)
-    const st = nameConfirmationState({ ...after, changeLog: before.changeLog ?? [] }, { ...p, id });
-    if (st === 'other' || st === 'self') continue;
-    const line = `人の名簿: ${p.name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き${insiderCount(after) === 1 ? '。1名の体制のため本人の記名を受け付け、自己申告の氏名として開示する' : ''})`;
+  for (const { id, name } of pendingNameConfirmations(before, after)) {
+    const line = `人の名簿: ${name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き${insiderCount(after) === 1 ? '。1名の体制のため本人の記名を受け付け、自己申告の氏名として開示する' : ''})`;
     diff.push(line);
-    nameConfirmItems.push({ id, name: p.name, line });
+    nameConfirmItems.push({ id, name, line });
   }
   // アカウント名の確認済みの上書き(#296)。足した確認は、本人以外の決定した者の記名を要する(accountConfirmItems)
   const accountConfirmItems = [];
@@ -4596,6 +4618,13 @@ if (isMain) {
   const delegationInput = { ...(prior?.delegation ?? {}), ...(change?.delegation ?? {}) };
   const peopleInput = change?.people ?? prior?.people ?? [];
   const governanceInput = { ...(prior?.governance ?? {}), ...(change?.governance ?? {}) };
+  // この変化点の記録のうち、氏名の確認に関わる部分(記名者と確認の対象)。1回だけ作り、類A の検査(付与される者の前提条件)の
+  // 評価と、変化点の記録の書き出しの両方に使う(process-compass #375 / ADR-0111 決定1・2)。類B の検査(記名・承認する者の資格)は、
+  // この記録を足さない変化点の前の構成で照らす
+  const thisRecord = change
+    ? { decidedBy: change.decidedBy ?? null, nameConfirmations: pendingNameConfirmations(prior, { people: peopleInput }).map(({ id }) => ({ id })) }
+    : null;
+  const logWithThis = (log) => [...(Array.isArray(log) ? log : []), ...(thisRecord ? [thisRecord] : [])];
   const priorSeat = Object.fromEntries((prior?.seats ?? []).map((s) => [s.role, s]));
 
   // 委任の規則の承認(ADR-0038)。追加・拡大した規則と、承認待ちの規則へ、今回の承認者を記録する。
@@ -4735,7 +4764,8 @@ if (isMain) {
         if (p.qualification?.confirmedAt && !(String(iq.confirmedAt) > String(p.qualification.confirmedAt))) {
           why.push(`確認日(${iq.confirmedAt})が、旧い記録の確認日(${p.qualification.confirmedAt})より後でない。旧い記録の使い回しは受け付けない`);
         }
-        const authority = qualificationAuthorityProblems(ctxNow, { ...s, qualification: iq });
+        // 実施者・承認者に置かれる人の名義は類A(この変化点の記録を足した後の構成で照らす。ADR-0111 決定2)
+        const authority = qualificationAuthorityProblems({ ...ctxNow, changeLog: logWithThis(prior?.changeLog) }, { ...s, qualification: iq });
         if (authority.length) why.push(authority[0]);
         if (why.length) {
           s.qualification = null;
@@ -4809,6 +4839,8 @@ if (isMain) {
       // 変化点を経ない再生成は、構成を変えない。生成日時も引き継ぐ
       generatedAt: prior && !change ? prior.generatedAt : undefined,
       changeLog: prior?.changeLog,
+      // 席の責任者の名義(類A)を照らすための、この変化点の記録(ADR-0111 決定3)。構成へは書かない
+      pendingRecord: thisRecord,
       reviewSourcing: { ...Object.fromEntries((prior?.unmet ?? []).map((u) => [u.gate, u.reviewSourcing])), ...(S.reviewSourcing ?? {}) },
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
@@ -5127,8 +5159,18 @@ if (isMain) {
         refused.push(`${c.name} を ${MODE_LABEL[c.from]} にできません: ${c.reason}。${upTo}`);
       }
     }
+    // 評価の時点の2類(process-compass #375 / ADR-0111 決定2)。
+    //   類A 付与される者の前提条件(名簿、席の責任者・適合性確認の実施者と承認者に置かれる人の名義、上書きの表示と記録):
+    //       この変化点の記録(thisRecord)を足した後の構成 withThis で照らす。確認の記名の要件を先に照らし(下の「氏名の確認」)、
+    //       満たさない確認は拒否されるため、満たした確認だけが、この変化点の判定に数えられる
+    //   類B 記名・承認する者の資格(変化点の記名者、確認の記名者、任免の決定者、規則の決定者・承認者): config(記録を足す前)で照らす
+    // namingProblems の中身(名簿・席の責任者・適合性確認の承認者)は、すべて類A である
+    if (thisRecord && JSON.stringify(thisRecord.nameConfirmations) !== JSON.stringify((report.nameConfirmItems ?? []).map(({ id }) => ({ id })))) {
+      reject('内部の誤り: 氏名の確認の記録と差分が一致しません(評価と書き出しは同じ記録から作ります)');
+    }
+    const withThis = { ...config, changeLog: logWithThis(config.changeLog) };
     // 記名の欄(名簿、席の責任者、適合性確認の承認者)。AI の名義と、名簿に無い名義を拒否する
-    for (const p of namingProblems(config)) refused.push(`記名を受け付けられません: ${p}`);
+    for (const p of namingProblems(withThis)) refused.push(`記名を受け付けられません: ${p}`);
     // 離脱した人が責任者だった席。後任か、未記入かを、入力で示してもらう
     for (const s of config.seats) {
       if (s.accountable && !findPerson(config, s.accountable) && findPerson(prior, s.accountable)) {
@@ -5144,7 +5186,7 @@ if (isMain) {
     // この変化点で出された適合性確認。実施は AI維持管理者の席の責任者、承認は当該の席の責任者に限る(第3章 3.4.2)
     for (const s of config.seats) {
       if (change.seats?.[s.role]?.qualification && s.qualification) {
-        for (const p of qualificationAuthorityProblems(config, s, { reapproval: reapproved.includes(s.role) })) {
+        for (const p of qualificationAuthorityProblems(withThis, s, { reapproval: reapproved.includes(s.role) })) {
           refused.push(`適合性確認の記録を受け付けられません: ${p}`);
         }
       }
@@ -5294,6 +5336,15 @@ if (isMain) {
             '記名できるのは、確認される本人以外の、人の名簿の人です。AI が決めてはなりません'
         );
       } else {
+        // 確認の記名者の資格は類B(変化点の前の構成で照らす。ADR-0111 決定2)。この変化点で名簿へ足した人による確認は数えない。
+        // 変化点の前の名簿に体制の内の人がいない場合(名簿を初めて記入する変化点)は、記名できる前の名簿の人がいないため、この変化点の名簿で照らす
+        const priorSigner = findPerson(prior, change.decidedBy);
+        if (!priorSigner && findPerson(config, change.decidedBy) && insiderCount(prior) > 0) {
+          refused.push(
+            `氏名の確認(${report.nameConfirmItems.map((i) => i.name).join(', ')})の記名者 "${change.decidedBy}" は、この変化点で名簿へ足した人です。` +
+              'この変化点で名簿へ足した人による確認は数えません。この変化点より前から名簿にいる、確認される本人以外の人が記名します(確認と任命は同じ変化点で出せます)'
+          );
+        }
         for (const p of nameProblems(config, change.decidedBy, { requireRoster: true })) refused.push(`氏名の確認の記名を受け付けられません: ${p}`);
         const by = personKey(config, change.decidedBy);
         // 体制の内の人が1名の名簿では、本人の記名を受け付ける(自己申告の氏名として記録し、開示する)
@@ -5415,7 +5466,7 @@ if (isMain) {
       console.log('[即時反映] 未達・逸脱・列挙に無い離脱の発生を含みます。決定ではないため、記名を待たずに反映します。未達のまま出荷するかどうかは、既存の規定によります(R1 の変更は標準 第7章 7.3 の例外承認。CL1 以上と規制業は不可)');
     }
     if (config.shipBlocked) console.log(`[出荷不可] ${config.shipBlocked.reason}`);
-    for (const n of nameOverrides(config)) console.log(`[上書き] 名義の機械検査を人が上書きした: ${n}`);
+    for (const n of nameOverrides(withThis)) console.log(`[上書き] 名義の機械検査を人が上書きした: ${n}`);
     for (const n of report.standby) console.log(`[協働のまま] ${n}`);
     for (const n of staleRules) console.log(`[要修正] 既存の${n}。この規則では委任は働きません。規則を改めるか、削除してください`);
     // 有効でない規則。席に有効な規則が残っていれば、席は委任のままで、その規則だけが働かない
@@ -5530,9 +5581,10 @@ if (isMain) {
         ...(appointerSigned ? { appointerSigned: true } : {}),
         rosterEdits: report.rosterEdits,
         accountConfirmations: (report.accountConfirmItems ?? []).map(({ id, account }) => ({ id, account })),
-        nameConfirmations: (report.nameConfirmItems ?? []).map(({ id }) => ({ id })),
+        // 評価(withThis)と同じ記録から書く(ADR-0111 決定2)
+        nameConfirmations: thisRecord.nameConfirmations,
         ruleApprovedBy: approvedNow.length ? change.ruleApprovedBy : null,
-        nameOverrides: nameOverrides(config),
+        nameOverrides: nameOverrides(withThis),
         ruleApproval: approvedNow.length
           ? {
               approvedBy: change.ruleApprovedBy,
