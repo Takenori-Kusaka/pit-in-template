@@ -67,13 +67,17 @@ npx -y @nanonets/graft@0.12.1 build
 graft の出力は**探索の入力**である。ゲートの判定、独立レビュー(G-6)の挙動要約、テストや静的解析の代替に
 使わない。`graft blast` の影響範囲は、人が差分を読む範囲を絞る手がかりであり、読んだことの代わりにならない。
 
-## MCP で使いたい場合(任意・各自のローカル設定)
+## MCP で使いたい場合
 
-リポジトリの `.mcp.json` には登録しない。MCP サーバーは Claude セッションごとに常駐してメモリを持ち続けるため、
-使う人が自分の local scope にだけ足す:
+既定では MCP サーバーとして使わず、上表の CLI を使う。MCP サーバーは Claude セッションごとに常駐してメモリを持ち続けるためである。
 
-```bash
-claude mcp add --scope local graft -- npx -y @nanonets/graft@0.12.1 mcp
+エージェントが使う外部ツール(MCP サーバー)は、案件の一覧(リポジトリの `.mcp.json`)に置き、追加と変更は AI維持管理者が承認する
+(標準 第3章 3.11.6。G-5 は `.mcp.json` の変更を統制の設定の変更として扱う)。各自の `--scope local`・`--scope user` へ足すと、
+版管理された一覧の外でエージェントの道具が増えるため、足さない。MCP で使うと決めたら、次の行を `.mcp.json` へ足す PR を
+`state:needs-platform` で AI維持管理者へ渡す(採用の記録は PR の本文と判断記録に残す):
+
+```json
+{ "mcpServers": { "graft": { "command": "npx", "args": ["-y", "@nanonets/graft@0.12.1", "mcp"] } } }
 ```
 
 `graft_find_code` / `graft_find_all` / `graft_file_api` / `graft_trace_calls` / `graft_repo_map` /

@@ -36,10 +36,13 @@
 # /scripts/init/          @ai-maintainer
 # /scripts/vendor/        @ai-maintainer
 # /adapters/              @ai-maintainer
+# /.mcp.json              @ai-maintainer   # 外部ツール(MCP サーバー)の一覧(3.11.6)
 #
 # 注: 役割の行は、Git ホスティングのチーム(@org/ai-maintainer など)へ置き換えてから有効にする。
 # 2人の所有者の両方の承認(論理積)は、CODEOWNERS では表せない。要るならルールセットの必須レビューで扱う。
-# CODEOWNERS の雛形の行を有効にする道具の側の扱いは、process-compass #358 で検討中であり、本雛形と重なる
+# 指示資産(CLAUDE.md・AGENTS.md・.claude/skills/ ほか)と .mcp.json の変更の AI維持管理者の承認は、CODEOWNERS に依らず
+# G-5(gate-g5-base)が、統制の設定の変更の承認と同じく本人の承認のレビューで確かめる(process-compass #358 / ADR-0126。
+# team の体制のルールセットは CODEOWNERS のレビューを必須にしないため)。上の行は、承認者の候補を出す誘導層として有効にしてよい
 
 # 判定記録の置き場(process-compass #321 / ADR-0070)。記録だけの PR の承認者を、記名者の席へ誘導する。
 # これは誘導層であり、遮断に数えない(所有者の誰か 1 人で足り、bypass actor は素通りする)。

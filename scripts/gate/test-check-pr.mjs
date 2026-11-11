@@ -554,6 +554,46 @@ scenario('対象のパス: 依存の更新の bot の PR は対象外の旨を�
 git('switch', '-q', 'main');
 git('reset', '-q', '--hard', 'HEAD~1');
 
+// ---------------------------------------------------------------- 指示資産の変更(第3章 3.11.5。process-compass #358)
+const SETUP = { body: BODY('Spec: setup') };
+const treeDoc = '# 規約\n\n```\nsrc/\n├── a.js\n└── b.js\n```\n';
+// IMPL-0504:ng(違反と適合の対。個人用のファイルを版管理へ入れる変更は失敗)
+scenario('指示資産: CLAUDE.local.md を版管理へ入れると失敗', SETUP, () => write('CLAUDE.local.md', '# 手元だけ\n'), failsWith(/個人の作業環境に固有の指示 CLAUDE\.local\.md/));
+// 利用者の全体の除外(Claude Code が足す **/.claude/settings.local.json)に依らず、強制で追跡した場面にする
+scenario('指示資産: 下位の .claude/settings.local.json も失敗', SETUP, () => {
+  write('pkg/.claude/settings.local.json', '{}\n');
+  git('add', '-f', 'pkg/.claude/settings.local.json');
+}, failsWith(/個人の作業環境に固有の指示 pkg\/\.claude\/settings\.local\.json/));
+// IMPL-0504:ok(共有の指示資産の変更は失敗にしない)
+scenario('指示資産: 共有の CLAUDE.md の変更は失敗にしない', SETUP, () => write('CLAUDE.md', '# 規約\n\n- 行1\n'), passes(expect_((r) => JSON.stringify(r.instructionAssets?.changed) === '["CLAUDE.md"]', (r) => JSON.stringify(r.instructionAssets))));
+// IMPL-0501:ok(上限が未設定なら行数を出し、上限未設定として扱う。失敗にも通過にもしない)
+scenario('指示資産: 上限が未設定なら、行数と「上限未設定」を出す', SETUP, () => write('CLAUDE.md', '# 規約\n' + '- 行\n'.repeat(250)), passes(expect_((r) => r.instructionAssets?.maxLines === null && r.instructionAssets.sizes[0].lines === 251 && /上限未設定/.test(renderG6Material(r)), (r) => JSON.stringify(r.instructionAssets))));
+// IMPL-0502:ng(木の図の形を一覧に出す。合否に使わない)
+scenario('指示資産: ディレクトリの木の図の形を一覧に出し、失敗にしない', SETUP, () => write('.claude/skills/x/SKILL.md', treeDoc), passes(expect_((r) => r.instructionAssets?.treeForms.length === 2 && r.instructionAssets.treeForms[0].file === '.claude/skills/x/SKILL.md', (r) => JSON.stringify(r.instructionAssets))));
+// IMPL-0502:ok(木の図の無い変更は 0 件で、限界の定型の文を出す)
+scenario('指示資産: 木の図の無い変更は 0 件で、0 件を根拠にしない旨を出す', SETUP, () => write('AGENTS.md', '# 規約\n\n- 行1\n'), passes(expect_((r) => r.instructionAssets?.treeForms.length === 0 && /導出できる内容が無いことを示さない/.test(renderG6Material(r)), (r) => JSON.stringify(r.instructionAssets))));
+scenario('指示資産: 製品のコードだけの変更では、指示資産の一覧を出さない', {}, () => write('src/a.js', lines(21)), passes(expect_((r) => r.instructionAssets?.changed.length === 0 && !/### 指示資産の変更/.test(renderG6Material(r)), (r) => JSON.stringify(r.instructionAssets))));
+// 上限を既定ブランチの強制層の設定に置く
+git('switch', '-q', 'main');
+{
+  const g = JSON.parse(read('.claude/guard.json'));
+  g.instructionAssetLimit = { maxLinesPerFile: 200 };
+  write('.claude/guard.json', g);
+}
+git('add', '-A');
+git('commit', '-q', '-m', 'instruction asset limit');
+// IMPL-0501:ng(既定ブランチの上限を超える指示資産は失敗)
+scenario('指示資産: 上限(200 行)を超える CLAUDE.md は失敗', SETUP, () => write('CLAUDE.md', '# 規約\n' + '- 行\n'.repeat(250)), failsWith(/指示資産 CLAUDE\.md が 251 行で、上限 200 行/));
+scenario('指示資産: 同じ PR で上限を緩めても、既定ブランチの上限で判定する', SETUP, () => {
+  const g = JSON.parse(read('.claude/guard.json'));
+  g.instructionAssetLimit = { maxLinesPerFile: 1000 };
+  write('.claude/guard.json', g);
+  write('CLAUDE.md', '# 規約\n' + '- 行\n'.repeat(250));
+}, failsWith(/上限 200 行/));
+scenario('指示資産: 上限の内の CLAUDE.md は通る', SETUP, () => write('CLAUDE.md', '# 規約\n' + '- 行\n'.repeat(150)), passes(expect_((r) => r.instructionAssets?.maxLines === 200, (r) => JSON.stringify(r.instructionAssets))));
+git('switch', '-q', 'main');
+git('reset', '-q', '--hard', 'HEAD~1');
+
 // ---------------------------------------------------------------- 区分の下限と確定者(第3章 3.8.1。#288 第2巡)
 // IMPL-0062:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('区分の下限: 規則(src/auth/**、下限 R1)に当たる変更を R3 と記載', { body: BODY('Spec: F-001 / Task-1', RISK('R3')) }, () => write('src/auth/login.js', lines(3, 'l')), failsWith(/区分の下限: 記載された区分 R3 は、変更の対象から導いた下限 R1 より低い/));

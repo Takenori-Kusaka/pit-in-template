@@ -22,5 +22,10 @@
   "selfHealLockFile": ".claude/.self-heal",
   "selfHealReason": "自己修正ループの書き込み範囲にテストを含めません。渡された失敗をテスト側の変更で解消する経路が残るためです。テストの修正を要すると判明した場合、ループを終了して受入基準へ戻ってください",
 
-  "denyLog": ".claude/denied.log"
+  "denyLog": ".claude/denied.log",
+
+  "instructionAssetLimit": {
+    "note": "指示資産(CLAUDE.md・AGENTS.md・.claude/skills/ ほか)の1ファイルあたりの行数の上限(標準 第3章 3.11.4 要求事項1・3.11.5)。値は組織が定め、理由を層1 か判断記録へ書く(ADR-0084)。null の間、G-5(pr-rules)は行数を出し「上限未設定」として判定しない(上限内とは記録しない。失敗にもしない)",
+    "maxLinesPerFile": null
+  }
 }

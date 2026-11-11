@@ -207,6 +207,8 @@ export const NON_PRODUCT = [
   'LICENSE-docs',
   '.gitignore',
   '.gitattributes',
+  // 外部ツール(MCP サーバー)の一覧(標準 第3章 3.11.6。#358)。製品のコードでなく、統制の設定(CONTROL_FILES)として承認を要する
+  '.mcp.json',
 ];
 
 /**
@@ -364,7 +366,18 @@ export const CONTROL_FILES = [
   // AI レビューの指示の置き場(標準 第5章 5.8.6 の要求事項7)。ai-review.yml は既定ブランチの版から読むため、その PR 自身のレビューは
   // 変えられない。それでも、指示を弱める PR を先に取り込み、次の PR をその指示でレビューさせる2段の経路が残る(process-compass #369)
   '.github/ai-review/**',
+  // 案件の範囲の外部ツール(MCP サーバー)の一覧(標準 第3章 3.11.6 要求事項1・5。process-compass #358 / IMPL-0228・IMPL-0229)。
+  // 一覧に足すサーバーは、エージェントに道具と権限を足す。追加と変更は AI維持管理者の承認を要する
+  '.mcp.json',
 ];
+
+/**
+ * エージェント指示資産(誘導層・再利用層)。変更に AI維持管理者本人の承認を要する(標準 第3章 3.11.5。process-compass #358 / IMPL-0227)。
+ * 統制の設定(CONTROL_FILES)と違い、陰性の確認(3b)を課さない。誘導層は止める仕組みではなく、陰性の確認の対象にならないため
+ */
+export const INSTRUCTION_ASSET_FILES = ['CLAUDE.md', 'AGENTS.md', '**/CLAUDE.md', '**/AGENTS.md', '.claude/skills/**', '.claude/rules/**', '.claude/agents/**', '.claude/commands/**'];
+/** 個人の作業環境に固有の指示(版管理から除外する。標準 第3章 3.11.5。IMPL-0504) */
+export const PERSONAL_INSTRUCTION_FILES = ['CLAUDE.local.md', '**/CLAUDE.local.md', '.claude/settings.local.json', '**/.claude/settings.local.json'];
 
 // ---------------------------------------------------------------- 依存と設定を兼ねるファイルの中の閾値(process-compass #363)
 //
@@ -496,7 +509,8 @@ export function keyedThresholdChanges(entries, keyed, before, after) {
 export function controlTouchedOf(files, thresholdGlobs = THRESHOLD_FILES) {
   const out = new Set();
   for (const e of files ?? []) {
-    for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f)) out.add(f);
+    // 指示資産(INSTRUCTION_ASSET_FILES)も承認の範囲に数える(陰性の確認は課さない。#358 / IMPL-0227)
+    for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f) || matchAny(INSTRUCTION_ASSET_FILES, f)) out.add(f);
   }
   return [...out];
 }
@@ -527,7 +541,12 @@ export function controlTouchedBetween(git, parent, commit) {
   const adapter = stack ? json(git(['show', `${parent}:adapters/${stack}.json`])) : null;
   const { plain, keyed } = splitThresholdGlobs(Array.isArray(adapter?.thresholdFiles) ? adapter.thresholdFiles : []);
   const globs = [...THRESHOLD_FILES, ...plain];
-  const touched = controlTouchedOf(entries, globs);
+  const touched = controlTouchedOf(entries, globs).filter((f) => {
+    // 指示資産の承認(#358 / IMPL-0227)は、変更の前の版の判定のコードがこの規則を持つ変更にだけ数える。規則の前に入った指示資産の
+    // 変更を、出荷の集約が遡って承認の欠けにしないため(統制の設定の承認の境 beforeRule と同じ考え方)
+    if (matchAny(CONTROL_FILES, f) || matchAny(globs, f) || !matchAny(INSTRUCTION_ASSET_FILES, f)) return true;
+    return /INSTRUCTION_ASSET_FILES/.test(git(['show', `${parent}:scripts/gate/check-pr.mjs`]) ?? '');
+  });
   // 依存と設定を兼ねるファイルの中の閾値の表(#363)。表の中身が変わったファイルだけを数える
   const kc = keyedThresholdChanges(entries, keyed, (f) => git(['show', `${parent}:${f}`]), (f) => git(['show', `${commit}:${f}`]));
   for (const label of [...kc.changed, ...kc.initial]) {
@@ -2025,6 +2044,46 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       readTargets: readPlanTargets,
     });
   }
+
+  // --- 4e. 指示資産の変更(標準 第3章 3.11.5。process-compass #358 / IMPL-0501・IMPL-0502・IMPL-0504) ---
+  {
+    const head = (f) => atHead(f);
+    const changedAssets = all.filter((e) => matchAny(INSTRUCTION_ASSET_FILES, e.path) && head(e.path) !== null).map((e) => e.path);
+    // IMPL-0504: 個人の作業環境に固有の指示(CLAUDE.local.md・.claude/settings.local.json)を版管理へ入れる変更は失敗(消す変更は通す)
+    for (const e of all) {
+      if (matchAny(PERSONAL_INSTRUCTION_FILES, e.path) && head(e.path) !== null) {
+        result.errors.push(`個人の作業環境に固有の指示 ${e.path} を版管理へ入れています。共有の指示資産へ混入させないため、追跡から外す(.gitignore にある。標準 第3章 3.11.5)`);
+      }
+    }
+    // IMPL-0501: 1ファイルあたりの分量。上限は強制層の設定(.claude/guard.json の instructionAssetLimit.maxLinesPerFile)を既定ブランチから読む。
+    // 値は組織が定める(ADR-0084)。未設定なら「上限未設定」と出して判定しない(上限内とは記録しない。失敗にもしない)
+    const guardAtPolicy = json(atPolicy('.claude/guard.json'));
+    const maxLines = Number.isInteger(guardAtPolicy?.instructionAssetLimit?.maxLinesPerFile) && guardAtPolicy.instructionAssetLimit.maxLinesPerFile > 0 ? guardAtPolicy.instructionAssetLimit.maxLinesPerFile : null;
+    const sizes = changedAssets.map((f) => {
+      const t = String(head(f) ?? '').replace(/\r\n/g, '\n');
+      return { file: f, lines: t === '' ? 0 : t.replace(/\n$/, '').split('\n').length, chars: [...t].length };
+    });
+    for (const s of sizes) {
+      if (maxLines !== null && s.lines > maxLines) result.errors.push(`指示資産 ${s.file} が ${s.lines} 行で、上限 ${maxLines} 行(.claude/guard.json の instructionAssetLimit.maxLinesPerFile)を超えています(標準 第3章 3.11.4 要求事項1・3.11.5)`);
+    }
+    // IMPL-0502: コードベースから導出できる内容のうち、形で特定できるもの(ディレクトリの木の図)。合否に使わない
+    const treeForms = [];
+    for (const f of changedAssets) {
+      const lines = String(head(f) ?? '').replace(/\r\n/g, '\n').split('\n');
+      lines.forEach((l, i) => {
+        if (/[├└]──|^\s*[│|]\s+[├└]/.test(l)) treeForms.push({ file: f, line: i + 1, text: l.trim().slice(0, 80) });
+      });
+    }
+    result.instructionAssets = {
+      changed: changedAssets,
+      sizes,
+      maxLines,
+      treeForms,
+      limit:
+        '機械が確かめるのは、1ファイルの行数と上限、ディレクトリの木の図の形までである。既存の記述との矛盾と、形で特定できない導出できる内容は、' +
+        'AI維持管理者がレビューで確かめて PR の「指示資産の変更の確認」へ記録する(機械も AI の確認も、その確かめに数えない)。木の図が出ないことは、導出できる内容が無いことを示さない',
+    };
+  }
   return result;
 }
 
@@ -2462,6 +2521,16 @@ export function renderG6Material(r) {
       L.push('', `> ${p.limit}`);
     }
     L.push('');
+  }
+  const ia = r.instructionAssets;
+  if (ia && ia.changed.length) {
+    L.push('### 指示資産の変更(標準 第3章 3.11.5。木の図の検出は合否に使わない)', '');
+    L.push(`- 上限: ${ia.maxLines === null ? '**上限未設定**(`.claude/guard.json` の `instructionAssetLimit.maxLinesPerFile`。値は組織が定める。未設定の間は判定せず、上限内とは記録しない)' : `1ファイル ${ia.maxLines} 行`}`);
+    for (const s of ia.sizes) L.push(`  - \`${esc(s.file)}\`: ${s.lines} 行・${s.chars} 文字${ia.maxLines !== null && s.lines > ia.maxLines ? ' — **上限を超える**' : ''}`);
+    L.push(`- ディレクトリの木の図の形: ${ia.treeForms.length} 件`);
+    for (const t of ia.treeForms.slice(0, 20)) L.push(`  - \`${esc(t.file)}:${t.line}\` \`${esc(t.text)}\``);
+    L.push('- 変更の承認: AI維持管理者本人の承認のレビュー(統制の設定の変更の承認と同じ数え方。陰性の確認は要らない)');
+    L.push('', `> ${ia.limit}`, '');
   }
   return L.join('\n').trimEnd();
 }

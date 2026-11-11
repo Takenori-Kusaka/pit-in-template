@@ -24,7 +24,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** glob をごく小さな部分集合で照合する(`**` `*` `?` のみ) */
+/**
+ * glob をごく小さな部分集合で照合する(`**` `*` `?` のみ)。大文字と小文字を区別しない。Windows(NTFS)と macOS(APFS の既定)は
+ * 区別しないファイルシステムで、`.CLAUDE/Settings.json` も `.claude/settings.json` と同じファイルを指すため(process-compass #358。
+ * 区別すると強制層の遮断を通る)。区別するファイルシステムでは、大文字と小文字だけが違う別のファイルも遮断する
+ */
 export function globToRegExp(glob) {
   const SPECIAL = '.+^${}()|[]';
   let re = '';
@@ -52,7 +56,7 @@ export function globToRegExp(glob) {
       re += c;
     }
   }
-  return new RegExp('^' + re + '$');
+  return new RegExp('^' + re + '$', 'i');
 }
 
 export function match(pattern, target) {
@@ -120,7 +124,7 @@ function main() {
 
   // 2. 自己修正ループ中のテスト。guard.enabled に依らず適用する
   const lockRel = guard.selfHealLockFile ?? '.claude/.self-heal';
-  if (rel === lockRel) {
+  if (rel.toLowerCase() === lockRel.toLowerCase()) {
     deny('自己修正のロックは `node scripts/gate/self-heal.mjs start|stop` で始めて終えます。ファイルを直接書き換えません', 'self-heal-lock');
   }
   const lock = path.join(ROOT, lockRel);

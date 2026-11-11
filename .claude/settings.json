@@ -3,6 +3,7 @@
   "env": {
     "DO_NOT_TRACK": "1"
   },
+  "enableAllProjectMcpServers": false,
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -28,6 +29,13 @@
       "Bash(npx -y @nanonets/graft@0.12.1 build:*)"
     ],
     "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./**/id_rsa*)",
+      "Read(./**/.aws/**)",
+      "Read(./**/.ssh/**)",
       "Read(./context/_archive/**)",
       "Bash(npx -y @nanonets/graft@0.12.1 build --deep:*)",
       "Bash(npx -y @nanonets/graft@0.12.1 blast --name:*)",
@@ -45,13 +53,6 @@
     "ask": [
       "Bash(npm publish:*)",
       "Bash(wget:*)",
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./**/*.pem)",
-      "Read(./**/*.key)",
-      "Read(./**/id_rsa*)",
-      "Read(./**/.aws/**)",
-      "Read(./**/.ssh/**)",
       "Edit(./.claude/settings.json)",
       "Edit(./.claude/guard.json)",
       "Edit(./.claude/hooks/**)",

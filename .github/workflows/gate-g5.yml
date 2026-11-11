@@ -149,6 +149,9 @@ jobs:
       - run: node scripts/gate/test-performer-account.mjs
       # ホスティングへの書き込みの操作の遮断(.claude/hooks/guard-bash.mjs。process-compass #429 / IMPL-0418)
       - run: node scripts/gate/test-guard-bash.mjs
+      # 書き込みの遮断(.claude/hooks/guard-write.mjs)。強制層への書き込みと、自己修正のロック中のテストへの書き込みの遮断と、
+      # 遮断の記録(.claude/denied.log)を、一時の置き場で試験する(process-compass #358 / IMPL-0187・IMPL-0198)
+      - run: node scripts/gate/test-guard-write.mjs
       # 従う本標準の版・適用の終了・適用の開始の境・述べられる主張の名を、一時の置き場で通しで試験する(process-compass #313)
       - run: node scripts/gate/test-edition-end.mjs
       # 判断記録の状態と置き換えの両側の参照、状態に応じた置き場(標準 第6章 テンプレ2「置き換えと廃止」、第4章 G-3「記載の検査」。process-compass #289)

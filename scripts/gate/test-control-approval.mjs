@@ -173,6 +173,27 @@ const hasErr = (r, re) => r.errors.some((e) => re.test(e));
   check('統制の設定に触れない PR には承認を求めない', !hasErr(r7, /統制の設定の変更の承認/) && r7.controlApproval?.changed.length === 0, JSON.stringify(r7.errors));
 }
 {
+  // 指示資産の変更の承認(標準 第3章 3.11.5。process-compass #358)
+  // 規則の前の版(既定ブランチの判定のコードが指示資産の承認を持たない)では、指示資産の変更を数えない(遡って欠けにしない)
+  const before = pr('規則の前の版で CLAUDE.md を変える', () => write('CLAUDE.md', '# 規約\n'), { body: BODY() });
+  check('既定ブランチの判定のコードに指示資産の規則が無い版では、指示資産の変更に承認を求めない', !hasErr(before, /統制の設定の変更の承認/), JSON.stringify(before.errors));
+  git('switch', '-q', 'main');
+  write('scripts/gate/check-pr.mjs', "export const CONTROL_FILES = ['.github/workflows/**'];\nexport const INSTRUCTION_ASSET_FILES = ['CLAUDE.md'];\n");
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: instruction asset rule');
+  // IMPL-0227:ng(指示資産・外部ツールの一覧を変える PR で、AI維持管理者本人の承認が無ければ落ちる)
+  const a = pr('CLAUDE.md を変え、承認なし', () => write('CLAUDE.md', '# 規約\n\n- 規則を足す\n'), { body: BODY() });
+  check('指示資産(CLAUDE.md)の変更に、承認のレビューが無ければ落ちる', hasErr(a, /統制の設定の変更の承認/) && a.controlApproval?.changed.includes('CLAUDE.md'), JSON.stringify(a.errors));
+  const b = pr('スキルを足し、承認なし', () => write('.claude/skills/x/SKILL.md', '---\nname: x\n---\n'), { body: BODY() });
+  check('指示資産(.claude/skills/)の追加に、承認のレビューが無ければ落ちる', hasErr(b, /統制の設定の変更の承認/), JSON.stringify(b.errors));
+  const c = pr('.mcp.json を足し、承認なし', () => write('.mcp.json', '{ "mcpServers": { "x": { "command": "npx" } } }\n'));
+  check('外部ツールの一覧(.mcp.json)の追加に、承認のレビューが無ければ落ちる', hasErr(c, /統制の設定の変更の承認/) && c.controlApproval?.changed.includes('.mcp.json'), JSON.stringify(c.errors));
+  // IMPL-0227:ok(AI維持管理者本人の承認があれば通り、指示資産だけの変更には陰性の確認を求めない)
+  const d = pr('CLAUDE.md を変え、承認あり', () => write('CLAUDE.md', '# 規約\n\n- 規則を足す\n'), { body: BODY(), reviews: [review('suzuki')] });
+  check('指示資産の変更に AI維持管理者本人の承認があれば通り、陰性の確認を求めない', !hasErr(d, /統制の設定の変更の承認/) && !hasErr(d, /陰性の確認/), JSON.stringify(d.errors));
+  check('controlTouchedOf: 下位の CLAUDE.md・AGENTS.md を数え、文書の *.md は数えない', JSON.stringify(controlTouchedOf([{ path: 'pkg/CLAUDE.md' }, { path: 'AGENTS.md' }, { path: 'docs/design.md' }]).sort()) === JSON.stringify(['AGENTS.md', 'pkg/CLAUDE.md']));
+}
+{
   // --require-control-approval を渡さない(gate-g5.yml の pr-rules)ときは、承認を照らさない(PR の側で動く判定は同じ PR で外せるため)
   k++;
   git('switch', '-q', '-C', `pr-${k}`, 'main');

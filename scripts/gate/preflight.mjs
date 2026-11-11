@@ -40,7 +40,7 @@ export const DISPOSITIONS = ['取り込む', '置き換える', '残して並存
 /** 準拠テンプレートが持つワークフロー。これ以外のワークフローは既存の資産として一覧へ載せる */
 export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'gate-g5-base.yml', 'gate-g5-push.yml', 'record-copy.yml', 'ship-evidence.yml'];
 /** 準拠テンプレートの直下の配置。これ以外のファイルは、既存の製品のコードと履歴として一覧へ載せる */
-export const TEMPLATE_TOP = ['.claude', '.gitattributes', '.github', '.gitignore', '.ignore', '.prettierignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
+export const TEMPLATE_TOP = ['.claude', '.gitattributes', '.github', '.gitignore', '.ignore', '.mcp.json', '.prettierignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
 /** .gitignore に含めるテンプレートの行(証跡・秘匿情報・カバレッジの出力・端末ごとの状態の除外) */
 export const TEMPLATE_GITIGNORE_LINES = ['coverage/', '/evidence/', '.env', '.env.*', '*.pem', '*.key', '.claude/.self-heal'];
 /**
@@ -175,6 +175,17 @@ export function preflight(root = ROOT) {
   const agents = readText(root, 'AGENTS.md');
   if (agents !== null && !AGENTS_ENTRY.test(agents)) {
     asset('agents-md', 'エージェントの指示ファイル', 'AGENTS.md', 'テンプレートの入口(CLAUDE.md を正本と指す)でない独自の AGENTS.md。CLAUDE.md があると読まれない基盤があり、矛盾する指示はどちらが選ばれるか定まらない');
+  }
+  // 既存の外部ツール(MCP サーバー)の一覧。テンプレートの .mcp.json はサーバーを持たない(標準 第3章 3.11.6。process-compass #358)
+  const mcp = readText(root, '.mcp.json');
+  if (mcp !== null) {
+    let servers = null;
+    try {
+      servers = Object.keys(JSON.parse(mcp)?.mcpServers ?? {});
+    } catch {
+      servers = null;
+    }
+    if (servers === null || servers.length) asset('mcp', '外部ツールの一覧', '.mcp.json', servers === null ? '読めない .mcp.json' : `既存の MCP サーバー ${servers.length} 件(${servers.join('・')})。提供元・付与する権限・採用の承認(AI維持管理者)を確かめる`);
   }
   const nested = files.filter((f) => {
     const base = f.split('/').pop();
