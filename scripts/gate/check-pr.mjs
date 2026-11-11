@@ -241,7 +241,13 @@ export const THRESHOLD_FILES = [
   '.semgrepignore',
   '.secretlintrc*',
   '.secretlintignore',
+  // 製品のスタックの除外の一覧(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 / ADR-0121)。除外は検査の対象を縮める
+  // 変更であり、閾値・除外設定と同じく、製品のコードと同じ PR で変えない。変更は統制の設定の変更の承認を要する。
+  // 基底に無い一覧を新しく置く変更も、基底の構成が設定済みなら初回の設定として外さない(下の STACK_EXCLUSIONS)
+  '.github/stack-exclusions.json',
 ];
+/** 製品のスタックの除外の一覧。基底の構成が設定済みなら、新しく置く変更も閾値・除外設定の変更に数える(除外の追加は緩める向きのため) */
+export const STACK_EXCLUSIONS = '.github/stack-exclusions.json';
 
 /**
  * 開発の基盤(設定・ツール・雛形)のファイル。変更がこれだけに収まる PR は、トレーラ `Spec: setup` で通す(#286)。
@@ -1572,7 +1578,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     const f = e.path;
     const isThreshold = matchAny(thresholdGlobs, f) || (stack && f === `adapters/${stack}.json`);
     if (!isThreshold) continue;
-    if (atBase(e.from ?? f) === null) initial.push(f);
+    if (atBase(e.from ?? f) === null && !(f === STACK_EXCLUSIONS && baseConfigured)) initial.push(f);
     else thresholdChanges.push(f);
   }
   if (all.some((e) => e.path === 'process.config.json')) {

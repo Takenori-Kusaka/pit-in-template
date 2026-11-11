@@ -230,6 +230,23 @@ for (const n of [1, 3]) {
     );
     W.write(wfPath, wfText);
   }
+  // 製品のコードに宣言していないスタックがあると、契約検査が落ちる(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 / ADR-0121)
+  {
+    const stack = JSON.parse(W.read('process.config.json')).adapters.stack;
+    const other = stack === 'python' ? ['services/api/package.json', 'services/api/index.js'] : ['services/api/pyproject.toml', 'services/api/app.py'];
+    W.write(other[0], other[0].endsWith('.json') ? '{}\n' : '[project]\nname = "api"\n');
+    W.write(other[1], 'x = 1\n');
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 宣言していないスタック(services/api)の製品のコードがあると、契約検査が「基準1 未充足」で落ちる`, !r.ok && /G-5 基準1 未充足/.test(r.out) && /未実施\(構成のアダプタの外\)/.test(r.out), r.out);
+    W.write('.github/stack-exclusions.json', JSON.stringify({ exclusions: [{ path: 'services/api', category: 'non-product', reason: '試験の材料', decidedBy: '' }] }));
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 記名の無い除外では、契約検査が落ちる`, !r.ok && /記名\(decidedBy\)が未記入/.test(r.out), r.out);
+    W.write('.github/stack-exclusions.json', JSON.stringify({ exclusions: [{ path: 'services/api', category: 'non-product', reason: '試験の材料', decidedBy: '山田 花子' }] }));
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 理由と人の記名のある除外なら、契約検査が通る`, r.ok, r.out);
+    for (const f of [...other, '.github/stack-exclusions.json']) fs.rmSync(path.join(W.dir, f));
+    fs.rmSync(path.join(W.dir, 'services'), { recursive: true, force: true });
+  }
   // アダプタの projectDir が無いディレクトリを指すと、契約検査が落ちる(process-compass #363 の突合 X-1)
   {
     const stack = JSON.parse(W.read('process.config.json')).adapters.stack;

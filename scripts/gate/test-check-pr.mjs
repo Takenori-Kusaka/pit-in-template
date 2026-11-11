@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -822,6 +822,20 @@ ${instr}
   git('commit', '-q', '-am', 'ruff');
   unit('統制の設定の変更の承認の範囲: [tool.ruff] の変更を数える', controlTouchedBetween(gitA, 'main', 'HEAD').includes('pyproject.toml'));
   git('switch', '-q', 'main');
+
+  // 製品のスタックの除外の一覧(.github/stack-exclusions.json。標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 / ADR-0121)。
+  // 除外の変更と製品のコードの変更が同じ PR にあれば失敗にする。基底に無い一覧を新しく置く変更も、初回の設定として外さない
+  const EXCL = (p) => `${JSON.stringify({ exclusions: [{ path: p, category: 'non-product', reason: '文書の生成の道具', decidedBy: '鈴木 一郎' }] }, null, 2)}\n`;
+  // IMPL-0478:ng(違反と適合の対。標準の実装マーク。process-compass #363)
+  scenario('製品のスタックの除外の一覧を新しく置き、製品のコードも変える', {}, () => {
+    write('.github/stack-exclusions.json', EXCL('tools'));
+    write('src/app/core.py', PY_CODE);
+  }, failsWith(/基準値と除外設定の変更.*\.github\/stack-exclusions\.json/));
+  // IMPL-0478:ok(違反と適合の対。標準の実装マーク。process-compass #363)
+  scenario('製品のスタックの除外の一覧だけを置く PR(陰性の確認の記録あり)は通り、閾値・除外設定の変更として数える', { body: `除外の登録\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
+    write('.github/stack-exclusions.json', EXCL('tools'));
+  }, passes((r) => (r.thresholds.changed.includes('.github/stack-exclusions.json') ? [] : [`除外の一覧の変更として識別していない: ${JSON.stringify(r.thresholds)}`])));
+  unit('統制の設定の変更の承認の範囲: 製品のスタックの除外の一覧を数える', controlTouchedOf([{ path: '.github/stack-exclusions.json' }]).includes('.github/stack-exclusions.json'));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

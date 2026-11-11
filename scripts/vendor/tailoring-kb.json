@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "f1916de2063f868def6210425f06e45359e18c99",
+    "commit": "ef15e5802705396cb154cd4e537a234a5555ec73",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1407,7 +1407,7 @@
       "criteria": [
         "仕様(受入基準)と実装が一致している",
         "レビュアが挙動を自分の言葉で説明できる",
-        "(コア機能のみ)設計意図の記録が完備",
+        "(コア機能、または判断記録の要否の規則に当たる変更。後者は事業ステージ S1 以降)設計意図の記録が完備",
         "レビュアが作成の指示者本人でない",
         "(依存の追加・更新を含む場合)追加の必要性を確認した",
         "変更の検証の方法と結果が記録されている"

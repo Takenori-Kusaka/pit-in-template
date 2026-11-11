@@ -159,6 +159,9 @@ jobs:
       # 「対象なし」にしないこと、製品のコードの所在(projectDir)、python の依存の取得の入れ方(標準 第4章 G-5「検査対象が
       # 存在しない場合の扱い」。process-compass #363)
       - run: node scripts/gate/test-adapter.mjs
+      # 製品のすべてのスタック: 製品のコードのスタック(目印と拡張子の集計)と、宣言したスタック + 除外の突き合わせ。除外の記名・区分・
+      # パスの単位(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 / ADR-0121)
+      - run: node scripts/gate/test-stack-coverage.mjs
       # 自己修正ループの停止条件(無進捗・連続失敗)と保留の解除の名義(標準 第3章 3.12.10。process-compass #296)
       - run: node scripts/gate/test-self-heal.mjs
       # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)

@@ -13,5 +13,6 @@
     "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
   "coverageSummary": null,
-  "note": "実装スタックが未確定の状態です。探索ステージ(S0)の期間中はこのままでかまいません。スタックは S0 の出力であり、入力ではありません。確定の期限は SG-0 です。テストのコマンドが空のあいだ G-5 は失敗します(他の検査は未実施として証跡へ残り、通過します)。実装に着手する段階で、使う言語のコマンドをここへ書くか、adapters/ の他のファイルを、/process-change(種別 settings の settings.stack)で選んでください。process.config.json を手で編集しないでください(構成を書き換える経路は /process-change だけです) secretScan には、言語に依らない秘匿情報の検査(secretlint)を既定で書いてある。製品のコードの有無に依らず実行する(G-5 基準7 は対象なしを認めない。リポジトリの直下に .secretlintrc.json を要する。process-compass #363)。projectDir に製品のコードの所在を書くと、secretScan 以外のコマンドをそこで実行する"
+  "stacks": [],
+  "note": "実装スタックが未確定の状態です。探索ステージ(S0)の期間中はこのままでかまいません。スタックは S0 の出力であり、入力ではありません。確定の期限は SG-0 です。テストのコマンドが空のあいだ G-5 は失敗します(他の検査は未実施として証跡へ残り、通過します)。実装に着手する段階で、使う言語のコマンドをここへ書くか、adapters/ の他のファイルを、/process-change(種別 settings の settings.stack)で選んでください。process.config.json を手で編集しないでください(構成を書き換える経路は /process-change だけです) secretScan には、言語に依らない秘匿情報の検査(secretlint)を既定で書いてある。製品のコードの有無に依らず実行する(G-5 基準7 は対象なしを認めない。リポジトリの直下に .secretlintrc.json を要する。process-compass #363)。projectDir に製品のコードの所在を書くと、secretScan 以外のコマンドをそこで実行する。stacks は、ここへ手で書いたコマンドが受けるスタックの宣言(人が書く。単位は「スタック × 作業の場所」。例 [{ \"stack\": \"rust\", \"path\": \".\" }, { \"stack\": \"python\", \"path\": \"services/api\" }])。契約検査は、製品のコードにあるスタック(目印のファイルと拡張子の集計)が、宣言か .github/stack-exclusions.json の除外に入っていなければ G-5 を失敗にする(基準1 未充足。標準 第4章 G-5「製品のすべてのスタック」。process-compass #363)。アダプタの外の言語と、1つのリポジトリの複数のスタックは、この手書きの要素で受ける"
 }

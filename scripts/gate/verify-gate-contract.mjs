@@ -87,6 +87,7 @@ import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.m
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL } from './coverage-check.mjs';
+import { stackCoverageReport } from './stack-coverage.mjs';
 
 const config = loadConfig();
 const problems = [];
@@ -742,6 +743,18 @@ if (adapter) {
   } catch (e) {
     problems.push(e.message);
   }
+}
+
+// ---------------------------------------------------------- 5.2 製品のすべてのスタック(G-5 基準1・2・3・5。process-compass #363 / ADR-0121)
+//
+// 製品のコードにあるスタック(目印のファイルと拡張子の集計)を、「宣言したスタック × 作業の場所 + 登録した除外」と突き合わせる。
+// 外れたスタックがあれば失敗にする。ゲートの単位では「基準1 未充足」、検査の単位では「未実施(構成のアダプタの外)」と出す。
+// 複数のアダプタ(第2段)が無い間も、宣言の外のスタックは失敗にする(未実施は失敗に数える)
+
+if (adapter && config.gates?.g5?.state !== 'omitted') {
+  const sc = stackCoverageReport(config, adapter);
+  for (const p of sc.problems) problems.push(p);
+  for (const n of sc.notes) notes.push(n);
 }
 
 // ---------------------------------------------------------- 5.5 カバレッジの測る範囲(G-5 基準3。#296)
