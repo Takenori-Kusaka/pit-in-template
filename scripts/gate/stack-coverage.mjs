@@ -18,7 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, adapterFamily, adapterProjectDir, aiNameBlocked, isFilledValue } from './config.mjs';
+import { ROOT, adapterFamily, adapterProjectDir, nameProblems, isFilledValue } from './config.mjs';
 import { isNonProduct } from './check-pr.mjs';
 
 /** 除外の一覧の置き場(統制の設定。check-pr.mjs の THRESHOLD_FILES に入れ、同時変更の検査と変更の承認に掛ける) */
@@ -173,9 +173,10 @@ export function parseStackExclusions(text, { config = null, declared = [] } = {}
     if (!Object.hasOwn(EXCLUSION_CATEGORIES, x?.category)) errs.push(`区分 "${x?.category ?? ''}" は受けません。区分は non-product(製品でない)だけです。製品のスタックは除外できません`);
     if (!isFilledValue(x?.reason)) errs.push('製品でない理由(reason)が未記入です');
     if (!isFilledValue(x?.decidedBy)) errs.push('記名(decidedBy)が未記入です。除外は人が記名で決めます');
-    else {
-      const why = config ? aiNameBlocked(config, x.decidedBy) : null;
-      if (why) errs.push(`記名 "${x.decidedBy}" は ${why}。AI の名義の記名を受け付けません`);
+    else if (config) {
+      // 記名は自然人の氏名に限る。AI を示す語・担い手の識別(performer)と同じ文字列・名簿(people[])にない名前を受け付けない。
+      // 除外は緩める向きの決定であり、名簿が未記入の間は受け付けない(突合 X3-2)
+      for (const why of nameProblems(config, x.decidedBy, { requireRoster: true })) errs.push(`記名を受け付けません: ${why}`);
     }
     if (p && p !== '.') {
       const covered = declared.filter((d) => d.place !== '.' && under(d.place, p));
@@ -223,7 +224,7 @@ export function uncoveredProblems(uncovered, adapterId) {
       `G-5 基準1 未充足: 構成に宣言していないスタック ${stack} の製品のコードがあります(${sample}。目印 ${markers.length} 件・拡張子 ${list.length - markers.length} 件)。` +
         `このスタックの ${STACK_CRITERIA} は 未実施(構成のアダプタの外)です。未実施は失敗に数えます(構成のアダプタ: ${adapterId})。` +
         '直し方は2つです。(1) 製品のコードなら、スタックを宣言する(/process-change の種別 settings でアダプタを選ぶ。複数のスタックやアダプタの外の言語は、' +
-        'adapters/none.json に全スタックのコマンドを手で書き、stacks に「スタック × 作業の場所」を書く。1つの構成で複数のアダプタを回す形は、この準拠テンプレートにありません)。' +
+        'adapters/none.json に全スタックのコマンドを手で書き、stacks に「スタック × 作業の場所」を書く。要素ごとに coverageSummary を書かなければ基準3 が未実施で失敗する。1つの構成で複数のアダプタを回す形は、この準拠テンプレートにありません。アダプタの変更は閾値・除外設定と同じく、製品のコードと別の PR にする)。' +
         `(2) 製品でないなら、${STACK_EXCLUSIONS_FILE} にパス・区分 non-product・理由・人の記名で登録する(統制の設定。AI維持管理者の承認を要し、製品のコードと同じ PR では変えられない)` +
         '(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363)'
     );

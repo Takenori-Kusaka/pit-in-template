@@ -241,11 +241,15 @@ for (const n of [1, 3]) {
     W.write('.github/stack-exclusions.json', JSON.stringify({ exclusions: [{ path: 'services/api', category: 'non-product', reason: '試験の材料', decidedBy: '' }] }));
     r = W.node('scripts/gate/verify-gate-contract.mjs');
     check(`${tag}: 記名の無い除外では、契約検査が落ちる`, !r.ok && /記名\(decidedBy\)が未記入/.test(r.out), r.out);
-    W.write('.github/stack-exclusions.json', JSON.stringify({ exclusions: [{ path: 'services/api', category: 'non-product', reason: '試験の材料', decidedBy: '山田 花子' }] }));
+    W.write('.github/stack-exclusions.json', JSON.stringify({ exclusions: [{ path: 'services/api', category: 'non-product', reason: '試験の材料', decidedBy: '名簿 外子' }] }));
     r = W.node('scripts/gate/verify-gate-contract.mjs');
-    check(`${tag}: 理由と人の記名のある除外なら、契約検査が通る`, r.ok, r.out);
+    // 初期化の直後は名簿(people[])が未記入。除外は緩める向きの決定であり、名簿で照らせない記名を受けない(突合 X3-2。
+    // 名簿にある人の記名で通ることは test-stack-coverage.mjs が確かめる)
+    check(`${tag}: 名簿で照らせない名前の記名の除外では、契約検査が落ちる(突合 X3-2)`, !r.ok && /名簿/.test(r.out) && /基準1 未充足/.test(r.out), r.out);
     for (const f of [...other, '.github/stack-exclusions.json']) fs.rmSync(path.join(W.dir, f));
     fs.rmSync(path.join(W.dir, 'services'), { recursive: true, force: true });
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 宣言の外のスタックが無くなれば、契約検査が通る`, r.ok, r.out);
   }
   // アダプタの projectDir が無いディレクトリを指すと、契約検査が落ちる(process-compass #363 の突合 X-1)
   {

@@ -16,7 +16,8 @@
 //
 // 結果(evidence/coverage-result.json)には、割合・範囲・分母・測っていない製品のファイルの数を書く。割合だけでは、
 // 2 行中 2 行の 100% と、2,000 行中 1,600 行の 80% を区別できないためである(ADR-0078 決定6)。
-// coverageSummary が null のアダプタは、判定を実施しない扱いとして記録する(通過させる。#330 の範囲)。
+// coverageSummary が null のアダプタは、判定を実施しない扱いとして記録する(通過させる。#330 の範囲)。ただし none の手書きの要素(stacks)で宣言した
+// スタックは、要素ごとの coverageSummary を要し、無ければ基準3 の未実施として失敗に数える(process-compass #363 の突合 X3-1)。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -249,6 +250,12 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
   }
   const scopeInfo = { scope, scopeLabel: SCOPE_LABEL[scope], scopeDeclared: declared, scopeDefaulted: !declared };
 
+  // 手書きの要素(none の stacks)で宣言したスタックは、要素ごとにカバレッジを報告し、要素ごとに同じ基準値と比べる。
+  // 報告の無い要素は基準3 の未実施であり、失敗に数える(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 の突合 X3-1)
+  if (adapter.id === 'none' && Array.isArray(adapter.stacks) && adapter.stacks.length) {
+    return evaluateHandwrittenStacks({ root, adapter, threshold, scopeInfo, say, messages });
+  }
+
   const rel = adapter.coverageSummary;
   if (!rel) {
     say('warn', `アダプタ ${adapter.id} はカバレッジの集計ファイルを持ちません。判定を実施しない扱いで記録します`);
@@ -385,6 +392,67 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
   }
   say('notice', `カバレッジ ${c.pct}%(範囲: 変更で加えた・変えたコード、分母 ${c.denominator} 行。基準値 ${threshold}%。全体 ${wholePct ?? '—'}%)`);
   return { code: 0, result, messages };
+}
+
+/** 集計ファイルの全体の割合と分母(istanbul の coverage-summary.json、pytest-cov の coverage.json)。読めなければ null */
+export function summaryTotals(raw) {
+  const pct = raw?.total?.lines?.pct ?? raw?.totals?.percent_covered;
+  const total = raw?.total?.lines?.total ?? raw?.totals?.num_statements;
+  return typeof pct === 'number' || typeof total === 'number' ? { pct: typeof pct === 'number' ? pct : null, total: typeof total === 'number' ? total : null } : null;
+}
+
+/**
+ * 手書きの要素(adapters/none.json の stacks)のカバレッジの判定。要素ごとに coverageSummary(作業の場所からの相対のパス)を読み、
+ * 要素ごとに同じ基準値と比べる。合算しない。coverageSummary の無い要素は、そのスタックの基準3 の未実施として失敗に数える
+ * (第4章 G-5「検査対象が存在しない場合の扱い」の「未実施は失敗に数える」。#363 の突合 X3-1)。測る範囲は全体(行単位の被覆を読まない)
+ */
+export function evaluateHandwrittenStacks({ root, adapter, threshold, scopeInfo = {}, say = () => {}, messages = [] }) {
+  const perStack = [];
+  let failed = false;
+  for (const [i, d] of adapter.stacks.entries()) {
+    const stack = String(d?.stack ?? '');
+    const place = String(d?.path ?? '.').replace(/\\/g, '/').replace(/\/+$/, '') || '.';
+    const label = `手書きの要素 stacks[${i}](${stack} × ${place})`;
+    const rel = typeof d?.coverageSummary === 'string' && d.coverageSummary.trim() ? d.coverageSummary.trim() : null;
+    if (!rel) {
+      failed = true;
+      perStack.push({ stack, place, measured: false, reason: 'カバレッジを報告しない(未実施)' });
+      say(
+        'fail',
+        `${label}: カバレッジの集計ファイル(coverageSummary)がありません。このスタックの基準3 は 未実施 で、未実施は失敗に数えます。` +
+          'adapters/none.json の stacks の要素に、手で書いたコマンドが出す集計ファイル(istanbul の coverage-summary.json か pytest-cov の coverage.json。作業の場所からの相対のパス)を書いてください。スタックの間で合算しません'
+      );
+      continue;
+    }
+    const p = path.join(root, place, rel);
+    const raw = fs.existsSync(p) ? (() => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } })() : undefined;
+    const t = raw ? summaryTotals(raw) : null;
+    if (raw === undefined || t === null || t.pct === null) {
+      failed = true;
+      perStack.push({ stack, place, measured: false, reason: raw === undefined ? '集計ファイルが無い' : '集計ファイルを読み取れない' });
+      say('fail', `${label}: カバレッジの集計ファイル ${path.posix.join(place, rel)} が${raw === undefined ? 'ありません' : '読み取れません'}。テストの実行設定を確認してください`);
+      continue;
+    }
+    const ok = t.pct >= threshold;
+    perStack.push({ stack, place, measured: true, pct: t.pct, denominator: t.total, ok });
+    if (!ok) {
+      failed = true;
+      say('fail', `${label}: カバレッジ ${t.pct}%(分母 ${t.total} 行)が基準値 ${threshold}% を下回っています`);
+    } else say('notice', `${label}: カバレッジ ${t.pct}%(分母 ${t.total} 行。基準値 ${threshold}%)`);
+  }
+  const measured = perStack.filter((s) => s.measured);
+  const result = {
+    measured: measured.length === perStack.length,
+    ...scopeInfo,
+    scope: 'whole',
+    perStack,
+    threshold,
+    ok: !failed,
+    // 最も低いスタックの割合(合算ではない)
+    pct: measured.length ? Math.min(...measured.map((s) => s.pct)) : null,
+    dilution: true,
+  };
+  return { code: failed ? 1 : 0, result, messages };
 }
 
 function writeResult(root, o) {

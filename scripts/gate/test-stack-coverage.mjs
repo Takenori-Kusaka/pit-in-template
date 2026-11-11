@@ -10,6 +10,8 @@
 //   - 除外(.github/stack-exclusions.json)は、区分 non-product・パス・理由・人の記名を要する。記名の欠け・AI の名義・区分の外・
 //     ワイルドカード・全体・宣言した作業の場所を覆う除外は受けない
 //   - 強制層(scripts/gate など)と文書は製品のコードに数えない。除外は秘匿情報の検査(基準7)に効かない
+//   - 除外の記名は nameProblems で確かめる(担い手の識別と同じ文字列・名簿にない名前を受けない。突合 X3-2)
+//   - 手書きの要素は要素ごとにカバレッジを報告し、要素ごとに基準値と比べる。報告が無ければ基準3 の未実施で失敗(突合 X3-1)
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -17,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { stackOfFile, declaredStacks, parseStackExclusions, matchStacks, uncoveredProblems, stackCoverageReport, isProductCandidate, STACK_EXCLUSIONS_FILE } from './stack-coverage.mjs';
 import { ALWAYS_PHASES } from './config.mjs';
+import { evaluateHandwrittenStacks, evaluateCoverage } from './coverage-check.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -90,6 +93,12 @@ const MIXED = ['package.json', 'src/index.ts', 'services/api/pyproject.toml', 's
   // IMPL-0477:ng(違反と適合の対。標準の実装マーク。process-compass #363)
   check('除外: 記名の欠けを受けない', parse({ ...OK_EX, decidedBy: '' }).problems.some((p) => /記名\(decidedBy\)が未記入/.test(p)));
   check('除外: AI の名義の記名を受けない', parse({ ...OK_EX, decidedBy: 'Claude' }).problems.some((p) => /AI の名義/.test(p)), parse({ ...OK_EX, decidedBy: 'Claude' }).problems.join('\n'));
+  // 記名は nameProblems で確かめる(突合 X3-2): 担い手の識別と同じ文字列、名簿にない名前を受けない
+  const withSeat = { ...CONFIG, seats: [{ id: 'dev', performer: { account: 'pitcrew-dev' } }] };
+  const perf = parseStackExclusions(EXCL({ ...OK_EX, decidedBy: 'pitcrew-dev' }), { config: withSeat, declared: decl });
+  check('除外: 担い手の識別(performer)と同じ文字列の記名を受けない', perf.problems.some((p) => /担い手の識別/.test(p)) && perf.exclusions.length === 0, perf.problems.join('\n'));
+  const off = parse({ ...OK_EX, decidedBy: '佐藤 次郎' });
+  check('除外: 名簿(people[])にない名前の記名を受けない', off.problems.some((p) => /名簿/.test(p)) && off.exclusions.length === 0, off.problems.join('\n'));
   check('除外: 理由の欠けを受けない', parse({ ...OK_EX, reason: '' }).problems.some((p) => /理由/.test(p)));
   check('除外: 区分は non-product だけ(製品のスタックの除外の区分は無い)', parse({ ...OK_EX, category: 'product' }).problems.some((p) => /区分/.test(p)));
   check('除外: ワイルドカード(拡張子の単位 = スタックの単位)を受けない', parse({ ...OK_EX, path: '**/*.py' }).problems.some((p) => /ワイルドカード/.test(p)));
@@ -128,6 +137,29 @@ function repo(files) {
   check('リポジトリ: none の手書きの要素で両方を宣言すれば通る', r.problems.length === 0, r.problems.join('\n'));
   r = stackCoverageReport(CONFIG, NODE, repo({ ...base, [STACK_EXCLUSIONS_FILE]: EXCL([{ ...OK_EX, path: 'services/api' }, { ...OK_EX, path: 'unused' }]) }));
   check('リポジトリ: 当たらない除外は注記に出す', r.notes.some((n) => /unused/.test(n) && /効いていない/.test(n)), r.notes.join('\n'));
+}
+
+// ---------------------------------------------------------------- 6. 手書きの要素のカバレッジ(基準3。突合 X3-1)
+// none の経路で通る混在のリポジトリでも、基準3 は未実施のまま通さない。要素ごとに集計ファイルを読み、要素ごとに比べる(合算しない)
+{
+  const SUM = (pct, total = 10) => JSON.stringify({ total: { lines: { pct, total, covered: Math.round((pct * total) / 100) } } });
+  const PYSUM = (pct, n = 10) => JSON.stringify({ totals: { percent_covered: pct, num_statements: n } });
+  const root = repo({ 'coverage/coverage-summary.json': SUM(95), 'services/api/coverage.json': PYSUM(90), 'services/api/low.json': PYSUM(50) });
+  const run = (stacks) => evaluateHandwrittenStacks({ root, adapter: NONE(stacks), threshold: 80 });
+  // IMPL-0476:ng(違反と適合の対。標準の実装マーク。process-compass #363 の突合 X3-1)
+  let r = run([{ stack: 'node', path: '.' }, { stack: 'python', path: 'services/api' }]);
+  check('手書きの要素: カバレッジを報告しない要素があれば、基準3 の未実施として失敗', r.code === 1 && r.result.perStack.every((s) => !s.measured) && r.result.ok === false, JSON.stringify(r.result));
+  r = run([{ stack: 'node', path: '.', coverageSummary: 'coverage/coverage-summary.json' }, { stack: 'python', path: 'services/api' }]);
+  const viaEval = evaluateCoverage({ root, config: { ci: { coverageThreshold: 80, coverageScope: 'whole' } }, adapter: NONE([{ stack: 'node', path: '.' }, { stack: 'python', path: 'services/api' }]) });
+  check('手書きの要素: カバレッジの判定(evaluateCoverage)も、none の coverageSummary が null のまま通さない', viaEval.code === 1 && Array.isArray(viaEval.result.perStack), JSON.stringify(viaEval.result));
+  check('手書きの要素: 一部の要素だけが報告しても、報告しない要素で失敗', r.code === 1 && r.result.perStack[0].ok === true && r.result.perStack[1].measured === false, JSON.stringify(r.result));
+  // IMPL-0476:ok(違反と適合の対。標準の実装マーク。process-compass #363 の突合 X3-1)
+  r = run([{ stack: 'node', path: '.', coverageSummary: 'coverage/coverage-summary.json' }, { stack: 'python', path: 'services/api', coverageSummary: 'coverage.json' }]);
+  check('手書きの要素: 要素ごとに集計ファイルを報告し、どれも基準値以上なら通る(istanbul・pytest-cov の形)', r.code === 0 && r.result.ok && r.result.pct === 90, JSON.stringify(r.result));
+  r = run([{ stack: 'node', path: '.', coverageSummary: 'coverage/coverage-summary.json' }, { stack: 'python', path: 'services/api', coverageSummary: 'low.json' }]);
+  check('手書きの要素: 合算しない(95% と 50% の組は、50% の要素で失敗)', r.code === 1 && r.result.perStack[1].ok === false, JSON.stringify(r.result));
+  r = run([{ stack: 'python', path: 'services/api', coverageSummary: 'missing.json' }]);
+  check('手書きの要素: 書いた集計ファイルが無ければ失敗', r.code === 1 && r.result.perStack[0].reason === '集計ファイルが無い', JSON.stringify(r.result));
 }
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
