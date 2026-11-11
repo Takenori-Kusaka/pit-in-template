@@ -1438,6 +1438,51 @@ if (isMain) {
     historicalConfigs.set(rev, c && typeof c === 'object' ? c : null);
     return historicalConfigs.get(rev);
   }
+
+  // --- G-6 の範囲(事業ステージ S1 のコア機能への限定。標準 第8章 軸B、ADR-0112 決定1。process-compass #435) ---
+  //
+  // 構成の gates.g6.params.scope が core-only のとき、コア機能に当たらない PR の変更を G-6 の範囲の外とし、G-6 を適用しない
+  // 体制と同じ扱い(R1 の変更だけ例外承認を要する)にする。期間は、変更の親のコミットの構成の事業ステージで分ける。
+  // 次のどれかに当たれば範囲を限らず、全変更を数える(#435 の裁定の歯止め)。
+  //   1. コア機能のパス(corePathsOf: delegation.protectedPaths と riskFloor.rules[].paths の和)が、変更の親の版か HEAD の版で
+  //      未宣言(追跡中のファイルに1件も当たらない宣言を含む)。理由を欠落の文に添える
+  //   2. 変更の親の版と HEAD の版のパスの和で、コア機能に当たる(後から狭めた宣言で範囲の外へ出さない)
+  //   3. 出荷の範囲に、親の版の構成が S0 のコミットを含む(S0 から移った後の最初の出荷)。S0 の期間の変更そのものは、
+  //      前提3(第8章「S0 の省略が成立する前提」)のとおり全変更で数える
+  //   4. PR を経ないコミット(この関数を使わない。範囲を限らない)
+  const G6_CORE_ONLY = config.gates?.g6?.state === 'required' && config.gates?.g6?.params?.scope === 'core-only';
+  const trackedAtRev = new Map();
+  const trackedAt = (rev) => {
+    if (!trackedAtRev.has(rev)) trackedAtRev.set(rev, trackedFiles(ROOT, rev));
+    return trackedAtRev.get(rev);
+  };
+  let rangeHasS0Cache = null;
+  /** 出荷の範囲に、親の版の構成が事業ステージ S0 のコミットを含むか(S0 から移った後の最初の出荷) */
+  function rangeHasS0Period() {
+    if (rangeHasS0Cache === null) rangeHasS0Cache = commits.some((c) => c.parents[0] && stageOf(configAt(c.parents[0])) === 'S0');
+    return rangeHasS0Cache;
+  }
+  /** PR の変更(マージコミット mergeHash、変更したファイル files)が G-6 の範囲の外か。理由(why)は範囲を限らなかった理由 */
+  function g6ScopeOf(mergeHash, files) {
+    if (!G6_CORE_ONLY) return { limited: false, outOfScope: false, core: null, why: null };
+    const parentRev = `${mergeHash}^1`;
+    const before = configAt(parentRev);
+    const full = (why, core = null) => ({ limited: true, outOfScope: false, core, why });
+    if (stageOf(before) === 'S0') return full('変更の親の版の構成が事業ステージ S0 のため(S0 の省略が成立する前提3)、範囲を限らずに数えた');
+    if (rangeHasS0Period()) return full('出荷の範囲に事業ステージ S0 の期間の変更を含む(S0 から移った後の最初の出荷)ため、範囲を限らずに数えた');
+    if (stageOf(before) !== 'S1' || before?.gates?.g6?.state !== 'required' || before?.gates?.g6?.params?.scope !== 'core-only') {
+      return full('変更の親の版の構成が、G-6 の範囲をコア機能に限る事業ステージ S1 の構成でないため、範囲を限らずに数えた');
+    }
+    const atHead = touchesCore(config, files, { tracked: TRACKED_FILES });
+    const atParent = touchesCore(before, files, { tracked: trackedAt(parentRev) });
+    if (!atHead || !atParent) {
+      const where = !atHead && !atParent ? '変更の親の版と HEAD の版' : !atParent ? '変更の親の版' : 'HEAD の版';
+      return full(`コア機能のパス(確約範囲・コア指定のパスと区分の下限の規則のパス)が${where}の構成で未宣言のため、範囲を限らずに数えた`);
+    }
+    const hitFiles = [...new Set([...atHead.files, ...atParent.files])];
+    if (hitFiles.length) return full(null, { hit: true, files: hitFiles, atHead: atHead.hit, atParent: atParent.hit });
+    return { limited: true, outOfScope: true, core: { hit: false, files: [] }, why: null };
+  }
   const recordCommits = new Map();
   /** 判定記録のファイルを足したコミット(最初に追加したもの)。未コミットの記録は null */
   function recordCommitOf(file) {
@@ -1913,6 +1958,8 @@ if (isMain) {
       files: prFiles.length,
       // 統制の設定を変えたファイルと、マージの前の構成が設定済みか(承認の照合は下の「統制の設定の変更の承認」。#371)
       control: { files: controlTouched, parentConfigured },
+      // G-6 の範囲(S1 のコア機能への限定)。outOfScope が真なら独立した人の確認の欠落に数えない。why は範囲を限らなかった理由(#435)
+      g6Scope: g6ScopeOf(hash, prFiles),
       // 承認レビューの写し(所在・失効した承認・PR の記録との所見)。無ければ null
       copy: copyEntry
         ? {
@@ -2347,9 +2394,9 @@ if (isMain) {
    *   G-6 を適用する体制: G-6 を事後へ移した変更を除き、記録の欠落。例外承認の記録が対応づけば欠落にしない(区分を問わない)
    *   G-6 が未達・成立しない・省略の体制: R1 の変更だけ、例外承認の記録を要する
    */
-  function exceptionNeeded(counted, postHoc, riskClass) {
+  function exceptionNeeded(counted, postHoc, riskClass, outOfScope = false) {
     if (counted || postHoc) return false;
-    return g6Applied || riskClass === 'R1';
+    return (g6Applied && !outOfScope) || riskClass === 'R1';
   }
 
   // 写しで G-6 を数えなかった理由(突合 L-4)。ホスティングの記録と照合できなかった写しと、食い違いのある写しは数えない
@@ -2360,15 +2407,22 @@ if (isMain) {
         ? '。承認レビューの写しをホスティングの記録と照合できなかったため、写しで G-6 を数えていない(gh・リポジトリを読めない実行、または PR をホスティングで引けない。第4章 G-6 条件5)'
         : '。承認レビューの写しにホスティングの記録との食い違いがあるため、写しで G-6 を数えていない(第4章 G-6 条件5)';
   for (const p of prs) {
-    const needs = exceptionNeeded(p.g6.independent.counted, p.g6PostHoc, p.riskClass);
+    // G-6 の範囲の外(S1 のコア機能への限定で、コア機能に当たらない PR の変更)は、G-6 を適用しない体制と同じ扱い(#435)
+    const outOfScope = Boolean(p.g6Scope?.outOfScope);
+    const needs = exceptionNeeded(p.g6.independent.counted, p.g6PostHoc, p.riskClass, outOfScope);
     const ex = needs ? exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors }, p.material) : { matched: [], rejected: [] };
     p.exceptionRecords = ex.matched;
     p.exceptionRejected = ex.rejected;
     if (!needs || ex.matched.length) continue;
     const rejected = ex.rejected.length ? `対応づけなかった例外の行: ${ex.rejected.join(' / ')}。` : '';
-    if (g6Applied) {
+    if (g6Applied && !outOfScope) {
       gaps.push(
         `PR #${p.number}: 独立した人の確認を経ていません(${p.g6.independent.reasonText}${copyNotCountedText(p)})。G-6 を適用する体制では記録の欠落です` +
+          (p.g6Scope?.why
+            ? `(G-6 の範囲をコア機能に限る構成だが、${p.g6Scope.why})`
+            : p.g6Scope?.core?.hit
+              ? `(G-6 の範囲(コア機能)に当たる変更: ${p.g6Scope.core.files.slice(0, 3).join(', ')})`
+              : '') +
           (p.delegated ? `(委任の申告があるが、G-6 を事後へ移せない: ${p.g6PostHocBlockers.join(' / ')})` : '') +
           `。${rejected}独立した人(作成を指示した者でない、名簿の人)が、自分の挙動要約を付けて承認するか、G-6 の判定記録(「対象」に PR #${p.number}、判定者、挙動要約)を残してください。` +
           `確認を待てない場合は、例外承認の記録(技術負債台帳の区分「例外」の行。「対象」に PR #${p.number}、状態・承認した者・理由・期限を記入)を対応づけます(第7章 7.3)`
@@ -2807,7 +2861,7 @@ if (isMain) {
   // 項目1 に理由を出す)。G-6 を適用する体制の、事後へ移していない変更で、様式の G-6 の判定記録も無いものが当たる
   if (recordsBranch.available) {
     for (const p of prs) {
-      if (p.copy || p.g6PostHoc || !g6Applied) continue;
+      if (p.copy || p.g6PostHoc || !g6Applied || p.g6Scope?.outOfScope) continue;
       if (g6RecordsFor((text) => refersToPr(text, p.number)).length) continue;
       gaps.push(
         `PR #${p.number}: 承認レビューの写し(${REVIEWS_DIR}/pr-${p.number}.json)が記録用ブランチ ${recordsBranch.ref} に無く、G-6 の判定記録(様式)もありません。` +
@@ -3424,6 +3478,19 @@ if (isMain) {
   // 表示を広げるのは裁定の範囲(簡略で記録された G-7)に限る(process-compass #374 / ADR-0112 決定1・決定4、突合 X-3・X-5・X-7)
   const GATE_STATE_TEXT = { required: '適用', simplified: '簡略', omitted: '省略', unmet: '未達' };
   const scopeLimited = (key, g) => key === 'g6' && g.state === 'required' && g.params?.scope === 'core-only';
+  // 範囲の限定の行は、集約の数え方と一致させる(process-compass #435 の裁定6)。集約が範囲を限らなかった構成・出荷では、その旨を状態に添える。
+  // ブランチ保護の必須の承認数(generate-profile.mjs の review.requiredApprovals)はパスで分けられず全 PR に掛かることも開示する(裁定4)
+  const g6ScopeStateText = () =>
+    !corePaths.declared
+      ? '範囲の限定(コア機能)。コア機能のパスが未宣言のため、集約は範囲を限らず全変更を数えた'
+      : rangeHasS0Period()
+        ? '範囲の限定(コア機能)。S0 から移った後の最初の出荷のため、集約は範囲を限らず全変更を数えた'
+        : '範囲の限定(コア機能)';
+  const G6_SCOPE_COUNTING = [
+    '集約の数え方: 変更の親の版の構成が S1 でコア機能に限る PR のうち、コア機能のパス(確約範囲・コア指定のパスと区分の下限の規則のパス。変更の親の版と HEAD の版の和)に当たらない変更は、独立した人の確認の欠落に数えない(R1 の変更は例外承認を要する)。' +
+      'PR を経ないコミット、親の版の構成が S0 の変更、S0 から移った後の最初の出荷、パスが親の版か HEAD の版で未宣言の変更は、範囲を限らず全変更を数える',
+    'ブランチ保護の必須の承認数はパスで分けられないため、PR の経路では全変更に承認が掛かる。範囲の限定が効くのは、出荷の証跡の集約が数える欠落だけである',
+  ];
   const g7Tightening = tightenings.find((t) => t.gate === 'g7' && t.from === 'simplified');
   const g7Tail = g7Tightening
     ? `。未適用の厳格化: 現行の規則の再導出では${GATE_STATE_TEXT[g7Tightening.to] ?? g7Tightening.to}${g7Tightening.blocking ? '。欠落に数えた' : '。欠落には数えない'}`
@@ -3432,7 +3499,7 @@ if (isMain) {
     .filter(([key, g]) => g.state !== 'required' || scopeLimited(key, g))
     .map(([key, g]) =>
       scopeLimited(key, g)
-        ? { label: g.label, state: '範囲の限定(コア機能)', why: paramNotes(config, 'g6', 'scope') }
+        ? { label: g.label, state: g6ScopeStateText(), why: [...paramNotes(config, 'g6', 'scope'), ...G6_SCOPE_COUNTING] }
         : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${key === 'g7' && g.state === 'simplified' ? g7Tail : ''}`, why: g.why ?? [] }
     );
   if (config.guard?.enabled === false) {
@@ -4656,7 +4723,11 @@ if (isMain) {
   const g6Summary = `独立した人の確認あり ${confirmedUnits.length} 件 / G-6 を事後へ移した ${g6PostHoc} 件 / 例外承認の記録が対応づいた ${exceptedChanges.length} 件 / 独立した人の確認を経ていない ${withoutIndependentHuman} 件` +
     (reviewersRequired >= 2 ? `(承認者 ${reviewersRequired} 名を要する体制。満たない変更 ${insufficientApproverChanges.length} 件${insufficientApproverChanges.length ? `: ${insufficientApproverChanges.join(', ')}` : ''})` : '') +
     (auditFormat ? `(監査対応書式。判定記録の欠落・未記入 ${auditRecordGaps.length} 件)` : '') +
-    (g6Applied ? '(G-6 を適用する体制。事後へ移した変更と例外承認のある変更を除き、欠落として扱う)' : '(G-6 を適用しない体制。R1 の変更だけ例外承認を要する)');
+    (g6Applied
+      ? G6_CORE_ONLY
+        ? `(G-6 を適用する体制。事後へ移した変更、例外承認のある変更、G-6 の範囲(コア機能)の外の PR の変更 ${count(prs, (p) => p.g6Scope?.outOfScope)} 件を除き、欠落として扱う。範囲の外の変更のうち R1 は例外承認を要する)`
+        : '(G-6 を適用する体制。事後へ移した変更と例外承認のある変更を除き、欠落として扱う)'
+      : '(G-6 を適用しない体制。R1 の変更だけ例外承認を要する)');
   const g5Summary = prs.length ? `gate-g5 成功 ${count(prs, (p) => p.g5 === 'success')} / 成功以外 ${count(prs, (p) => p.g5 !== 'success' && p.g5 !== 'unknown')} / 記録なし ${count(prs, (p) => p.g5 === 'unknown')}(PR ごと)` : 'PR なし';
   const specTotal = new Set(specChanges.flatMap((c) => c.specs)).size;
   const criteria = [
