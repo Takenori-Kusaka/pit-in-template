@@ -46,7 +46,7 @@ import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, r
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { readTrialChecklist } from './trial-checklist.mjs';
-import { readPopulation, samplingOverdueNote } from './content-sampling.mjs';
+import { readPopulation, samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
@@ -528,8 +528,12 @@ export function parsePickupTarget(text) {
   if (f) return { feature: f[1].toUpperCase(), task: f[2] ? `Task-${f[2].split('-')[1]}` : null };
   const p = s.match(/^(?:PR\s*)?#?(\d+)$/i);
   if (p) return { pr: Number(p[1]) };
-  const ty = s.normalize('NFKC').match(/^類型\s*[::]?\s*(\S.*)$/);
-  if (ty) return { type: ty[1].trim() };
+  // 機能へ対応づけない作業単位(標準 第3章 3.5.5 要求事項9)。「Issue #N」「Issue #N / 類型 <名>」「類型 <名>」(作業単位の無い指定は判定できない)
+  const n = s.normalize('NFKC');
+  const iss = n.match(/^Issue\s*#\s*(\d+)(?:\s*\/\s*類型\s*[::]?\s*(\S.*))?$/i);
+  if (iss) return { issue: Number(iss[1]), type: iss[2] ? iss[2].trim() : null };
+  const ty = n.match(/^類型\s*[::]?\s*(\S.*)$/);
+  if (ty) return { type: ty[1].trim(), issue: null };
   return null;
 }
 
@@ -545,13 +549,8 @@ export function pickupCheck({ label, target, from = null, records = [], config =
   const rule = PICKUP_RULES[label];
   if (!rule) return res('undetermined', `ラベル ${label ?? '(無し)'} は引き渡しのラベルの語彙(標準 第3章 3.5.5)に無い。推測で着手しない`);
   const t = parsePickupTarget(target);
-  if (rule.target === 'feature' && t?.type) {
-    // 機能へ対応づけない作業単位(標準 第3章 3.5.5 要求事項9)。価値責任者が前もって記録した類型の判断の通過を前提とする
-    const own = (r) => String(r.target ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim() === `類型 ${t.type}`;
-    if (decisionPassed(records, '価値責任者の判断', own)) return res('start', `類型「${t.type}」の価値責任者の判断の通過が、最新の判定として記録にある(標準 第3章 3.5.5 要求事項9)`, { required: ['価値責任者の判断'] });
-    return res('undetermined', `類型「${t.type}」について、価値責任者が前もって記録した判断(テンプレ4 のゲート欄「価値責任者の判断」、対象「類型 ${t.type}」、結果「通過」)が無い。機能へ対応づけない作業単位の前提を導けない。推測で着手せず、価値責任者へ確かめる(標準 第3章 3.5.5 要求事項9)`, { returnTo: seatOf(config, 'value-owner') });
-  }
-  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけない作業単位は「類型 <名>」で指定し、価値責任者が前もって記録した類型の判断を前提とする(標準 第3章 3.5.5 要求事項9)。推測で着手せず、付けた席へ確かめる`);
+  if (rule.target === 'feature' && !t?.feature && (t?.issue || t?.type)) return pickupUnfeatured({ label, t, from, records, config, res });
+  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけない作業単位は「Issue #N / 類型 <名>」で指定し、価値責任者が前もって記録した類型の判断を前提とする(標準 第3章 3.5.5 要求事項9)。推測で着手せず、付けた席へ確かめる`);
   if (rule.target === 'pr' && !t?.pr) return res('undetermined', `${label} の作業単位は PR の番号(PR #N)で指定する`);
   const judgeSeat = (key) => {
     const role = gateRole(config, key);
@@ -575,7 +574,8 @@ export function pickupCheck({ label, target, from = null, records = [], config =
     const decisionHold = () =>
       res(
         'hold',
-        `${from} を経た ${label} に、${route.decision.gate}の記録(テンプレ4 のゲート欄「${route.decision.gate}」、対象 ${t.feature}、結果「通過」)が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5・9)`,
+        `${from} を経た ${label} に、${route.decision.gate}の記録(テンプレ4 のゲート欄「${route.decision.gate}」、対象 ${t.feature}、結果「通過」)が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5・9)。` +
+          `process-compass #359 の更新を取り込む前から ${label} にある作業単位も同じ扱いで、猶予は無い。${route.decision.gate}の席の責任者がこの記録を書けば着手できる(README「process-compass #359 の更新を取り込むとき」)`,
         { required: [...active.map(gateArg), route.decision.gate], missing: [route.decision.gate], returnTo: seatOf(config, route.decision.role) }
       );
     const decisionOk = !route.decision || decisionPassed(records, route.decision.gate, (r) => forTarget(r, t.feature));
@@ -622,6 +622,39 @@ export function pickupCheck({ label, target, from = null, records = [], config =
     return res('undetermined', `PR #${t.pr} に G-6 の差し戻しの記録(宣言行 \`G-6: 差し戻し / 基準 N / 期限 YYYY-MM-DD\` の変更要求、または様式)が無い。出荷判定者の記録の突合による差し戻しは機械では確かめない。着手せず、差し戻した席へ理由の所在を確かめる`, { required: ['G-6'], returnTo: judgeSeat('g6'), issues });
   }
   return res('hold', `PR #${t.pr} に G-6 の通過(承認者本人の挙動要約つきの承認)が最新の判定として記録に無い。${label} は付いているが、未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`, { required: ['G-6'], missing: ['G-6'], returnTo: judgeSeat('g6'), issues });
+}
+
+/**
+ * 機能へ対応づけない作業単位の着手の確認(標準 第3章 3.5.5 要求事項9。process-compass #359 の重の実装の突合 中-3・低-1)。
+ * 作業単位(Issue #N)と類型を両方とも指定させ、--from の経路の前提も照らす:
+ *   - 類型の判断: 価値責任者が前もって記録した判断(ゲート欄「価値責任者の判断」、対象「類型 <名>」)の最新が通過であること
+ *   - needs-po: 類型の判断が価値責任者の判断に当たる(作業単位ごとの判断の記録 Issue #N があればそれも読む。差し戻しなら着手しない)
+ *   - needs-owner: 事業決裁者の決裁の記録(対象 Issue #N)の最新が通過であること
+ *   - needs-tech: G-3 の通過の記録(対象 Issue #N)の最新が通過であること(G-3 が有効な構成)
+ * 作業単位がその類型に当たるかは機械が確かめない(価値責任者が類型の範囲を定め、内部監査が見る)
+ */
+function pickupUnfeatured({ label, t, from, records, config, res }) {
+  if (!t.issue) return res('undetermined', `類型「${t.type}」だけでは作業単位を照らせない。作業単位とあわせて「Issue #N / 類型 ${t.type}」で指定する(標準 第3章 3.5.5 要求事項9)`);
+  if (!t.type) return res('undetermined', `Issue #${t.issue} は機能へ対応づけない作業単位として指定された。前提とする類型を「Issue #${t.issue} / 類型 <名>」で指定する。類型の判断が無ければ、価値責任者へ確かめる(標準 第3章 3.5.5 要求事項9)`, { returnTo: seatOf(config, 'value-owner') });
+  const route = PICKUP_FROM[from];
+  if (!route) return res('undetermined', `${label} へ替えた前のラベルを --from で渡す(${Object.keys(PICKUP_FROM).join(' / ')})。経路によって前提の判定記録が違う`);
+  const norm = (r) => String(r.target ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+  const typeOwn = (r) => norm(r) === `類型 ${t.type}`;
+  const unit = (r) => new RegExp(`Issue\\s*#?${t.issue}(?!\\d)`, 'i').test(norm(r));
+  if (!decisionPassed(records, '価値責任者の判断', typeOwn)) {
+    return res('undetermined', `類型「${t.type}」について、価値責任者が前もって記録した判断(テンプレ4 のゲート欄「価値責任者の判断」、対象「類型 ${t.type}」、結果「通過」)が無い。機能へ対応づけない作業単位の前提を導けない。推測で着手せず、価値責任者へ確かめる(標準 第3章 3.5.5 要求事項9)`, { returnTo: seatOf(config, 'value-owner') });
+  }
+  const unitPo = records.filter((r) => String(r.gate ?? '').normalize('NFKC').startsWith('価値責任者の判断') && unit(r));
+  if (unitPo.length && !latestPassIn(unitPo)) {
+    return res('hold', `Issue #${t.issue} に、価値責任者の判断の差し戻しが最新の判定として記録にある。着手しない(標準 第3章 3.5.5 要求事項5)`, { required: ['価値責任者の判断'], missing: ['価値責任者の判断'], returnTo: seatOf(config, 'value-owner') });
+  }
+  if (route.gates.includes('g3') && isGateActive(config, 'g3') && !latestPassIn(records.filter((r) => r.gate?.startsWith('G-3') && unit(r)))) {
+    return res('hold', `${from} を経た ${label} に、G-3 の通過の記録(対象 Issue #${t.issue})が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`, { required: ['G-3'], missing: ['G-3'], returnTo: seatOf(config, 'tech-lead') });
+  }
+  if (route.decision && route.decision.gate !== '価値責任者の判断' && !decisionPassed(records, route.decision.gate, unit)) {
+    return res('hold', `${from} を経た ${label} に、${route.decision.gate}の記録(対象 Issue #${t.issue}、結果「通過」)が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5・9)`, { required: [route.decision.gate], missing: [route.decision.gate], returnTo: seatOf(config, route.decision.role) });
+  }
+  return res('start', `類型「${t.type}」の価値責任者の判断と、${from} の経路の前提が記録にある(Issue #${t.issue})。Issue #${t.issue} がその類型に当たるかは機械が確かめない(価値責任者が類型の範囲を定め、内部監査が見る)`, { required: ['価値責任者の判断'] });
 }
 
 /** 開いている PR のレビューを gh api で読み、写しと同じ形にして記録を起こす(着手の前の確認だけが使う) */
@@ -1023,7 +1056,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
       try {
         const d = new Date();
         const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const sn = samplingOverdueNote({ root: ROOT, today, items: readPopulation(ROOT, { fetch: false }).items });
+        const sn = samplingOverdueNote({ root: ROOT, today, items: readPopulation(ROOT, { fetch: false }).items, startQuarter: sampleQuarterOf(config.changeLog?.[0]?.date ?? config.generatedAt ?? null) });
         if (sn) result.notes.push(sn);
       } catch {
         // 読めなければ出さない(次の一手は止めない)

@@ -571,6 +571,42 @@ try {
   } finally {
     fs.rmSync(wz.d, { recursive: true, force: true });
   }
+  // IMPL-0342:ng 変化点の前の名簿に本人と前任以外の体制の内の人がいれば、同じ変化点で外しても自己の任命を受け付けない(#359 重の実装の突合 中-2)
+  const wo = workspace('pit-in-359o-');
+  try {
+    const d0p = path.join(wo.d, 'docs/D-0-governance.md');
+    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 個人事業主本人(試験) |'));
+    const fill1 = wo.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+    const add2 = wo.run({ summary: '2人目', people: [P[0], P[2]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '2人目を名簿へ足す' });
+    const fill2 = { ok: fill1.ok && add2.ok && wo.cfg().people.length === 2, out: `${fill1.out}
+${add2.out}` };
+    const before = wo.raw();
+    const sweep = wo.run({ summary: '全員を外して承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '承継' });
+    check(
+      'IMPL-0342:ng 前の名簿に本人と前任以外の体制の内の人がいれば、同じ変化点で外しても新任の自己の任命を受け付けない',
+      fill2.ok && !sweep.ok && /新任の決定者が、自分の任命を自分の記名で確定することはできません/.test(sweep.out) && wo.raw() === before,
+      `${fill2.out}\n${sweep.out}`
+    );
+  } finally {
+    fs.rmSync(wo.d, { recursive: true, force: true });
+  }
+  // IMPL-0342:ng 「決裁の権限の出所」の否定と数の誤検出を、法的な形態として読まない(#359 重の実装の突合 低-3)
+  for (const [label, source] of [
+    ['否定(個人事業主ではない)', '個人事業主ではない(株式会社。取締役11名、代表権は代表取締役)'],
+    ['数(11名の中の1名)', '代表権を持つ取締役11名の法人'],
+    ['数(十一人の中の一人)', '代表権を持つ者が十一人の法人'],
+  ]) {
+    const wn = workspace('pit-in-359n-');
+    try {
+      const d0p = path.join(wn.d, 'docs/D-0-governance.md');
+      fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, `$1 ${source} |`));
+      wn.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+      const r = wn.run({ summary: '承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '承継' });
+      check(`IMPL-0342:ng 「決裁の権限の出所」の${label}を法的な形態として読まず、自己の任命を受け付けない`, !r.ok, r.out);
+    } finally {
+      fs.rmSync(wn.d, { recursive: true, force: true });
+    }
+  }
   // 法人で外部の記録(登記・議事録)への言及が無ければ、受け付けたうえで記録に残す(保証の開示の項目7 に「外部の記録の所在なし」)
   const wq = workspace('pit-in-359c-');
   try {

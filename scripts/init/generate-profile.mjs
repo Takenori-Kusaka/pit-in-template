@@ -1357,7 +1357,7 @@ export function authoritySourceFilled(root = ROOT) {
 /**
  * D-0 節11 の「決裁の権限の出所」が挙げる体制の法的な形態(process-compass #359 / IMPL-0342)。
  * 自己の任命の例外(第3章 3.13.3)は、本人の上に任命の権限を持つ者がいない1名の体制(個人事業主、または1名で代表権を持つ法人)に限る。
- * 機械が見るのは語の有無だけで、形態の真偽は確かめない(EV-0250。内部監査と外部の確認者が確かめる)。
+ * 機械が見るのは語の有無だけで、形態の真偽は確かめない(EV-0248。内部監査と外部の確認者が確かめる)。
  * 戻り値: { filled, form: 'sole' | 'corp' | null, externalRef }。externalRef は法人の外部の記録(登記・議事録)への言及の有無
  */
 export function authoritySourceForm(root = ROOT) {
@@ -1366,7 +1366,11 @@ export function authoritySourceForm(root = ROOT) {
   const v = m ? m[1].trim() : '';
   const filled = Boolean(v) && !v.startsWith('<') && v !== '—' && v !== '-';
   const t = v.normalize('NFKC');
-  const form = !filled ? null : /個人事業主/.test(t) ? 'sole' : /代表権/.test(t) && /(1名|1人|一人|ひとり)/.test(t) ? 'corp' : null;
+  // 否定(「個人事業主ではない」)と、数の誤検出(「11名」の中の「1名」、「十一人」の中の「一人」)を拾わない(#359 重の実装の突合 低-3)
+  const negSole = /個人事業主\s*(では|で|には|に)\s*(ない|なく|ありません|あらず)/.test(t) || /(非|元)個人事業主/.test(t);
+  const one = /(?<![0-9])1\s*(名|人)(?![0-9])/.test(t) || /(?<![一二三四五六七八九十百千万〇])(一人|一名|ひとり)/.test(t);
+  const negCorp = /代表権[^。|]*(複数|[2-9２-９]\s*名以上|二人以上|二名以上)/.test(t) || /代表権[^。|]*(ない|なく|ありません)/.test(t);
+  const form = !filled ? null : /個人事業主/.test(t) && !negSole ? 'sole' : /代表権/.test(t) && one && !negCorp ? 'corp' : null;
   return { filled, form, externalRef: /登記|議事録/.test(t) };
 }
 /** 判定記録の判定日時の比べる形(分までの手元の時刻、時刻が無ければ日付) */
@@ -2767,6 +2771,12 @@ export function selfAppointmentOf(config, report, decidedBy, before = null, root
   if (!key || key !== deciderAfter) return false;
   const insidersAfter = (config.people ?? []).filter((p) => p && p.external !== true);
   if (insidersAfter.length !== 1 || insidersAfter[0].id !== key) return false;
+  // 変化点の前の名簿でも、本人と前任の決定者以外の体制の内の人が 0 であること(#359 重の実装の突合 中-2)。
+  // 同じ変化点で記名できたはずの人を外して例外へ入る経路を塞ぐ。前の名簿が無ければ受け付けない
+  if (!before) return false;
+  const priorId = personKey(before, report.priorDecider) ?? report.priorDecider;
+  const othersBefore = (before.people ?? []).filter((p) => p && p.external !== true && p.id !== key && p.id !== priorId && p.id !== report.priorDecider);
+  if (othersBefore.length) return false;
   if ([config, before].filter(Boolean).some((c) => (c.people ?? []).some((p) => p?.external === true && p?.appointer === true))) return false;
   return authoritySourceForm(root).form !== null;
 }

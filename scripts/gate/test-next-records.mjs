@@ -220,9 +220,20 @@ const CONFIG = {
   check('IMPL-0467:ng needs-po を経た needs-dev に価値責任者の判断の記録が無ければ、G-2・G-4 が通っていても着手せず価値責任者へ差し戻す', noDecision.decision === 'hold' && same(noDecision.missing, ['価値責任者の判断']) && noDecision.returnTo?.role === 'value-owner', JSON.stringify(noDecision));
   check('IMPL-0467:ng 価値責任者の判断の後に差し戻しがあれば着手しない', pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: [...RP, poDecision('F-001', '差し戻し', '2099-01-01 09:00')], config: ICONFIG }).decision === 'hold');
   // IMPL-0467:ok(違反と適合の対)。機能へ対応づけない作業単位は、価値責任者が前もって記録した類型の判断の通過で着手してよい
-  const typeOk = pickupCheck({ label: 'state:needs-dev', target: '類型 依存の更新', from: PO, records: [...R, poDecision('類型 依存の更新')], config: ICONFIG });
-  const typeNg = pickupCheck({ label: 'state:needs-dev', target: '類型 依存の更新', from: PO, records: R, config: ICONFIG });
-  check('IMPL-0467:ok 類型の判断の記録がある機能へ対応づけない作業単位は着手してよく、記録が無ければ判定できない(価値責任者へ確かめる)', typeOk.decision === 'start' && typeNg.decision === 'undetermined' && typeNg.returnTo?.role === 'value-owner', JSON.stringify([typeOk, typeNg]));
+  const TY = poDecision('類型 依存の更新');
+  const typeOk = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: PO, records: [...R, TY], config: ICONFIG });
+  const typeNg = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: PO, records: R, config: ICONFIG });
+  check('IMPL-0467:ok 類型の判断の記録がある機能へ対応づけない作業単位(Issue #N / 類型)は着手してよく、記録が無ければ判定できない(価値責任者へ確かめる)', typeOk.decision === 'start' && typeNg.decision === 'undetermined' && typeNg.returnTo?.role === 'value-owner', JSON.stringify([typeOk, typeNg]));
+  // 重の実装の突合 中-3・低-1: 類型だけ・作業単位だけの指定は判定できない。--from の経路の前提も照らす
+  check('IMPL-0467:ng 類型だけ(作業単位の無い指定)・作業単位だけ(類型の無い指定)・--from の無い指定は判定できない', ['類型 依存の更新', 'Issue #77'].every((tg) => pickupCheck({ label: 'state:needs-dev', target: tg, from: PO, records: [...R, TY], config: ICONFIG }).decision === 'undetermined') && pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', records: [...R, TY], config: ICONFIG }).decision === 'undetermined');
+  const ownerNg = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: 'state:needs-owner', records: [...R, TY], config: ICONFIG });
+  const ownerDecision = { file: 'docs/gates/owner-77.md', source: 'base', gate: '事業決裁者の決裁', target: 'Issue #77', result: '通過', resultRaw: '通過', judgedAt: '2026-10-23 09:00', issue: null };
+  const ownerOk = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: 'state:needs-owner', records: [...R, TY, ownerDecision], config: ICONFIG });
+  check('IMPL-0467:ng/ok needs-owner を経た類型の作業単位は、作業単位の事業決裁者の決裁が無ければ着手せず、あれば着手してよい', ownerNg.decision === 'hold' && ownerOk.decision === 'start', JSON.stringify([ownerNg, ownerOk]));
+  const techNg = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: 'state:needs-tech', records: [...R, TY], config: ICONFIG });
+  check('IMPL-0467:ng needs-tech を経た類型の作業単位は、作業単位の G-3 の通過が無ければ着手しない', techNg.decision === 'hold' && same(techNg.missing, ['G-3']), JSON.stringify(techNg));
+  const unitReject = pickupCheck({ label: 'state:needs-dev', target: 'Issue #77 / 類型 依存の更新', from: PO, records: [...R, TY, poDecision('Issue #77', '差し戻し', '2099-01-01 09:00')], config: ICONFIG });
+  check('IMPL-0467:ng 類型の判断があっても、作業単位の価値責任者の判断が差し戻しなら着手しない', unitReject.decision === 'hold', JSON.stringify(unitReject));
   // X-1: 技術判断者を経た作業単位は G-3 の記録も見る
   const tech = pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: 'state:needs-tech', records: R, config: ICONFIG });
   check('着手の確認: state:needs-tech を経た needs-dev は、G-2・G-4 が通っていても G-3 の記録が無ければ着手しない(技術判断者へ差し戻す)', tech.decision === 'hold' && same(tech.missing, ['G-3']) && tech.returnTo?.role === 'tech-lead' && same(tech.returnTo.labels, ['state:needs-tech']), JSON.stringify(tech));

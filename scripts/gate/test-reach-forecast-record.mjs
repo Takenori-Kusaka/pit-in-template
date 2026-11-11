@@ -102,6 +102,10 @@ const reachLines = (out) => out.split('\n').filter((l) => /到達の見込み/.t
     'docs/gates/mc-b-2026-10-08.md': header(MID, '2026-10-08') + reach({ ...withoutSigner, 確かめた者: '<価値責任者の記名>', 区分: '' }),
     'docs/gates/mc-c-2026-10-15.md': header(MID, '2026-10-15') + reach(FULL),
     'docs/gates/sg-2026-10-20.md': header('ステージ移行', '2026-10-20'),
+    // ゲートでない判断の記録(標準 第3章 3.5.5 要求事項9。#359 重の実装の突合「確かめていない点」)
+    'docs/gates/po-F-001-2026-10-21.md': header('価値責任者の判断', '2026-10-21').replace('| 対象 | 案件 |', '| 対象 | F-001 |'),
+    'docs/gates/po-type-2026-10-21.md': header('価値責任者の判断', '2026-10-21').replace('| 対象 | 案件 |', '| 対象 | 類型 依存の更新 |'),
+    'docs/gates/owner-77-2026-10-22.md': header('事業決裁者の決裁', '2026-10-22').replace('| 対象 | 案件 |', '| 対象 | Issue #77 |'),
     'docs/gates/mc-d-2026-10-22.md': header(MID, '2026-10-22') + reach({ ...FULL, 区分: '算定できない(窓の単位期間が2つ)', 期間の見込み: '該当なし(算定できない)', 費用の見込み: '該当なし(算定できない)', 比べる残り: '該当なし(算定できない)' }),
     'docs/gates/mc-e-2026-10-23.md': header(MID, '2026-10-23') + reach({ ...FULL, 区分: '期間 乙 / 期間予算 対象外 / 要員予算 対象外。案件 乙', 期間の見込み: '該当なし(対象外)' }),
     'docs/gates/mc-g-2026-10-25.md': header(MID, '2026-10-25') + reach({ ...FULL, 区分: '期間 甲 / 期間予算 算定できない / 要員予算 甲。案件 算定できない', 費用の見込み: '該当なし(期間予算が未確定)' }),
@@ -120,6 +124,7 @@ const reachLines = (out) => out.split('\n').filter((l) => /到達の見込み/.t
   check('理由の無い「該当なし」は、区分が算定できないでも欠落にする(突合の再確認 新-5)', ls.some((l) => /mc-f-2026-10-24\.md: 「到達の見込み」に空欄の欄があります\(期間の見込み\)/.test(l)), ls.join('\n'));
   check('組に甲があっても案件の区分が算定できないなら、理由つきの該当なしを欠落にしない(7.7.3。突合の再確認 2回目 中)', !ls.some((l) => /mc-g-2026-10-25/.test(l)), ls.join(String.fromCharCode(10)));
   check('「案件の区分: 算定できない」の書き方も案件の区分として読む(突合の再確認 3回目)', !ls.some((l) => /mc-h-2026-10-26/.test(l)), ls.join(String.fromCharCode(10)));
+  check('ゲートでない判断の記録(価値責任者の判断・事業決裁者の決裁)を、集約が欠落・失敗の行に挙げない', !out.split(String.fromCharCode(10)).some((l) => /po-F-001-2026-10-21|po-type-2026-10-21|owner-77-2026-10-22/.test(l)) && /を出力しました/.test(out), out.split(String.fromCharCode(10)).filter((l) => /po-|owner-77/.test(l)).join(String.fromCharCode(10)));
   check('ステージ移行ゲートの記録には、到達の見込みの検査を掛けない(#415 の M2-9)', !ls.some((l) => /sg-2026-10-20\.md/.test(l)), ls.join('\n'));
 }
 
