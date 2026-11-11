@@ -76,6 +76,8 @@ for (const c of allowed) check(`通す: ${c}`, !hostingWriteOf(c), String(hostin
 // AI の担い手による PR のマージの拒否(第4章 G-5「取り込み先が既定ブランチになるマージだけを行う」。process-compass #360 H-5)。
 // フックは guard.enabled に依らず、gh pr merge と gh api による PR のマージ(REST の pulls/N/merge への書き込み、GraphQL の mutation)を
 // 基底に依らず拒否する。中間の層へのマージもこの経路では行えない。
+// 拾わない形(突合 X-7。フックは抑止の層であり、IMPL-0491 のスクリプトから API を呼ぶ経路と同じ種類の取りこぼし): `gh alias set` で作った別名を経た形
+// (`gh alias set m "pr merge"` の後の `gh m 1`)と、`npx gh pr merge` の形は拒否しない。権限設定の ask `Bash(gh pr merge:*)` も別名の形には当たらない。
 // IMPL-0255:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 const mergeDenied = [
   'gh pr merge 12 --squash',

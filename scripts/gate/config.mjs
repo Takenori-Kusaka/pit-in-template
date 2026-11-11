@@ -1242,6 +1242,34 @@ export function resolveSigner(config, ref) {
   return hits.size === 1 ? [...hits][0] : null;
 }
 
+/** git の引用符つきのパス(diff の --- / +++ の行)("b/src/\346\227\245.js")を戻す。C の8進のエスケープは UTF-8 のバイトとして読む */
+export function unquoteGitPath(p) {
+  const s = String(p ?? '');
+  if (!(s.startsWith('"') && s.endsWith('"'))) return s;
+  const bytes = [];
+  const body = s.slice(1, -1);
+  const SIMPLE = { n: 10, t: 9, r: 13, '"': 34, '\\': 92, a: 7, b: 8, f: 12, v: 11 };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\' && i + 1 < body.length) {
+      const o = body.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(o)) {
+        bytes.push(parseInt(o, 8));
+        i += 3;
+        continue;
+      }
+      const nx = body[i + 1];
+      if (SIMPLE[nx] !== undefined) {
+        bytes.push(SIMPLE[nx]);
+        i += 1;
+        continue;
+      }
+    }
+    for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
 /**
  * 記入があるか。空欄、「—」「-」、「未定」「未記入」「なし」などの記入でない値、様式の説明(<…>)を残した値は、
  * 記入なしとして扱う。変更種別の登録の根拠(basis)と、例外承認の記録の欄で、同じ判定を使う

@@ -480,7 +480,24 @@ scenario('pytest の strict: pytest.xfail( の呼び出しは予期せぬ通過�
   write('tests/test_x.py', `import pytest\n\ndef test_x():\n    ${KF().trim()}\n    pytest.xfail("bug")\n`);
   write('src/a.js', lines(21));
 }, failsWith(/pytest\.xfail\( は、呼んだ時点で/));
+// 別名を経た印(突合 X-2): from pytest import mark の @mark.xfail・import pytest as pt の @pt.mark.xfail・xfail = pytest.mark.xfail の @xfail
+scenario('pytest の strict: from pytest import mark の @mark.xfail で strict の無いものは失敗', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', `from pytest import mark\n\n${KF()}@mark.xfail(reason="bug")\ndef test_x():\n    assert 1 == 2\n`);
+  write('src/a.js', lines(21));
+}, failsWith(/別名 mark\.xfail.*strict=True が無く/));
+scenario('pytest の strict: import pytest as pt の @pt.mark.xfail と、代入した別名 @xfail で strict の無いものは失敗', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', `import pytest as pt\n\nxfail = pt.mark.xfail\n\n${KF()}@pt.mark.xfail(reason="a")\ndef test_x():\n    assert 1 == 2\n\n${KF()}@xfail\ndef test_y():\n    assert 1 == 2\n`);
+  write('src/a.js', lines(21));
+}, failsWith(/別名 pt\.mark\.xfail.*strict=True が無く/, (r) => (W(r).strictErrors.length === 2 && W(r).strictErrors.some((e) => /別名 @xfail/.test(e)) && W(r).xfails.length === 2 ? [] : [`別名の検出: ${JSON.stringify(W(r).strictErrors)} / ${W(r).xfails.length} 件`])));
 // IMPL-0489:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('pytest の strict: ASCII 以外の名前の新しいテストに strict=True の xfail を足すと通り、一覧に正しい名で出る(突合 X-1)', { today: '2026-11-12' }, () => {
+  write('tests/test_日本.py', PY_TEST('@pytest.mark.xfail(strict=True)', KF()));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).strictErrors.length === 0 && W(r).xfails.length === 1 && W(r).xfails[0].file === 'tests/test_日本.py' && W(r).xfails[0].note && !W(r).xfails[0].problems.length && W(r).newTestFiles.includes('tests/test_日本.py'), (r) => JSON.stringify(W(r)))));
+scenario('pytest の strict: 代入の式に strict=True を持つ別名 @xfail は通る(突合 X-2)', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', `import pytest\n\nxfail = pytest.mark.xfail(strict=True)\n\n${KF()}@xfail\ndef test_x():\n    assert 1 == 2\n`);
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).strictErrors.length === 0 && W(r).xfails.length === 1 && /別名 @xfail/.test(W(r).xfails[0].mark), (r) => JSON.stringify(W(r)))));
 scenario('pytest の strict: 構成(pyproject.toml の [tool.pytest.ini_options])の xfail_strict = true で通る', { today: '2026-11-12' }, () => {
   write('pyproject.toml', '[project]\nname = "x"\n\n[tool.pytest.ini_options]\nxfail_strict = true\n');
   write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(reason="bug")', KF()));

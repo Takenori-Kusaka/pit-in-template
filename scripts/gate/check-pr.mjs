@@ -158,6 +158,7 @@ import {
   RULE_APPROVER_SEAT,
   hasWriteAssociation,
   directionLabel,
+  unquoteGitPath,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -1981,7 +1982,8 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     const dirs = ['.', typeof adapter?.projectDir === 'string' ? adapter.projectDir.replace(/^\.\/?/, '') || '.' : '.'];
     const checkDay = today ?? pr.today ?? new Date().toISOString().slice(0, 10);
     const w = weakeningFindings({
-      diffText: git(['diff', '-U0', '-M', mergeBase, HEADREF]) ?? '',
+      // core.quotePath=false: ASCII 以外を含むパスを引用符で囲ませない。囲まれたパスは parseUnifiedDiff が戻す(突合 X-1。coverage-check と同じ扱い)
+      diffText: git(['-c', 'core.quotePath=false', 'diff', '-U0', '-M', mergeBase, HEADREF]) ?? '',
       isTest,
       atHead,
       atBase,
@@ -2078,7 +2080,7 @@ export const KNOWN_FAILURE_LOOKBACK = 3;
 /** 検出の限界の定型の文(IMPL-0204)。0 件でも出す */
 export const WEAKENING_LIMIT =
   '検出の限界: 列挙した語(skip・only・todo・xfail・fails・failing・expectFailure・expectedFailure・Disabled・Ignore・アサーションの語)以外の弱め方は拾わない。' +
-  '早期の return、試験の注釈化、別名を経た skip、自前の検証・印、設定による除外(-k・--deselect・testPathIgnorePatterns など)、テストのパスの外のテスト、製品のコードの側で検証を無効にする変更は、一覧に出ない';
+  '早期の return、試験の注釈化、別名を経た xfail・skip の一部(同じファイルの import pytest as・from pytest import mark・行頭の xfail = pytest.mark.xfail の代入は読む。from pytest import xfail・関数の中の import・ファイルを越えた別名・skip の別名は読まない)、自前の検証・印、設定による除外(-k・--deselect・testPathIgnorePatterns など)、テストのパスの外のテスト、製品のコードの側で検証を無効にする変更は、一覧に出ない';
 /** 「製品のコードを変えずに既存のテストを変えた変更」の検出の限界の定型の文(IMPL-0486)。0 件でも出す */
 export const TEST_ONLY_LIMIT = '検出の限界: 同じ PR で製品とテストを変えた場合、ローカルで解消した失敗は拾わない(PR の全体の差分だけを見る静的な近似。失敗が解消したことは確かめない)';
 /** 担保水準 L2 で規模の基準なし(null)が効いた PR に毎回出す定型の文(IMPL-0494) */
@@ -2113,11 +2115,14 @@ export function parseUnifiedDiff(text) {
     }
     if (!cur) continue;
     if (!hunk && raw.startsWith('--- ')) {
-      cur.from = raw === '--- /dev/null' ? null : raw.replace(/^--- (?:a\/)?/, '');
+      // 引用符つきのパス("a/tests/test_\346\227\245.py")は戻してから接頭辞を外す(突合 X-1)。空白を含むパスの末尾のタブも外す
+      const p = unquoteGitPath(raw.slice(4).replace(/\t$/, '').trimEnd());
+      cur.from = p === '/dev/null' ? null : p.replace(/^a\//, '');
       continue;
     }
     if (!hunk && raw.startsWith('+++ ')) {
-      cur.file = raw === '+++ /dev/null' ? null : raw.replace(/^\+\+\+ (?:b\/)?/, '');
+      const p = unquoteGitPath(raw.slice(4).replace(/\t$/, '').trimEnd());
+      cur.file = p === '/dev/null' ? null : p.replace(/^b\//, '');
       continue;
     }
     const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
@@ -2259,6 +2264,56 @@ export function basisProblems(cell, { adrExists, specText }) {
 }
 
 /**
+ * pytest の印の別名(IMPL-0204・IMPL-0489。突合 X-2)。同じファイルの本文の import と、行頭の代入だけを読む。
+ * 読む形: `import pytest as pt`(pt.mark.xfail・pt.xfail()、`from pytest import mark [as m]`(mark.xfail)、
+ * `xfail = <pytest の mark>.xfail[(...)]`(@xfail)。関数の中の import、ファイルを越えた別名、`from pytest import xfail` などは読まない(限界の文に書く)
+ */
+export function pytestAliasesOf(text) {
+  const src = String(text ?? '');
+  const modules = new Set(['pytest']);
+  for (const m of src.matchAll(/^import[ \t]+([^\n#]+)/gm)) {
+    for (const part of m[1].split(',')) {
+      const a = /^\s*pytest\s+as\s+(\w+)\s*$/.exec(part);
+      if (a) modules.add(a[1]);
+    }
+  }
+  const marks = new Set();
+  for (const m of src.matchAll(/^from[ \t]+pytest[ \t]+import[ \t]+\(?([^)\n#]+)/gm)) {
+    for (const part of m[1].split(',')) {
+      const a = /^\s*mark(?:\s+as\s+(\w+))?\s*$/.exec(part);
+      if (a) marks.add(a[1] ?? 'mark');
+    }
+  }
+  const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const markExpr = [...[...modules].map((x) => `${rx(x)}\\.mark`), ...[...marks].map(rx)].join('|');
+  const assign = new RegExp(`^\\s*(\\w+)\\s*=\\s*(?<![\\w.])(?:${markExpr})\\.xfail\\b`);
+  const names = new Map();
+  const lines = src.split('\n');
+  lines.forEach((l, i) => {
+    const m = assign.exec(l);
+    if (m && m[1] !== 'pytest') names.set(m[1], markCall(lines, i + 1));
+  });
+  const aliasModules = [...modules].filter((x) => x !== 'pytest');
+  return {
+    assign,
+    // pytest.mark.xfail の字面は XFAIL_MARKS が拾う。ここは別名だけ
+    marker: aliasModules.length || marks.size ? new RegExp(`(?<![\\w.])(?:${[...aliasModules.map((x) => `${rx(x)}\\.mark`), ...[...marks].map(rx)].join('|')})\\.xfail\\b`) : null,
+    imperative: aliasModules.length ? new RegExp(`(?<![\\w.])(?:${aliasModules.map(rx).join('|')})\\.xfail\\s*\\(`) : null,
+    names,
+    decorator: names.size ? new RegExp(`^\\s*@(${[...names.keys()].map(rx).join('|')})\\b`) : null,
+  };
+}
+
+/** 別名を経た pytest の xfail の行か。XFAIL_MARKS と同じ形 [表示, 正規表現, 枠組み, 代入の式] を返す。当たらなければ null */
+export function pytestAliasMark(text, alias) {
+  if (alias.marker?.test(text)) return [`@pytest.mark.xfail(別名 ${alias.marker.exec(text)[0]})`, alias.marker, 'pytest-marker'];
+  if (alias.imperative?.test(text)) return [`pytest.xfail( (別名 ${alias.imperative.exec(text)[0].replace(/\s*\($/, '')})`, alias.imperative, 'pytest-imperative'];
+  const d = alias.decorator?.exec(text);
+  if (d) return [`@pytest.mark.xfail(別名 @${d[1]})`, alias.decorator, 'pytest-marker', alias.names.get(d[1]) ?? ''];
+  return null;
+}
+
+/**
  * 検証を弱める変更の検出(IMPL-0204)・期待値の改めの根拠・落ちることを期待する印の注釈(IMPL-0488)・pytest の strict(IMPL-0489)。
  * diffText: `git diff -U0 -M <基底> <先頭>` の全体。isTest: テストのパスの判定。atHead・atBase: 本文を読む関数。
  * 返り値: { files, skips, xfails, removedAssertions, pairs, newTestFiles, strictErrors, expectation, limit }
@@ -2269,6 +2324,11 @@ export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '',
   const headLinesOf = (f) => {
     if (!headCache.has(f)) headCache.set(f, String(atHead(f) ?? '').replace(/\r\n/g, '\n').split('\n'));
     return headCache.get(f);
+  };
+  const aliasCache = new Map();
+  const aliasesOf = (f, lines) => {
+    if (!aliasCache.has(f)) aliasCache.set(f, pytestAliasesOf(lines.join('\n')));
+    return aliasCache.get(f);
   };
   let jsFails = false;
   for (const d of parseUnifiedDiff(diffText)) {
@@ -2287,19 +2347,23 @@ export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '',
         if (l.type !== '+' || COMMENT_LINE.test(l.text)) continue;
         const skip = SKIP_MARKS.find(([, re]) => re.test(l.text));
         if (skip) out.skips.push({ file: d.file, line: l.line, mark: skip[0], text: l.text.trim().slice(0, 160) });
-        const xf = XFAIL_MARKS.find(([, re]) => re.test(l.text));
-        if (!xf) continue;
         const headLines = headLinesOf(d.file);
+        const alias = aliasesOf(d.file, headLines);
+        // 別名の代入の行(xfail = pytest.mark.xfail)は印の使用ではない。使用の側(@xfail)で、代入の式も合わせて strict を見る
+        if (alias.assign.test(l.text)) continue;
+        const xf = XFAIL_MARKS.find(([, re]) => re.test(l.text)) ?? pytestAliasMark(l.text, alias);
+        if (!xf) continue;
         const from = Math.max(0, l.line - 1 - KNOWN_FAILURE_LOOKBACK);
         const near = headLines.slice(from, l.line).reverse().find((x) => KNOWN_FAILURE_NOTE.test(x)) ?? null;
         const problems = knownFailureProblems(near, today);
         out.xfails.push({ file: d.file, line: l.line, mark: xf[0], framework: xf[2], text: l.text.trim().slice(0, 160), note: near ? near.trim().slice(0, 200) : null, problems });
         // IMPL-0489: pytest は、予期せず通った場合に失敗にする strict を要する。Jest・Vitest は枠組みが予期せぬ通過を失敗にする
         if (xf[2] === 'pytest-marker') {
-          const call = markCall(headLines, l.line);
-          if (/\bstrict\s*=\s*False\b/.test(call)) out.strictErrors.push(`${d.file}:${l.line} の @pytest.mark.xfail が strict=False を指定している(予期せず通っても失敗にならない)`);
+          // 別名(@xfail)は、使用の側の呼び出しに、代入の式(xfail = pytest.mark.xfail(strict=True))を足して見る
+          const call = markCall(headLines, l.line) + (xf[3] ?? '');
+          if (/\bstrict\s*=\s*False\b/.test(call)) out.strictErrors.push(`${d.file}:${l.line} の ${xf[0]} が strict=False を指定している(予期せず通っても失敗にならない)`);
           else if (!/\bstrict\s*=\s*True\b/.test(call) && !pytestStrict?.strict) {
-            out.strictErrors.push(`${d.file}:${l.line} の @pytest.mark.xfail に strict=True が無く、構成${pytestStrict ? `(${pytestStrict.file})` : '(pytest.ini・pyproject.toml・tox.ini・setup.cfg)'}にも xfail_strict = true が無い(予期せず通っても失敗にならない)`);
+            out.strictErrors.push(`${d.file}:${l.line} の ${xf[0]} に strict=True が無く、構成${pytestStrict ? `(${pytestStrict.file})` : '(pytest.ini・pyproject.toml・tox.ini・setup.cfg)'}にも xfail_strict = true が無い(予期せず通っても失敗にならない)`);
           }
         } else if (xf[2] === 'pytest-imperative') {
           out.strictErrors.push(`${d.file}:${l.line} の pytest.xfail( は、呼んだ時点で試験を xfail として終えるため、予期せず通ったことを検出できない(strict は効かない)。@pytest.mark.xfail(strict=True) で書く`);

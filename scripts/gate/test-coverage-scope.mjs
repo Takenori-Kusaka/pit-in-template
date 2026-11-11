@@ -390,7 +390,9 @@ const mkRepo = (prefix) => {
 
   const goVersion = spawnSync(process.env.PIT_IN_GO ?? 'go', ['version'], { encoding: 'utf8' });
   if (goVersion.status !== 0) {
-    console.log('未確認 go が無いため、構文木(scripts/gate/_go-stmt-lines)で文の開始行を得る場面を流していません(変更の範囲の go の割合)');
+    // 突合 X-10: CI(環境変数 CI)では go が無いことを失敗に数える(IMPL-0259 の違反と適合の対が流れないまま通さない)。手元では従来どおり未確認
+    if (process.env.CI) check('go: CI では go が要る(構文木で文の開始行を得る場面を流す)', false, `go version の終了コード ${goVersion.status}${goVersion.error ? ` / ${goVersion.error.message}` : ''}`);
+    else console.log('未確認 go が無いため、構文木(scripts/gate/_go-stmt-lines)で文の開始行を得る場面を流していません(変更の範囲の go の割合)');
   } else {
     G.w('coverage.out', profile());
     q = evaluateCoverage({ root: G.d, config: cfg({ coverageScope: 'changed' }), adapter: GO, base: 'main' });

@@ -34,7 +34,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, loadAdapter, ROOT, fail, notice, warn, targetState, nestedTargetProblem, adapterProjectDir, matchGlob, isFilledValue } from './config.mjs';
+import { loadConfig, loadAdapter, ROOT, fail, notice, warn, targetState, nestedTargetProblem, adapterProjectDir, matchGlob, isFilledValue, unquoteGitPath } from './config.mjs';
 import { isProductCode, THRESHOLD_FILES } from './check-pr.mjs';
 
 export const COVERAGE_SCOPES = ['changed', 'whole'];
@@ -108,33 +108,8 @@ export const BRIEF_SCOPE_GAP_TEXT =
   `企画書(docs/project-brief.md)に「${'カバレッジの測る範囲(G-5 基準3)'}」の行がありません(#296 で足した行。G-1 を通過済みのため遡って失敗させません)。` +
   '記載の欠落です。様式(templates/06-project-brief.md)から行を写し、構成の ci.coverageScope と同じ範囲を書きます(範囲の記録と構成の一致は契約検査が確かめます)';
 
-/** git の引用符つきのパス("b/src/\346\227\245.js")を戻す。C の8進のエスケープは UTF-8 のバイトとして読む */
-export function unquoteGitPath(p) {
-  const s = String(p ?? '');
-  if (!(s.startsWith('"') && s.endsWith('"'))) return s;
-  const bytes = [];
-  const body = s.slice(1, -1);
-  const SIMPLE = { n: 10, t: 9, r: 13, '"': 34, '\\': 92, a: 7, b: 8, f: 12, v: 11 };
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i];
-    if (ch === '\\' && i + 1 < body.length) {
-      const o = body.slice(i + 1, i + 4);
-      if (/^[0-7]{3}$/.test(o)) {
-        bytes.push(parseInt(o, 8));
-        i += 3;
-        continue;
-      }
-      const nx = body[i + 1];
-      if (SIMPLE[nx] !== undefined) {
-        bytes.push(SIMPLE[nx]);
-        i += 1;
-        continue;
-      }
-    }
-    for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
-  }
-  return Buffer.from(bytes).toString('utf8');
-}
+// unquoteGitPath は config.mjs へ移した(check-pr.mjs の差分の読み取りと共通。突合 X-1)。互換のため再び公開する
+export { unquoteGitPath };
 
 /**
  * G-1 企画書(docs/project-brief.md)の「カバレッジの測る範囲(G-5 基準3)」の行の値。行が無ければ null、
