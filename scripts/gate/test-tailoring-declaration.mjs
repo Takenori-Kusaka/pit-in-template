@@ -90,7 +90,7 @@ const gapLines = (r) => `${r.report}\n${r.out}`.split('\n').filter((l) => /未�
   // #435 の裁定6: 項目2 の文は集約の数え方と一致させる。この構成はコア機能のパスを宣言しないため、集約は全変更を数える
   check(
     '項目2: コア機能のパスが未宣言の構成は、集約が範囲を限らず全変更を数えた旨を状態に出し、数え方とブランチ保護の承認数との差を理由に載せる',
-    rows.some((l) => /^\| G-6 独立レビュー \| 範囲の限定\(コア機能\)。コア機能のパスが未宣言のため、集約は範囲を限らず全変更を数えた \|.*集約の数え方: .*ブランチ保護の必須の承認数はパスで分けられない/.test(l)),
+    rows.some((l) => /^\| G-6 独立レビュー \| 範囲の限定\(コア機能\)。コア機能のパスが未宣言のため、集約は範囲を限らず全変更を数えた。集約の計上: [^|]*範囲を限らず全変更として数えた PR の変更 0 件[^|]*\|.*集約の数え方:.*ブランチ保護の必須の承認数はパスで分けられない/.test(l)),
     rows.join('\n')
   );
   check('S1 の G-7 は適用であり、項目2 に載らない', !rows.some((l) => /^\| G-7 /.test(l)), rows.join('\n'));
@@ -164,7 +164,8 @@ if (process.platform === 'win32') {
       fs.writeFileSync(path.join(dir, rel), text);
     };
     put('process.config.json', JSON.stringify(first, null, 2) + '\n');
-    for (const f of ['src/core/a.js', 'src/ui/b.js', 'src/misc/c.js']) put(f, 'export const v = 0;\n');
+    // src/core/keep.js は、コア機能のファイルを移す場面(突合 X-1)でも HEAD の宣言が追跡中のファイルに当たるように置く
+    for (const f of ['src/core/a.js', 'src/core/keep.js', 'src/ui/b.js', 'src/misc/c.js']) put(f, 'export const v = 0;\n');
     g('init', '-q', '-b', 'main');
     for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'tester'], ['core.autocrlf', 'false'], ['gc.auto', '0'], ['maintenance.auto', 'false']]) g('config', k, v);
     g('add', '-A');
@@ -178,7 +179,11 @@ if (process.platform === 'win32') {
         continue;
       }
       if (s.config) put('process.config.json', JSON.stringify(s.config, null, 2) + '\n');
-      else put(s.file, `export const v = ${++n};\n`);
+      else if (s.mv) {
+        // 名前の変更(git は既定で名前の変更として検出する)
+        g('mv', s.mv[0], s.mv[1]);
+        s.file = s.mv[1];
+      } else put(s.file, `export const v = ${++n};\n`);
       g('add', '-A');
       g('commit', '-q', '-m', `${s.config ? 'chore: 構成を差し替える' : `feat: ${s.file} を変える`}\n\nRisk: R3\nVerification: node --check を実行して通過`);
       const sha = g('rev-parse', 'HEAD');
@@ -224,7 +229,7 @@ if (process.platform === 'win32') {
     check('歯止め4: PR を経ない、コア機能でない変更のコミットは、範囲を限らず欠落に数える', h.commitGap('src/misc/c.js') !== null && h.prGap(1) === null, indepGaps(h));
     const g6 = item2(h.report).find((l) => /^\| G-6 /.test(l)) ?? '';
     // IMPL-0471:ok(違反と適合の対。標準の実装マーク。process-compass #435)
-    check('項目2: 集約が範囲を限った出荷は「範囲の限定(コア機能)」とし、数え方とブランチ保護の承認数との差を理由に載せる', /^\| G-6 独立レビュー \| 範囲の限定\(コア機能\) \|/.test(g6) && /集約の数え方: /.test(g6) && /PR の経路では全変更に承認が掛かる/.test(g6), g6 || item2(h.report).join('\n'));
+    check('項目2: 集約が範囲を限った出荷は「範囲の限定(コア機能)」とし、数え方とブランチ保護の承認数との差を理由に載せる', /^\| G-6 独立レビュー \| 範囲の限定\(コア機能\)。集約の計上: 範囲の外として欠落に数えなかった PR の変更 1 件 \/ コア機能に当たり数えた PR の変更 1 件 \/ 範囲を限らず全変更として数えた PR の変更 0 件 \/ 範囲を限らない PR を経ないコミット \d+ 件 \|/.test(g6) && /集約の数え方: /.test(g6) && /PR の経路では全変更に承認が掛かる/.test(g6), g6 || item2(h.report).join('\n'));
   }
   {
     // 歯止め1: コア機能のパスが未宣言なら全変更を数え、理由を添える
@@ -249,9 +254,9 @@ if (process.platform === 'win32') {
     // IMPL-0470:ng(違反と適合の対。標準の実装マーク。process-compass #435)
     check('前提3: S0 の期間のコア機能でない PR の変更は、S1 へ移った後の出荷で欠落に数える', /変更の親の版の構成が事業ステージ S0 のため/.test(first.prGap(1) ?? ''), indepGaps(first));
     // IMPL-0470:ng(違反と適合の対。標準の実装マーク。process-compass #435)
-    check('歯止め3: S0 から移った後の最初の出荷では、S1 の期間のコア機能でない PR の変更も欠落に数える', /S0 から移った後の最初の出荷/.test(first.prGap(2) ?? ''), indepGaps(first));
+    check('歯止め3: S0 から移った後の最初の出荷では、S1 の期間のコア機能でない PR の変更も欠落に数える', /移行の元: S0[^)]*\)を含む\(移行の後の最初の出荷\)/.test(first.prGap(2) ?? ''), indepGaps(first));
     const g6 = item2(first.report).find((l) => /^\| G-6 /.test(l)) ?? '';
-    check('項目2: S0 から移った後の最初の出荷は、集約が範囲を限らず全変更を数えた旨を状態に出す', /S0 から移った後の最初の出荷のため、集約は範囲を限らず全変更を数えた/.test(g6), g6 || item2(first.report).join('\n'));
+    check('項目2: S0 から移った後の最初の出荷は、集約が範囲を限らず全変更を数えた旨を状態に出す', /範囲の限定の数え方へ移った後の最初の出荷のため、集約は範囲を限らず全変更を数えた。集約の計上: [^|]*範囲を限らず全変更として数えた PR の変更 2 件/.test(g6), g6 || item2(first.report).join('\n'));
     const second = history(S0, [{ file: 'src/ui/b.js', pr: 1 }, { config: S1 }, { tag: 'v1' }, { file: 'src/misc/c.js', pr: 2 }, { tag: 'v2' }]);
     // IMPL-0470:ok(違反と適合の対。標準の実装マーク。process-compass #435)
     check('歯止め3: 移行の後の2回目の出荷では、S1 の期間のコア機能でない PR の変更を欠落に数えない', Boolean(second.pr(2)) && second.prGap(2) === null && second.pr(2)?.g6Scope?.outOfScope === true, indepGaps(second));
@@ -260,6 +265,43 @@ if (process.platform === 'win32') {
     // 対照: CL1 は G-6 を全変更に適用する(エンジンが scope all)。範囲の限定は効かない
     const h = history(cfgOf({ 'q-criticality': 'cl1' }, withPaths(['src/core/**'])), [{ file: 'src/ui/b.js', pr: 1 }]);
     check('CL1 の構成は、コア機能でない PR の変更も欠落に数える(範囲 all)', h.prGap(1) !== null && h.pr(1)?.g6Scope?.limited === false, indepGaps(h));
+  }
+  {
+    // 突合 X-1: コア機能のファイルを範囲の外のパスへ移す PR は、移す前のパスでコア機能に当たる(対照のコア機能でない PR は数えない)
+    const h = history(S1, [{ mv: ['src/core/a.js', 'src/misc/a.js'], pr: 1 }, { file: 'src/ui/b.js', pr: 2 }]);
+    // IMPL-0470:ng(違反と適合の対。標準の実装マーク。process-compass #435 突合 X-1)
+    check('突合 X-1: コア機能のファイルを範囲の外へ移す PR は、名前の変更の元のパスでコア機能に当たり、欠落に数える', /G-6 の範囲\(コア機能\)に当たる変更: src\/core\/a\.js/.test(h.prGap(1) ?? '') && h.prGap(2) === null, indepGaps(h));
+  }
+  {
+    // 突合 X-2: S0 → S1 のほか、S2 → S1 と範囲 all → core-only の移行の後の最初の出荷も全変更で数える。2回目の出荷から限定する
+    const S2 = cfgOf({ 'q-biz-phase': 'growth' }, withPaths(['src/core/**']));
+    const ALL = { ...S1, gates: { ...S1.gates, g6: { ...S1.gates.g6, params: { ...S1.gates.g6.params, scope: 'all' } } } };
+    for (const [label, first] of [['S2 → S1', S2], ['範囲 all → core-only', ALL]]) {
+      const h = history(first, [{ config: S1 }, { file: 'src/ui/b.js', pr: 1 }]);
+      // IMPL-0470:ng(違反と適合の対。標準の実装マーク。process-compass #435 突合 X-2)
+      check(`突合 X-2: ${label} の移行の後の最初の出荷では、コア機能でない PR の変更も欠落に数える`, /を含む\(移行の後の最初の出荷\)/.test(h.prGap(1) ?? ''), indepGaps(h));
+      const g6 = item2(h.report).find((l) => /^\| G-6 /.test(l)) ?? '';
+      // IMPL-0471:ng(違反と適合の対。全変更として数えた分を項目2 に載せる。process-compass #435 突合 X-3)
+      check(`突合 X-3: ${label} の移行の後の最初の出荷は、項目2 に全変更として数えた PR の変更の件数を載せる`, /範囲を限らず全変更として数えた PR の変更 1 件\(出荷の範囲に、範囲の限定の数え方へ入る移行/.test(g6), g6 || item2(h.report).join('\n'));
+      const second = history(first, [{ config: S1 }, { tag: 'v1' }, { file: 'src/ui/b.js', pr: 1 }, { tag: 'v2' }]);
+      // IMPL-0470:ok(違反と適合の対。標準の実装マーク。process-compass #435 突合 X-2)
+      check(`突合 X-2: ${label} の移行の後の2回目の出荷では、コア機能でない PR の変更を欠落に数えない`, Boolean(second.pr(1)) && second.prGap(1) === null && second.pr(1)?.g6Scope?.outOfScope === true, indepGaps(second));
+    }
+  }
+  {
+    // 突合 X-3: 親の版だけ未宣言の PR も、項目2 の全変更として数えた分に載る
+    const h = history(cfgOf({}), [{ file: 'src/ui/b.js', pr: 1 }, { config: S1 }, { file: 'src/misc/c.js', pr: 2 }]);
+    const g6 = item2(h.report).find((l) => /^\| G-6 /.test(l)) ?? '';
+    check('突合 X-3: 親の版だけ未宣言の PR は欠落に数え、項目2 に全変更として数えた分(1 件)と範囲の外(1 件)を載せる', /変更の親の版の構成で未宣言/.test(h.prGap(1) ?? '') && h.prGap(2) === null && /範囲の外として欠落に数えなかった PR の変更 1 件 .*範囲を限らず全変更として数えた PR の変更 1 件/.test(g6), `${indepGaps(h)}\n${g6}`);
+  }
+  {
+    // 突合 X-4: CL1 の回答で範囲が core-only のまま残った古い構成でも、PR ごとの限定を掛けない
+    const old = cfgOf({ 'q-criticality': 'cl1' }, (c) => withPaths(['src/core/**'])({ ...c, gates: { ...c.gates, g6: { ...c.gates.g6, params: { ...c.gates.g6.params, scope: 'core-only' } } } }));
+    const h = history(old, [{ file: 'src/ui/b.js', pr: 1 }]);
+    // IMPL-0470:ng(違反と適合の対。標準の実装マーク。process-compass #435 突合 X-4)
+    check('突合 X-4: CL1 の古い core-only の構成では、コア機能でない PR の変更も欠落に数える', /安全重要度 CL1 以上の構成/.test(h.prGap(1) ?? '') && h.pr(1)?.g6Scope?.outOfScope === false, indepGaps(h));
+    const g6 = item2(h.report).find((l) => /^\| G-6 /.test(l)) ?? '';
+    check('突合 X-4: 項目2 に CL1 以上のため全変更を数えた旨を出す', /安全重要度 CL1 以上の構成のため、集約は範囲を限らず全変更を数えた/.test(g6), g6 || item2(h.report).join('\n'));
   }
   fs.rmSync(BIN, { recursive: true, force: true });
 }

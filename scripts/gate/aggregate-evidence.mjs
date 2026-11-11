@@ -1457,21 +1457,41 @@ if (isMain) {
     if (!trackedAtRev.has(rev)) trackedAtRev.set(rev, trackedFiles(ROOT, rev));
     return trackedAtRev.get(rev);
   };
-  let rangeHasS0Cache = null;
-  /** 出荷の範囲に、親の版の構成が事業ステージ S0 のコミットを含むか(S0 から移った後の最初の出荷) */
-  function rangeHasS0Period() {
-    if (rangeHasS0Cache === null) rangeHasS0Cache = commits.some((c) => c.parents[0] && stageOf(configAt(c.parents[0])) === 'S0');
-    return rangeHasS0Cache;
+  // 安全重要度 CL1 以上の回答の構成は、範囲を限らない(規則 r-e-cl1 は scope all。古い core-only の構成でも PR ごとの限定を掛けない。
+  // 出荷を止める未適用の厳格化とそろえる。#435 の突合 X-4)
+  const cl1Of = (c) => ['cl1', 'cl2', 'cl3'].includes(c?.answers?.['q-criticality']);
+  /** 範囲の限定(コア機能)の数え方に入る構成か: 事業ステージ S1・G-6 が適用・範囲 core-only・CL0 */
+  const coreOnlyCounting = (c) => stageOf(c) === 'S1' && c?.gates?.g6?.state === 'required' && c?.gates?.g6?.params?.scope === 'core-only' && !cl1Of(c);
+  const G6_CORE_ONLY_COUNTING = G6_CORE_ONLY && !cl1Of(config);
+  let rangeMigrationCache = null;
+  /**
+   * 出荷の範囲に、範囲の限定の数え方へ入る移行を含むか(移行の後の最初の出荷)。移行は、親の版の構成が数え方に入らない
+   * (S0・S2・範囲 all・CL1 以上)コミットを範囲に含むことで判定する(S0 → S1、S2 → S1、範囲 all → core-only のいずれも。#435 の突合 X-2)。
+   * 構成の初期化より前(親の版に設定済みの構成が無い)は移行に数えない。返り値は移行の元の事業ステージの一覧(無ければ null)
+   */
+  function rangeMigration() {
+    if (rangeMigrationCache === null) {
+      const from = new Set();
+      for (const c of commits) {
+        const p = c.parents[0] ? configAt(c.parents[0]) : null;
+        if (!p || p.configured === false || coreOnlyCounting(p)) continue;
+        from.add(stageOf(p) === 'S1' ? (cl1Of(p) ? 'S1(CL1 以上)' : 'S1(範囲 all)') : (stageOf(p) ?? '不明'));
+      }
+      rangeMigrationCache = from.size ? [...from] : false;
+    }
+    return rangeMigrationCache || null;
   }
-  /** PR の変更(マージコミット mergeHash、変更したファイル files)が G-6 の範囲の外か。理由(why)は範囲を限らなかった理由 */
+  /** PR の変更(マージコミット mergeHash、変更したファイル files。名前の変更の元を含む)が G-6 の範囲の外か。理由(why)は範囲を限らなかった理由 */
   function g6ScopeOf(mergeHash, files) {
     if (!G6_CORE_ONLY) return { limited: false, outOfScope: false, core: null, why: null };
     const parentRev = `${mergeHash}^1`;
     const before = configAt(parentRev);
     const full = (why, core = null) => ({ limited: true, outOfScope: false, core, why });
+    if (cl1Of(config) || cl1Of(before)) return full('安全重要度 CL1 以上の構成(全変更に適用)のため、範囲を限らずに数えた');
     if (stageOf(before) === 'S0') return full('変更の親の版の構成が事業ステージ S0 のため(S0 の省略が成立する前提3)、範囲を限らずに数えた');
-    if (rangeHasS0Period()) return full('出荷の範囲に事業ステージ S0 の期間の変更を含む(S0 から移った後の最初の出荷)ため、範囲を限らずに数えた');
-    if (stageOf(before) !== 'S1' || before?.gates?.g6?.state !== 'required' || before?.gates?.g6?.params?.scope !== 'core-only') {
+    const migration = rangeMigration();
+    if (migration) return full(`出荷の範囲に、範囲の限定の数え方へ入る移行(移行の元: ${migration.join('・')})を含む(移行の後の最初の出荷)ため、範囲を限らずに数えた`);
+    if (!coreOnlyCounting(before)) {
       return full('変更の親の版の構成が、G-6 の範囲をコア機能に限る事業ステージ S1 の構成でないため、範囲を限らずに数えた');
     }
     const atHead = touchesCore(config, files, { tracked: TRACKED_FILES });
@@ -1960,7 +1980,9 @@ if (isMain) {
       // 統制の設定を変えたファイルと、マージの前の構成が設定済みか(承認の照合は下の「統制の設定の変更の承認」。#371)
       control: { files: controlTouched, parentConfigured },
       // G-6 の範囲(S1 のコア機能への限定)。outOfScope が真なら独立した人の確認の欠落に数えない。why は範囲を限らなかった理由(#435)
-      g6Scope: g6ScopeOf(hash, prFiles),
+      // 判定に渡すファイルは名前の変更の元のパスを含める(--no-renames で消した側と足した側の両方を出す。コア機能のファイルを範囲の外の
+      // パスへ移す変更を、移す前のパスで判定する。#435 の突合 X-1)
+      g6Scope: g6ScopeOf(hash, [...new Set([...prFiles, ...git(['diff', '--name-only', '--no-renames', `${hash}^1`, hash]).split('\n').filter(Boolean)])]),
       // 承認レビューの写し(所在・失効した承認・PR の記録との所見)。無ければ null
       copy: copyEntry
         ? {
@@ -3483,15 +3505,26 @@ if (isMain) {
   const scopeLimited = (key, g) => key === 'g6' && g.state === 'required' && g.params?.scope === 'core-only';
   // 範囲の限定の行は、集約の数え方と一致させる(process-compass #435 の裁定6)。集約が範囲を限らなかった構成・出荷では、その旨を状態に添える。
   // ブランチ保護の必須の承認数(generate-profile.mjs の review.requiredApprovals)はパスで分けられず全 PR に掛かることも開示する(裁定4)
-  const g6ScopeStateText = () =>
-    !corePaths.declared
-      ? '範囲の限定(コア機能)。コア機能のパスが未宣言のため、集約は範囲を限らず全変更を数えた'
-      : rangeHasS0Period()
-        ? '範囲の限定(コア機能)。S0 から移った後の最初の出荷のため、集約は範囲を限らず全変更を数えた'
-        : '範囲の限定(コア機能)';
+  // 状態の文には、出荷の範囲の計上(範囲の外として数えなかった PR、範囲を限らず数えた PR とその理由、PR を経ないコミット)を添える(突合 X-3)
+  const g6ScopeStateText = () => {
+    const head = !G6_CORE_ONLY_COUNTING
+      ? '範囲の限定(コア機能)。安全重要度 CL1 以上の構成のため、集約は範囲を限らず全変更を数えた'
+      : !corePaths.declared
+        ? '範囲の限定(コア機能)。コア機能のパスが未宣言のため、集約は範囲を限らず全変更を数えた'
+        : rangeMigration()
+          ? '範囲の限定(コア機能)。範囲の限定の数え方へ移った後の最初の出荷のため、集約は範囲を限らず全変更を数えた'
+          : '範囲の限定(コア機能)';
+    const out = count(prs, (p) => p.g6Scope?.outOfScope);
+    const coreHit = count(prs, (p) => p.g6Scope?.core?.hit);
+    const whys = new Map();
+    for (const p of prs) if (p.g6Scope?.why) whys.set(p.g6Scope.why.replace(/、?範囲を限らずに数えた$/, ''), (whys.get(p.g6Scope.why.replace(/、?範囲を限らずに数えた$/, '')) ?? 0) + 1);
+    const fullCount = [...whys.values()].reduce((a, b) => a + b, 0);
+    const why = fullCount ? `(${[...whys].map(([w, n]) => `${w} ${n} 件`).join(' / ')})` : '';
+    return `${head}。集約の計上: 範囲の外として欠落に数えなかった PR の変更 ${out} 件 / コア機能に当たり数えた PR の変更 ${coreHit} 件 / 範囲を限らず全変更として数えた PR の変更 ${fullCount} 件${why} / 範囲を限らない PR を経ないコミット ${directProduct.length} 件`;
+  };
   const G6_SCOPE_COUNTING = [
-    '集約の数え方: 変更の親の版の構成が S1 でコア機能に限る PR のうち、コア機能のパス(確約範囲・コア指定のパスと区分の下限の規則のパス。変更の親の版と HEAD の版の和)に当たらない変更は、独立した人の確認の欠落に数えない(R1 の変更は例外承認を要する)。' +
-      'PR を経ないコミット、親の版の構成が S0 の変更、S0 から移った後の最初の出荷、パスが親の版か HEAD の版で未宣言の変更は、範囲を限らず全変更を数える',
+    '集約の数え方: 変更の親の版の構成が S1 でコア機能に限る PR のうち、コア機能のパス(確約範囲・コア指定のパスと区分の下限の規則のパス。変更の親の版と HEAD の版の和。名前の変更の元のパスを含む)に当たらない変更は、独立した人の確認の欠落に数えない(R1 の変更は例外承認を要する)。' +
+      'PR を経ないコミット、親の版の構成が S0 の変更、範囲の限定の数え方へ移った後の最初の出荷(S0 → S1、S2 → S1、範囲 all → core-only のいずれも)、パスが親の版か HEAD の版で未宣言の変更、安全重要度 CL1 以上の構成は、範囲を限らず全変更を数える',
     'ブランチ保護の必須の承認数はパスで分けられないため、PR の経路では全変更に承認が掛かる。範囲の限定が効くのは、出荷の証跡の集約が数える欠落だけである',
   ];
   const g7Tightening = tightenings.find((t) => t.gate === 'g7' && t.from === 'simplified');
