@@ -6,11 +6,15 @@
 // 様式と承認レビューの写し)を直接読み、readRecordsBranch の戻り値と同じ形を手で組み立てて collectRecords 以下に渡します。
 // 写しの PR と機能の対応(PR 本文の Spec: トレーラ・タイトル・ブランチ名)は、prInfoOf を差し替えて与えます。
 // 記録用ブランチの実際の読み取りは test-records.mjs、next.mjs の全体の段階の導出(構成・D-0・仕様)は、この試験では確かめていません。
+// 着手の前の判定記録の確認(next.mjs --intake。process-compass #368)は、入口を一時の置き場で --offline で通します(git と GitHub を
+// 使いません)。開いている PR のレビューの gh api での読み出し(openPrRecords)は、この試験では確かめていません。
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status } from './next.mjs';
+import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, intakeCheck, renderIntake, INTAKE_EXIT } from './next.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
@@ -154,6 +158,76 @@ const CONFIG = {
   check('受け皿: 写しの無い G-4 は、PR のレビューと様式の両方の経路を出す', /対象が PR として存在するなら、その PR に判定者本人のレビューを出す\(1 行目 `G-4: 通過`/.test(recordRoute('g4', 'F-009', [])) && /records\/gates\/ へ置いて records ブランチへ push/.test(recordRoute('g4', 'F-009', [])), recordRoute('g4', 'F-009', []));
   check('受け皿: G-7 は様式だけ', /^様式を records\/gates\/ へ置いて records ブランチへ push する\(`\/gate G-7`/.test(recordRoute('g7', null, [])), recordRoute('g7', null, []));
   check('受け皿: G-6 は承認者本人の挙動要約つきの承認レビュー', /承認者本人の挙動要約つきの承認レビュー/.test(recordRoute('g6', 'F-001', [])));
+}
+
+// ---------------------------------------------------------------- 着手の前の判定記録の確認(標準 第3章 3.5.5 要求事項5。process-compass #368 / IMPL-0331)
+// 関数の場面と、入口(node scripts/gate/next.mjs --intake)を一時の置き場で通す場面の両方を持つ
+{
+  const ICONFIG = {
+    configured: true,
+    gates: { g2: { state: 'required', label: 'G-2 要件合意' }, g4: { state: 'required', label: 'G-4 機能仕様承認' }, g6: { state: 'required', label: 'G-6 独立レビュー' } },
+    roles: [
+      { id: 'value-owner', name: '価値責任者', gatesOwned: ['g2', 'g4'] },
+      { id: 'dev-verifier', name: '開発者', gatesOwned: [] },
+      { id: 'independent-reviewer', name: '独立レビュア', gatesOwned: ['g6'] },
+      { id: 'qa-gatekeeper', name: '出荷判定者', gatesOwned: ['g7'] },
+    ],
+    seats: [{ role: 'value-owner', accountable: 'p1' }, { role: 'independent-reviewer', accountable: 'p2' }],
+    people: CONFIG.people,
+  };
+  const R = collectRecords({ gateRecords: baseRecords, branch: branchOf(), prInfoOf, config: CONFIG }).records;
+  const approval = (body, commit = 'h1') => ({ pr: 30, head_sha: 'h1', reviews: [{ id: 9, state: 'APPROVED', commit_id: commit, submitted_at: '2026-10-24T00:00:00Z', user: { id: 30000001, login: 'suzuki' }, body }] });
+  const open = (copy) => ({ available: true, reason: null, records: recordsFromCopy(copy, null, { config: ICONFIG }) });
+
+  const ng1 = intakeCheck({ label: 'state:needs-dev', target: 'F-009', records: R, config: ICONFIG });
+  check('IMPL-0331:ng state:needs-dev でも G-2・G-4 の通過の記録が無い機能には着手しない(判定者の受信箱へ差し戻す)', ng1.decision === 'hold' && same(ng1.missing, ['G-2', 'G-4']) && ng1.returnTo?.role === 'value-owner' && same(ng1.returnTo.labels, ['state:needs-po']) && /要求事項5/.test(ng1.reason), JSON.stringify(ng1));
+  const ng2 = intakeCheck({ label: 'state:needs-dev', target: 'F-002', records: R, config: ICONFIG });
+  check('着手の確認: G-4 だけ通過し G-2 の記録が無い機能も着手しない', ng2.decision === 'hold' && same(ng2.missing, ['G-2']), JSON.stringify(ng2));
+  const ok1 = intakeCheck({ label: 'state:needs-dev', target: 'F-001 / Task-1', records: R, config: ICONFIG });
+  check('IMPL-0331:ok G-2・G-4 の通過の記録がある機能は、state:needs-dev で着手してよい', ok1.decision === 'start' && same(ok1.required, ['G-2', 'G-4']), JSON.stringify(ok1));
+  const ng3 = intakeCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: ICONFIG, openPr: open(approval('LGTM')) });
+  check('着手の確認: 挙動要約の無い承認だけの PR は、state:ready-to-merge でも受け取らない(独立レビュアへ差し戻す)', ng3.decision === 'hold' && ng3.returnTo?.role === 'independent-reviewer' && ng3.issues.some((x) => /挙動要約が無い/.test(x)), JSON.stringify(ng3));
+  const ng4 = intakeCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: ICONFIG, openPr: open(approval('挙動要約: 一覧に失効の表示を足す変更。', 'old')) });
+  check('着手の確認: 承認の後に push があり失効した PR も受け取らない', ng4.decision === 'hold', JSON.stringify(ng4));
+  const ok2 = intakeCheck({ label: 'state:ready-to-merge', target: '#30', records: R, config: ICONFIG, openPr: open(approval('挙動要約: 一覧に失効の表示を足す変更。')) });
+  check('着手の確認: 挙動要約つきの承認がある PR は受け取ってよい', ok2.decision === 'start', JSON.stringify(ok2));
+  const off = intakeCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: ICONFIG, openPr: { available: false, reason: '--offline のため読んでいない', records: [] } });
+  check('着手の確認: PR のレビューを読めず記録も見つからなければ、判定できない(着手しない)', off.decision === 'undetermined' && /推測で着手しない/.test(off.reason), JSON.stringify(off));
+  const qmNg = intakeCheck({ label: 'state:qm-blocked', target: 'PR #30', records: R, config: ICONFIG, openPr: open(approval('挙動要約: 一覧に失効の表示を足す変更。')) });
+  const qmOk = intakeCheck({ label: 'state:qm-blocked', target: 'PR #31', records: R, config: ICONFIG, openPr: open({ pr: 31, head_sha: 'h1', reviews: [{ id: 8, state: 'CHANGES_REQUESTED', commit_id: 'h1', submitted_at: '2026-10-24T00:00:00Z', user: { id: 30000001, login: 'suzuki' }, body: 'G-6: 差し戻し / 基準 3 / 期限 2026-10-30' }] }) });
+  check('着手の確認: state:qm-blocked は G-6 の差し戻しの記録があれば着手し、無ければ判定できない', qmOk.decision === 'start' && qmNg.decision === 'undetermined', JSON.stringify([qmOk, qmNg]));
+  check('着手の確認: 判定を経ずに付くラベル(dev-done・needs-po など)は判定記録を求めない', ['state:dev-done', 'state:needs-po', 'state:needs-platform'].every((l) => intakeCheck({ label: l, target: 'PR #30', config: ICONFIG }).decision === 'start'));
+  check('着手の確認: 語彙に無いラベル・機能 ID の無い needs-dev・構成なしは判定できない', intakeCheck({ label: 'state:done', target: 'F-001', config: ICONFIG }).decision === 'undetermined' && intakeCheck({ label: 'state:needs-dev', target: 'Issue #4', config: ICONFIG }).decision === 'undetermined' && intakeCheck({ label: 'state:needs-dev', target: 'F-001', records: R, config: null }).decision === 'undetermined');
+  const omitted = { ...ICONFIG, gates: { ...ICONFIG.gates, g6: { state: 'omitted' } } };
+  check('着手の確認: G-6 が省略の構成では state:ready-to-merge を使わない(判定できない)', intakeCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: omitted, openPr: open(approval('LGTM')) }).decision === 'undetermined');
+  check('着手の確認: 出力の見出しと終了コード', /^\[着手しない\]/.test(renderIntake(ng1)) && /判定者へ差し戻す\(価値責任者\(山田 太郎\)。受信箱 `state:needs-po`\)/.test(renderIntake(ng1)) && INTAKE_EXIT.start === 0 && INTAKE_EXIT.hold === 3 && INTAKE_EXIT.undetermined === 4, renderIntake(ng1));
+
+  // 入口: 一時の置き場に scripts と構成と docs/gates/ を置き、next.mjs --intake を --offline で実行する(git と GitHub を使わない)
+  const ROOT_DIR = path.resolve(HERE, '..', '..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-intake-'));
+  try {
+    fs.cpSync(path.join(ROOT_DIR, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(ICONFIG, null, 2));
+    fs.mkdirSync(path.join(dir, 'docs', 'gates'), { recursive: true });
+    const env = { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '', GIT_CEILING_DIRECTORIES: path.dirname(dir) };
+    const run = (...a) => {
+      const r = spawnSync(process.execPath, ['scripts/gate/next.mjs', '--intake', ...a, '--offline'], { cwd: dir, encoding: 'utf8', env });
+      return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    let r = run('state:needs-dev', 'F-001');
+    check('IMPL-0331:ng 入口: 判定記録の無い機能の state:needs-dev に、next.mjs --intake は「着手しない」を出し、終了コード 3 で終える', r.status === 3 && /^\[着手しない\] state:needs-dev F-001/.test(r.out) && /判定者へ差し戻す/.test(r.out), `${r.status}\n${r.out}`);
+    r = run('state:ready-to-merge', 'PR #30');
+    check('入口: --offline で PR の判定記録が見つからなければ「判定できない」(終了コード 4)', r.status === 4 && /^\[判定できない\]/.test(r.out), `${r.status}\n${r.out}`);
+    fs.copyFileSync(path.join(FIXTURES, 'gates', 'g2-F-001-2026-10-19.md'), path.join(dir, 'docs', 'gates', 'g2-F-001-2026-10-19.md'));
+    fs.writeFileSync(path.join(dir, 'docs', 'gates', 'g4-F-001-2026-10-20.md'), readFixture('gates', 'g4-F-005-2026-10-20.md').replace('F-005 / 9d8c7b6', 'F-001 / 9d8c7b6').replace('通過(判定者の申告を転記)', '通過'));
+    fs.writeFileSync(path.join(dir, 'docs', 'gates', 'g6-PR-30-2026-10-24.md'), readFixture('gates', 'g4-F-005-2026-10-20.md').replace('G-4 機能仕様承認', 'G-6 独立レビュー').replace('F-005 / 9d8c7b6', 'F-001 / Task-1 / PR #30').replace('通過(判定者の申告を転記)', '通過'));
+    r = run('state:needs-dev', 'F-001');
+    check('IMPL-0331:ok 入口: G-2・G-4 の判定記録がある機能の state:needs-dev は「着手してよい」(終了コード 0)', r.status === 0 && /^\[着手してよい\] state:needs-dev F-001/.test(r.out), `${r.status}\n${r.out}`);
+    r = run('state:ready-to-merge', 'PR #30');
+    check('入口: 様式の G-6 の通過の記録がある PR は、--offline でも受け取ってよい', r.status === 0 && /^\[着手してよい\]/.test(r.out), `${r.status}\n${r.out}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log('');
