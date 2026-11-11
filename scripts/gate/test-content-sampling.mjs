@@ -10,7 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
-import { quarterOf, prevQuarter, quarterEnd, population, populationAt, deriveSeed, sample, sampleCount, hadFindings, verifyRecord, samplingOverdueNote, BASE_COUNT } from './content-sampling.mjs';
+import { pathToFileURL } from 'node:url';
+import { quarterOf, prevQuarter, quarterEnd, population, populationAt, populationOrError, deriveSeed, sample, sampleCount, hadFindings, verifyRecord, samplingOverdueNote, BASE_COUNT } from './content-sampling.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -103,6 +104,22 @@ try {
   at('2027-01-04', 'docs: 2026Q4 の抽出の記録の訂正');
   r = node('--verify', '2026Q4');
   check('入口: 別の訂正の記録を追記しても、抽出の記録は1回のコミットのまま検証を通る', r.status === 0, r.out);
+  // 確認 第3巡への裁定 低: 訂正の記録の理由か記名が空なら失敗にする
+  fs.writeFileSync(path.join(dir, 'docs/content-sampling/2026Q4-訂正-2.md'), '# 訂正\n\n| 項目 | 値 |\n| --- | --- |\n| 訂正する箇所 | 所見の誤字 |\n| 理由 |  |\n| 記名 | 監査 一郎 |\n');
+  at('2027-01-05', 'docs: 理由の無い訂正');
+  r = node('--verify', '2026Q4');
+  check('IMPL-0174:ng --verify: 理由か記名の欄が空の訂正の記録を失敗にする', r.status === 1 && r.out.includes('理由か記名の欄の記入が無い'), r.out);
+  fs.rmSync(path.join(dir, 'docs/content-sampling/2026Q4-訂正-2.md'));
+  at('2027-01-06', 'chore: 理由の無い訂正を消す');
+  // 確認 第3巡への裁定 高-1: 四半期の境界は UTC に固定する。JST と UTC の両方で同じ記録が同じ四半期に入る
+  fs.writeFileSync(path.join(dir, 'docs/gates/tz.md'), '# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-1 判定 |\n| 結果 | 通過 |\n');
+  git('add', '-A');
+  execFileSync('git', ['commit', '-q', '-m', 'tz'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: '2027-01-01T05:00:00+09:00', GIT_COMMITTER_DATE: '2027-01-01T05:00:00+09:00' } });
+  const modUrl = pathToFileURL(path.join(ROOT, 'scripts/gate/content-sampling.mjs')).href;
+  const inQuarter = (tz) => spawnSync(process.execPath, ['--input-type=module', '-e', `const m = await import(${JSON.stringify(modUrl)}); console.log(JSON.stringify(m.populationAt(${JSON.stringify(dir)}, '2026Q4').map((x) => x.id)))`], { encoding: 'utf8', env: { ...process.env, TZ: tz } }).stdout.trim();
+  const utc = inQuarter('UTC0');
+  const jst = inQuarter('JST-9');
+  check('四半期の境界: 2027-01-01 05:00 JST(2026-12-31 20:00 UTC)のコミットは、UTC と JST のどちらで数えても 2026Q4 に入る', utc === jst && JSON.parse(utc || '[]').includes('tz.md'), `${utc} / ${jst}`);
   // 書き換え(2回目のコミット)は済ませたことに数えない
   fs.writeFileSync(recPath, fs.readFileSync(recPath, 'utf8').replace('監査 一郎 | なし |', '監査 次郎 | なし |'));
   git('add', '-A');
@@ -127,6 +144,23 @@ try {
   check('/pit: 規定を運び始めた四半期(2026Q4)より前の四半期には、遡って注記を出さない', samplingOverdueNote({ root: dir, today: '2026-10-05', items: q3 }) === null);
   const q1 = popIds.map((id) => ({ id, quarter: '2027Q1' }));
   check('/pit: 案件の開始の四半期より前には注記を出さず、開始の後は出す', samplingOverdueNote({ root: dir, today: '2027-04-05', items: q1, startQuarter: '2027Q2' }) === null && Boolean(samplingOverdueNote({ root: dir, today: '2027-04-05', items: q1, startQuarter: '2027Q1' })));
+  // 確認 第3巡への裁定 中: 合流コミットのある履歴では第1親の連鎖をたどる
+  git('checkout', '-q', '-b', 'side');
+  fs.writeFileSync(path.join(dir, 'docs/gates/side.md'), '# ゲート判定記録\n');
+  at('2026-12-10', 'side: 締めの前の日付の枝');
+  git('checkout', '-q', 'main');
+  execFileSync('git', ['merge', '-q', '--no-ff', '-m', 'merge side', 'side'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: '2027-01-08T09:00:00+00:00', GIT_COMMITTER_DATE: '2027-01-08T09:00:00+00:00' } });
+  check('母集団: 締めの後に合流した枝の記録は、締めの時点の第1親の木に無いので、その四半期に入れない', !populationAt(dir, '2026Q4').some((x) => x.id === 'side.md') && populationAt(dir, '2027Q1').some((x) => x.id === 'side.md'), JSON.stringify(populationAt(dir, '2026Q4')));
+  // 確認 第3巡への裁定 中・低: 記録用ブランチを数える前に取得できない・履歴が浅いときは、数えずに理由を返す
+  git('remote', 'add', 'origin', path.join(dir, 'no-such-remote'));
+  const unreachable = populationOrError(dir, '2026Q4');
+  check('母集団: origin へ届かず記録用ブランチを取得できないときは、数えずに理由を返す', unreachable.items === null && /取得できない/.test(unreachable.error ?? ''), JSON.stringify(unreachable));
+  git('remote', 'remove', 'origin');
+  const shallow = `${dir}-shallow`;
+  execFileSync('git', ['clone', '-q', '--depth', '1', pathToFileURL(dir).href, shallow], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const sh = populationOrError(shallow, '2026Q4', { fetch: false });
+  check('母集団: 浅いクローンでは「履歴が浅い」として数えない', sh.items === null && /履歴が浅い/.test(sh.error ?? ''), JSON.stringify(sh));
+  fs.rmSync(shallow, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 } finally {
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

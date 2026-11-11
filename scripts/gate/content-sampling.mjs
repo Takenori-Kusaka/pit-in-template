@@ -5,7 +5,8 @@
 //
 // 母集団は、その四半期に作成した判定記録の人が書く欄を持つ記録(様式: 基底ブランチの docs/gates/ と記録用ブランチの records/gates/、
 // 承認レビューの写し: 記録用ブランチの records/reviews/ の本文のあるレビュー)。四半期の締めの時点のコミットの木にあり、直前の四半期の
-// 締めの時点の木に無かった記録を数える(締めの後に遅れて入った記録は、次の四半期の母集団に入る)。
+// 締めの時点の木に無かった記録を数える(締めの後に遅れて入った記録は、次の四半期の母集団に入る)。境界は UTC。
+// 締めの後の名前の変更と遡った記録の追加は、コミットの日付を偽らない限り効かない(日付の偽りは判定者以外の確かめる者が止める)。
 // 抽出の記録の誤字の訂正は、別の訂正の記録(docs/content-sampling/<四半期>-訂正-<N>.md。理由と記名)を追記する形で行い、
 // 抽出の記録そのものと抽出の結果は変えない。
 // 当事者がリポジトリを支配している以上、機械の統制だけでは抽出の選び直しを閉じない。止めるのは判定者以外の確かめる者である(EV-0249)。
@@ -149,7 +150,7 @@ export function recordCommits(root, rel) {
  * 記録の検証。problems が空なら、抽出を済ませたものとして数える
  * @param {{ text: string, quarter: string, items: Array<{id: string, quarter: string}>, commits: string[]|null, prevText?: string|null }} a
  */
-export function verifyRecord({ text, quarter, items, commits, prevText = null }) {
+export function verifyRecord({ text, quarter, items, commits, prevText = null, corrections = [] }) {
   const problems = [];
   if (commits === null) problems.push('履歴を読めない(git log が失敗)。1回のコミットで入ったかを確かめられない');
   else if (commits.length === 0) problems.push('記録がコミットされていない。確かめた者と所見を書いてから、1回のコミットで入れる');
@@ -168,7 +169,22 @@ export function verifyRecord({ text, quarter, items, commits, prevText = null })
   if (JSON.stringify(expected) !== JSON.stringify(got)) problems.push(`抽出した記録が、種と件数(${count} 件)から再現した抽出と一致しない`);
   const blank = r.picked.filter((p) => !filledCell(p.who) || !filledCell(p.finding));
   if (blank.length) problems.push(`確かめた者か所見の記入が無い行が ${blank.length} 件ある(記入の無い記録は、抽出を済ませたことに数えない)`);
+  for (const c of corrections) {
+    const reason = (c.text.match(/^\| 理由 \| ([^|]*) \|/m)?.[1] ?? '').trim();
+    const signer = (c.text.match(/^\| 記名 \| ([^|]*) \|/m)?.[1] ?? '').trim();
+    if (!filledCell(reason) || !filledCell(signer)) problems.push(`訂正の記録 ${c.file} に、理由か記名の欄の記入が無い`);
+  }
   return problems;
+}
+
+/** 四半期の訂正の記録([{ file, text }]) */
+export function readCorrections(root, q) {
+  const dir = path.join(root, RECORD_DIR);
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.startsWith(`${q}-訂正-`) && f.endsWith('.md'))
+    .map((f) => ({ file: `${RECORD_DIR}/${f}`, text: fs.readFileSync(path.join(dir, f), 'utf8') }));
 }
 
 /**
@@ -180,7 +196,11 @@ export function samplingOverdueNote({ root = ROOT, today, items = null, startQua
   if (!prev) return null;
   if (quarterLess(prev, EFFECTIVE_QUARTER)) return null;
   if (startQuarter && quarterLess(prev, startQuarter)) return null;
-  if (items === null) items = populationAt(root, prev) ?? [];
+  if (items === null) {
+    const r = populationOrError(root, prev);
+    if (r.error) return `判定記録の記述の内容の四半期の抽出(標準 第5章 5.7.4)の ${prev} の母集団を数えられない: ${r.error}`;
+    items = r.items;
+  }
   const n = items.filter((i) => i.quarter === prev).length;
   if (!n) return null;
   const rel = `${RECORD_DIR}/${prev}.md`;
@@ -188,7 +208,7 @@ export function samplingOverdueNote({ root = ROOT, today, items = null, startQua
   const cmd = `\`node scripts/gate/content-sampling.mjs --quarter ${prev}\``;
   if (!fs.existsSync(file)) return `判定記録の記述の内容の四半期の抽出(標準 第5章 5.7.4)が、${prev} について記録されていない(母集団 ${n} 件)。${cmd} で抽出し、判定者以外の人が確かめて所見を書く`;
   const prevPrev = path.join(root, RECORD_DIR, `${prevQuarter(prev)}.md`);
-  const problems = verifyRecord({ text: fs.readFileSync(file, 'utf8'), quarter: prev, items, commits: commitsOf(root, rel), prevText: fs.existsSync(prevPrev) ? fs.readFileSync(prevPrev, 'utf8') : null });
+  const problems = verifyRecord({ text: fs.readFileSync(file, 'utf8'), quarter: prev, items, commits: commitsOf(root, rel), prevText: fs.existsSync(prevPrev) ? fs.readFileSync(prevPrev, 'utf8') : null, corrections: readCorrections(root, prev) });
   if (!problems.length) return null;
   return `判定記録の記述の内容の四半期の抽出(標準 第5章 5.7.4)の ${prev} の記録が、抽出を済ませたことに数えられない: ${problems.join(' / ')}(\`node scripts/gate/content-sampling.mjs --verify ${prev}\`)`;
 }
@@ -201,8 +221,10 @@ const gitOut = (root, args) => {
   }
 };
 /** ref の、day の終わり(手元の時刻の 23:59:59)より前の最後のコミット。無ければ null */
+// 四半期の境界は UTC に固定する(確認 第3巡への裁定 高-1)。実行する機械の時刻帯に依らず、同じ記録が同じ四半期に入る。
+// 合流コミットのある履歴では第1親の連鎖をたどる(--first-parent。中)
 function commitBefore(root, ref, day) {
-  const out = gitOut(root, ['rev-list', '-1', `--before=${day} 23:59:59`, ref]);
+  const out = gitOut(root, ['rev-list', '--first-parent', '-1', `--before=${day}T23:59:59+00:00`, ref]);
   return out ? out.trim() || null : null;
 }
 /** コミットの木にある判定記録の識別子(様式の名前と、写しの本文のあるレビュー) */
@@ -234,11 +256,32 @@ function recordsRef(root) {
 }
 /**
  * 四半期の母集団(再確認への裁定)。四半期の締めの時点のコミットの木(基底ブランチの HEAD と記録用ブランチ)にあり、直前の四半期の
- * 締めの時点の木に無かった判定記録。締めの後の名前の変更や、遡った記録の追加は、締めの時点の木を変えないので効かない。
+ * 締めの時点の木に無かった判定記録。締めの後の名前の変更や、遡った記録の追加は、コミットの日付を偽らない限り締めの時点の木を変えないので効かない。
  * 締めの後に遅れて入った記録は、入った四半期の母集団に入る。リポジトリの履歴を読めなければ null
  */
-export function populationAt(root, q) {
-  if (gitOut(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return null;
+export function populationAt(root, q, opts = {}) {
+  const r = populationOrError(root, q, opts);
+  return r.error ? null : r.items;
+}
+
+/**
+ * 母集団と、数えられないときの理由(確認 第3巡への裁定 中・低)。
+ * 履歴が浅い・記録用ブランチを数える前に取得できない(origin があるのに fetch が通らない)ときは、数えずに理由を返す。
+ * origin の無いリポジトリは、手元の記録用ブランチだけを読む
+ */
+export function populationOrError(root, q, { fetch = true } = {}) {
+  if (gitOut(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return { items: null, error: 'リポジトリの履歴を読めない' };
+  if (String(gitOut(root, ['rev-parse', '--is-shallow-repository']) ?? '').trim() === 'true') return { items: null, error: '履歴が浅い(浅いクローン)。四半期の締めの時点の木を導けない。git fetch --unshallow で履歴を取ってから実行する' };
+  const hasOrigin = gitOut(root, ['remote', 'get-url', 'origin']) !== null;
+  if (fetch && hasOrigin) {
+    const lsRemote = gitOut(root, ['ls-remote', '--heads', 'origin', 'records']);
+    if (lsRemote === null) return { items: null, error: '記録用ブランチ records を数える前に取得できない(origin へ届かない)。取得できる環境で実行し直す' };
+    if (lsRemote.trim() && gitOut(root, ['fetch', '--quiet', 'origin', 'records:refs/remotes/origin/records']) === null) return { items: null, error: '記録用ブランチ records を fetch できない。取得できる環境で実行し直す' };
+  }
+  return { items: populationFromHistory(root, q), error: null };
+}
+
+function populationFromHistory(root, q) {
   const rref = recordsRef(root);
   const idsAt = (day) => {
     const ids = idsInTree(root, commitBefore(root, 'HEAD', day), { gatesDirs: ['docs/gates'] });
@@ -280,7 +323,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exit(1);
     }
     const prevFile = path.join(ROOT, RECORD_DIR, `${prevQuarter(verifyQ)}.md`);
-    const problems = verifyRecord({ text: fs.readFileSync(path.join(ROOT, rel), 'utf8'), quarter: verifyQ, items: populationAt(ROOT, verifyQ) ?? [], commits: recordCommits(ROOT, rel), prevText: fs.existsSync(prevFile) ? fs.readFileSync(prevFile, 'utf8') : null });
+    const pr = populationOrError(ROOT, verifyQ);
+    if (pr.error) {
+      console.error(`${verifyQ} の母集団を数えられない: ${pr.error}`);
+      process.exit(1);
+    }
+    const problems = verifyRecord({ text: fs.readFileSync(path.join(ROOT, rel), 'utf8'), quarter: verifyQ, items: pr.items, commits: recordCommits(ROOT, rel), prevText: fs.existsSync(prevFile) ? fs.readFileSync(prevFile, 'utf8') : null, corrections: readCorrections(ROOT, verifyQ) });
     for (const p of problems) console.log(`- ${p}`);
     if (problems.length) {
       console.log(`${rel}: ${problems.length} 件。抽出を済ませたことに数えない`);
@@ -313,11 +361,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error(problem);
     process.exit(1);
   }
-  const items = populationAt(ROOT, q);
-  if (items === null) {
-    console.error('リポジトリの履歴を読めない。四半期の締めの時点の母集団を導けない');
+  const pr = populationOrError(ROOT, q);
+  if (pr.error) {
+    console.error(`${q} の母集団を数えられない: ${pr.error}`);
     process.exit(1);
   }
+  const items = pr.items;
   const branchAvailable = Boolean(recordsRef(ROOT));
   const branchReason = branchAvailable ? null : '記録用ブランチ records が手元に無い';
   const pop = items;
@@ -328,7 +377,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exit(1);
   }
   const picked = sample(pop, seed, count);
-  const form = fs.readFileSync(path.join(ROOT, 'templates/content-sampling.md'), 'utf8');
+  const form = fs.readFileSync(path.join(ROOT, 'templates/content-sampling.md'), 'utf8').replace(/\r\n/g, '\n');
   const rows = picked.map((p, i) => `| ${i + 1} | ${p.id} | | |`).join('\n');
   const popRows = pop.length ? [...pop].sort((a, b) => (a.id < b.id ? -1 : 1)).map((p) => `| ${p.id} |`).join('\n') : '| — |';
   const text = form

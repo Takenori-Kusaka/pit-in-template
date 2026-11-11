@@ -540,31 +540,31 @@ try {
   }
 
   // 1名の体制の自己の任命(第3章 3.13.3 の例外。process-compass #359 / IMPL-0342)。前任の決定者(1人目)が体制から外れ、後継(2人目)が
-  // 全席に就く。本人の上に任命の権限を持つ者がいない1名の体制(個人事業主・1名で代表権を持つ法人)に限り、新任の記名を自己の任命として受け付ける
+  // 全席に就く。D-0 節11 の選択の欄「体制の法的な形態(自己の任命の例外)」が「個人事業主」か「1名で代表権を持つ法人」と完全に一致する体制に限り、
+  // 新任の記名を自己の任命として受け付ける。自由な文(決裁の権限の出所)の中身では受け付けない(確認 第3巡への裁定 高-2)
+  const setForm = (d0p, v) => fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 体制の法的な形態\(自己の任命の例外\) \|)[^\n]*\|\s*$/m, `$1 ${v} |`));
   const wz = workspace('pit-in-359z-');
   try {
     const d0p = path.join(wz.d, 'docs/D-0-governance.md');
-    const setSource = (v) => fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, `$1 ${v} |`));
     const fill = wz.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
     const succession = { summary: '事業の承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '前任が退いたため承継する' };
-    // IMPL-0342:ng 「決裁の権限の出所」が個人事業主・1名で代表権を持つ法人のどちらも挙げていなければ、新任の自己の任命を受け付けない
-    setSource('代表の決裁による(試験)');
+    // IMPL-0342:ng 選択の欄が様式のまま(#359 より前の D-0 と同じく値が無い)なら、決裁の権限の出所に「個人事業主本人」と書いてあっても受け付けない
     const before = wz.raw();
     const noForm = wz.run(succession);
     check(
-      'IMPL-0342:ng 「決裁の権限の出所」が法的な形態を挙げていなければ、新任の決定者の自己の任命を受け付けない',
-      fill.ok && !noForm.ok && /新任の決定者が、自分の任命を自分の記名で確定することはできません/.test(noForm.out) && /本人の上に任命の権限を持つ者がいない1名の体制だけ/.test(noForm.out) && wz.raw() === before,
+      'IMPL-0342:ng 選択の欄に値が無ければ、自由な文に個人事業主と書いてあっても新任の決定者の自己の任命を受け付けず、欄を書く案内を出す',
+      fill.ok && !noForm.ok && /新任の決定者が、自分の任命を自分の記名で確定することはできません/.test(noForm.out) && /体制の法的な形態\(自己の任命の例外\)/.test(noForm.out) && /#359 より前の D-0 にはこの欄が無い/.test(noForm.out) && wz.raw() === before,
       `${fill.out}\n${noForm.out}`
     );
     // IMPL-0342:ng 名簿に組織上の任命権者がいれば、例外に当たらない(任命権者の記名による)
-    setSource('個人事業主本人(試験)');
+    setForm(d0p, '個人事業主');
     const withOrg = wz.run({ ...succession, people: [P[1], ORG] });
     check('IMPL-0342:ng 名簿に組織上の任命権者がいれば、新任の自己の任命を受け付けない', !withOrg.ok && wz.raw() === before, withOrg.out);
-    // IMPL-0342:ok 個人事業主を挙げた1名の体制の承継は、新任の記名を自己の任命として受け付け、変化点の記録に残す
+    // IMPL-0342:ok 選択の欄が「個人事業主」の1名の体制の承継は、新任の記名を自己の任命として受け付け、変化点の記録に残す
     const ok = wz.run(succession);
     const e = wz.cfg().changeLog.at(-1);
     check(
-      'IMPL-0342:ok 個人事業主を挙げた1名の体制の承継は、新任の決定者の記名を自己の任命として受け付け、selfAppointed を残す',
+      'IMPL-0342:ok 選択の欄が「個人事業主」の1名の体制の承継は、新任の決定者の記名を自己の任命として受け付け、selfAppointed を残す',
       ok.ok && e.selfAppointed === true && e.decidedBy === P[1].name && e.selfAppointedNoExternalRef !== true,
       `${ok.out}\n${JSON.stringify(e)}`
     );
@@ -575,11 +575,10 @@ try {
   const wo = workspace('pit-in-359o-');
   try {
     const d0p = path.join(wo.d, 'docs/D-0-governance.md');
-    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 個人事業主本人(試験) |'));
+    setForm(d0p, '個人事業主');
     const fill1 = wo.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
     const add2 = wo.run({ summary: '2人目', people: [P[0], P[2]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '2人目を名簿へ足す' });
-    const fill2 = { ok: fill1.ok && add2.ok && wo.cfg().people.length === 2, out: `${fill1.out}
-${add2.out}` };
+    const fill2 = { ok: fill1.ok && add2.ok && wo.cfg().people.length === 2, out: `${fill1.out}\n${add2.out}` };
     const before = wo.raw();
     const sweep = wo.run({ summary: '全員を外して承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '承継' });
     check(
@@ -590,46 +589,38 @@ ${add2.out}` };
   } finally {
     fs.rmSync(wo.d, { recursive: true, force: true });
   }
-  // IMPL-0342:ng 「決裁の権限の出所」の否定と数の誤検出を、法的な形態として読まない(#359 重の実装の突合 低-3)
-  for (const [label, source] of [
-    ['否定(個人事業主ではない)', '個人事業主ではない(株式会社。取締役11名、代表権は代表取締役)'],
-    ['数(11名の中の1名)', '代表権を持つ取締役11名の法人'],
-    ['数(十一人の中の一人)', '代表権を持つ者が十一人の法人'],
-  ]) {
-    const wn = workspace('pit-in-359n-');
-    try {
-      const d0p = path.join(wn.d, 'docs/D-0-governance.md');
-      fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, `$1 ${source} |`));
-      wn.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
-      const r = wn.run({ summary: '承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '承継' });
-      check(`IMPL-0342:ng 「決裁の権限の出所」の${label}を法的な形態として読まず、自己の任命を受け付けない`, !r.ok, r.out);
-    } finally {
-      fs.rmSync(wn.d, { recursive: true, force: true });
-    }
-  }
-  // 再確認への裁定 新-中-2: 正当な1名の法人の書き方を、否定と読まない。否定と数の誤検出は引き続き拾わない
+  // 確認 第3巡への裁定 高-2: 選択の欄の値の完全一致だけを見る。自由な文と、欄の値の言い換え・否定・付け足しは受け付けない
   {
-    const form = (v) => {
+    const form = (choice, source = '個人事業主本人') => {
       const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-359f-'));
       try {
         fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
-        fs.writeFileSync(path.join(d, 'docs/D-0-governance.md'), `| 決裁の権限の出所 | ${v} |
-`);
+        fs.writeFileSync(path.join(d, 'docs/D-0-governance.md'), `| 決裁の権限の出所 | ${source} |\n| 体制の法的な形態(自己の任命の例外) | ${choice} |\n`);
         return authoritySourceForm(d).form;
       } finally {
         fs.rmSync(d, { recursive: true, force: true });
       }
     };
-    const okCases = ['1名で代表権を持つ法人(他に代表権を持つ者はいない)', '代表取締役1名で代表権を持ち、取締役会を置かない', '1名で代表権を持つ法人(登記事項証明書 2026-10-01 取得)', '個人事業主本人'];
-    const ngCases = ['個人事業主ではない(株式会社。取締役11名、代表権は代表取締役)', '代表権を持つ取締役11名の法人', '代表権を持つ者が十一人の法人', '代表権を持たない1名の担当者', '代表権を持つ者が2名の法人'];
-    check('IMPL-0342:ok 正当な1名の法人・個人事業主の書き方を、法的な形態として読む', okCases.every((v) => form(v) !== null), JSON.stringify(okCases.map((v) => [v, form(v)])));
-    check('IMPL-0342:ng 否定・数の誤検出・代表権の否定・複数の代表権を、法的な形態として読まない', ngCases.every((v) => form(v) === null), JSON.stringify(ngCases.map((v) => [v, form(v)])));
+    check('IMPL-0342:ok 選択の欄の「個人事業主」「1名で代表権を持つ法人」をそのまま読む', form('個人事業主') === 'sole' && form('1名で代表権を持つ法人') === 'corp');
+    const ngChoices = ['個人事業主ではない', '個人事業主本人', '1名で代表権を持つ法人(他に代表権を持つ者はいない)', '代表権を持たない1名の担当者', '該当なし', '<自己の任命の例外を使う体制だけ>', ''];
+    check('IMPL-0342:ng 選択の欄の値が2つの語と完全に一致しなければ、言い換え・否定・付け足し・空欄を法的な形態として読まない', ngChoices.every((v) => form(v) === null), JSON.stringify(ngChoices.map((v) => [v, form(v)])));
+    check('IMPL-0342:ng 自由な文(決裁の権限の出所)の中身では読まない(選択の欄が無ければ、出所に「1名で代表権を持つ法人」と書いてあっても読まない)', (() => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-359f-'));
+      try {
+        fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+        fs.writeFileSync(path.join(d, 'docs/D-0-governance.md'), '| 決裁の権限の出所 | 1名で代表権を持つ法人 |\n');
+        return authoritySourceForm(d).form === null;
+      } finally {
+        fs.rmSync(d, { recursive: true, force: true });
+      }
+    })());
   }
   // 法人で外部の記録(登記・議事録)への言及が無ければ、受け付けたうえで記録に残す(保証の開示の項目7 に「外部の記録の所在なし」)
   const wq = workspace('pit-in-359c-');
   try {
     const d0p = path.join(wq.d, 'docs/D-0-governance.md');
-    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 1名で代表権を持つ法人(試験) |'));
+    setForm(d0p, '1名で代表権を持つ法人');
+    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 代表取締役の決裁(試験) |'));
     wq.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
     const ok = wq.run({ summary: '代表の交代', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '前任の代表が退任した' });
     const e = wq.cfg().changeLog.at(-1);
