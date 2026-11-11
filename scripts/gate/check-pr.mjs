@@ -380,24 +380,64 @@ function tableHeader(line) {
 }
 
 /**
- * TOML・INI の本文のうち、表 table とその下位の表(名が table に . : - で続くもの)の中身。比べるための正規の文字列を返す
- * (空行と行の全体の注記を除き、前後の空白を除く)。該当する表が無ければ ''
+ * TOML の1行から、文字列の外の行末の注記(# 以降)を除く。複数行の文字列(""" と ''')の中は注記として扱わない。
+ * state は { ml: null | '"""' | "'''" }。行をまたいで持ち越す(process-compass #363 の突合 X-6)
  */
-export function tableSection(text, table) {
+export function stripTomlComment(line, state) {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    if (state.ml) {
+      const end = line.indexOf(state.ml, i);
+      if (end < 0) return out + line.slice(i);
+      out += line.slice(i, end + 3);
+      i = end + 3;
+      state.ml = null;
+      continue;
+    }
+    const c = line[i];
+    if (c === '#') return out;
+    if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+      state.ml = line.slice(i, i + 3);
+      out += state.ml;
+      i += 3;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== c) j += c === '"' && line[j] === '\\' ? 2 : 1;
+      out += line.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * TOML・INI の本文のうち、表 table とその下位の表(名が table に . : - で続くもの)の中身。比べるための正規の文字列を返す
+ * (空行と行の全体の注記を除き、前後の空白を除く。toml が真なら、文字列の外の行末の注記も除く)。該当する表が無ければ ''
+ */
+export function tableSection(text, table, { toml = false } = {}) {
   if (text === null || text === undefined) return '';
   const out = [];
   let current = null;
+  const state = { ml: null };
   for (const raw of String(text).replace(/\r\n/g, '\n').split('\n')) {
-    const h = tableHeader(raw);
+    const inString = Boolean(state.ml);
+    const line = toml ? stripTomlComment(raw, state) : raw;
+    const h = inString ? null : tableHeader(line);
     if (h !== null) {
       current = h === table || (h.startsWith(table) && /^[.:-]/.test(h.slice(table.length))) ? h : null;
       if (current) out.push(`[${current}]`);
       continue;
     }
     if (!current) continue;
-    const t = raw.trim();
-    if (!t || /^[#;]/.test(t)) continue;
-    out.push(t);
+    const t = inString ? line : line.trim();
+    if (!t.trim() || (!inString && /^[#;]/.test(t))) continue;
+    out.push(inString ? t : t.replace(/\s+$/, ''));
   }
   return out.join('\n');
 }
@@ -421,11 +461,14 @@ export function keyedThresholdChanges(entries, keyed, before, after) {
     const b = before(e.from ?? f);
     const a = after(f);
     for (const { table } of hits) {
-      const sb = tableSection(b, table);
-      const sa = tableSection(a, table);
+      const toml = /.toml$/i.test(f);
+      const sb = tableSection(b, table, { toml });
+      const sa = tableSection(a, table, { toml });
       if (sb === sa) continue;
-      if (b === null || !sb) initial.push(`${f}([${table}]。基底に無い)`);
-      else changed.push(`${f}([${table}])`);
+      // 「初回の設定」は、ファイルそのものが基底に無い場合に限る。基底に在るファイルへ表を新しく足す変更は、除外の追加に
+      // 近い緩める向きの変更として、閾値の変更に数える(process-compass #363 の突合 X-2)
+      if (b === null) initial.push(`${f}([${table}]。ファイルが基底に無い)`);
+      else changed.push(`${f}([${table}])${sb ? '' : '(表を新しく足した)'}`);
     }
   }
   return { changed, initial, files };

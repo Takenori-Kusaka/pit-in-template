@@ -2514,6 +2514,22 @@ export function adapterProjectDir(adapter) {
 }
 
 /**
+ * projectDir が指すディレクトリが無ければ例外にする。書き誤った所在で検査を「対象なし」として通さないため。
+ * 目印が直下にあっても同じ(process-compass #363 の突合 X-1)
+ */
+export function assertProjectDirExists(adapter, root = ROOT) {
+  const dir = adapterProjectDir(adapter);
+  if (dir === '.') return;
+  const abs = path.join(root, dir);
+  if (!(fs.existsSync(abs) && fs.statSync(abs).isDirectory())) {
+    throw new Error(
+      `アダプタ ${adapter.id} の projectDir "${dir}" のディレクトリがありません。製品のコードの所在を書き直してください。` +
+        '書き誤った所在で検査を「対象なし」として通さないため、失敗させます(標準 第4章 G-5「検査対象が存在しない場合の扱い」)'
+    );
+  }
+}
+
+/**
  * アダプタの対象の状態。{ present, dir, nested }
  *   present: 所在(projectDir)に目印がある(none は test などのコマンドが書かれている)
  *   dir: 所在(直下は '.')
@@ -2521,6 +2537,7 @@ export function adapterProjectDir(adapter) {
  */
 export function targetState(adapter, root = ROOT) {
   const dir = adapterProjectDir(adapter);
+  assertProjectDirExists(adapter, root);
   if (adapter.id === 'undetermined') return { present: false, dir, nested: [] };
   if (adapter.id === 'none') {
     // 秘匿情報の検査のコマンドは対象の有無の根拠にしない(対象なしでも実行するため)
@@ -2548,7 +2565,8 @@ export function targetState(adapter, root = ROOT) {
     .split('\0')
     .filter(Boolean)
     .map((f) => f.replace(/\\/g, '/'))
-    .filter((f) => f.includes('/') && !TARGET_SKIP_DIRS.test(f) && re.test(f.slice(f.lastIndexOf('/') + 1)))
+    // 所在の外の目印。所在が直下でなければ、直下の目印も数える(突合 X-1)
+    .filter((f) => !TARGET_SKIP_DIRS.test(f) && re.test(f.slice(f.lastIndexOf('/') + 1)))
     .filter((f) => path.posix.dirname(f) !== dir)
     .sort();
   return { present: false, dir, nested };
@@ -2565,7 +2583,7 @@ export function nestedTargetProblem(adapter, state) {
   const where = state.dir === '.' ? 'リポジトリの直下' : `所在 ${state.dir}`;
   const list = `${state.nested.slice(0, 5).join(', ')}${state.nested.length > 5 ? ` ほか ${state.nested.length - 5} 件` : ''}`;
   return (
-    `アダプタ ${adapter.id}: ${where}に目印のファイルが無く、下の階層にあります(${list})。製品のコードがあるため、「対象なし」として通しません。` +
+    `アダプタ ${adapter.id}: ${where}に目印のファイルが無く、所在の外(下の階層、または直下)にあります(${list})。製品のコードがあるため、「対象なし」として通しません。` +
     `adapters/${adapter.id}.json の projectDir に製品のコードの所在(例: "${path.posix.dirname(state.nested[0])}")を書いてください。` +
     'アダプタの変更は統制の設定の変更です(標準 第4章 G-5「検査対象が存在しない場合の扱い」「統制の設定の変更の承認」)'
   );

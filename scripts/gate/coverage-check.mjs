@@ -396,7 +396,14 @@ function writeResult(root, o) {
 function main() {
   const config = loadConfig();
   const adapter = loadAdapter(config);
-  const state = targetState(adapter);
+  let state;
+  try {
+    state = targetState(adapter);
+  } catch (e) {
+    fail(e.message);
+    writeResult(ROOT, { measured: false, reason: 'アダプタの projectDir が不正' });
+    process.exit(1);
+  }
   const nested = nestedTargetProblem(adapter, state);
   if (nested) {
     fail(nested);

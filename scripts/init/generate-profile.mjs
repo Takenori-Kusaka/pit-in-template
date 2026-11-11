@@ -529,7 +529,7 @@ export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, so
       compensation: [],
       reviewSourcing: null,
       howToResolve: [
-        '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, go, none）を決定する',
+        '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, python-poetry, python-uv, go, none）を決定する',
         '決定したスタックを、/process-change(種別 settings の settings.stack)で構成へ反映する。process.config.json を手で編集しない',
       ],
     });

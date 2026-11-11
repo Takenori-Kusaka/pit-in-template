@@ -36,12 +36,16 @@ const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-adapter-bin-'));
 dirs.push(BIN);
 // 代役: 呼ばれた所在(作業ディレクトリ)に .fake-<名> を書き、FAKE_EXIT で終わる
 for (const name of ['npx', 'python', 'poetry', 'uv']) {
-  fs.writeFileSync(path.join(BIN, name), `#!/bin/sh\necho "$@" > ".fake-${name}"\nexit \${FAKE_EXIT:-0}\n`);
+  // 環境変数 UV_PYTHON も印に書く(python-uv が runtimeVersion の python を使うか。突合 X-4)
+  fs.writeFileSync(path.join(BIN, name), `#!/bin/sh\necho "$@" > ".fake-${name}"\necho "UV_PYTHON=$UV_PYTHON" >> ".fake-${name}"\nexit \${FAKE_EXIT:-0}\n`);
   fs.chmodSync(path.join(BIN, name), 0o755);
-  fs.writeFileSync(path.join(BIN, `${name}.cmd`), `@echo off\r\necho %* > ".fake-${name}"\r\nif "%FAKE_EXIT%"=="" exit /b 0\r\nexit /b %FAKE_EXIT%\r\n`);
+  fs.writeFileSync(path.join(BIN, `${name}.cmd`), `@echo off\r\necho %* > ".fake-${name}"\r\necho UV_PYTHON=%UV_PYTHON%>> ".fake-${name}"\r\nif "%FAKE_EXIT%"=="" exit /b 0\r\nexit /b %FAKE_EXIT%\r\n`);
 }
 
-function workspace(stack, files = {}, adapterPatch = null) {
+const SECRETLINT_RC = '{ "rules": [{ "id": "@secretlint/secretlint-rule-preset-recommend" }] }\n';
+// 既定では秘匿情報の検査の設定を置く(初期化が作る)。noRc で置かない場合を試す
+function workspace(stack, files = {}, adapterPatch = null, { noRc = false } = {}) {
+  if (!noRc && !('.secretlintrc.json' in files)) files = { '.secretlintrc.json': SECRETLINT_RC, ...files };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pit-in-adapter-${stack}-`));
   dirs.push(dir);
   fs.cpSync(path.join(ROOT, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
@@ -143,6 +147,36 @@ for (const bad of ['../outside', '/abs/path']) {
   const W = workspace('python', {}, { projectDir: bad });
   const r = W.adapter('test', '0');
   check(`projectDir "${bad}" は直下の外を指すため失敗させる`, r.code === 1 && /直下の外|相対のパス/.test(r.out), r.out);
+}
+// projectDir の書き誤り(突合 X-1)。所在のディレクトリが無ければ、目印が直下にあっても失敗させる
+{
+  // IMPL-0475:ng(違反と適合の対。標準の実装マーク。process-compass #363 の突合 X-1)
+  const W = workspace('python', { 'pyproject.toml': '[project]\nname = "a"\n' }, { projectDir: 'srv' });
+  for (const phase of ['test', 'install']) {
+    const r = W.adapter(phase, '0');
+    check(`python: projectDir "srv" が無いディレクトリなら、目印が直下にあっても ${phase} を対象なしにせず失敗させる`, r.code === 1 && /projectDir "srv" のディレクトリがありません/.test(r.out) && !W.ran('.', 'python'), r.out);
+  }
+  const cc = W.run('scripts/gate/coverage-check.mjs', []);
+  check('python: projectDir が無いディレクトリなら、カバレッジの判定も未実施にせず失敗させる', cc.code === 1 && /ディレクトリがありません/.test(cc.out), cc.out);
+  // 契約検査が落ちることは、構成を設定した複製で test-init-g5.mjs が確かめる
+  // 所在のディレクトリはあるが目印が無く、目印が直下にある
+  const D = workspace('python', { 'pyproject.toml': '[project]\nname = "a"\n', 'srv/x.py': 'x = 1\n' }, { projectDir: 'srv' });
+  const r = D.adapter('test', '0');
+  check('python: 所在(srv)に目印が無く直下にあれば、直下の目印を所在の外の目印として数え、失敗させる', r.code === 1 && /pyproject\.toml/.test(r.out) && /所在の外/.test(r.out), r.out);
+}
+// 旧い構成で秘匿情報の検査の設定が無い(突合 X-3)
+for (const stack of ['undetermined', 'none', 'node']) {
+  const W = workspace(stack, {}, null, { noRc: true });
+  const r = W.adapter('secretScan', '0');
+  check(`${stack}: .secretlintrc.json が無ければ、秘匿情報の検査を落とし、--scaffold で作れることを日本語で出す`, r.code === 1 && /\.secretlintrc\.json/.test(r.out) && /--scaffold/.test(r.out) && !W.ran('.', 'npx'), r.out);
+}
+// python-uv は runtimeVersion の python を uv に使わせる(突合 X-4)
+{
+  const W = workspace('python-uv', { 'pyproject.toml': '[project]\nname = "a"\n' });
+  W.adapter('test', '0');
+  const mark = path.join(W.dir, '.fake-uv');
+  const text = fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8') : '';
+  check('python-uv: uv に UV_PYTHON=runtimeVersion(3.12)を渡す', /UV_PYTHON=3\.12/.test(text), text);
 }
 
 // ---------------------------------------------------------------- 3. python の依存の取得の入れ方(python アダプタ)

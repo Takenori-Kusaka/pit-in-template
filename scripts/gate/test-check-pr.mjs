@@ -786,6 +786,25 @@ ${instr}
   scenario('pyproject.toml の [tool.ruff] だけを変える PR(陰性の確認の記録あり)は通る', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
     write('pyproject.toml', PYPROJECT({ exclude: '"legacy", "build"' }));
   }, passes((r) => (r.thresholds.changed.includes('pyproject.toml([tool.ruff])') ? [] : ['閾値の変更として識別していない'])));
+  // 基底に在るファイルへ閾値の表を新しく足す変更は、初回の設定ではなく閾値の変更に数える(突合 X-2)
+  // IMPL-0202:ng(違反と適合の対。標準の実装マーク。process-compass #363 の突合 X-2)
+  scenario('基底に在る pyproject.toml へ [tool.mypy] の表を新しく足し、製品のコードも変える', {}, () => {
+    write('pyproject.toml', `${PYPROJECT()}\n[tool.mypy]\nignore_errors = true\n`);
+    write('src/app/core.py', PY_CODE);
+  }, failsWith(/基準値と除外設定の変更.*pyproject\.toml\(\[tool\.mypy\]\)\(表を新しく足した\)/));
+  // IMPL-0202:ok(違反と適合の対。標準の実装マーク。process-compass #363 の突合 X-2)
+  scenario('pyproject.toml のファイルそのものを新しく作る(下の階層。初回の設定)と、製品のコードも変える', {}, () => {
+    write('services/api/pyproject.toml', '[project]\nname = "api"\n\n[tool.ruff]\nextend-exclude = ["gen"]\n');
+    write('src/app/core.py', PY_CODE);
+  }, passes((r) => (r.thresholds.initial.some((x) => /services\/api\/pyproject\.toml\(\[tool\.ruff\]。ファイルが基底に無い\)/.test(x)) ? [] : [`初回の設定として識別していない: ${JSON.stringify(r.thresholds)}`])));
+  // 行末の注記の変更だけは、閾値の変更に数えない(突合 X-6)。文字列の中の # は注記として扱わない
+  unit('表の中身: TOML の行末の注記の違いは変更に数えない', tableSection('[tool.ruff]\nline-length = 100 # a\n', 'tool.ruff', { toml: true }) === tableSection('[tool.ruff]\nline-length = 100  # b\n', 'tool.ruff', { toml: true }));
+  unit('表の中身: TOML の文字列の中の # の違いは変更に数える', tableSection('[tool.ruff]\nexclude = ["a#1"]\n', 'tool.ruff', { toml: true }) !== tableSection('[tool.ruff]\nexclude = ["a#2"]\n', 'tool.ruff', { toml: true }));
+  unit('表の中身: 複数行の文字列の中の # と見出しの形の行は、注記・見出しとして扱わない', tableSection('[tool.x]\nv = """\n# keep\n[not.header]\n"""\n', 'tool.x', { toml: true }).includes('# keep') && tableSection('[tool.x]\nv = """\n# keep\n[not.header]\n"""\n', 'tool.x', { toml: true }).includes('[not.header]'));
+  scenario('pyproject.toml の [tool.ruff] の行末の注記だけを変え、製品のコードも変える', {}, () => {
+    write('pyproject.toml', PYPROJECT().replace('extend-exclude = ["legacy"]', 'extend-exclude = ["legacy"]  # 旧い置き場'));
+    write('src/app/core.py', PY_CODE);
+  }, passes((r) => (r.thresholds.changed.length === 0 ? [] : [`注記の変更を閾値の変更と数えた: ${r.thresholds.changed.join(', ')}`])));
   // 統制の設定の変更の承認の範囲(出荷の証跡の集約と同じ関数)も、表の中身の変更だけを数える
   const gitA = (args) => {
     try {

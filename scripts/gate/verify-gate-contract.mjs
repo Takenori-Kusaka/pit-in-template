@@ -23,7 +23,7 @@ import path from 'node:path';
 import {
   loadConfig,
   loadAdapter,
-  adapterProjectDir,
+  assertProjectDirExists,
   ROOT,
   fail,
   warn,
@@ -731,11 +731,14 @@ if (adapter) {
   if (!(adapter.commands?.secretScan ?? '').trim()) {
     problems.push(
       `アダプタ ${adapter.id} の "secretScan" が空です。秘匿情報の検査は台帳記録による通過も対象なしによる通過も認めない基準のため、` +
-        '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
+        '実行するコマンドが必要です。adapters/ のファイルへ書いてください' +
+        (adapter.id === 'undetermined' || adapter.id === 'none'
+          ? `。旧い準拠テンプレートの adapters/${adapter.id}.json は secretScan を空にしていました。取り込んだテンプレートの版の adapters/${adapter.id}.json の secretScan(secretlint)を写し、リポジトリの直下に .secretlintrc.json が無ければ node scripts/init/generate-profile.mjs --scaffold で作ります(process-compass #363)`
+          : '')
     );
   }
   try {
-    adapterProjectDir(adapter);
+    assertProjectDirExists(adapter);
   } catch (e) {
     problems.push(e.message);
   }

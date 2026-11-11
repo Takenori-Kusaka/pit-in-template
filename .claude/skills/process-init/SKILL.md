@@ -237,7 +237,7 @@ node scripts/gate/next.mjs
 **`process.config.json` を直接編集しません**。構成を書き換える経路は `/process-change` だけです。手で編集した構成と、引数(`--stack`)で値を変える再生成は、拒否されます。
 
 1. **意思決定の記録**: `/adr-write` を実行し、採用した技術スタックと選定理由、比較検討した選択肢（採らなかった選択肢）を `context/decisions/` へ記録します。
-2. **構成への反映**: `/process-change` の種別 `settings` で、決定したスタック（`node`, `python`, `go`, `none` のいずれか）を反映します。変更は `changeLog[]` へ記録されます。
+2. **構成への反映**: `/process-change` の種別 `settings` で、決定したスタック（`node`, `python`, `python-poetry`, `python-uv`, `go`, `none` のいずれか）を反映します。変更は `changeLog[]` へ記録されます。
    ```bash
    cat > /tmp/change.json <<'JSON'
    { "kind": "settings", "summary": "技術スタックを確定した(ADR-001)", "settings": { "stack": "<決定したスタック>" } }

@@ -384,7 +384,7 @@ CI が固定するのは**ゲート契約**だけです。
 - 必須ステータスチェックの名前は `gate-g5`
 - 出荷判定の証跡は `evidence/evidence.json` のキー構造
 
-実際に走るテスト・静的解析・ライセンス検査のコマンドは `adapters/<stack>.json` から差し込みます。同梱するアダプタは `node` / `python` / `python-poetry` / `python-uv` / `go` / `none` / `undetermined` の7種です。`python-poetry` と `python-uv` は、ロックファイル(`poetry.lock`・`uv.lock`)どおりに依存を入れます。どれを使うかは人が選びます(ロックファイルの有無からは選びません)。製品のコードがリポジトリの直下に無い場合は、アダプタの `projectDir` に所在を書きます(秘匿情報の検査のほかのコマンドをそこで実行する)。直下に目印が無く下の階層にある状態は、「対象なし」にせず G-5 で失敗します。秘匿情報の検査は、製品のコードの有無に依らずリポジトリの全体へ実行します(第4章 G-5 基準7 は対象なしを認めない)。プロセスの骨格が言語に汚染されません。
+実際に走るテスト・静的解析・ライセンス検査のコマンドは `adapters/<stack>.json` から差し込みます。同梱するアダプタは `node` / `python` / `python-poetry` / `python-uv` / `go` / `none` / `undetermined` の7種です。`python-poetry` と `python-uv` は、ロックファイル(`poetry.lock`・`uv.lock`)どおりに依存を入れます。どれを使うかは人が選びます(ロックファイルの有無からは選びません)。製品のコードがリポジトリの直下に無い場合は、アダプタの `projectDir` に所在を書きます(秘匿情報の検査のほかのコマンドをそこで実行する)。直下に目印が無く下の階層にある状態は、「対象なし」にせず G-5 で失敗します。秘匿情報の検査は、製品のコードの有無に依らずリポジトリの全体へ実行します(第4章 G-5 基準7 は対象なしを認めない)。この変更の前に `undetermined`・`none` で初期化した案件は、`.secretlintrc.json` が無く、`adapters/<stack>.json` の `secretScan` も空のため、更新の後に G-5 の secret-scan と契約検査が落ちます。取り込んだ版の `adapters/<stack>.json` の `secretScan` を写し、`node scripts/init/generate-profile.mjs --scaffold` で設定を作ってください(落ちたときにも同じ案内が出ます)。`projectDir` が無いディレクトリを指すと、目印が直下にあっても G-5 と契約検査が失敗します。プロセスの骨格が言語に汚染されません。
 
 ゲートのスクリプトは Node 22 の標準機能だけで動きます。依存パッケージのインストールは要りません。ワークフローは、ゲートのスクリプトを動かす前に `.github/gate-node-version` の版の Node を用意します(ランナーの既定の Node に依らない)。製品の実行環境の版は、アダプタの `runtimeVersion` が別に決めます。この固定を外した手順は `scripts/gate/test-gate-node.mjs` が見つけます。
 

@@ -15,6 +15,7 @@
 //   - コマンドの中の {root} は、リポジトリの直下の絶対パスに置き換える(所在の下からテンプレートのスクリプトを呼ぶため)
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES } from './config.mjs';
 
@@ -79,6 +80,17 @@ if (!cmd.trim()) {
   process.exit(1);
 }
 
+// secretlint の設定が無いと、secretlint は英語の「config is not found」だけを出して落ちる。何をすればよいかを先に出す。
+// 旧い初期化は undetermined・none で設定を作らなかったため、更新の後に落ちる採用者がいる(process-compass #363 の突合 X-3)。
+// 落ちる向きは変えない(基準7 は対象なしを認めない)
+if (phase === 'secretScan' && /\bsecretlint\b/.test(cmd) && !fs.readdirSync(ROOT).some((f) => /^\.secretlintrc(\..+)?$/.test(f))) {
+  fail(
+    '秘匿情報の検査の設定(.secretlintrc.json)がリポジトリの直下にありません。秘匿情報の検査は、製品のコードの有無やスタックの確定に依らず実行します(第4章 G-5 基準7 は「対象なし」を認めません)。' +
+      '`node scripts/init/generate-profile.mjs --scaffold` を実行すると、無いファイルだけを作ります(既存のファイルは書き換えません)。作った設定は、統制の設定の初回の設定として PR で取り込みます'
+  );
+  process.exit(1);
+}
+
 const rootPosix = ROOT.replace(/\\/g, '/');
 const command = cmd.replaceAll('{root}', rootPosix);
 
@@ -103,6 +115,9 @@ const env = {
   PIT_IN_ROOT: rootPosix,
   PIT_IN_PROJECT_DIR: cwd.replace(/\\/g, '/'),
 };
+// uv は PATH の python と別の版を選びうる。アダプタの runtimeVersion の python を使わせる(既に指定があれば変えない。
+// process-compass #363 の突合 X-4)
+if (adapter.runtime === 'python' && adapter.runtimeVersion && !process.env.UV_PYTHON) env.UV_PYTHON = String(adapter.runtimeVersion);
 
 if (!always && state.dir !== '.') console.log(`(所在: ${state.dir})`);
 if (always && !state.present) console.log(`(製品のコードの有無に依らず実施する検査です。リポジトリの直下で実行します)`);

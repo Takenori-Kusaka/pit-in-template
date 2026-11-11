@@ -230,6 +230,16 @@ for (const n of [1, 3]) {
     );
     W.write(wfPath, wfText);
   }
+  // アダプタの projectDir が無いディレクトリを指すと、契約検査が落ちる(process-compass #363 の突合 X-1)
+  {
+    const stack = JSON.parse(W.read('process.config.json')).adapters.stack;
+    const aPath = `adapters/${stack}.json`;
+    const aText = W.read(aPath);
+    W.write(aPath, JSON.stringify({ ...JSON.parse(aText), projectDir: 'no-such-dir' }, null, 2));
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: アダプタの projectDir が無いディレクトリを指すと、契約検査が落ちる`, !r.ok && /projectDir "no-such-dir" のディレクトリがありません/.test(r.out), r.out);
+    W.write(aPath, aText);
+  }
   // 承認は承認した差分に対して数える(標準 第4章 G-6。#296 L-2)。適用するルールセットの dismiss_stale_reviews_on_push を外すと契約検査が落ちる
   {
     const cfg = JSON.parse(W.read('process.config.json'));
