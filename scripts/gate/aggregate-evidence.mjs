@@ -112,6 +112,10 @@ import {
   reviewersRequiredOf,
   corePathsOf,
   touchesCore,
+  restrictionHit,
+  restrictionState,
+  stepCeiling,
+  valueOwnerAgreementState,
   trackedFiles,
   approvalBinding,
   parseGhVersion,
@@ -1147,7 +1151,7 @@ if (isMain) {
     const objection = normLine(objectionRaw ?? '');
     const judge = rowValue(text, '判定者');
     // 監査対応書式(構成 review.recordFormat: audit。テンプレ4「監査対応書式」)の行。2人目の承認者は、G-6 を2名で行う体制の
-    // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上の者(標準 第1章 1.4・附属書F)。段の機械の検査は未実装(process-compass #357)。
+    // 2人目の独立した確認者であり、自分の挙動要約を同じ節に書く。安全性の評価者は、実装の責任者から組織上の距離の段で CL2 は段2 以上・CL3 は段3 以上の者(標準 第1章 1.4・附属書F)。記録した段を比べ、構成から導ける反証で引き下げる。距離そのものは確かめない(process-compass #357 / ADR-0127 決定6)。
     // 様式の説明(<…>)を残したままの欄は未記入として扱う(#288 第5巡)
     const auditCell = (key) => {
       const v = rowValue(text, key, false);
@@ -1162,6 +1166,11 @@ if (isMain) {
     const secondSummary = auditCell('2人目の挙動要約');
     const safety = auditCell('安全性の評価者');
     const safetyRecord = auditCell('安全性の評価の記録の所在');
+    // 評価者と段階「最強」の検証の担当者の段(第1章 1.4・第8章 軸E。#357 / ADR-0127 決定6)。段の値は記録した値を読む
+    const safetyStep = auditCell('安全性の評価者の段');
+    const safetyStepBasis = auditCell('安全性の評価者の段の根拠');
+    const strongest = auditCell('最強の検証の担当者');
+    const strongestStep = auditCell('最強の検証の担当者の段と根拠');
     return {
       ...r,
       target: rowValue(text, '対象'),
@@ -1179,6 +1188,11 @@ if (isMain) {
         safetyAssessor: safety.value,
         safetyAssessorRowPresent: safety.present,
         safetyRecord: safetyRecord.value,
+        safetyStep: safetyStep.value,
+        safetyStepRowPresent: safetyStep.present,
+        safetyStepBasis: safetyStepBasis.value,
+        strongestVerifier: strongest.value ? strongest.value.replace(/。.*$/, '').trim() : null,
+        strongestStep: strongestStep.value,
       },
       // 作成側の検証の記載。「検証方法と結果」の欄(表の行)または節に、記載があるか
       authorVerificationPresent: Boolean(
@@ -1712,7 +1726,20 @@ if (isMain) {
   function independentConfirmation(ins, reviews, refers, { direct = false, files = null, at = null, headOid = undefined, prLabel = null } = {}) {
     // コア機能の変更か(構成のコア機能のパスに当たるか)。未宣言なら null(判定できない)。要求する承認者の数は、コアなら大きいほう
     const core = coreCountApplies ? touchesCore(config, files ?? [], { tracked: TRACKED_FILES }) : null;
-    const required = core?.hit ? coreReviewersRequired : reviewersRequired;
+    // 承認権限の一時制限(第7章 7.9.2)。解除されていない制限の範囲に触れる変更は、独立レビュア2名を要する。満たさなければ
+    // 独立した人の確認に数えない(検出能力の低下を検知された者の承認を単独では数えない。ADR-0067 決定2。#357 / ADR-0127 決定5)
+    // 照らす時点は、変更を取り込んだコミット(at は取り込む前の版 `<hash>^`)の時刻。読めなければ現在の状態で照らす
+    const takenAt = (() => {
+      const rev = typeof at === 'string' ? at.replace(/\^$/, '') : null;
+      if (!rev) return null;
+      try {
+        return execFileSync('git', ['show', '-s', '--format=%cI', rev], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+      } catch {
+        return null;
+      }
+    })();
+    const restricted = g6AppliedStructure ? restrictionHit(config, files ?? [], takenAt) : { hit: false, restrictions: [] };
+    const required = Math.max(core?.hit ? coreReviewersRequired : reviewersRequired, restricted.hit ? 2 : 0);
     const about = {
       instructors: [...ins.known.values()],
       instructorsByDefault: ins.byDefault,
@@ -1818,7 +1845,15 @@ if (isMain) {
     about.approverNames = byNames;
     if (byNames.length < required) {
       const copied = about.copiedSummaries.length ? `。先に数えた承認者と同一の文の挙動要約のため数えない承認者: ${about.copiedSummaries.join('、')}(自分の言葉で書く)` : '';
-      return { ...none('insufficientApprovers'), reasonText: insufficientText(byNames.length, required, core) + copied };
+      const rest = restricted.hit
+        ? `。承認権限の一時制限(第7章 7.9.2)の範囲に触れる: ${restricted.restrictions.map((r) => `${r.id}(${r.paths.join(', ')}。対象 ${r.person ?? '不明'})`).join(' / ')}。範囲の変更は独立レビュア2名を要する`
+        : '';
+      // 制限で要求が上がった変更は、構成の要求の文ではなく制限の文で出す(要求の出所を取り違えさせない)
+      const base =
+        restricted.hit && required > (core?.hit ? coreReviewersRequired : reviewersRequired)
+          ? `G-6 の承認者 ${byNames.length} 名 / 要求 ${required} 名(名簿の別人が、自分の挙動要約を付けて承認するか、判定記録の「2人目の承認者」に記名する)`
+          : insufficientText(byNames.length, required, core);
+      return { ...none('insufficientApprovers'), restrictedBy: restricted.hit ? restricted.restrictions.map((r) => r.id) : [], reasonText: base + rest + copied };
     }
     return {
       counted: true,
@@ -1835,6 +1870,14 @@ if (isMain) {
       summarySource: summarized.some((c) => c.summary === 'review') ? 'review' : 'gate-record',
       // 承認した者に、独立レビュアの席の責任者が含まれるか(件数として別に出す。欠落にはしない)
       byReviewerSeat: Boolean(reviewerKey) && summarized.some((c) => c.person.id === reviewerKey || personKey(config, c.person.name) === reviewerKey),
+      // 確認者の力量の確認(第3章 3.4.1。#357 / ADR-0127 決定4)。記録が無い確認者と、力量を確認した者がこの変更の作成を指示した者
+      // (依頼した本人)である確認者。名簿の現在の行で引く。中身は確かめない
+      noCompetenceApprovers: byNames.filter((n) => !findPerson(config, n)?.reviewCompetence),
+      requesterConfirmedApprovers: byNames.filter((n) => {
+        const by = findPerson(config, n)?.reviewCompetence?.confirmedBy;
+        const k = by ? personKey(config, by) : null;
+        return Boolean(k) && ins.known.has(k);
+      }),
       ...about,
     };
   }
@@ -2454,6 +2497,11 @@ if (isMain) {
   // 構成の整合(契約検査のうち、構成だけから確かめられる部分)。PR を経ない体制では、契約検査が走らないまま
   // 出荷へ進む場合があるため、集約の時点でも確かめる(要約値の連鎖、回答と名簿の食い違いなど)
   for (const p of configIntegrityProblems(config)) gaps.push(`構成の整合: ${p}`);
+  // 受託・委託の構成で、価値責任者(発注側が選任した者)が様式 08 と構成で食い違えば記録の欠落(#357 / ADR-0127 決定7)。
+  // 空欄(旧い様式を含む)は次の一手の注記にとどめる。値は構成へ写さない
+  const slaFile = path.join(ROOT, 'docs/ai-sla.md');
+  const valueOwner = valueOwnerAgreementState(config, fs.existsSync(slaFile) ? fs.readFileSync(slaFile, 'utf8') : null);
+  if (valueOwner.applies && valueOwner.state === 'mismatch') gaps.push(`価値責任者の所属: ${valueOwner.text}`);
   // 未適用の厳格化(#318 突合 X-4)。安全重要度 CL1 以上で G-6・G-7 が規則より緩いまま残る構成は欠落として数える
   // (CL1 以上は未達のまま出荷しない)。ほかの差は保証の開示に出す
   const tightenings = pendingTightenings(config);
@@ -2531,6 +2579,21 @@ if (isMain) {
   const auditRecordGaps = [];
   if (auditFormat || safetyAssessmentRequired) {
     const devKey = whoKey('dev-verifier');
+    // 求める段(第8章 軸E): CL3 は段3、それ以外(CL2)は段2
+    const stepRequired = config.answers?.['q-criticality'] === 'cl3' ? 3 : 2;
+    /** 記録した段を求める段と比べる。届かなければ理由の文、届けば null。段2 以上の距離そのものは確かめない */
+    const stepCompare = (row, stepText, basisText, person, against) => {
+      const m = String(stepText ?? '').normalize('NFKC').match(/段\s*([1-4])/);
+      if (!m) return `「${row}」が未記入、または段1〜4 として読めない(CL${stepRequired} は段${stepRequired} 以上。届かない段は未達として扱い、CL1 以上は未達のまま出荷しない)`;
+      if (!String(basisText ?? '').trim()) return `「${row}」の根拠(指揮系統・資源・リリースの権限の事実)が未記入である`;
+      const recorded = Number(m[1]);
+      const cap = stepCeiling(config, person.name, against);
+      const effective = Math.min(recorded, cap.ceiling);
+      if (effective < stepRequired) {
+        return `記録した段 段${recorded}${effective !== recorded ? `(段${effective} として数えた。${cap.reasons.join('。')})` : ''} が、求める段 段${stepRequired} に届かない`;
+      }
+      return null;
+    };
     const unitList = [
       ...prs.map((p) => ({ label: `PR #${p.number}`, refers: (text) => refersToPr(text, p.number), instructors: p.g6.independent.instructors, postHoc: p.g6PostHoc })),
       ...directProduct.map((d) => ({ label: `コミット ${d.commit}`, refers: commitRefers(d.hash), instructors: d.independent.instructors, postHoc: false })),
@@ -2574,9 +2637,30 @@ if (isMain) {
               if (g.judge && samePerson(config, a.safetyAssessor, g.judge)) why.push('当該の判定者(独立レビュア)と同一人物である。独立した安全性の評価は G-6 へ吸収しない');
             }
             if (!a.safetyRecord) why.push('「安全性の評価の記録の所在」が未記入である');
+            // 段の比較(第8章 軸E。CL2 は段2 以上、CL3 は段3 以上)。記録した段を、構成から導ける反証で引き下げて数える。
+            // 段2 以上の距離そのものは確かめない(#357 / ADR-0127 決定6。O-5 の解消)
+            if (person) {
+              const st = stepCompare('安全性の評価者の段', a.safetyStep, a.safetyStepBasis, person, [seatOf('dev-verifier')?.accountable, ...(u.instructors ?? []), g.judge].filter(Boolean));
+              if (st) why.push(st);
+            }
             if (why.length) auditRecordGaps.push(`${g.file}: 安全性の評価者 "${a.safetyAssessor}" を独立した評価者として受け付けません(${why.join('。')})`);
           } else if (a.safetyAssessor.normalize('NFKC').replace(/^該当なし/, '').replace(/^[((:：\s]+/, '').replace(/[))\s]+$/, '').length === 0) {
             auditRecordGaps.push(`${g.file}: 「安全性の評価者」の「該当なし」に理由がありません。安全関連でない変更である理由を書いてください`);
+          }
+          // 段階「最強」の検証の担当者(第5章 5.8.4。CL2 は段2 以上、CL3 は段3 以上)。氏名が書かれた記録で段を比べる(IMPL-0184)。
+          // 行の有無と「該当なし」の当否は確かめない(安全関連部に触れるかは人が判定する)
+          const sv = a.strongestVerifier;
+          if (sv && !/^該当なし/.test(sv.normalize('NFKC'))) {
+            const why = [];
+            if (aiNameBlocked(config, sv)) why.push('AI の名義である');
+            const person = resolveSigner(config, sv);
+            if (!person) why.push('名簿の人へ対応づかない');
+            else {
+              if (devKey && person.id === devKey) why.push('開発者の席の責任者(実装の責任者)と同一人物である');
+              const st = stepCompare('最強の検証の担当者の段と根拠', a.strongestStep, a.strongestStep, person, [seatOf('dev-verifier')?.accountable, ...(u.instructors ?? [])].filter(Boolean));
+              if (st) why.push(st);
+            }
+            if (why.length) auditRecordGaps.push(`${g.file}: 段階「最強」の検証の担当者 "${sv}" を受け付けません(${why.join('。')})`);
           }
         }
       }
@@ -3500,6 +3584,11 @@ if (isMain) {
     nameOverrideDetails: nameOverrideDetails(config),
     // 本人以外の確認で記名者を照合した既存の記録(process-compass #434 / ADR-0120 決定2)。作られた時点の照合と区別して開示する
     laterSignerChecks: laterSignerChecks(config),
+    // 承認権限の一時制限(第7章 7.9。#357 / ADR-0127 決定5)
+    restrictions: (() => {
+      const st = restrictionState(config);
+      return { active: st.active, legacy: st.legacy, notCounted: count(changeUnits, (c) => (c.independent.restrictedBy?.length ?? 0) > 0) };
+    })(),
     changes: {
       total: changesTotal,
       withoutIndependentHuman,
@@ -3515,6 +3604,9 @@ if (isMain) {
       byReviewerSeat: count(confirmedUnits, (c) => c.independent.byReviewerSeat),
       // アカウント名の確認済みの上書きで数えた承認の件数(承認者の数で数える。#296)
       overriddenApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.overriddenLogins?.length ?? 0), 0),
+      // 確認者の力量(第3章 3.4.1。#357 / ADR-0127 決定4)。承認者の数で数える
+      noCompetenceConfirmations: confirmedUnits.reduce((n, c) => n + (c.independent.noCompetenceApprovers?.length ?? 0), 0),
+      requesterConfirmations: confirmedUnits.reduce((n, c) => n + (c.independent.requesterConfirmedApprovers?.length ?? 0), 0),
       // 名義を共有するアカウントの承認(承認者の数で数える)と、それを数えた変更の件数(第4章 G-6。#430 / IMPL-0423・IMPL-0424)
       sharedAccountApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.sharedApprovers?.length ?? 0), 0),
       sharedAccountChanges: count(confirmedUnits, (c) => (c.independent.sharedApprovers?.length ?? 0) > 0),
@@ -5396,7 +5488,7 @@ if (isMain) {
     R.push(`| 　内訳: 作成を指示した者を名簿と対応づけられない | ${un.instructorUnresolved} | ${prevUn('instructorUnresolved')} |`);
     R.push(`| 　内訳: レビュアの挙動要約を伴わない承認だけである | ${un.noReviewerSummary ?? 0} | ${prevUn('noReviewerSummary')} |`);
     R.push(
-      `| 　内訳: 独立した人の承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名)に満たない | ${un.insufficientApprovers ?? 0}${(A.independence.reviewers?.insufficient ?? []).length ? `: ${A.independence.reviewers.insufficient.join(', ')}` : ''} | ${prevUn('insufficientApprovers')} |`
+      `| 　内訳: 独立した人の承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名。コア機能と承認権限の一時制限の範囲では上がる)に満たない | ${un.insufficientApprovers ?? 0}${(A.independence.reviewers?.insufficient ?? []).length ? `: ${A.independence.reviewers.insufficient.join(', ')}` : ''} | ${prevUn('insufficientApprovers')} |`
     );
     R.push(`| 　内訳: PR を経ていないコミット(独立した人の G-6 の判定記録が対応づかない) | ${un.directCommits} | ${prevUn('directCommits')} |`);
     if (ch.approvalRecordNotFound) {
@@ -5405,6 +5497,20 @@ if (isMain) {
     R.push(
       `| 独立した人の確認に数えた変更のうち、承認した者に独立レビュアの席の責任者を含む | 含む ${ch.byReviewerSeat ?? 0} 件 / 含まない ${ch.notByReviewerSeat ?? 0} 件 | ${prev((p) => (p.independence.changes.byReviewerSeat === undefined ? '値なし' : `含む ${p.independence.changes.byReviewerSeat} 件 / 含まない ${p.independence.changes.notByReviewerSeat} 件`))} |`
     );
+    // 確認者の力量(第3章 3.4.1)。数えたうえで件数を出す。出荷は止めない(#357 / ADR-0127 決定4)
+    R.push(
+      `| 独立した人の確認に数えた承認のうち、力量の確認の記録が無い確認者による確認(名簿の reviewCompetence が無い。第3章 3.4.1) | ${ch.noCompetenceConfirmations ?? 0} 件 | ${prev((p) => p.independence.changes.noCompetenceConfirmations ?? '値なし')} |`
+    );
+    R.push(
+      `| 独立した人の確認に数えた承認のうち、依頼した本人による確認(確認者の力量を確認した者が、その変更の作成を指示した者。ほかの者による確認と区別する) | ${ch.requesterConfirmations ?? 0} 件 | ${prev((p) => p.independence.changes.requesterConfirmations ?? '値なし')} |`
+    );
+    // 承認権限の一時制限(第7章 7.9)。範囲を記録していない旧い発動は、範囲を判定できない(#357 / ADR-0127 決定5)
+    const rs = A.independence.restrictions;
+    if (rs && (rs.active.length || rs.legacy || rs.notCounted)) {
+      R.push(
+        `| 承認権限の一時制限(第7章 7.9.2) | 解除されていない制限 ${rs.active.length} 件${rs.active.length ? `(${rs.active.map((r) => `${r.id}: ${r.paths.join(', ')}`).join(' / ')})` : ''}。範囲に触れ、独立レビュア2名に満たず数えなかった変更 ${rs.notCounted} 件${rs.legacy ? `。範囲を記録していない旧い発動の記録 ${rs.legacy} 件(範囲を判定できない。/process-change の種別 notice で範囲を書いて記録し直すか、解除を記録する)` : ''} | — |`
+      );
+    }
     if (ch.overriddenApprovals) {
       R.push(`| アカウント名の機械検査(AI を示す語)を、名簿の確認(本人以外の記名)で上書きして数えた承認 | ${ch.overriddenApprovals} 件 | ${prev((p) => p.independence.changes.overriddenApprovals ?? '値なし')} |`);
     }

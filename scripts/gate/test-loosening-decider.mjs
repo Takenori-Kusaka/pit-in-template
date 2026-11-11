@@ -38,7 +38,8 @@ const quiet = (fn) => {
 };
 
 const A = { id: 'a', name: '山田 太郎', accounts: ['yamada'] };
-const X = { id: 'x', name: '高橋 次郎', external: true, accounts: ['takahashi-j'] };
+// 外部の確認者を独立レビュアの席の責任者に置く条件(3.5 の(イ))の記録を持たせる(process-compass #357 / ADR-0127 決定3)
+const X = { id: 'x', name: '高橋 次郎', external: true, accounts: ['takahashi-j'], reviewCompetence: { confirmedAt: '2026-10-20', confirmedBy: '山田 太郎', record: 'docs/review-competence/x.md' } };
 const seatsOf = (map) => Object.entries(map).map(([role, accountable]) => ({ role, accountable }));
 const answers = {
   'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free',
@@ -50,7 +51,9 @@ const config = quiet(
       generatedAt: '2026-10-24T09:00:00+09:00',
       d0Version: null,
       people: [A, X],
-      seats: seatsOf({ 'biz-approver': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'x' }),
+      seats: seatsOf({ 'biz-approver': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'x' }).map((s) =>
+        s.role === 'independent-reviewer' ? { ...s, agreement: { at: '2026-10-20', record: 'docs/agreements/x.pdf' } } : s
+      ),
     }).config
 );
 
@@ -147,7 +150,9 @@ try {
         generatedAt: '2026-10-24T09:00:00+09:00',
         d0Version: null,
         people: [A, B, X],
-        seats: seatsOf({ 'biz-approver': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'x' }),
+        seats: seatsOf({ 'biz-approver': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'x' }).map((s) =>
+          s.role === 'independent-reviewer' ? { ...s, agreement: { at: '2026-10-20', record: 'docs/agreements/x.pdf' } } : s
+        ),
       }).config
   );
   const dev = base.seats.find((s) => s.role === 'dev-verifier');

@@ -189,7 +189,14 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const endHash = w.commit('chore: end');
   const rAfter = change({ kind: 'settings', summary: '値を変える', settings: { task: { maxChangedLines: 300 } } });
   check('終了の後は、変化点を追記しない', !rAfter.ok && /適用を終えています/.test(rAfter.out), rAfter.out);
-  const rNotice = change({ kind: 'notice', summary: '一時制限の発動を記録した', event: 'restriction', notice: { to: '名簿 丁', at: new Date().toLocaleDateString('sv-SE') } });
+  // 制限の範囲・対象の人・根拠・記録した者を要する(process-compass #357 / ADR-0127 決定5)
+  const rNotice = change({
+    kind: 'notice',
+    summary: '一時制限の発動を記録した',
+    event: 'restriction',
+    restriction: { id: 'r1', person: '名簿 丁', paths: ['src/payments/**'], basis: '試験の注入の記録', recordedBy: '名簿 丁' },
+    notice: { to: '名簿 丁', at: new Date().toLocaleDateString('sv-SE') },
+  });
   check('終了の後も、種別 notice は受け付ける', rNotice.ok, rNotice.out);
   fs.rmSync(path.join(w.dir, 'change.json'), { force: true });
   w.git('checkout', '-q', '--', '.');

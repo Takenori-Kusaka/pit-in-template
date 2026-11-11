@@ -78,6 +78,10 @@ import {
   personName,
   nameProblems,
   namingProblems,
+  agreementProblems,
+  PERSON_KEYS,
+  restrictionInputProblems,
+  normalizeRestriction,
   headcountProblems,
   allowedDeciders,
   ruleDeciderProblems,
@@ -663,6 +667,9 @@ export function buildSeats(prevSeats = []) {
         // 判断を担う席で読む。{ confirmedAt, confirmedBy, record, person }。責任者が替われば消える(前任の記録を引き継がない)。
         // 鍵は記録を書いた席にだけ置く(旧い構成の変化点を経ない再生成で構成が変わらないように)
         ...(p.competence !== undefined ? { competence: p.competence } : {}),
+        // 外部の確認者を独立レビュアの席の責任者に置く条件の1つ、席の規定に従う書面の合意の所在(第3章 3.5 の(イ)。#357 / ADR-0127 決定3)。
+        // { at, record }。本文は構成へ写さない。責任者が替われば消える
+        ...(p.agreement ? { agreement: p.agreement } : {}),
         // 席の責任者が委任を宣言し、規則が AI維持管理者の承認待ちであるあいだ、宣言した意図と決定者を保持する。
         // 承認が入った変化点で、委任を有効にする(再宣言を要求しない)
         ...(p.intent ? { intent: p.intent } : {}),
@@ -836,6 +843,9 @@ export function buildConfig(answers, opts = {}) {
     ...(typeof p.team === 'string' && p.team.trim() ? { team: p.team.trim() } : {}),
     // 組織上の任命権者(体制の外の人。第3章 3.13.3)。前任の決定者が体制から外れたとき、決定者の任命を記名する
     ...(p.appointer !== undefined ? { appointer: p.appointer } : {}),
+    // 確認者の力量の確認の記録(第3章 3.4.1。席の責任者でない確認者と外部の確認者を含む。process-compass #357 / ADR-0127 決定3・4)。
+    // { confirmedAt, confirmedBy, record }。中身は確かめない。鍵は記録を書いた人にだけ置く
+    ...(p.reviewCompetence !== undefined && p.reviewCompetence !== null ? { reviewCompetence: p.reviewCompetence } : {}),
   }));
   // D-0 表1 の2行の決定者の席。標準変更カタログへの登録は、リリース判定会(B-4)を置く体制では
   // B-4('b4')、置かない体制では「体制と運用形態」の決定者が行う(第3章 3.7.4 / 第8章 軸A)
@@ -1600,6 +1610,9 @@ export function changeLogEntry(e) {
     notice: e.notice ?? null,
     // 種別 notice の記録が、どの記録の通知を埋めるか(changeLog の添字)
     ...(e.noticeFor != null ? { noticeFor: e.noticeFor } : {}),
+    // 承認権限の一時制限の発動と解除(第7章 7.9.6)。範囲・対象の人・根拠・記録した者(process-compass #357 / ADR-0127 決定5)
+    ...(e.event ? { event: e.event } : {}),
+    ...(e.restriction ? { restriction: e.restriction } : {}),
     // 要約値の連鎖(sealChangeLog が書く)。stateHash は changeLog を除いた構成、prevHash は直前の記録
     prevHash: null,
     stateHash: null,
@@ -3314,7 +3327,9 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
         e.kind === 'init'
           ? '構成の生成'
           : e.kind === 'notice'
-            ? '権限の一時制限の発動(変化点に数えない)'
+            ? e.event === 'restriction-release'
+              ? '権限の一時制限の解除(変化点に数えない)'
+              : '権限の一時制限の発動(変化点に数えない)'
             : (KIND_NOTE[e.kind] ?? `${e.changePoint}`) + (e.result === 'no-change' && e.kind !== 'outage' ? '。構成の変更なし' : '');
       const summary = [
         e.summary ?? '—',
@@ -4714,8 +4729,11 @@ if (isMain) {
         bad.push(`seats.${role} はオブジェクトで書きます`);
         continue;
       }
-      const unknown = Object.keys(v).filter((k) => !['accountable', 'mode', 'performer', 'performerAccount', 'fallback', 'qualification', 'competence'].includes(k));
-      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは accountable / mode / performer / performerAccount / fallback / qualification / competence です`);
+      // agreement(書面の合意の所在。3.5 の(イ))は独立レビュアの席にだけ置ける(#357 / ADR-0127 決定3)
+      const seatKeys = ['accountable', 'mode', 'performer', 'performerAccount', 'fallback', 'qualification', 'competence', ...(role === 'independent-reviewer' ? ['agreement'] : [])];
+      const unknown = Object.keys(v).filter((k) => !seatKeys.includes(k));
+      if (unknown.length) bad.push(`seats.${role} に書けない欄があります(${unknown.join(', ')})。書けるのは ${seatKeys.join(' / ')} です`);
+      if (v.agreement !== undefined && v.agreement !== null) for (const p of agreementProblems(v.agreement)) bad.push(`seats.${role}.${p}(標準 第3章 3.5 の(イ)の書面の合意)`);
       // AI の担い手の名義(標準 第3章 3.5.3。#430)。変化点4 として種別 performer でだけ受け付ける。null は申告を取り下げる(未申告)
       if (v.performerAccount !== undefined) {
         const pa = v.performerAccount;
@@ -4782,6 +4800,16 @@ if (isMain) {
     }
 
     if (change.people !== undefined && !Array.isArray(change.people)) bad.push('people は配列で書きます(名簿の全体を置き換えます)');
+    // 名簿の行の未知の欄は、黙って捨てずに拒む(process-compass #357 / ADR-0127 決定10)
+    for (const [i, p] of (Array.isArray(change.people) ? change.people : []).entries()) {
+      const unknownP = isObject(p) ? Object.keys(p).filter((k) => !PERSON_KEYS.includes(k)) : [];
+      if (unknownP.length) {
+        bad.push(
+          `people[${i}] に書けない欄があります(${unknownP.join(', ')})。書けるのは ${PERSON_KEYS.join(' / ')} です。` +
+            '直属の上長・部門・所属の法人は名簿に持たせません(組織上の距離の段は、判定記録の段と段の根拠に書く。標準 第1章 1.4)'
+        );
+      }
+    }
     if (change.delegation !== undefined) {
       if (!isObject(change.delegation)) bad.push('delegation はオブジェクトで書きます');
       else {
@@ -4879,11 +4907,19 @@ if (isMain) {
           );
         }
         if (!(change.notice?.to && change.notice?.at)) bad.push('過去の変化点の通知を記録するときは、notice.to(通知先)と notice.at(通知日)の両方を書きます');
-      } else if (change.event !== 'restriction') {
-        bad.push('種別 notice は、noticeFor(通知を記録する変化点の添字)か、event: "restriction"(承認権限の一時制限の発動。標準 第7章 7.9)のいずれかを書きます');
+      } else if (change.event !== 'restriction' && change.event !== 'restriction-release') {
+        bad.push(
+          '種別 notice は、noticeFor(通知を記録する変化点の添字)か、event: "restriction"(承認権限の一時制限の発動)・"restriction-release"(解除)(標準 第7章 7.9)のいずれかを書きます'
+        );
+      } else {
+        // 制限の範囲・対象の人・根拠・記録した者を記録に残す(7.9.6。process-compass #357 / ADR-0127 決定5)
+        for (const p of restrictionInputProblems(prior, change)) bad.push(p);
       }
     } else if (change.noticeFor !== undefined || change.event !== undefined) {
       bad.push('noticeFor と event は種別 notice でだけ使えます');
+    }
+    if (change.restriction !== undefined && !(change.kind === 'notice' && ['restriction', 'restriction-release'].includes(change.event))) {
+      bad.push('restriction は種別 notice の event: "restriction" / "restriction-release" でだけ使えます');
     }
     // 従う本標準の版の切り替え(標準 第1章 1.10.3)。複製した知識ベースの版に限る。適用の開始は動かさない
     if (change.kind === 'edition') {
@@ -5335,6 +5371,8 @@ if (isMain) {
       } else if (s.competence && (holderChanged || !s.accountable)) {
         s.competence = null;
       }
+      // 書面の合意(3.5 の(イ))も人に属する。責任者が替わり、新しい合意が同じ変化点に無ければ引き継がない(#357)
+      if (input.agreement === null || (input.agreement === undefined && s.agreement && (holderChanged || !s.accountable))) delete s.agreement;
 
       // 承認し直し。approvedBy だけを書いた入力は、既存の確認の記録へ、新しい承認者を書く。確認の再実施は要しない
       if (isReapproval(iq)) {
@@ -5689,7 +5727,7 @@ if (isMain) {
     const deciderNote = qaVia === 'decider' ? { to: qa } : null;
 
     // 即時通知(第3章 3.13.6)。対象の変化点では、通知先と通知日を変化点の記録へ残す
-    const RESTRICTION = '承認権限の一時制限(標準 第7章 7.9)の発動';
+    const RESTRICTION = change.event === 'restriction-release' ? '承認権限の一時制限(標準 第7章 7.9)の解除' : '承認権限の一時制限(標準 第7章 7.9)の発動';
     const noticeReasons = change.kind === 'notice' ? (change.noticeFor !== undefined ? prior.changeLog[change.noticeFor].notice?.reasons ?? [] : [RESTRICTION]) : report.noticeReasons;
     // 通知先: 出荷判定者の席の責任者。事象6 では前任者(離脱済みなら D-0 表1 の決定者)。
     // 品質保証部門の通知先(governance.qaNotice)を定めていれば、すべての即時通知をそこへも送る
@@ -5755,6 +5793,16 @@ if (isMain) {
             : `通知先と通知日を、この入力の notice({ "to", "at" })へ書く。`) +
           `適用後に記録する場合は、種別 notice の変化点で、noticeFor に ${prior.changeLog.length} を書く。` +
           '未記入のままでは、出荷判定の証跡の集約が記録の欠落として扱う'
+      );
+    }
+
+    // 受託・委託の構成の任免(標準 第8章 軸D「席の責任者の任免」。process-compass #357 / ADR-0127 決定8)。席の責任者の任免は、
+    // その人が属する側の組織で任命の権限を持つ者が決定し、相手の組織へ氏名と交替の理由を通知する。名簿は所属を持たないため、
+    // どちらの側の任免かを機械は判定しない。通知の記録の置き場を案内するだけにする
+    if (change.kind === 'accountable' && ['outsourcer', 'vendor'].includes(config.answers?.['q-dev-form'])) {
+      report.remaining.push(
+        '受託・委託の構成の任免(標準 第8章 軸D): 席の責任者の任免は、その人が属する側の組織で任命の権限を持つ者が決定する(発注側の人が受注側の要員を、受注側の人が発注側の人を任命しない)。' +
+          '相手の組織へ、氏名と交替の理由を通知し、docs/ai-sla.md の「任免の通知の記録の置き場」へ記録する。機械はどちらの側の任免かを確かめない'
       );
     }
 
@@ -6371,6 +6419,10 @@ if (isMain) {
             : null,
         notice,
         noticeFor: change.kind === 'notice' && change.noticeFor !== undefined ? change.noticeFor : null,
+        // 承認権限の一時制限の発動と解除(第7章 7.9.6)。範囲・対象の人・根拠・記録した者。鍵は制限の記録にだけ置く(#357 / ADR-0127 決定5)
+        ...(change.kind === 'notice' && ['restriction', 'restriction-release'].includes(change.event)
+          ? { event: change.event, restriction: normalizeRestriction(config, change) }
+          : {}),
         edition: change.kind === 'edition' ? { from: standardEdition(prior), to: change.edition } : null,
         end: change.kind === 'end' ? { reason: change.endReason } : null,
       }),

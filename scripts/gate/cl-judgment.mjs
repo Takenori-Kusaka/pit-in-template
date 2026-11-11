@@ -29,6 +29,7 @@ import {
   structureDeciderLabel,
   aiNameBlocked,
   readGateRecords,
+  stepCeiling,
 } from './config.mjs';
 import { readRecordsBranch, recordFromForm } from './records.mjs';
 
@@ -354,10 +355,17 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
     else if (judgedAt && dateOnly(v.confirmedAt) < judgedAt) unmet.push(`確認日(${dateOnly(v.confirmedAt)})が判定日(${judgedAt})より前(判定より前の確認は、その判定の確認に数えない)`);
     effective = recorded;
     // 2名の体制で、体制の内の相手を確認者に数えてよいのは段1 に限る(第8章 軸E)
+    let capNote = '1〜2名の体制の内の確認者は段1 として数える';
     if (confirmer && confirmer.external !== true && config?.answers?.['q-team-size'] === 'size-1-2' && effective !== null && effective > 1) effective = 1;
+    // 構成から導ける反証(リリースの権限を持つ席、判定者と同じ所属)で引き下げる。満たす向きには使わない(#357 / ADR-0127 決定6)
+    const cap = confirmer ? stepCeiling(config, confirmer.name, [v.judge].filter(Boolean)) : { ceiling: 4, reasons: [] };
+    if (effective !== null && effective > cap.ceiling) {
+      effective = cap.ceiling;
+      capNote = cap.reasons.join('。');
+    }
     if (effective !== null && effective < req.step) {
       unmet.push(
-        `記録した段 段${recorded}${effective !== recorded ? `(1〜2名の体制の内の確認者は段1 として数える)` : ''} が、求める段 段${req.step}(${req.reasons.join('。')})に届かない`
+        `記録した段 段${recorded}${effective !== recorded ? `(${capNote})` : ''} が、求める段 段${req.step}(${req.reasons.join('。')})に届かない`
       );
     }
   }

@@ -701,6 +701,7 @@ export function rosterProblems(config) {
     }
     if (performers.has(n)) out.push(`${at}: "${n}" は担い手の識別(performer)と同じ文字列である`);
     if (p.external !== undefined && typeof p.external !== 'boolean') out.push(`${at}: external は true / false で書く`);
+    for (const q of reviewCompetenceProblems(config, p)) out.push(`${at}: ${q}`);
     // 組織上の任命権者(第3章 3.13.3)。体制の外の人として記載する。実際に任命の権限を持つかは、機械で確かめない
     if (p.appointer !== undefined && typeof p.appointer !== 'boolean') out.push(`${at}: appointer は true / false で書く`);
     else if (p.appointer === true && p.external !== true) {
@@ -1530,7 +1531,239 @@ export function namingProblems(config) {
       }
     }
   }
+  out.push(...externalSeatProblems(config));
   return out;
+}
+
+/**
+ * 外部の確認者(名簿の external)を席の責任者に置く構成の問題(標準 第3章 3.5。process-compass #357 / ADR-0127 決定1・3)。
+ *
+ * - 外部の確認者を責任者に置ける席は、独立レビュアの席に限る(体制の規模によらない)。ほかの席の責任者は体制の内の人とし、
+ *   体制の人数に数える。受託で発注側に置く席の人も同じ。D-0 表1「体制と運用形態」の決定者は席(governance.structureDecider)で
+ *   表すため、外部の確認者が決定者になる経路も、この拒否で塞がる(#370 / IMPL-0463)
+ * - 独立レビュアの席の責任者に置く外部の確認者は、(イ)の3条件を満たす。任免の決定者の記名は変化点の入口が要する。
+ *   残る2つ(力量の確認 3.4.1 と、席の規定に従う書面の合意)の記録の有無を確かめる。中身は確かめない(IMPL-0116)
+ *
+ * namingProblems から呼ぶため、変化点の入口・契約の検査・出荷の証跡の集約(記録の欠落)の3か所で効く
+ */
+export function externalSeatProblems(config) {
+  const out = [];
+  for (const s of config.seats ?? []) {
+    if (!s?.accountable) continue;
+    const person = findPerson(config, s.accountable);
+    if (person?.external !== true || person?.appointer === true) continue;
+    const label = s.name ?? s.role;
+    if (s.role !== 'independent-reviewer') {
+      out.push(
+        `${label} の責任者: "${person.name}" は外部の確認者(external: true)として名簿にある。外部の確認者を責任者に置ける席は、独立レビュアの席に限る。` +
+          'ほかの席の責任者は体制の内の人として名簿に載せ(external: false)、体制の人数に数える。受託で発注側に置く席の人も体制の内である(標準 第3章 3.5・第8章 軸D)'
+      );
+      continue;
+    }
+    const missing = [];
+    if (reviewCompetenceProblems(config, person).length || !person.reviewCompetence) missing.push('力量の確認の記録(名簿の人の reviewCompetence。第3章 3.4.1)');
+    if (agreementProblems(s.agreement).length || !s.agreement) missing.push('席の規定に従う書面の合意の所在(seats.independent-reviewer.agreement)');
+    if (missing.length) {
+      out.push(
+        `${label} の責任者: 外部の確認者 "${person.name}" を独立レビュアの席の責任者に置く条件(標準 第3章 3.5 の(イ))のうち、${missing.join('と、')}が無い。` +
+          '条件を満たすまでは、名簿に載せるだけの置き方((ア))にする'
+      );
+    }
+  }
+  return out;
+}
+
+/** 名簿の人の力量の確認の記録(第3章 3.4.1)の形の問題。記録の無い人は [] */
+export function reviewCompetenceProblems(config, person) {
+  const c = person?.reviewCompetence;
+  if (c === undefined || c === null) return [];
+  const at = `"${person?.name ?? person?.id}" の reviewCompetence`;
+  if (typeof c !== 'object' || Array.isArray(c)) return [`${at} は { "confirmedAt": "YYYY-MM-DD", "confirmedBy": "<本人以外の確認した者>", "record": "<確認の記録の所在>" } で書く`];
+  const out = [];
+  const unknown = Object.keys(c).filter((k) => !['confirmedAt', 'confirmedBy', 'record'].includes(k));
+  if (unknown.length) out.push(`${at} に書けない欄がある(${unknown.join(', ')})。書けるのは confirmedAt / confirmedBy / record だけ`);
+  if (!(typeof c.confirmedAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c.confirmedAt))) out.push(`${at}.confirmedAt は YYYY-MM-DD で書く`);
+  if (!(typeof c.confirmedBy === 'string' && c.confirmedBy.trim())) out.push(`${at}.confirmedBy(確認した者)が無い。自己申告は認めない`);
+  else {
+    if (aiNameReason(normName(c.confirmedBy))) out.push(`${at}.confirmedBy "${c.confirmedBy}" は AI の名義である。確認した者は自然人に限る`);
+    if (person?.id && personKey(config, c.confirmedBy) === person.id) out.push(`${at}.confirmedBy "${c.confirmedBy}" は本人である。本人以外の者が確認する`);
+  }
+  if (!(typeof c.record === 'string' && c.record.trim())) out.push(`${at}.record(確認の記録の所在。独立レビュアでは実際の差し戻しの記録)が無い`);
+  return out;
+}
+
+/** 独立レビュアの席の書面の合意の所在の形の問題。記録の無い席は [] */
+export function agreementProblems(a) {
+  if (a === undefined || a === null) return [];
+  if (typeof a !== 'object' || Array.isArray(a)) return ['agreement は { "at": "YYYY-MM-DD", "record": "<書面の合意の所在>" } で書く'];
+  const out = [];
+  const unknown = Object.keys(a).filter((k) => !['at', 'record'].includes(k));
+  if (unknown.length) out.push(`agreement に書けない欄がある(${unknown.join(', ')})。書けるのは at / record だけ`);
+  if (!(typeof a.at === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.at))) out.push('agreement.at(合意の日)は YYYY-MM-DD で書く');
+  if (!(typeof a.record === 'string' && a.record.trim())) out.push('agreement.record(書面の合意の所在。本文は構成へ写さない)が無い');
+  return out;
+}
+
+/** 名簿の人の行に書ける欄(標準 第6章 表5-2。process-compass #357 / ADR-0127 決定10)。これ以外の欄は変化点の入口で拒む */
+export const PERSON_KEYS = ['id', 'name', 'external', 'accounts', 'nameConfirmed', 'accountsConfirmed', 'team', 'appointer', 'reviewCompetence'];
+
+// ---------------------------------------------------------------- 承認権限の一時制限(標準 第7章 7.9。process-compass #357 / ADR-0127 決定5)
+//
+// 発動と解除は人(品質保証の機能)が記録する。機械は発動しない(7.9.6)。記録された制限を出荷の証跡の集約が照らし、解除されていない
+// 制限の範囲(paths)に触れる変更で、独立した人の確認に数えた承認が2名に満たないものを記録の欠落にする(7.9.2 の字義)。
+// 強制する承認の数(reviewersRequiredOf・ブランチ保護)には入れない(ADR-0088 決定6。範囲の限定を全 PR へ広げない)。期限の欄は置かない(7.9.3)
+
+const RESTRICTION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+/** 構成の変化点の記録から、制限の発動と解除を読む。active は解除されていない制限、legacy は範囲の無い旧い発動の記録 */
+export function restrictionState(config) {
+  const log = Array.isArray(config?.changeLog) ? config.changeLog : [];
+  const active = new Map();
+  const released = [];
+  let legacy = 0;
+  log.forEach((e, index) => {
+    if (e?.kind !== 'notice' || e.noticeFor != null) return;
+    const r = e.restriction;
+    // 時点は記録した時刻(at。オフセットつき)で比べる。無い記録は発効日(date)の始まりとする
+    const when = String(e.at ?? e.date ?? '');
+    if (e.event === 'restriction-release' && r?.id) {
+      if (active.has(r.id)) released.push({ ...active.get(r.id), releasedAt: when, releasedIndex: index });
+      active.delete(r.id);
+    } else if (r?.id && Array.isArray(r.paths)) {
+      active.set(r.id, { id: r.id, person: r.person ?? null, paths: r.paths, basis: r.basis ?? null, recordedBy: r.recordedBy ?? null, at: when, index });
+    } else if (!r && (e.notice?.reasons ?? []).some((x) => String(x).includes('一時制限') && String(x).includes('発動'))) {
+      legacy++;
+    }
+  });
+  return { active: [...active.values()], released, legacy };
+}
+
+/** 種別 notice の制限の入力の問題(変化点の入口)。prior は変化点の前の構成 */
+export function restrictionInputProblems(prior, change) {
+  const r = change?.restriction;
+  const isRelease = change?.event === 'restriction-release';
+  const shape = isRelease
+    ? '{ "id": "<発動の記録の識別子>", "basis": "<解除の根拠。7.9.3 の連続2回の検出>", "recordedBy": "<記録した者>" }'
+    : '{ "id": "<識別子>", "person": "<検出能力の低下を検知された者>", "paths": ["<範囲のパスのパターン>"], "basis": "<根拠となった測定結果の所在>", "recordedBy": "<記録した者>" }';
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return [`restriction を ${shape} で書きます(標準 第7章 7.9.6 の「対象とした範囲」「根拠となった測定結果」)`];
+  const out = [];
+  const allowed = isRelease ? ['id', 'basis', 'recordedBy'] : ['id', 'person', 'paths', 'basis', 'recordedBy'];
+  const unknown = Object.keys(r).filter((k) => !allowed.includes(k));
+  if (unknown.length) out.push(`restriction に書けない欄があります(${unknown.join(', ')})。書けるのは ${allowed.join(' / ')} です`);
+  const ctx = { ...prior, people: change.people ?? prior?.people ?? [] };
+  const st = restrictionState(prior);
+  if (!(typeof r.id === 'string' && RESTRICTION_ID.test(r.id))) out.push('restriction.id は英数字の識別子で書きます(解除の記録が同じ識別子を引きます)');
+  else if (isRelease && !st.active.some((a) => a.id === r.id)) {
+    out.push(`restriction.id "${r.id}" は、解除されていない制限の発動の記録にありません${st.active.length ? `(解除されていない制限: ${st.active.map((a) => a.id).join(' / ')})` : ''}`);
+  } else if (!isRelease && [...st.active, ...st.released].some((a) => a.id === r.id)) out.push(`restriction.id "${r.id}" は既に使われています。発動ごとに別の識別子を書きます`);
+  if (!isRelease) {
+    if (!(typeof r.person === 'string' && r.person.trim()) || !resolveSigner(ctx, r.person)) out.push('restriction.person(検出能力の低下を検知された者)を、人の名簿の氏名または id で書きます');
+    if (!Array.isArray(r.paths) || !r.paths.length || r.paths.some((p) => !(typeof p === 'string' && p.trim()))) {
+      out.push('restriction.paths(見逃した欠陥の類型に対応する範囲。パスのパターンの配列)を書きます。範囲を限定しない制限は 7.9.2 の「適用の範囲」に反します');
+    }
+  }
+  if (!(typeof r.basis === 'string' && r.basis.trim())) out.push(`restriction.basis(${isRelease ? '解除の判定の根拠' : '根拠となった測定結果の所在'})を書きます`);
+  if (!(typeof r.recordedBy === 'string' && r.recordedBy.trim())) out.push('restriction.recordedBy(記録した者。品質保証の機能を担う人)を書きます');
+  else {
+    if (aiNameReason(normName(r.recordedBy))) out.push(`restriction.recordedBy "${r.recordedBy}" は AI の名義です。発動と解除は人が記録します(機械による発動は行わない。7.9.6)`);
+    else if (!resolveSigner(ctx, r.recordedBy)) out.push(`restriction.recordedBy "${r.recordedBy}" が人の名簿にありません`);
+  }
+  return out;
+}
+
+/**
+ * 変更が、その時点で解除されていない制限の範囲に触れるか。day は変更を取り込んだ日(YYYY-MM-DD。不明なら現在の状態で照らす)。
+ * 当たれば { hit: true, restrictions: [...] }。照らすのは範囲のパスだけで、対象の人が承認したかに依らない(7.9.2 の字義)
+ */
+export function restrictionHit(config, files, day = null) {
+  const st = restrictionState(config);
+  // 時刻で比べる(時刻帯の違いで日付がずれないように)。日付だけの値は、その日の始まり(UTC)として読む
+  const t = (v) => {
+    const ms = Date.parse(String(v ?? ''));
+    return Number.isNaN(ms) ? null : ms;
+  };
+  const d = typeof day === 'string' ? t(day) : null;
+  const live = [...st.active, ...st.released].filter((r) => {
+    if (d === null) return !r.releasedAt;
+    const from = t(r.at);
+    const to = r.releasedAt ? t(r.releasedAt) : null;
+    return (from === null || from <= d) && (to === null || to > d);
+  });
+  const list = Array.isArray(files) ? files : [];
+  const hits = live.filter((r) => list.some((f) => r.paths.some((g) => matchGlob(g, f))));
+  return { hit: hits.length > 0, restrictions: hits };
+}
+
+// ---------------------------------------------------------------- 組織上の距離の段の反証(標準 第1章 1.4。process-compass #357 / ADR-0127 決定6)
+//
+// 段は、判定記録に書いた段と根拠を、求める段と比べる。段2 以上の距離そのものは機械では確かめない(名簿に直属の上長・部門・
+// 法人を持たせない)。構成から導ける反証だけを使い、記録した段を引き下げて数える。満たす向きには使わない
+//   - 出荷判定者・事業決裁者の席の責任者は、リリースの権限を持つ。段2 以上に数えない(段2 の「確認者が対象のリリースの権限を持たない」)
+//   - 名簿の所属(team)が、比べる相手(実装の責任者・判定者など)と同じ値の人は、作成の部門から独立していない。段3 以上に数えない
+
+/** リリースの権限を持つ席(第1章 1.4 の段2。出荷判定者・事業決裁者) */
+export const RELEASE_AUTHORITY_SEATS = ['qa-gatekeeper', 'biz-approver'];
+
+/**
+ * 確認者・評価者 ref の段の上限。against は比べる相手(実装の責任者・作成を指示した者・判定者)の記名の配列。
+ * 反証が無ければ { ceiling: 4, reasons: [] }
+ */
+export function stepCeiling(config, ref, against = []) {
+  const person = findPerson(config, ref);
+  const key = person?.id ?? null;
+  const reasons = [];
+  let ceiling = 4;
+  if (key) {
+    const releaseSeats = (config?.seats ?? []).filter((s) => RELEASE_AUTHORITY_SEATS.includes(s.role) && personKey(config, s.accountable) === key);
+    if (releaseSeats.length) {
+      ceiling = Math.min(ceiling, 1);
+      reasons.push(`${releaseSeats.map((s) => s.name ?? s.role).join('・')}の席の責任者で、リリースの権限を持つ(段2 以上に数えない)`);
+    }
+    const team = typeof person.team === 'string' && person.team.trim() ? person.team.trim() : null;
+    if (team) {
+      const same = against.map((a) => findPerson(config, a)).filter((p) => p && p.id !== key && typeof p.team === 'string' && p.team.trim() === team);
+      if (same.length) {
+        ceiling = Math.min(ceiling, 2);
+        reasons.push(`名簿の所属(team: ${team})が ${[...new Set(same.map((p) => p.name))].join('・')} と同じで、作成の部門から独立していない(段3 以上に数えない)`);
+      }
+    }
+  }
+  return { ceiling, reasons };
+}
+
+/**
+ * 受託・委託の構成で、様式 08(docs/ai-sla.md)の「価値責任者(発注側が選任した者)」の行と、構成の価値責任者の席の責任者を照らす
+ * (標準 第8章 軸D「価値責任者の所属」。process-compass #357 / ADR-0127 決定7)。値は構成へ写さない(ADR-0087 決定3)。
+ * { applies, state: 'match' | 'blank' | 'mismatch' | 'no-sla', text }。一致しても、発注側の人であることは機械では確かめていない
+ */
+export const VALUE_OWNER_ROW = '価値責任者(発注側が選任した者)';
+export function valueOwnerAgreementState(config, slaText) {
+  if (!['outsourcer', 'vendor'].includes(config?.answers?.['q-dev-form'])) return { applies: false };
+  const holder = (config.seats ?? []).find((s) => s.role === 'value-owner')?.accountable ?? null;
+  if (slaText == null) return { applies: true, state: 'no-sla', text: '委託・受託の構成だが、docs/ai-sla.md が無い。価値責任者(発注側が選任した者)を照らせない' };
+  const line = slaText.split(/\r?\n/).find((l) => l.startsWith(`| ${VALUE_OWNER_ROW} |`));
+  const cell = line ? (line.split('|')[2] ?? '').trim() : '';
+  if (!cell || cell.startsWith('<')) {
+    return { applies: true, state: 'blank', text: `docs/ai-sla.md の「${VALUE_OWNER_ROW}」が空欄(雛形の記入例のまま、または旧い様式で行が無い)。次の締結・改訂で、発注側が選任した者の氏名を当事者が記入する(AI が氏名を推測で埋めない)` };
+  }
+  const named = resolveSigner(config, cell.replace(/[((].*$/, '').trim()) ?? null;
+  if (!holder || !named || personKey(config, holder) !== named.id) {
+    return {
+      applies: true,
+      state: 'mismatch',
+      text: `docs/ai-sla.md の「${VALUE_OWNER_ROW}」(${cell})と、構成の価値責任者の席の責任者(${holder ? personName(config, holder) : '未記入'})が一致しない。受託では価値責任者を発注側に置き、受注側の人を置かない(標準 第8章 軸D)`,
+    };
+  }
+  return { applies: true, state: 'match', text: `価値責任者 ${named.name} は docs/ai-sla.md の「${VALUE_OWNER_ROW}」と一致する。発注側の人であることは機械では確かめていない` };
+}
+
+/** 記録へ書く制限(氏名を名簿の氏名へ正規化する) */
+export function normalizeRestriction(config, change) {
+  const r = change.restriction ?? {};
+  const nm = (x) => (x ? (resolveSigner(config, x)?.name ?? String(x).trim()) : null);
+  return change.event === 'restriction-release'
+    ? { id: r.id, basis: String(r.basis).trim(), recordedBy: nm(r.recordedBy) }
+    : { id: r.id, person: nm(r.person), paths: r.paths.map((p) => String(p).trim()), basis: String(r.basis).trim(), recordedBy: nm(r.recordedBy) };
 }
 
 /**

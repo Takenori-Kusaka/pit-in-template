@@ -50,7 +50,7 @@ import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sam
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
-import { retiredDetectionTypes } from './config.mjs';
+import { retiredDetectionTypes, valueOwnerAgreementState } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
@@ -1075,8 +1075,13 @@ export function computeNext({ fetch = true, network = true } = {}) {
     for (const t of pendingTightenings(config)) result.notes.push(t.text);
     // 委託・受託の構成で、判定の結果を受け取る者が空欄(process-compass #317 / ADR-0087 決定3)
     const slaPath = path.join(ROOT, 'docs/ai-sla.md');
-    const rn = outsourcingReceiverNote(config, fs.existsSync(slaPath) ? fs.readFileSync(slaPath, 'utf8') : null);
+    const slaText = fs.existsSync(slaPath) ? fs.readFileSync(slaPath, 'utf8') : null;
+    const rn = outsourcingReceiverNote(config, slaText);
     if (rn) result.notes.push(rn);
+    // 受託・委託の構成の価値責任者(発注側が選任した者)と席の責任者の照合(process-compass #357 / ADR-0127 決定7)。
+    // 空欄・食い違いを注記する。食い違いは出荷の証跡の集約が記録の欠落にする
+    const vo = valueOwnerAgreementState(config, slaText);
+    if (vo.applies && vo.state !== 'match' && vo.state !== 'no-sla') result.notes.push(`${vo.text}。読む: ${READ.artifact('08-ai-sla')}`);
   }
 
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と

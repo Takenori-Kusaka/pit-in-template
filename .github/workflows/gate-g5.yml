@@ -118,6 +118,8 @@ jobs:
       - run: node scripts/gate/test-recalibration.mjs
       # 独立と席の規則(確認者の有無を名簿と席から導く、出荷判定者が兼ねない席、強制する承認の数。process-compass #302・#304・#305・#307)
       - run: node scripts/gate/test-roster-rules.mjs
+      # 外部の確認者を置ける席・(イ)の条件の記録・承認権限の一時制限・段の反証・受託の価値責任者(process-compass #357 / ADR-0127)
+      - run: node scripts/gate/test-roster-conditions.mjs
       # 企画書の閾値の行(7.6 のエスカレーション閾値と 7.7.4 の自動的な上程の閾値)の記入の検査(process-compass #419 / ADR-0097)
       - run: node scripts/gate/test-brief-thresholds.mjs
       # 当初の見積りの保存(G-1 の時点の見積りの空欄と書き換え)と、見積りと実績の差の記録(process-compass #416 / ADR-0093)

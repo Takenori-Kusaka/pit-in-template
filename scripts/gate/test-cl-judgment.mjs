@@ -187,6 +187,13 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
     !st.confirmation.ok && st.confirmation.required === 3 && st.shipBlocking && /G-8 の受容で代えない/.test(st.shipBlockingReason),
     JSON.stringify(st)
   );
+  // 構成から導ける段の反証(process-compass #357 / ADR-0127 決定6。IMPL-0452)。出荷判定者の席の責任者(リリースの権限)は段2 以上に数えない
+  // IMPL-0452:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  st = clJudgmentState(cl1, { text: d0({ 判定した区分: 'CL1', 確認者の段: '段2', 段の根拠: '直属の上長が異なる' }) });
+  check('確認: 出荷判定者の席の責任者が記録した段2 は段1 として数え、CL1 の段2 に届かず未達', !st.confirmation.ok && st.confirmation.effective === 1 && st.confirmation.unmet.some((u) => /リリースの権限/.test(u)), JSON.stringify(st.confirmation));
+  // IMPL-0452:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  st = clJudgmentState(cl1, { text: d0({ 判定した区分: 'CL1', 確認者: '青木 一郎', 確認者の段: '段2', 段の根拠: '直属の上長が異なり、リリースの権限を持たない' }) });
+  check('確認: 反証の無い確認者の段2 は記録した段で数える(距離そのものは確かめない)', st.confirmation.ok && st.confirmation.effective === 2, JSON.stringify(st.confirmation));
   const small = configOf({ 'q-team-size': 'size-1-2' }, { people: [PEOPLE[4], PEOPLE[3], PEOPLE[5]], seats: seatsOf({ 'biz-approver': 'p4', 'dev-verifier': 'p4', 'independent-reviewer': 'p3' }) });
   st = clJudgmentState(small, { text: d0({ 確認者の段: '段2' }) });
   check('確認: 2名の体制の内の相手は段1 として数える', st.confirmation.effective === 1 && st.confirmation.recorded === 2 && st.confirmation.ok, JSON.stringify(st.confirmation));
