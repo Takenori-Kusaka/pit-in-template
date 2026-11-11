@@ -4073,11 +4073,17 @@ if (isMain) {
       continue;
     }
     // 区分が「算定できない」「対象外」のときは、見込みと残りの3行を「該当なし(理由)」と書いてよい(7.7.3 はこの2つを合格とも不合格とも書かない)
-    const undetermined = /算定できない|対象外/.test(String(rowValue(sec, '区分', false) ?? '').normalize('NFKC'));
+    // 区分の行に甲・乙・丙が1つも無く、算定できない・対象外だけのとき(案件の区分が算定できない・対象外)に限り、
+    // 見込みと残りの3行の「該当なし(理由)」を受け付ける。理由の無い「該当なし」は受け付けない(突合の再確認 新-5)
+    const cls = String(rowValue(sec, '区分', false) ?? '').normalize('NFKC');
+    const undetermined = /算定できない|対象外/.test(cls) && !/[甲乙丙]/.test(cls);
     const OPTIONAL_WHEN_UNDETERMINED = new Set(['期間の見込み', '費用の見込み', '比べる残り']);
     const blank = REACH_ROWS.filter((k) => {
-      const v = rowValue(sec, k, false);
-      if (undetermined && OPTIONAL_WHEN_UNDETERMINED.has(k) && /該当なし/.test(String(v ?? ''))) return false;
+      const v = String(rowValue(sec, k, false) ?? '').normalize('NFKC');
+      if (OPTIONAL_WHEN_UNDETERMINED.has(k) && /^該当なし/.test(v.trim())) {
+        // 算定できない・対象外の案件だけが、理由つきの「該当なし」を書ける。甲・乙・丙の組がある記録の「該当なし」は欠けに数える
+        return !(undetermined && /該当なし\s*\([^)]*\S[^)]*\)/.test(v));
+      }
       return !filled(v);
     });
     if (blank.length) gaps.push(`${g.file}: 「到達の見込み」に空欄の欄があります(${blank.join(' / ')})。到達の見込みの記録が欠けた判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3)`);

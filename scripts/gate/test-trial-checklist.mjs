@@ -58,6 +58,13 @@ p = trialChecklistProblems(
   TODAY
 );
 check('項目の行へ数値と所在を書き足した写しは、項目の欠けと読まない', p.length === 0, p.join('\n'));
+// 突合の再確認 新-1: 括弧の外の文を書き換えた行・消した行は、様式の項目の欠けとして出す
+p = trialChecklistProblems(allChecked.replace(/^- \[x\] 支援担当\(EN-1\)が割り当てられ、関与の期間が定められている\r?\n/m, ''), FORM, TODAY);
+check('EN-1 の項目を消した写しは、似た書き出しの別の項目があっても欠けとして出す', p.length === 1 && p[0].includes('支援担当(EN-1)が割り当てられ'), p.join('\n'));
+p = trialChecklistProblems(allChecked.replace('支援担当(EN-1)が割り当てられ、関与の期間が定められている', '支援担当(EN-1)は置かない'), FORM, TODAY);
+check('括弧の後ろの文を書き換えた項目は、様式の項目の欠けとして出す', p.length === 1 && p[0].includes('項目が写しにありません'), p.join('\n'));
+p = trialChecklistProblems(allChecked.replace('対象範囲(対象・環境・変更種別・リスク区分)が文書で確定している', '対象範囲(対象のみ)は未確定'), FORM, TODAY);
+check('括弧の外の文を否定へ書き換えた項目は、様式の項目の欠けとして出す', p.length === 1 && p[0].includes('対象範囲'), p.join('\n'));
 
 // IMPL-0465:ng(違反と適合の対。標準の実装マーク)
 p = trialChecklistProblems(setRow(checkedAll, '| 品質規程 4.2 の承認の手続 |  | 申請 SB-1 | |'), FORM, TODAY);
