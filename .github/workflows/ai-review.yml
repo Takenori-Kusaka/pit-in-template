@@ -80,6 +80,11 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      # 記録の手順(ai-review-record.mjs)を動かす Node の版(既定ブランチの .github/gate-node-version)
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+
       # 有効かどうかとフォークの扱いは、既定ブランチの構成から読む(PR の側の構成で切り替えられない)
       - name: 有効かどうかを確認する
         id: gate

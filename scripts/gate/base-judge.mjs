@@ -296,7 +296,8 @@ const AI_REVIEW_RUN_FORBIDDEN = [
   [/--approve|gh\s+pr\s+review/, '承認を出す'],
 ];
 const ALLOWED_SETUP = /^ {6}- uses: actions\/setup-(node|python|go)@v\d+$/;
-const ALLOWED_SETUP_WITH = /^ {10}(node|python|go)-version: [\w.'"-]+$/;
+// node-version-file は既定ブランチの .github/gate-node-version だけを許す(記録の手順を動かす Node の版の固定。#360)
+const ALLOWED_SETUP_WITH = /^ {10}((node|python|go)-version: [\w.'"-]+|node-version-file: \.github\/gate-node-version)$/;
 
 /**
  * ai-review.yml の許す形の一覧の検査(空なら適合。process-compass #369 の突合 F-2)。契機・トップの権限・ジョブの集合と各ジョブの
