@@ -205,13 +205,24 @@ const CONFIG = {
   const approval = (body, commit = 'h1') => ({ pr: 30, head_sha: 'h1', reviews: [{ id: 9, state: 'APPROVED', commit_id: commit, submitted_at: '2026-10-24T00:00:00Z', user: { id: 30000001, login: 'suzuki' }, body }] });
   const open = (copy) => ({ available: true, reason: null, records: recordsFromCopy(copy, null, { config: ICONFIG }) });
   const PO = 'state:needs-po';
+  // 価値責任者の判断の記録(テンプレ4 のゲート欄「価値責任者の判断」。標準 第3章 3.5.5 要求事項9。process-compass #359 / IMPL-0467)
+  const poDecision = (target, result = '通過', at = '2026-10-22 09:00') => ({ file: `docs/gates/po-${target.replace(/\s+/g, '-')}.md`, source: 'base', gate: '価値責任者の判断', target, result, resultRaw: result, judgedAt: at, issue: null });
+  const RP = [...R, poDecision('F-001'), poDecision('F-009')];
 
   const ng1 = pickupCheck({ label: 'state:needs-dev', target: 'F-009', from: PO, records: R, config: ICONFIG });
   check('IMPL-0331:ng state:needs-dev でも G-2・G-4 の通過の記録が無い機能には着手しない(判定者の受信箱へ差し戻す)', ng1.decision === 'hold' && same(ng1.missing, ['G-2', 'G-4']) && ng1.returnTo?.role === 'value-owner' && same(ng1.returnTo.labels, ['state:needs-po']) && /要求事項5/.test(ng1.reason), JSON.stringify(ng1));
   const ng2 = pickupCheck({ label: 'state:needs-dev', target: 'F-002', from: PO, records: R, config: ICONFIG });
   check('着手の確認: G-4 だけ通過し G-2 の記録が無い機能も着手しない', ng2.decision === 'hold' && same(ng2.missing, ['G-2']), JSON.stringify(ng2));
-  const ok1 = pickupCheck({ label: 'state:needs-dev', target: 'F-001 / Task-1', from: PO, records: R, config: ICONFIG });
-  check('IMPL-0331:ok G-2・G-4 の通過の記録がある機能は、state:needs-po からの state:needs-dev で着手してよい', ok1.decision === 'start' && same(ok1.required, ['G-2', 'G-4']) && /価値責任者の判断の記録はテンプレートに様式が無く/.test(ok1.reason), JSON.stringify(ok1));
+  const ok1 = pickupCheck({ label: 'state:needs-dev', target: 'F-001 / Task-1', from: PO, records: RP, config: ICONFIG });
+  check('IMPL-0331:ok G-2・G-4 の通過と価値責任者の判断の記録がある機能は、state:needs-po からの state:needs-dev で着手してよい', ok1.decision === 'start' && same(ok1.required, ['G-2', 'G-4']) && /価値責任者の判断の通過が記録にある/.test(ok1.reason), JSON.stringify(ok1));
+  // IMPL-0467:ng(違反と適合の対。標準の実装マーク)。G-2・G-4 が通っていても、needs-po を経た作業単位に価値責任者の判断の記録が無ければ着手しない
+  const noDecision = pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: R, config: ICONFIG });
+  check('IMPL-0467:ng needs-po を経た needs-dev に価値責任者の判断の記録が無ければ、G-2・G-4 が通っていても着手せず価値責任者へ差し戻す', noDecision.decision === 'hold' && same(noDecision.missing, ['価値責任者の判断']) && noDecision.returnTo?.role === 'value-owner', JSON.stringify(noDecision));
+  check('IMPL-0467:ng 価値責任者の判断の後に差し戻しがあれば着手しない', pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: [...RP, poDecision('F-001', '差し戻し', '2099-01-01 09:00')], config: ICONFIG }).decision === 'hold');
+  // IMPL-0467:ok(違反と適合の対)。機能へ対応づけない作業単位は、価値責任者が前もって記録した類型の判断の通過で着手してよい
+  const typeOk = pickupCheck({ label: 'state:needs-dev', target: '類型 依存の更新', from: PO, records: [...R, poDecision('類型 依存の更新')], config: ICONFIG });
+  const typeNg = pickupCheck({ label: 'state:needs-dev', target: '類型 依存の更新', from: PO, records: R, config: ICONFIG });
+  check('IMPL-0467:ok 類型の判断の記録がある機能へ対応づけない作業単位は着手してよく、記録が無ければ判定できない(価値責任者へ確かめる)', typeOk.decision === 'start' && typeNg.decision === 'undetermined' && typeNg.returnTo?.role === 'value-owner', JSON.stringify([typeOk, typeNg]));
   // X-1: 技術判断者を経た作業単位は G-3 の記録も見る
   const tech = pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: 'state:needs-tech', records: R, config: ICONFIG });
   check('着手の確認: state:needs-tech を経た needs-dev は、G-2・G-4 が通っていても G-3 の記録が無ければ着手しない(技術判断者へ差し戻す)', tech.decision === 'hold' && same(tech.missing, ['G-3']) && tech.returnTo?.role === 'tech-lead' && same(tech.returnTo.labels, ['state:needs-tech']), JSON.stringify(tech));
@@ -224,7 +235,7 @@ const CONFIG = {
   check('着手の確認: G-4 の通過の後に差し戻しがある機能は着手しない', pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: [...R, g4Reject], config: ICONFIG }).decision === 'hold');
   // X-3: 構成にゲートのキーが無い
   check('着手の確認: 構成に gates が無い、または g2 のキーだけが無いときは判定できない', pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: R, config: { ...ICONFIG, gates: undefined } }).decision === 'undetermined' && pickupCheck({ label: 'state:needs-dev', target: 'F-009', from: PO, records: R, config: { ...ICONFIG, gates: { g4: ICONFIG.gates.g4, g6: ICONFIG.gates.g6 } } }).decision === 'undetermined' && pickupCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: { ...ICONFIG, gates: { g6: { state: 'maybe' } } } }).decision === 'undetermined');
-  check('着手の確認: G-2・G-4 を明示して省略した構成では、記録を求めずに着手してよい', pickupCheck({ label: 'state:needs-dev', target: 'F-009', from: PO, records: R, config: { ...ICONFIG, gates: { ...ICONFIG.gates, g2: { state: 'omitted' }, g4: { state: 'unmet' } } } }).decision === 'start');
+  check('着手の確認: G-2・G-4 を明示して省略した構成では、ゲートの記録を求めずに着手してよい(価値責任者の判断の記録は要る)', pickupCheck({ label: 'state:needs-dev', target: 'F-009', from: PO, records: RP, config: { ...ICONFIG, gates: { ...ICONFIG.gates, g2: { state: 'omitted' }, g4: { state: 'unmet' } } } }).decision === 'start' && pickupCheck({ label: 'state:needs-dev', target: 'F-009', from: PO, records: R, config: { ...ICONFIG, gates: { ...ICONFIG.gates, g2: { state: 'omitted' }, g4: { state: 'unmet' } } } }).decision === 'hold');
 
   const ng3 = pickupCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: ICONFIG, openPr: open(approval('LGTM')) });
   check('着手の確認: 挙動要約の無い承認だけの PR は、state:ready-to-merge でも受け取らない(独立レビュアへ差し戻す)', ng3.decision === 'hold' && ng3.returnTo?.role === 'independent-reviewer' && ng3.issues.some((x) => /挙動要約が無い/.test(x)), JSON.stringify(ng3));
@@ -243,6 +254,11 @@ const CONFIG = {
   check('着手の確認: 語彙に無いラベル・機能 ID の無い needs-dev・構成なしは判定できない', pickupCheck({ label: 'state:done', target: 'F-001', config: ICONFIG }).decision === 'undetermined' && pickupCheck({ label: 'state:needs-dev', target: 'Issue #4', from: PO, config: ICONFIG }).decision === 'undetermined' && pickupCheck({ label: 'state:needs-dev', target: 'F-001', from: PO, records: R, config: null }).decision === 'undetermined');
   const omitted = { ...ICONFIG, gates: { ...ICONFIG.gates, g6: { state: 'omitted' } } };
   check('着手の確認: G-6 が省略の構成では state:ready-to-merge を使わない(判定できない)', pickupCheck({ label: 'state:ready-to-merge', target: 'PR #30', records: R, config: omitted, openPr: open(approval('LGTM')) }).decision === 'undetermined');
+  // IMPL-0467:ok / ng(a)。G-6 が省略の構成の state:qm-blocked は、出荷判定者の G-7 の差し戻しの記録を前提とする
+  const g7Reject = { file: 'docs/gates/g7-pr30.md', source: 'base', gate: 'G-7 出荷判定', target: 'PR #30', result: '差し戻し', resultRaw: '差し戻し', judgedAt: '2026-10-25 09:00', issue: null };
+  const qmG7ok = pickupCheck({ label: 'state:qm-blocked', target: 'PR #30', records: [...R, g7Reject], config: omitted });
+  const qmG7ng = pickupCheck({ label: 'state:qm-blocked', target: 'PR #30', records: R, config: omitted });
+  check('IMPL-0467:ok G-6 が省略の構成の qm-blocked は、G-7 の差し戻しの記録があれば着手し、無ければ着手せず出荷判定者へ差し戻す', qmG7ok.decision === 'start' && qmG7ng.decision === 'hold' && qmG7ng.returnTo?.role === 'qa-gatekeeper', JSON.stringify([qmG7ok, qmG7ng]));
   check('着手の確認: 出力の見出しと終了コード', /^\[着手しない\]/.test(renderPickup(ng1)) && /判定者へ差し戻す\(価値責任者\(山田 太郎\)。受信箱 `state:needs-po`\)/.test(renderPickup(ng1)) && PICKUP_EXIT.start === 0 && PICKUP_EXIT.hold === 3 && PICKUP_EXIT.undetermined === 4, renderPickup(ng1));
 
   // 入口: 一時の置き場に scripts と構成と docs/gates/ を置き、next.mjs --pickup を --offline で実行する(git と GitHub を使わない)
@@ -266,7 +282,12 @@ const CONFIG = {
     fs.writeFileSync(path.join(dir, 'docs', 'gates', 'g4-F-001-2026-10-20.md'), form.replace('F-005 / 9d8c7b6', 'F-001 / 9d8c7b6').replace('通過(判定者の申告を転記)', '通過'));
     fs.writeFileSync(path.join(dir, 'docs', 'gates', 'g6-PR-30-2026-10-24.md'), form.replace('G-4 機能仕様承認', 'G-6 独立レビュー').replace('F-005 / 9d8c7b6', 'F-001 / Task-1 / PR #30').replace('通過(判定者の申告を転記)', '通過'));
     r = run('state:needs-dev', 'F-001', '--from', PO);
-    check('IMPL-0331:ok 入口: G-2・G-4 の判定記録がある機能の state:needs-dev は「着手してよい」(終了コード 0)', r.status === 0 && /^\[着手してよい\] state:needs-dev F-001/.test(r.out), `${r.status}\n${r.out}`);
+    check('IMPL-0467:ng 入口: G-2・G-4 の判定記録があっても、needs-po を経た needs-dev に価値責任者の判断の記録が無ければ「着手しない」', r.status === 3 && /価値責任者の判断の記録/.test(r.out), `${r.status}
+${r.out}`);
+    // 価値責任者の判断の記録(テンプレ4 のゲート欄「価値責任者の判断」。標準 第3章 3.5.5 要求事項9)
+    fs.writeFileSync(path.join(dir, 'docs', 'gates', 'po-F-001-2026-10-21.md'), form.replace('G-4 機能仕様承認', '価値責任者の判断').replace('F-005 / 9d8c7b6', 'F-001').replace('通過(判定者の申告を転記)', '通過'));
+    r = run('state:needs-dev', 'F-001', '--from', PO);
+    check('IMPL-0331:ok 入口: G-2・G-4 と価値責任者の判断の記録がある機能の state:needs-dev は「着手してよい」(終了コード 0)', r.status === 0 && /^\[着手してよい\] state:needs-dev F-001/.test(r.out), `${r.status}\n${r.out}`);
     r = run('--from', PO, 'state:needs-dev', 'F-001');
     check('入口: --from を先に書いても同じに読む', r.status === 0, `${r.status}\n${r.out}`);
     r = run('state:needs-dev', 'F-001', '--from', 'state:needs-tech');

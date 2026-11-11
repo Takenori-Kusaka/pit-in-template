@@ -46,6 +46,7 @@ import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, r
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { readTrialChecklist } from './trial-checklist.mjs';
+import { readPopulation, samplingOverdueNote } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
@@ -486,10 +487,13 @@ function withIssues(step, issues) {
 //                                      (出荷判定者の記録の突合による差し戻しは、テンプレートに判定記録の様式が無い)
 //   state:needs-dev(対象は機能 F-NNN。--from で前のラベルを渡す)
 //     --from state:needs-tech        G-3 の通過。3.5.5 の遷移「技術判断者が G-3 の判定記録を作成し」から
-//     --from state:needs-po / needs-owner  価値責任者の判断・事業決裁者の決裁の記録。テンプレートに様式が無く、機械では読まない
+//     --from state:needs-po / needs-owner  価値責任者の判断・事業決裁者の決裁の記録(テンプレ4 のゲート欄「価値責任者の判断」「事業決裁者の決裁」、
+//                                         対象は作業単位。標準 第3章 3.5.5 要求事項9。process-compass #359 / IMPL-0467)
 //     いずれの経路でも G-2・G-4 の通過を求める。これは 3.5.5 からではなく、第5章 5.8.5 の禁止事項1(受入基準を確定せずに
 //     実装を始めない)と /implement の前提による。次の一手が /implement を出す条件と同じ
-//   --from が無い needs-dev、機能へ対応づけない作業単位は、前提を導けないため判定できない
+//   --from が無い needs-dev は、前提を導けないため判定できない。機能へ対応づけない作業単位は「類型 <名>」で指定し、価値責任者が前もって
+//   記録した類型の判断(ゲート欄「価値責任者の判断」、対象「類型 <名>」)の通過を前提とする。類型の記録が無ければ判定できない
+//   G-6 が省略・未達の構成の state:qm-blocked は、出荷判定者の G-7 の判定記録(結果「差し戻し」、対象 PR #N)を前提とする
 //   遷移の前提に特定の判定記録を置かないラベル(dev-done・needs-po・needs-tech・needs-owner・needs-audit・needs-platform)は着手してよい
 // 判定記録は最新の判定で読む(passed・latestPassIn。#368 の突合 X-2)。構成にゲートのキーが無い・状態が語彙に無いときは
 // 判定できない(X-3)。判定記録の読み方は次の一手と同じ 3 つの出所。開いている PR の判定はマージの前で写しが無いため、
@@ -504,10 +508,12 @@ export const PICKUP_RULES = {
 };
 /** state:needs-dev へ替えた前のラベル(3.5.5 の状態の遷移で needs-dev へ入る経路)と、その経路で足す判定記録 */
 export const PICKUP_FROM = {
-  'state:needs-po': { gates: [], unread: '価値責任者の判断の記録' },
-  'state:needs-tech': { gates: ['g3'], unread: null },
-  'state:needs-owner': { gates: [], unread: '事業決裁者の決裁の記録' },
+  'state:needs-po': { gates: [], decision: { gate: '価値責任者の判断', role: 'value-owner' } },
+  'state:needs-tech': { gates: ['g3'], decision: null },
+  'state:needs-owner': { gates: [], decision: { gate: '事業決裁者の決裁', role: 'biz-approver' } },
 };
+/** ゲートでない判断の記録(テンプレ4 のゲート欄の値。標準 第3章 3.5.5 要求事項9)。対象(作業単位・類型)の最新の判断が通過か */
+const decisionPassed = (records, gateName, matches) => latestPassIn(records.filter((r) => String(r.gate ?? '').normalize('NFKC').startsWith(gateName) && matches(r)));
 /**
  * 遷移の前提に特定の判定記録を置かないラベル。3.5.5 の語彙で、開発者・AI維持管理者・誰でも付けられ、付ける契機を判定に限らない
  * (state:needs-po へは監査の判定・G-3 の差し戻しの後にも遷移するが、誰でも付けられるため特定の記録を前提にしない)
@@ -522,6 +528,8 @@ export function parsePickupTarget(text) {
   if (f) return { feature: f[1].toUpperCase(), task: f[2] ? `Task-${f[2].split('-')[1]}` : null };
   const p = s.match(/^(?:PR\s*)?#?(\d+)$/i);
   if (p) return { pr: Number(p[1]) };
+  const ty = s.normalize('NFKC').match(/^類型\s*[::]?\s*(\S.*)$/);
+  if (ty) return { type: ty[1].trim() };
   return null;
 }
 
@@ -537,7 +545,13 @@ export function pickupCheck({ label, target, from = null, records = [], config =
   const rule = PICKUP_RULES[label];
   if (!rule) return res('undetermined', `ラベル ${label ?? '(無し)'} は引き渡しのラベルの語彙(標準 第3章 3.5.5)に無い。推測で着手しない`);
   const t = parsePickupTarget(target);
-  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけない作業単位は、テンプレートが前提の判定記録を読めない。推測で着手せず、付けた席へ確かめる`);
+  if (rule.target === 'feature' && t?.type) {
+    // 機能へ対応づけない作業単位(標準 第3章 3.5.5 要求事項9)。価値責任者が前もって記録した類型の判断の通過を前提とする
+    const own = (r) => String(r.target ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim() === `類型 ${t.type}`;
+    if (decisionPassed(records, '価値責任者の判断', own)) return res('start', `類型「${t.type}」の価値責任者の判断の通過が、最新の判定として記録にある(標準 第3章 3.5.5 要求事項9)`, { required: ['価値責任者の判断'] });
+    return res('undetermined', `類型「${t.type}」について、価値責任者が前もって記録した判断(テンプレ4 のゲート欄「価値責任者の判断」、対象「類型 ${t.type}」、結果「通過」)が無い。機能へ対応づけない作業単位の前提を導けない。推測で着手せず、価値責任者へ確かめる(標準 第3章 3.5.5 要求事項9)`, { returnTo: seatOf(config, 'value-owner') });
+  }
+  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけない作業単位は「類型 <名>」で指定し、価値責任者が前もって記録した類型の判断を前提とする(標準 第3章 3.5.5 要求事項9)。推測で着手せず、付けた席へ確かめる`);
   if (rule.target === 'pr' && !t?.pr) return res('undetermined', `${label} の作業単位は PR の番号(PR #N)で指定する`);
   const judgeSeat = (key) => {
     const role = gateRole(config, key);
@@ -555,10 +569,25 @@ export function pickupCheck({ label, target, from = null, records = [], config =
     if (unknown.length) return unknownRes(unknown);
     if (route.gates.some((g) => !isGateActive(config, g))) return res('undetermined', `${from} を経たが、${route.gates.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない。経路の判定記録の様式を導けない。付けた席へ確かめる`);
     const active = keys.filter((g) => isGateActive(config, g));
-    const note = route.unread ? `。${route.unread}はテンプレートに様式が無く、読んでいない` : '';
-    if (!active.length) return res('start', `${keys.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない(省略・未達は PROCESS-PROFILE.md の開示による)${note}`);
     const missing = active.filter((g) => !passed(records, g, t.feature));
-    if (!missing.length) return res('start', `${active.map((g) => gateLabel(config, g)).join('・')} の通過が最新の判定として記録にある(対象 ${t.feature})${note}`, { required: active.map(gateArg) });
+    // 経路の判断の記録(価値責任者の判断・事業決裁者の決裁。標準 第3章 3.5.5 要求事項9)。ゲートの通過を先に確かめ、
+    // ゲートが揃っていても判断の記録が無ければ、未判定のまま渡ったものとして扱う
+    const decisionHold = () =>
+      res(
+        'hold',
+        `${from} を経た ${label} に、${route.decision.gate}の記録(テンプレ4 のゲート欄「${route.decision.gate}」、対象 ${t.feature}、結果「通過」)が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5・9)`,
+        { required: [...active.map(gateArg), route.decision.gate], missing: [route.decision.gate], returnTo: seatOf(config, route.decision.role) }
+      );
+    const decisionOk = !route.decision || decisionPassed(records, route.decision.gate, (r) => forTarget(r, t.feature));
+    const note = route.decision ? `。${route.decision.gate}の通過が記録にある` : '';
+    if (!active.length) {
+      if (!decisionOk) return decisionHold();
+      return res('start', `${keys.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない(省略・未達は PROCESS-PROFILE.md の開示による)${note}`);
+    }
+    if (!missing.length) {
+      if (!decisionOk) return decisionHold();
+      return res('start', `${active.map((g) => gateLabel(config, g)).join('・')} の通過が最新の判定として記録にある(対象 ${t.feature})${note}`, { required: active.map(gateArg) });
+    }
     const g = missing.find((x) => route.gates.includes(x)) ?? missing[0];
     return res(
       'hold',
@@ -571,11 +600,14 @@ export function pickupCheck({ label, target, from = null, records = [], config =
   const unknown = unknownGates(['g6']);
   if (unknown.length) return unknownRes(unknown);
   if (!isGateActive(config, 'g6')) {
+    if (label === 'state:ready-to-merge') return res('undetermined', 'G-6 が省略・未達の構成では state:ready-to-merge を使わない(標準 第3章 3.5.5)。付けた者へ確かめる');
+    // 出荷判定者の記録の突合による差し戻しは、G-7 の判定記録(結果「差し戻し」、対象 PR #N)を前提とする(標準 第3章 3.5.5 要求事項9)
+    const g7 = records.filter((r) => r.gate?.startsWith('G-7') && refersPr(r, t.pr));
+    if (latestRejectIn(g7)) return res('start', `G-6 が省略・未達の構成で、出荷判定者の G-7 の差し戻しが最新の判定として記録にある(PR #${t.pr})`, { required: ['G-7'] });
     return res(
-      'undetermined',
-      label === 'state:ready-to-merge'
-        ? 'G-6 が省略・未達の構成では state:ready-to-merge を使わない(標準 第3章 3.5.5)。付けた者へ確かめる'
-        : 'G-6 が省略・未達の構成の差し戻しは、出荷判定者の記録の突合による。テンプレートに判定記録の様式が無いため機械では確かめない。差し戻した席へ理由の所在を確かめる'
+      'hold',
+      `G-6 が省略・未達の構成の state:qm-blocked に、出荷判定者の G-7 の差し戻しの記録(対象 PR #${t.pr}、結果「差し戻し」)が最新の判定として無い。未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5・9)`,
+      { required: ['G-7'], missing: ['G-7'], returnTo: seatOf(config, 'qa-gatekeeper') }
     );
   }
   const all = [...records, ...(openPr?.records ?? [])];
@@ -987,6 +1019,15 @@ export function computeNext({ fetch = true, network = true } = {}) {
     // 置いた写しに形の問題があれば出す。写しが無いことは出さない(移行段階は組織が適用を広げる計画の区切りで、T-1 を済ませた組織の
     // 案件にまで写しを求めない。#359 の独立の突合 中-3)
     {
+      // 判定記録の記述の内容の四半期の抽出(標準 第5章 5.7.4。process-compass #359 / IMPL-0174)。直前の四半期の記録が無ければ出す
+      try {
+        const d = new Date();
+        const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const sn = samplingOverdueNote({ root: ROOT, today, items: readPopulation(ROOT, { fetch: false }).items });
+        if (sn) result.notes.push(sn);
+      } catch {
+        // 読めなければ出さない(次の一手は止めない)
+      }
       const tc = readTrialChecklist(ROOT);
       if (tc.present && tc.problems.length) {
         result.notes.push(

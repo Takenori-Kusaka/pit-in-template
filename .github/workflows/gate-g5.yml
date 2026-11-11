@@ -134,6 +134,8 @@ jobs:
       - run: node scripts/gate/test-reach-forecast-record.mjs
       # 試行前チェックリスト(T-1 開始条件)の形の検査と、/pit の注記(process-compass #359)
       - run: node scripts/gate/test-trial-checklist.mjs
+      # 判定記録の記述の内容の四半期の抽出(process-compass #359)
+      - run: node scripts/gate/test-content-sampling.mjs
       # D-0 表1 の検証の行・決定と同意の列と、企画書の観点3 の出所の区分の検査(process-compass #411)
       - run: node scripts/gate/test-customer-voice.mjs
       # モデルの導入の記録・正解の目録・AI の採点者の較正の記録の検査(process-compass #426)
