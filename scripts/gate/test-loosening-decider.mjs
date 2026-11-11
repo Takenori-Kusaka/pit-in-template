@@ -556,8 +556,17 @@ try {
       fill.ok && !noForm.ok && /新任の決定者が、自分の任命を自分の記名で確定することはできません/.test(noForm.out) && /体制の法的な形態\(自己の任命の例外\)/.test(noForm.out) && /#359 より前の D-0 にはこの欄が無い/.test(noForm.out) && wz.raw() === before,
       `${fill.out}\n${noForm.out}`
     );
-    // IMPL-0342:ng 名簿に組織上の任命権者がいれば、例外に当たらない(任命権者の記名による)
+    // IMPL-0342:ng 選択の欄が一致しても、決裁の権限の出所が様式のまま・「—」なら受け付けない(確認 第4巡への裁定 高-1)
     setForm(d0p, '個人事業主');
+    const formRow = fs.readFileSync(path.join(wz.d, 'templates/00-d0-governance.md'), 'utf8').match(/^\| 決裁の権限の出所 \|[^\n]*\|\s*$/m)[0];
+    const setSourceRow = (row) => fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^\| 決裁の権限の出所 \|[^\n]*\|\s*$/m, row));
+    for (const [label, row] of [['様式のまま', formRow], ['様式の文から山括弧を外したもの', formRow.replace('| <', '| ').replace(/> \|\s*$/, ' |')], ['—', '| 決裁の権限の出所 | — |']]) {
+      setSourceRow(row);
+      const r = wz.run(succession);
+      check(`IMPL-0342:ng 選択の欄が一致しても、決裁の権限の出所が${label}なら新任の自己の任命を受け付けない`, !r.ok && wz.raw() === before, r.out);
+    }
+    setSourceRow('| 決裁の権限の出所 | 個人事業主本人(開業届 2020-04-01。試験) |');
+    // IMPL-0342:ng 名簿に組織上の任命権者がいれば、例外に当たらない(任命権者の記名による)
     const withOrg = wz.run({ ...succession, people: [P[1], ORG] });
     check('IMPL-0342:ng 名簿に組織上の任命権者がいれば、新任の自己の任命を受け付けない', !withOrg.ok && wz.raw() === before, withOrg.out);
     // IMPL-0342:ok 選択の欄が「個人事業主」の1名の体制の承継は、新任の記名を自己の任命として受け付け、変化点の記録に残す
@@ -602,6 +611,21 @@ try {
       }
     };
     check('IMPL-0342:ok 選択の欄の「個人事業主」「1名で代表権を持つ法人」をそのまま読む', form('個人事業主') === 'sole' && form('1名で代表権を持つ法人') === 'corp');
+    check('IMPL-0342:ng 決裁の権限の出所が様式の文のときは記入とみなさず、外部の記録の言及も探さない', (() => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-359f-'));
+      try {
+        fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+        fs.mkdirSync(path.join(d, 'templates'), { recursive: true });
+        const form = fs.readFileSync(path.join(ROOT, 'templates/00-d0-governance.md'), 'utf8');
+        fs.writeFileSync(path.join(d, 'templates/00-d0-governance.md'), form);
+        const row = form.match(/^\| 決裁の権限の出所 \|[^\n]*\|\s*$/m)[0];
+        fs.writeFileSync(path.join(d, 'docs/D-0-governance.md'), `${row}\n| 体制の法的な形態(自己の任命の例外) | 1名で代表権を持つ法人 |\n`);
+        const a = authoritySourceForm(d);
+        return a.form === 'corp' && a.filled === false && a.externalRef === false;
+      } finally {
+        fs.rmSync(d, { recursive: true, force: true });
+      }
+    })());
     const ngChoices = ['個人事業主ではない', '個人事業主本人', '1名で代表権を持つ法人(他に代表権を持つ者はいない)', '代表権を持たない1名の担当者', '該当なし', '<自己の任命の例外を使う体制だけ>', ''];
     check('IMPL-0342:ng 選択の欄の値が2つの語と完全に一致しなければ、言い換え・否定・付け足し・空欄を法的な形態として読まない', ngChoices.every((v) => form(v) === null), JSON.stringify(ngChoices.map((v) => [v, form(v)])));
     check('IMPL-0342:ng 自由な文(決裁の権限の出所)の中身では読まない(選択の欄が無ければ、出所に「1名で代表権を持つ法人」と書いてあっても読まない)', (() => {

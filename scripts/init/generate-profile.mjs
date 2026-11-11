@@ -1364,8 +1364,13 @@ export function authoritySourceForm(root = ROOT) {
   const file = path.join(root, 'docs/D-0-governance.md');
   const m = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').match(/^\| 決裁の権限の出所 \|([^\n]*)\|\s*$/m) : null;
   const v = m ? m[1].trim() : '';
-  const filled = Boolean(v) && !v.startsWith('<') && v !== '—' && v !== '-';
-  const t = v.normalize('NFKC');
+  // 未記入は、空・「—」・様式の説明文のまま(山括弧の有無を問わず、様式の行の文と照らす。確認 第4巡への裁定 高-1)
+  const formFile = path.join(root, 'templates/00-d0-governance.md');
+  const fromForm = fs.existsSync(formFile) ? (fs.readFileSync(formFile, 'utf8').match(/^\| 決裁の権限の出所 \|([^\n]*)\|\s*$/m)?.[1] ?? '') : '';
+  const norm = (x) => String(x ?? '').normalize('NFKC').trim().replace(/^<|>$/g, '').replace(/\s+/g, '').trim();
+  const isFormText = Boolean(norm(fromForm)) && norm(v) === norm(fromForm);
+  const filled = Boolean(v) && !v.startsWith('<') && !/^[—\-–―]+$/.test(v) && !isFormText;
+  const t = filled ? v.normalize('NFKC') : '';
   // 法的な形態は、選択の欄「体制の法的な形態(自己の任命の例外)」の値の完全一致だけで読む(確認 第3巡への裁定 高-2)。
   // 自由な文(決裁の権限の出所)の中身では受け付けない。語の判定は、狭めれば緩み、広げれば正当な書き方を拒むため採らない
   const fm = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').match(/^\| 体制の法的な形態\(自己の任命の例外\) \|([^\n]*)\|\s*$/m) : null;
@@ -2778,7 +2783,9 @@ export function selfAppointmentOf(config, report, decidedBy, before = null, root
   const othersBefore = (before.people ?? []).filter((p) => p && p.external !== true && p.id !== key && p.id !== priorId && p.id !== report.priorDecider);
   if (othersBefore.length) return false;
   if ([config, before].filter(Boolean).some((c) => (c.people ?? []).some((p) => p?.external === true && p?.appointer === true))) return false;
-  return authoritySourceForm(root).form !== null;
+  // (a) 選択の欄の値の完全一致 と (b) 決裁の権限の出所の記入 の両方を要する(確認 第4巡への裁定 高-1)
+  const a = authoritySourceForm(root);
+  return a.form !== null && a.filled;
 }
 
 /** 記名者1人に、変化点の行ごとの要件を照らす(向きの値を要件の根拠に使わない。ADR-0110 決定1・2) */
@@ -2826,7 +2833,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
     out.push(
       `「${item.line}」は席の責任者の任免(または決定者の変更)であり、決定できるのは${who}です("${decidedBy}" は該当しません)。` +
         (item.decider && !report.allBlankBefore
-          ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。例外は、本人の上に任命の権限を持つ者がいない1名の体制だけです(変化点の後の体制の内が本人1名、名簿に組織上の任命権者がいない、前任の決定者が体制から外れている、D-0 節11 の選択の欄「体制の法的な形態(自己の任命の例外)」に「個人事業主」か「1名で代表権を持つ法人」をそのまま書いている、ほかの行を束ねていない。自己の任命として保証の開示の項目7 へ出す。#359 より前の D-0 にはこの欄が無いので、様式から行を写して書く)。'
+          ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。例外は、本人の上に任命の権限を持つ者がいない1名の体制だけです(変化点の後の体制の内が本人1名、名簿に組織上の任命権者がいない、前任の決定者が体制から外れている、D-0 節11 の選択の欄「体制の法的な形態(自己の任命の例外)」に「個人事業主」か「1名で代表権を持つ法人」をそのまま書いている、同じ節の「決裁の権限の出所」に根拠を記入している(様式の説明のまま・空・「—」は未記入)、ほかの行を束ねていない。自己の任命として保証の開示の項目7 へ出す。#359 より前の D-0 にはこの欄が無いので、様式から行を写して書く)。'
           : '') +
         (report.allBlankBefore ? '全席が未記入の状態からの初回の記入は、この変化点で D-0 表1「体制と運用形態」の決定者の席に記入する人の記名と理由で受け付けます。' : '') +
         '離脱(席を空ける)だけの変化点は記名なしで反映できます。後任の任命は、別の変化点として決定者の記名と理由をつけて出します(標準 第3章 3.13.3)'

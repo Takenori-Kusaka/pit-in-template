@@ -273,10 +273,15 @@ export function populationOrError(root, q, { fetch = true } = {}) {
   if (gitOut(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return { items: null, error: 'リポジトリの履歴を読めない' };
   if (String(gitOut(root, ['rev-parse', '--is-shallow-repository']) ?? '').trim() === 'true') return { items: null, error: '履歴が浅い(浅いクローン)。四半期の締めの時点の木を導けない。git fetch --unshallow で履歴を取ってから実行する' };
   const hasOrigin = gitOut(root, ['remote', 'get-url', 'origin']) !== null;
-  if (fetch && hasOrigin) {
+  if (!hasOrigin) {
+    // origin の無いリポジトリは、取得する先が無い。手元の記録用ブランチを数えると古い記録で数える恐れがあるため、手元に records があれば数えず失敗にする
+    if (recordsRef(root)) return { items: null, error: 'origin が無く、手元の記録用ブランチ records が最新かを確かめられない。origin を設定して取得してから実行する' };
+  } else if (fetch) {
     const lsRemote = gitOut(root, ['ls-remote', '--heads', 'origin', 'records']);
-    if (lsRemote === null) return { items: null, error: '記録用ブランチ records を数える前に取得できない(origin へ届かない)。取得できる環境で実行し直す' };
-    if (lsRemote.trim() && gitOut(root, ['fetch', '--quiet', 'origin', 'records:refs/remotes/origin/records']) === null) return { items: null, error: '記録用ブランチ records を fetch できない。取得できる環境で実行し直す' };
+    if (lsRemote === null) return { items: null, error: '記録用ブランチ records を数える前に取得できない(origin へ届かない。認証・ネットワークを確かめる)' };
+    if (lsRemote.trim() && gitOut(root, ['fetch', '--quiet', '--force', 'origin', 'records:refs/remotes/origin/records']) === null) {
+      return { items: null, error: '記録用ブランチ records を fetch できない(手元の refs/remotes/origin/records と食い違う場合は、記録用ブランチの履歴の書き換えを疑い、AI維持管理者へ渡す)' };
+    }
   }
   return { items: populationFromHistory(root, q), error: null };
 }
@@ -305,9 +310,9 @@ export function readPopulation(root = ROOT, { fetch = true } = {}) {
   return { items: population({ gateRecords: forms, reviews: branch.available ? branch.reviews : new Map() }), branchAvailable: branch.available, branchReason: branch.reason ?? null };
 }
 
-function localToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** 今日の UTC の日付(四半期の境界と同じく UTC で締めを判断する。確認 第4巡への裁定 中) */
+function utcToday() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -342,7 +347,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error('--quarter YYYYQn(例: 2026Q4)か --verify YYYYQn を渡します');
     process.exit(2);
   }
-  const today = arg('--today') ?? localToday();
+  const today = arg('--today') ?? utcToday();
   if (today <= quarterEnd(q)) {
     console.error(`${q} はまだ締まっていない(末日 ${quarterEnd(q)})。四半期の締めの後に、締めの時点の母集団から抽出する`);
     process.exit(1);
