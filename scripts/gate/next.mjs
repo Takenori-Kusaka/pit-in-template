@@ -679,10 +679,21 @@ function planTasks(text) {
   return tasks;
 }
 
-function defaultBranch() {
-  for (const b of ['main', 'master']) if (git(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]) !== null) return b;
+/**
+ * 既定ブランチ(git log へ渡す参照)。origin の HEAD を先に読み、手元に同名のブランチがあればそれを、無ければ origin/<名> を返す。
+ * origin の HEAD を読めなければ手元の main・master。既定ブランチの名は main に限らない(process-compass #362 / ADR-0123)
+ */
+export function defaultBranchOf(gitFn = git) {
+  const remote = gitFn(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  if (remote) {
+    const name = remote.replace(/^refs\/remotes\/origin\//, '');
+    if (gitFn(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]) !== null) return name;
+    if (gitFn(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`]) !== null) return `origin/${name}`;
+  }
+  for (const b of ['main', 'master']) if (gitFn(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]) !== null) return b;
   return null;
 }
+const defaultBranch = () => defaultBranchOf(git);
 
 /** 既定ブランチのコミットのトレーラ Spec: F-NNN / Task-N を集める */
 function doneTasks(branch) {

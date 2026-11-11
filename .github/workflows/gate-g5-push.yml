@@ -1,0 +1,28 @@
+# G-5 の検査を、既定ブランチへの push で実行する(PR を経ない体制の構成の書き換えの検出。標準 第3章 3.13.5)
+#
+# 既定ブランチの名に依らずに動かすため、push の絞りはすべてのブランチ('**')とし、ジョブの条件で既定ブランチに限る。
+# on.push.branches は式を評価しないので、既定ブランチの名を契機に書けない(process-compass #362 / ADR-0123)。
+#
+# このファイルには、名も ID も gate-g5 のジョブを置かない。既定ブランチでないブランチへの push では、下のジョブが条件で
+# skipped になり、その check run は default-push の名で残る。名が gate-g5 の skipped の check run が PR の先頭のコミットに付くと、
+# 必須チェック gate-g5 を満たしてしまうためである(2026-11-11 の実機の確認)。既定ブランチへの push では、呼ばれた gate-g5.yml の
+# ジョブが「default-push / <ジョブ名>」の check run になる。
+# 条件は github.ref で書く(github.ref_name はタグと区別しない)。タグの push では起動しない(branches だけを書くため)。
+# 形は契約検査と事前点検が確かめる(scripts/gate/push-trigger.mjs)。このファイルは強制層であり、変更は AI維持管理者の承認を要する
+
+name: gate-g5-push
+
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  default-push:
+    name: default-push
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/gate-g5.yml

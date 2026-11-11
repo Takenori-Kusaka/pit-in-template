@@ -10,7 +10,8 @@
 //
 // 点検は事実を読むだけで、設問の回答を検出の結果で埋めません(/process-init の「ファイルから技術スタックを推測しない」と両立する)。
 // 止める項目は、黙って統制が外れる状態です(目印の無い指示ファイル、フックの登録の欠け、CODEOWNERS の置き場の重なりと
-// 雛形の所有者、既定ブランチの名、強制層のワークフロー gate-g5.yml の欠け)。告げる項目は、既存の統制の資産の一覧
+// 雛形の所有者、既定ブランチへの push の契機の形(旧版の gate-g5.yml・gate-g5-push.yml の欠け。既定ブランチの名では止めない。#362)、
+// 強制層のワークフロー gate-g5.yml の欠け)。告げる項目は、既存の統制の資産の一覧
 // (docs/adoption-inventory.md)へ載せることを求めます。一覧に無い資産と、扱いを確定していない資産は止めます(一覧の網羅を人の申告だけに頼らない)。
 // 共通の祖先の無い履歴の併合(根のコミットが2つ以上)は止めず、一覧へ載せることを求めます(#315 突合 X-4)。開始より前の履歴は
 // 出所を問わず主張の外で、古い併合は履歴を書き換えないと戻せないためです。準拠テンプレートの履歴を併合しない定め1 は保ちます。
@@ -25,6 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, aiNameReason, isFilledValue, codeownersState, CODEOWNERS_PLACES, hookRegistrationProblems } from './config.mjs';
 import { loadManifest, missingResident } from './claude-md-resident.mjs';
+import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
 
 /** CLAUDE.md の生成区間の目印(generate-profile.mjs の RULES_BEGIN・RULES_END と同じ文字列。test-adoption.mjs が一致を確かめる) */
 export const RULES_BEGIN = '<!-- generated:process-rules start -->';
@@ -36,7 +38,7 @@ export const INVENTORY_FILE = 'docs/adoption-inventory.md';
 export const DISPOSITIONS = ['取り込む', '置き換える', '残して並存する', '対象外とする'];
 
 /** 準拠テンプレートが持つワークフロー。これ以外のワークフローは既存の資産として一覧へ載せる */
-export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'gate-g5-base.yml', 'record-copy.yml', 'ship-evidence.yml'];
+export const TEMPLATE_WORKFLOWS = ['ai-review.yml', 'assurance-period.yml', 'context-drift.yml', 'delegation.yml', 'gate-entry.yml', 'gate-g5.yml', 'gate-g5-base.yml', 'gate-g5-push.yml', 'record-copy.yml', 'ship-evidence.yml'];
 /** 準拠テンプレートの直下の配置。これ以外のファイルは、既存の製品のコードと履歴として一覧へ載せる */
 export const TEMPLATE_TOP = ['.claude', '.gitattributes', '.github', '.gitignore', '.ignore', '.prettierignore', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'LICENSE-docs', 'PROCESS-PROFILE.md', 'README.md', 'adapters', 'context', 'docs', 'evidence', 'process.config.json', 'profiles', 'scripts', 'specs', 'templates'];
 /** .gitignore に含めるテンプレートの行(証跡・秘匿情報・カバレッジの出力・端末ごとの状態の除外) */
@@ -219,12 +221,17 @@ export function preflight(root = ROOT) {
     stop('gate-g5-workflow', '.github/workflows/gate-g5.yml', 'テンプレートのワークフロー gate-g5.yml が無い。G-5 の機械判定と契約検査が走らない(契約検査を走らせるのはこのワークフロー自身)', 'テンプレートの .github/workflows/ を複製する');
   }
 
-  // --- 止める: 既定ブランチ ---
+  // --- 止める: 既定ブランチへの push の契機の形(process-compass #362 / ADR-0123) ---
+  // 既定ブランチの名では止めない。push の契機(gate-g5-push.yml)は既定ブランチの名を実行時に読むため、名が main でなくても
+  // 契約検査が走る。止めるのは、旧版の gate-g5.yml(push の契機を main に固定した書き方)を持ち込んだ場合と、push のワークフローの
+  // 欠け・書き換えである。どちらも、名が違えば push の契約検査が黙って走らない
+  if (fs.existsSync(path.join(root, '.github/workflows/gate-g5.yml'))) {
+    const pt = pushTriggerProblems(readWorkflows(root));
+    if (pt.length) stop('push-trigger', '.github/workflows/', `既定ブランチへの push の契機の形がテンプレートと違う: ${pt.join('。')}`, 'テンプレートの .github/workflows/gate-g5.yml と gate-g5-push.yml を複製する(既定ブランチの名は改めなくてよい)');
+  }
+  // 既定ブランチの名と読み方は事実として残す。読み方が現在のブランチ(origin の HEAD も手元の main も無い)のときは、読み違いの可能性を告げる
   const br = defaultBranch(root);
   facts.defaultBranch = br;
-  if (br.name !== 'main') {
-    stop('default-branch', br.name ?? '(不明)', `既定ブランチが main でない(${br.name ?? '読めない'}。${br.how})。gate-g5.yml の push の契機が main に固定のため、push の契約検査が黙って走らない`, '既定ブランチを main にしてから初期化する(push の契機を書き換える経路は、準拠テンプレートに置いていない)');
-  }
 
   // --- 告げる(一覧へ載せることを求める) ---
   // 共通の祖先の無い履歴の併合(#315 突合 X-4)。止めずに、主系列の根でない根のコミットごとに一覧へ載せる。
@@ -348,6 +355,8 @@ export function printPreflight(result, log = console.log) {
     log(`[告げる] ${t.place}: ${t.text}${r ? `(一覧の扱い: ${r.disposition || '未記入'})` : ''}`);
   }
   if (result.facts.defaultBranch) log(`[事実] 既定ブランチ: ${result.facts.defaultBranch.name ?? '不明'}(${result.facts.defaultBranch.how})。コミット ${result.facts.commits ?? '?'} 件、根のコミット ${result.facts.roots ?? '?'} 件`);
+  // 既定ブランチの名では止めない(#362 / ADR-0123)。読み方が origin の HEAD でないときは、読み違いの可能性を添える
+  if (result.facts.defaultBranch && result.facts.defaultBranch.how !== 'origin の HEAD') log(`[事実] 既定ブランチは origin の HEAD から読めていない。適用の開始の境と出荷の範囲は既定ブランチの主系列の上に置くため、GitHub の既定ブランチと一致するかを人が確かめる(git remote set-head origin --auto で origin の HEAD を取得できる)`);
   log(
     result.stops.length
       ? `事前点検: 止める項目が ${result.stops.length} 件あります。初期化は構成を書きません`

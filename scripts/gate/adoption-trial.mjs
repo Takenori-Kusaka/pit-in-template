@@ -1846,7 +1846,10 @@ function envCheck() {
   if (!repo) items.shipEvidence = noRepo();
   else {
     const fetchedAt = localIso();
-    const runs = ghJson(['run', 'list', '--repo', repo, '--workflow', 'gate-g5', '--status', 'success', '--limit', '1', '--json', 'databaseId,url,createdAt']);
+    // 既定ブランチへの push の実行は gate-g5-push.yml(gate-g5.yml を呼ぶ)。成果物は呼び出し側の実行に付くため、先に探す。
+    // 無ければ gate-g5.yml の実行(手動の起動)を探す(process-compass #362 / ADR-0123。ship-evidence.yml と同じ順)
+    let runs = ghJson(['run', 'list', '--repo', repo, '--workflow', 'gate-g5-push.yml', '--status', 'success', '--limit', '1', '--json', 'databaseId,url,createdAt']);
+    if (!(Array.isArray(runs.value) && runs.value[0])) runs = ghJson(['run', 'list', '--repo', repo, '--workflow', 'gate-g5', '--status', 'success', '--limit', '1', '--json', 'databaseId,url,createdAt']);
     const first = Array.isArray(runs.value) && runs.value[0] && typeof runs.value[0] === 'object' ? runs.value[0] : null;
     const id = first?.databaseId ? first.databaseId : null;
     if (!id) items.shipEvidence = runs.why ? unconfirmed(`gate-g5 の実行の一覧を読めない(${runs.why})`, runs.reason ?? 'unreadable') : unconfirmed('gate-g5 の成功した実行が無い(最初の PR の後に確かめる)', 'no-subject');

@@ -114,6 +114,8 @@ jobs:
       # download-artifact は、この実行の成果物しか取れない(gate-g5 は別のワークフローの実行)。
       # 出荷の対象のコミット(--to、無ければ checkout したコミット)に対する gate-g5 の成功した実行を探し、
       # その実行の license-scan を取る。gate-g5 は既定ブランチへの push でも走るため、マージ後のコミットに実行がある。
+      # 既定ブランチへの push の実行は gate-g5-push.yml の実行(gate-g5.yml を呼ぶ。成果物は呼び出し側の実行に付く)なので、
+      # それを先に探し、無ければ gate-g5.yml の実行(手動の起動)を探す(process-compass #362 / ADR-0123)
       # 取得できなければ取り込まない。集約が「知財潔白性の検査記録がありません」を欠落として出す(隠さない)
       - name: 知財潔白性の検査記録を gate-g5 の実行から取り込む
         continue-on-error: true
@@ -122,7 +124,11 @@ jobs:
           TO: ${{ inputs.to }}
         run: |
           target=$(git rev-parse "${TO:-HEAD}^{commit}")
-          run=$(gh run list --repo "${{ github.repository }}" --workflow gate-g5 --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          run=''
+          for wf in gate-g5-push.yml gate-g5.yml; do
+            run=$(gh run list --repo "${{ github.repository }}" --workflow "$wf" --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$run" ] && break
+          done
           if [ -n "$run" ]; then
             gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
             echo "::notice::gate-g5 の実行 $run から license-scan を取り込みました(対象 $target)"
@@ -343,7 +349,11 @@ jobs:
           TO: ${{ steps.pr.outputs.to }}
         run: |
           target=$(git rev-parse "${TO:-HEAD}^{commit}")
-          run=$(gh run list --repo "${{ github.repository }}" --workflow gate-g5 --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          run=''
+          for wf in gate-g5-push.yml gate-g5.yml; do
+            run=$(gh run list --repo "${{ github.repository }}" --workflow "$wf" --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$run" ] && break
+          done
           if [ -n "$run" ]; then
             gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
             gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence || echo "::warning::gate-g5 の実行 $run に test-results がありません"

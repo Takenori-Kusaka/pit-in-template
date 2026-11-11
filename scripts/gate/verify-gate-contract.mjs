@@ -87,6 +87,7 @@ import {
 import { seatSeparationFindings, ruleStanding, pendingSeparationProblems } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
+import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
 import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL } from './coverage-check.mjs';
 import { stackCoverageReport } from './stack-coverage.mjs';
 
@@ -803,6 +804,9 @@ if (config.gates?.g5?.state !== 'omitted') {
     for (const p of agg.problems) problems.push(`gate-g5.yml: ${p}`);
     for (const n of agg.notes) notes.push(n);
   }
+  // 既定ブランチへの push の契機の形(標準 第3章 3.13.5。process-compass #362 / ADR-0123)。gate-g5.yml へ push の契機を戻す変更、
+  // gate-g5-push.yml の欠け・書き換え、ほかのワークフローの名が gate-g5 のジョブを、PR と push のたびに検出する
+  if (g5wf) for (const p of pushTriggerProblems(readWorkflows(ROOT))) problems.push(`既定ブランチへの push の契機: ${p}`);
 }
 
 // ---------------------------------------------------------- 7. ブランチ保護

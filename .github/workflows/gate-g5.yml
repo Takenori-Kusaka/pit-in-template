@@ -26,9 +26,13 @@ on:
   # 最後の実行を再実行する。PR のレビューの手順は実行のたびに API から読み直す
   # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
   # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
-  # 既定ブランチの名前が main でない場合は、ここを改める(このファイルは強制層であり、変更は AI維持管理者の承認を要する)
-  push:
-    branches: [main]
+  # push の契機はこのファイルに置かない。gate-g5-push.yml が、既定ブランチへの push に限ってこのファイルを呼ぶ(workflow_call)。
+  # 呼ばれた側の github コンテキストは呼び出し側の push の事象を指すため、下の push の分岐(github.event.before との比較)はそのまま働く。
+  # このファイルに push を書かない理由: on.push.branches は式を評価しない(既定ブランチの名を実行時に読めない)。絞りを外して
+  # ジョブの if: で既定ブランチに絞ると、既定ブランチでないブランチへの push のたびに、名が gate-g5 の skipped の check run が
+  # PR の先頭のコミットに付き、必須チェックを満たしてしまう(2026-11-11 の実機の確認。process-compass #362 / ADR-0123)。
+  # push のワークフローには名が gate-g5 のジョブを置かない。契約検査と事前点検が形を確かめる(scripts/gate/push-trigger.mjs)
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -187,6 +191,9 @@ jobs:
       - run: node scripts/gate/test-adoption.mjs
       # 実環境の統制の確認(env-check)の4値と確認の項目を、模擬の gh で試験する(附属書I I.11 要件⑦。process-compass #315)
       - run: node scripts/gate/test-env-check.mjs
+      # 既定ブランチへの push の契機の形(gate-g5-push.yml が既定ブランチに限って gate-g5.yml を呼ぶ。名が gate-g5 のジョブを
+      # ほかの契機に置かない)と、/pit の既定ブランチの読み方(既定ブランチの名は main に限らない。process-compass #362 / ADR-0123)
+      - run: node scripts/gate/test-push-trigger.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:

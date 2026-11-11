@@ -260,9 +260,22 @@ function workspace({ keepOwner = false } = {}) {
   w.write('.github/CODEOWNERS', coText);
 
   // 既定ブランチの名・共通の祖先の無い履歴
+  // 既定ブランチの名では止めない。push の契機の形(旧版の gate-g5.yml・gate-g5-push.yml の欠け)で止める(process-compass #362 / ADR-0123)
   w.git('branch', '-m', 'main', 'trunk');
   r = preflight(w.dir);
-  check('既定ブランチが main でなければ止める', r.stops.some((s) => /既定ブランチ|main/.test(s.text)), JSON.stringify(r.stops));
+  check('既定ブランチが trunk でも、push の契機の形がテンプレートどおりなら止めない', !r.stops.some((s) => s.id === 'push-trigger' || s.id === 'default-branch') && r.facts.defaultBranch?.name === 'trunk', JSON.stringify(r.stops));
+  {
+    const g5 = w.read('.github/workflows/gate-g5.yml');
+    w.write('.github/workflows/gate-g5.yml', g5.replace(/^  workflow_call:\r?\n/m, '  push:\n    branches: [main]\n'));
+    r = preflight(w.dir);
+    check('旧版の gate-g5.yml(push の契機を main に固定し、workflow_call が無い)を持ち込むと止める', r.stops.some((s) => s.id === 'push-trigger' && /push を契機に持つ/.test(s.text) && /workflow_call/.test(s.text)), JSON.stringify(r.stops));
+    w.write('.github/workflows/gate-g5.yml', g5);
+    const push = w.read('.github/workflows/gate-g5-push.yml');
+    fs.rmSync(path.join(w.dir, '.github/workflows/gate-g5-push.yml'));
+    r = preflight(w.dir);
+    check('gate-g5-push.yml が無ければ止める', r.stops.some((s) => s.id === 'push-trigger' && /gate-g5-push\.yml が無い/.test(s.text)), JSON.stringify(r.stops));
+    w.write('.github/workflows/gate-g5-push.yml', push);
+  }
   w.git('branch', '-m', 'trunk', 'main');
   w.git('checkout', '-q', '--orphan', 'other');
   w.git('rm', '-rqf', '.');
