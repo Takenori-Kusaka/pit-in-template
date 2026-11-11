@@ -396,6 +396,16 @@ try {
       check('#434 2b の否定: 確認と同じ変化点で追加した規則の決定者(旧い確認の人)には、その確認を使わず拒否する', !newRule.ok && /委任の規則 DR-002: 決定した者の記名を受け付けられない\("Claude Dupont"/.test(newRule.out) && raw() === before, newRule.out);
       const newType = run({ ...UNLOCK, delegation: { changeTypes: [...DTYPES, { ...DTYPES[0], id: '画像', registeredAt: DAY }] } });
       check('#434 2b の否定: 確認と同じ変化点で登録した変更種別の登録者(旧い確認の人)には、その確認を使わず拒否する', !newType.ok && /変更種別 "画像" を登録した者 "Claude Dupont" は [^。]*。AI の名義の記名を受け付けない/.test(newType.out) && raw() === before, newType.out);
+      // 2g: 確認と同じ変化点で、高橋が変更種別を登録し直す(登録は事業決裁者の席の責任者に限る)
+      const reg = run({ ...UNLOCK, delegation: { changeTypes: [{ ...DTYPES[0], registeredBy: '高橋 次郎', registeredAt: DAY }] } });
+      check('#434 2g の否定: 確認と同じ変化点で、確認する人が変更種別を登録し直す入力は、登録の権限の検査で拒否したまま', !reg.ok && /変更種別 "表示文言" を登録した者 "高橋 次郎" は、事業決裁者の席の責任者ではない/.test(reg.out) && raw() === before, reg.out);
+      // X3: 確認の外で、旧い確認の本人(Dupont)が記名する無関係の変化点
+      const self = run({ summary: '高橋の所属', people: [DUPONT, { ...TAKAHASHI, team: '品質' }], decidedBy: 'Claude Dupont', reason: '所属の変更' });
+      check(
+        '#434 確認の外の否定: 旧い確認の本人が記名する無関係の変化点は拒否したまま。拒否の末尾で、本人以外が確認すれば既存の記録も照合して通ることを案内する',
+        !self.ok && /決定した者の記名を受け付けられません: "Claude Dupont"/.test(self.out) && /Claude Dupont の氏名の確認に、本人以外が記名した記録がありません/.test(self.out) && /確認を数えた後の構成で照合するため通ります/.test(self.out) && raw() === before,
+        self.out
+      );
     }
     // 2f: 1名→2名を経ない旧い2名の構成(記録の無い確認の人が既存の委任の記録の記名者)
     {
@@ -442,8 +452,8 @@ try {
     const ppl = (team) => [PEOPLE3[0], PEOPLE3[1], { ...PEOPLE3[2], team }, PEOPLE3[3], DUPONT, GEMINI];
     const u = run({ summary: '鈴木の所属', people: ppl('品質'), decidedBy: 'Claude Dupont', reason: '所属の変更' });
     check(
-      '#434 1d: 名簿に既にある確認の旨は、数えられない記名者(Dupont)の無関係の変化点を止めず、記録へ載せずに注意を出す',
-      u.ok && !(cfg().changeLog.at(-1).nameConfirmations ?? []).length && /\[注意\] Gemini Sato の氏名の確認\(名簿に既にある確認の旨\)は、この変化点の記名者 "Claude Dupont" の記名では数えられない/.test(u.out) && !/Gemini Sato の氏名を実在の人の氏名として確認した/.test(u.out),
+      '#434 1d: 名簿に既にある確認の旨は、数えられない記名者(Dupont)の無関係の変化点を止めず、記録へ載せずに注意を出す。確認するつもりの記名でも確認として記録されないことを示す',
+      u.ok && !(cfg().changeLog.at(-1).nameConfirmations ?? []).length && /この変化点は、Gemini Sato の氏名の確認として記録されません\*\*\(確認するつもりで記名した場合も同じです/.test(u.out) && /\[注意\] Gemini Sato の氏名の確認\(名簿に既にある確認の旨\)は、この変化点の記名者 "Claude Dupont" の記名では数えられない/.test(u.out) && !/Gemini Sato の氏名を実在の人の氏名として確認した/.test(u.out),
       u.out
     );
     const yy = run({ summary: '鈴木の所属', people: ppl('開発'), decidedBy: '山田 太郎', reason: '所属の変更' });

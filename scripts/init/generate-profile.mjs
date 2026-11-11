@@ -1356,6 +1356,23 @@ const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
  * 人の離脱などで統制が成立しなくなった変化は、緩める向きの決定ではなく、未達・逸脱・列挙に無い離脱の
  * 発生である。arising へ入れ、記名を待たずに反映する(第3章 3.13.3)。
  */
+/**
+ * 氏名の確認の旨があり、本人以外の記名の記録が無いため効いていない名簿の人(記録の無い旧い確認・2名以上の名簿の本人の記名だけの確認)が、
+ * 拒否・席の引き下げの原因に含まれるときの案内(process-compass #434 / ADR-0120 決定2)。含まれなければ null
+ */
+function unconfirmedSignerHint(config, mentioned) {
+  const who = (Array.isArray(config?.people) ? config.people : []).filter(
+    (p) => p?.nameConfirmed === true && aiNameReason(p.name) && nameConfirmationState(config, p) === 'invalid' && mentioned(p)
+  );
+  if (!who.length) return null;
+  return (
+    `${who.map((p) => p.name).join(', ')} の氏名の確認に、本人以外が記名した記録がありません(記録の無い旧い確認、または2名以上の名簿で本人の記名だけの確認)。` +
+    'この人が記名した既存の記録(委任の規則の決定と承認、変更種別の登録)と、この人の記名は、そのため受け付けられません。' +
+    '本人以外の名簿の人がその氏名を確認する変化点では、確認を数えた後の構成で照合するため通ります' +
+    '(/process-change 種別 accountable で名簿をそのまま渡し、AI を示す語を含まない本人以外の decidedBy と reason を付ける。同じ PR でかまいません)'
+  );
+}
+
 /** 後で数えられない確認の拒否の文(process-compass #434 / ADR-0120 決定1)。原因と、記名できる人を案内する */
 function uncountableConfirmationText(what, decidedBy) {
   const why = aiNameReason(decidedBy)
@@ -5315,6 +5332,12 @@ if (isMain) {
     config.d0Version = d0After;
 
     console.log(renderChangeReport(report, clamps, config));
+    // 既存の規則の成立が、記名者の氏名の確認に本人以外の記録が無いために落ちた場合も、同じ案内を出す(ADR-0120 決定2)
+    if (!laterConfirmation) {
+      const reasons = [...clamps.map((c) => c.reason), ...(clamps.inactiveRules ?? []).map((x) => x.reason)].filter(Boolean);
+      const hint = unconfirmedSignerHint(config, (p) => reasons.some((r) => r.includes(`"${p.name}"`)));
+      if (hint) console.log(`[案内] ${hint}`);
+    }
     console.log(`## 兼務禁止と独立性の再判定\n\n- ${separationSummary(config)}`);
     for (const v of sep.violations) console.log(`- 抵触: ${v}`);
     for (const v of sep.deviated) console.log(`- 列挙に無い離脱として記録(1〜2名の体制): ${v.pair}`);
@@ -5354,6 +5377,7 @@ if (isMain) {
     for (const d of droppedNameConfirmations(prior, { people: config.people }, change.decidedBy)) {
       console.log(
         `[注意] ${d.name} の氏名の確認(名簿に既にある確認の旨)は、この変化点の記名者 "${change.decidedBy}" の記名では数えられないため、この変化点の記録へ載せません。` +
+          `**この変化点は、${d.name} の氏名の確認として記録されません**(確認するつもりで記名した場合も同じです。氏名の確認は確認待ちのまま残り、契約検査と出荷の証跡の集約は欠落として扱い続けます)。` +
           '本人以外の確認が済んでいても、AI を示す語を含む氏名の人の記名は、AI の名義の記名に当たります。確認は、確認される本人以外の、AI を示す語を含まない名簿の人が記名する変化点で記録します'
       );
     }
@@ -5421,20 +5445,9 @@ if (isMain) {
     const newTypes = new Set((config.delegation.changeTypes ?? []).filter((t) => !priorTypes.has(JSON.stringify(t))).map((t) => String(t?.id ?? '').trim()));
     // 既存の登録の登録者は、登録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。AR-4)。
     // 本人以外の確認を記録する変化点では、その確認を数えた後の構成で照らす(ADR-0120 決定2。この変化点の日付の照合)
-    // 拒否の原因が、既存の登録の登録者の氏名の確認に本人以外の記録が無いことか(名簿の人で確認の旨がある)。案内を足す
-    const legacySigner = (p) => {
-      const id = /変更種別 "([^"]+)" を登録した者/.exec(p)?.[1];
-      const t = id ? (config.delegation?.changeTypes ?? []).find((x) => String(x?.id ?? '').trim() === id) : null;
-      return Boolean(t && !newTypes.has(id) && /AI の名義の記名を受け付けない/.test(p) && findPerson(config, t.registeredBy)?.nameConfirmed === true);
-    };
     const existingSignerCtx = laterConfirmation ? recordSignerContext(withAwaiting({ ...config, changeLog: [...(config.changeLog ?? []), laterConfirmation] })) : recordSignerContext(cfgB);
     for (const p of changeTypeProblems(cfgB, { only: newTypes, existingConfig: existingSignerCtx })) {
-      refused.push(
-        `標準変更カタログ: ${p}` +
-          (!laterConfirmation && legacySigner(p)
-            ? '。既存の登録の登録者の氏名の確認に、本人以外が記名した記録がありません(記録の無い旧い確認は、既存の記録の照合に使いません)。本人以外の名簿の人がその氏名を確認する変化点では、確認を数えた後の構成で照合するため通ります(/process-change 種別 accountable で名簿をそのまま渡し、本人以外の decidedBy と reason を付ける。同じ PR でかまいません)'
-            : '')
-      );
+      refused.push(`標準変更カタログ: ${p}`);
     }
     // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
     if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
@@ -5654,6 +5667,12 @@ if (isMain) {
                 : `どの席で判断したかを記録しました(D-0 節13 に「決定した者と同一人物」と出る。次の一手と出荷の集約にも出る)。別の自然人で行うには、対象の席の責任者が decidedBy に記名して AI維持管理者が承認するか、${seatOf(RULE_APPROVER_SEAT)?.name ?? 'AI維持管理者'}の席を別の人へ移します(種別 accountable)。委任を認めない組織は、層1 項目4「AI の利用の拡大」の水準を「認めない」で始めます(構成の錠)`);
         }
       }
+    }
+    // 拒否の原因に、氏名の確認に本人以外の記録が無い人(確認の旨はあり、効いていない)が含まれるなら、本人以外が確認すれば
+    // 既存の記録も照合して通ることを、拒否の末尾に1回まとめて案内する(process-compass #434 / ADR-0120 決定2)
+    if (refused.length && !laterConfirmation) {
+      const hint = unconfirmedSignerHint(config, (p) => refused.some((r) => r.includes(`"${p.name}"`)));
+      if (hint) refused.push(hint);
     }
     if (refused.length) reject('この変化点は反映できません', [...new Set(refused)]);
     if (samePersonNotice) console.log(`[注意] ${samePersonNotice}`);
