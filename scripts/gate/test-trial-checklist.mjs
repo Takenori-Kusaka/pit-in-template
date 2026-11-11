@@ -61,6 +61,11 @@ check('項目の行へ数値と所在を書き足した写しは、項目の欠�
 // 突合の再確認 2回目: 括弧の中の「該当なし」で未確認の検出を逃れない
 p = trialChecklistProblems(FORM.replace('参加者の稼働時間が公式に確保されている(見込み工数と確保時間を数値で記載)', '参加者の稼働時間が公式に確保されている(外部委託分は該当なし、専任3名)'), FORM, TODAY);
 check('印の無い行の括弧の中の「該当なし」は、該当なしに数えず未確認として出す', p.some((x) => x.startsWith('未確認の項目') && x.includes('専任3名')), p.join(String.fromCharCode(10)));
+// 突合の再確認 3回目: 理由に括弧を含む行末の「該当なし」は、理由つきの該当なしとして扱う
+p = trialChecklistProblems(allChecked.replace('- [x] 中止の条件が事前に定められている', '- [ ] 中止の条件が事前に定められている 該当なし: 1日で終わる(計画書 docs/plan.md)'), FORM, TODAY);
+check('理由に括弧を含む「該当なし: 理由」は通す', p.length === 0, p.join(String.fromCharCode(10)));
+p = trialChecklistProblems(allChecked.replace('- [x] 中止の条件が事前に定められている', '- [ ] 中止の条件が事前に定められている 該当なし(1日で終わる(計画書))'), FORM, TODAY);
+check('入れ子の括弧の「該当なし(理由)」は通す', p.length === 0, p.join(String.fromCharCode(10)));
 // 突合の再確認 新-1: 括弧の外の文を書き換えた行・消した行は、様式の項目の欠けとして出す
 p = trialChecklistProblems(allChecked.replace(/^- \[x\] 支援担当\(EN-1\)が割り当てられ、関与の期間が定められている\r?\n/m, ''), FORM, TODAY);
 check('EN-1 の項目を消した写しは、似た書き出しの別の項目があっても欠けとして出す', p.length === 1 && p[0].includes('支援担当(EN-1)が割り当てられ'), p.join('\n'));

@@ -4078,7 +4078,7 @@ if (isMain) {
     // 案件の区分(「案件 <区分>」)があればそれで、無ければ括弧の中を除いた区分の欄に甲・乙・丙が無いかで決める(7.7.3: 算定できた組に
     // 乙・丙が無ければ案件は算定できない。突合の再確認 2回目 中)
     const cls = String(rowValue(sec, '区分', false) ?? '').normalize('NFKC').replace(/\([^()]*\)/g, '');
-    const caseCls = cls.match(/案件\s*[::]?\s*(甲|乙|丙|算定できない|対象外)/)?.[1] ?? null;
+    const caseCls = cls.match(/案件(?:の区分)?\s*(?:[::]|は)?\s*(甲|乙|丙|算定できない|対象外)/)?.[1] ?? null;
     const undetermined = caseCls ? /算定できない|対象外/.test(caseCls) : /算定できない|対象外/.test(cls) && !/[甲乙丙]/.test(cls);
     const OPTIONAL_WHEN_UNDETERMINED = new Set(['期間の見込み', '費用の見込み', '比べる残り']);
     const blank = REACH_ROWS.filter((k) => {

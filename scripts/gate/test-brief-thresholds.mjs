@@ -158,6 +158,17 @@ check('g1PassState: 基底に通過があれば、記録用ブランチを読め
   r = W.g1();
   check('入口: 判定者の記名が名簿の人に対応づかない記録用ブランチの通過は数えず、決められないとして失敗する', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない') && r.out.includes('人の名簿(people[])の人に対応づかない'), r.out);
   // 交代の前の責任者・代行者・表記の揺れ(敬称・アカウント)は、名簿の人に対応づけば通過に数える(突合の再確認 2回目 高)
+  // AI の名義の記名は、名簿にあっても通過に数えない(G-1 は人確定。突合の再確認 3回目)
+  W.write('process.config.json', JSON.stringify({ configured: true, people: [{ id: 'p1', name: '判定 花子', accounts: ['hanako'] }, { id: 'p2', name: '別 太郎', accounts: ['taro'] }, { id: 'p9', name: 'Claude', accounts: ['claude-bot'] }], seats: [{ role: 'biz-approver', accountable: 'p1' }] }) + '\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'roster with AI');
+  git('checkout', '-q', 'records');
+  fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM.replace('| 判定者 | 判定 花子 |', '| 判定者 | Claude |'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'G-1 by AI');
+  git('checkout', '-q', 'main');
+  r = W.g1();
+  check('入口: AI の名義の記名の記録用ブランチの通過は数えず、決められないとして失敗する', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない'), r.out);
   for (const judge of ['別 太郎', '判定 花子 様', 'hanako']) {
     git('checkout', '-q', 'records');
     fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM.replace('| 判定者 | 判定 花子 |', `| 判定者 | ${judge} |`));

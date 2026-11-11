@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords, resolveSigner } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords, resolveSigner, aiNameBlocked } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
 import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
@@ -105,7 +105,8 @@ const REQUIRED_ROWS = [
 // G-1 を通過済みか。基底ブランチの docs/gates/ と、記録用ブランチ records の records/gates/(判定記録の正本)の両方を読む
 // (process-compass #359 の独立の突合 高-1)。記録用ブランチを読めず、基底ブランチにも通過の記録が無い間は、G-1 の前とも通過済みとも
 // 扱わない。G-1 の前なら失敗になる欠けは undecided へ集め、最後に「判定記録を読めない」という1つの失敗として理由を添えて出す
-const g1 = g1PassState({ cwd: ROOT, baseRecords: readGateRecords(), resolveJudge: (name) => (name ? resolveSigner(config, name) : null) });
+// 判定者の記名は名簿の人へ対応づけ、AI の名義は除く(G-1 は人確定。突合の再確認 3回目)
+const g1 = g1PassState({ cwd: ROOT, baseRecords: readGateRecords(), resolveJudge: (name) => (name && !aiNameBlocked(config, name) ? resolveSigner(config, name) : null) });
 const gateRecs = g1.records;
 const undecided = [];
 const g1Dependent = (msg) => {

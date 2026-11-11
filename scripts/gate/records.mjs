@@ -537,7 +537,7 @@ export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = un
     };
   }
   if (!b?.available) {
-    return { passed: null, records, reason: '記録用ブランチ records を読めない(まだ無い最初の判定の前の案件か、取得できない環境。records を取得できる環境で実行し直す)' };
+    return { passed: null, records, reason: `記録用ブランチ records を読めない(まだ無い最初の判定の前の案件か、取得できない環境。詳細: ${b?.reason ?? '不明'})` };
   }
   return { passed: false, records, reason: null };
 }
