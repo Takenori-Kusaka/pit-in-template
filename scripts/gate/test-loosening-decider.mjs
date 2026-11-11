@@ -509,6 +509,36 @@ try {
     fs.rmSync(ws.d, { recursive: true, force: true });
   }
 
+  // 例外は行ごとに判定する(process-compass #432 再確認 Y-1)。2名・任命権者なしで、決定者の交代(例外に当たる行)と
+  // 決定者本人の改名(もう1人が記名できる行)を束ねた変化点は受け付けず、分け方を案内する。分ければ通る
+  const wy = workspace('pit-in-432y-');
+  try {
+    const twoSeats = (name0) => Object.fromEntries(SEAT_IDS.map((r, k) => [r, { accountable: [0, 0, 0, 0, 1, 0, 0, 0, 1][k] === 0 ? name0 : P[1].name }]));
+    // 1人で記入し、2人目を足して独立レビュア・AI運用担当者に置く(記名 1人目=決定者)
+    const fill0 = wy.run({ summary: '1人目', people: [P[0]], seats: Object.fromEntries(SEAT_IDS.map((r) => [r, { accountable: P[0].name }])), decidedBy: P[0].name, reason: '初期の設定' });
+    const fill1 = fill0.ok ? wy.run({ summary: '2人目', people: [P[0], P[1]], seats: twoSeats(P[0].name), decidedBy: P[0].name, reason: '2人目' }) : fill0;
+    const fill = fill1;
+    const renamedA = { ...P[0], name: '山田 太朗' };
+    const handover = (name0) => ({ ...twoSeats(name0), 'biz-approver': { accountable: P[1].name } });
+    // IMPL-0483:ng 例外に当たらない行(本人の改名)を、例外に当たる行(交代)と束ねた変化点を、前任の記名で受け付けない
+    const bundled = wy.run({ summary: '改名と交代', people: [renamedA, P[1]], seats: handover('山田 太朗'), decidedBy: P[0].name, reason: '試験' });
+    check(
+      'IMPL-0483:ng 決定者の交代と本人の改名を束ねた変化点を、前任の記名(自己の決定)では受け付けず、分け方を案内する',
+      fill.ok && !bundled.ok && /例外は行ごとに判定します/.test(bundled.out) && wy.cfg().changeLog.at(-1).selfDecided !== true,
+      `${fill.out}\n${bundled.out}`
+    );
+    // IMPL-0483:ok 分ければ通る。先に改名をもう1人の記名で、その後で交代を前任の記名(自己の決定)で出す
+    const rename = wy.run({ summary: '改名', people: [renamedA, P[1]], seats: twoSeats('山田 太朗'), decidedBy: P[1].name, reason: '改名' });
+    const swap = wy.run({ summary: '交代', people: [renamedA, P[1]], seats: handover('山田 太朗'), decidedBy: '山田 太朗', reason: '交代' });
+    check(
+      'IMPL-0483:ok 分ければ、改名はもう1人の記名で、交代は前任の記名(自己の決定)で受け付ける',
+      rename.ok && wy.cfg().changeLog.at(-2).selfDecided !== true && swap.ok && wy.cfg().changeLog.at(-1).selfDecided === true,
+      `${rename.out}\n${swap.out}`
+    );
+  } finally {
+    fs.rmSync(wy.d, { recursive: true, force: true });
+  }
+
 }
 
 if (failures) {

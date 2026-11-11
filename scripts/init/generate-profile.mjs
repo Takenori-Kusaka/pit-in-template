@@ -2684,33 +2684,54 @@ export function selfDecisionContext(config, report, before = null) {
   const holders = new Set((ref.seats ?? []).map((s) => findPerson(ref, s.accountable)?.id).filter(Boolean));
   const insidersRef = (ref.people ?? []).filter((p) => p && p.external !== true);
   const appointerIn = (ref.people ?? []).some((p) => p?.external === true && p?.appointer === true && presentAfter.has(p.id));
-  const signers = new Set();
-  for (const p of ref.people ?? []) {
-    if (!p?.id || deciderIds.has(p.id) || !presentAfter.has(p.id)) continue;
-    if (p.external === true) {
-      if (p.appointer === true) signers.add(p.id);
-    } else if (holders.has(p.id) || insidersRef.length === 2) signers.add(p.id);
-  }
-  // 例外の条件は人数ではなく、当事者以外で記名できる者(組織上の任命権者を含む)がいないこと(#432 突合 X-1 への裁定)。
-  // 記名できるのは本人(変化点より前の決定者。初回の記入では、ただ1人の体制の内の人)に限る。新任の決定者は当たらない(3.13.3)
-  const soleId =
-    signers.size === 0 && !appointerIn
-      ? report.allBlankBefore
-        ? insidersRef.length === 1
-          ? insidersRef[0].id
-          : null
-        : report.priorDeciderPresent
-          ? report.priorDecider
-          : null // 決定者が体制から外れた後は、組織上の任命権者の経路による(自己の任命の例外の記録の経路は IMPL-0342)
-      : null;
-  const sole = Boolean(soleId) && deciderIds.has(soleId);
-  return { rows, deciderIds, signers, sole, soleId: sole ? soleId : null };
+  /** 当事者(parties)以外で記名できる者 */
+  const signersExcept = (parties) => {
+    const out = new Set();
+    for (const p of ref.people ?? []) {
+      if (!p?.id || parties.has(p.id) || !presentAfter.has(p.id)) continue;
+      if (p.external === true) {
+        if (p.appointer === true) out.add(p.id);
+      } else if (holders.has(p.id) || insidersRef.length === 2) out.add(p.id);
+    }
+    return out;
+  };
+  const signers = signersExcept(deciderIds);
+  // 例外は行ごとに判定する(#432 再確認 Y-1 への裁定)。行の当事者以外に記名できる者がいない行(閉じた行)だけが例外に当たり、
+  // 本人(変化点より前の決定者。初回の記入では、ただ1人の体制の内の人)の記名を受け付ける。当事者以外が記名できる行(開いた行)は、
+  // その記名者の記名を要する。記名者は1人(R-3)なので、1人がすべての行を満たせなければ受け付けない。
+  // 行の当事者: 決定者その人を替える行は前任と新任、本人の行の表記の変更は前任、兼務の行は当事者
+  const partiesOf = (row) =>
+    row.party ? new Set([row.party]) : row.self ? new Set([report.priorDecider]) : new Set([...deciderIds]);
+  const rowSigners = rows.map((row) => signersExcept(partiesOf(row)));
+  const closed = rowSigners.map((x) => x.size === 0);
+  const candidate = appointerIn
+    ? null
+    : report.allBlankBefore
+      ? insidersRef.length === 1
+        ? insidersRef[0].id
+        : null
+      : report.priorDeciderPresent
+        ? report.priorDecider
+        : null; // 決定者が体制から外れた後は、組織上の任命権者の経路による(自己の任命の例外の記録の経路は IMPL-0342)
+  const soleId = candidate && deciderIds.has(candidate) && closed.some(Boolean) ? candidate : null;
+  /** この記名者が、すべての行の要件を満たすか(閉じた行は本人、開いた行はその行の当事者以外の記名者) */
+  const okFor = (key) => {
+    if (!key || !rows.length) return false;
+    const rowsOk = rows.every((_, i) => (closed[i] ? key === soleId : rowSigners[i].has(key)));
+    // 決定者が当事者になる行を含む変化点の任免の行・人を足す行は、本人以外(全員の当事者以外)か、例外に当たる本人が記名する
+    return rowsOk && (signers.has(key) || key === soleId);
+  };
+  /** 自己の決定(例外を使った記名)か */
+  const selfFor = (key) => okFor(key) && key === soleId;
+  const openLines = rows.filter((_, i) => !closed[i]).map((r) => r.line);
+  const mixedException = Boolean(soleId) && rows.some((_, i) => !closed[i] && !rowSigners[i].has(soleId));
+  return { rows, deciderIds, signers, okFor, selfFor, soleId, mixedException, openLines };
 }
 
 /** この記名が、1名の体制の自己の決定(本人以外に決められる者がいない場合の例外)に当たるか。変化点の記録の selfDecided に残す */
 export function selfDecisionOf(config, report, decidedBy, before = null) {
   const ctx = selfDecisionContext(config, report, before);
-  return ctx.rows.length > 0 && ctx.sole && ctx.soleId === personKey(config, decidedBy);
+  return ctx.rows.length > 0 && ctx.selfFor(personKey(config, decidedBy));
 }
 
 /** 記名者1人に、変化点の行ごとの要件を照らす(向きの値を要件の根拠に使わない。ADR-0110 決定1・2) */
@@ -2729,7 +2750,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
   // 決定者が当事者になる行(#432 論点2・#433 の重の部分)
   const self = selfDecisionContext(config, report, before);
   const selfMode = self.rows.length > 0;
-  const selfOk = selfMode && (self.signers.has(key) || (self.sole && self.soleId === key));
+  const selfOk = selfMode && self.okFor(key);
   const deciderNames = [...self.deciderIds].map((id) => personName(config, id)).join('・');
   const selfText = (line, own = false) =>
     `「${line}」は、${own ? 'D-0 表1「体制と運用形態」の決定者本人の行の変更であり、' : ''}D-0 表1「体制と運用形態」の決定者(${deciderNames})が当事者になる行です。決定者は、自分に関わる変更を自分の記名で決められません。` +
@@ -2737,7 +2758,10 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
     `本人以外の席の責任者、または2名の体制のもう1人(この変化点より前から名簿にいる人。新任の決定者と外部の確認者を除く)です("${decidedBy}" は該当しません)。` +
     (key && key === firstDecider && !report.allBlankBefore ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。' : '') +
     '体制の内に当事者以外で記名できる者(組織上の任命権者を含む)がいない場合に限り、本人(変化点より前の決定者)の記名を自己の決定として受け付け、保証の開示の項目7 へ出します。' +
-    'そのときは、D-0 節11 の「決裁の権限の出所」に根拠を書きます(標準 第3章 3.13.3)';
+    'そのときは、D-0 節11 の「決裁の権限の出所」に根拠を書きます(標準 第3章 3.13.3)' +
+    (self.mixedException
+      ? `。例外は行ごとに判定します。この変化点は、例外に当たる行(決定者その人を替える行など)と、本人以外が記名できる行(${self.openLines.join(' / ')})を束ねています。変化点を分け、先に本人以外が記名できる行を、その記名者の記名で出します。その後で、例外に当たる行を出します`
+      : '');
   for (const item of report.appointItems ?? []) {
     if (selfMode) {
       // 決定者が当事者になる行を含む変化点では、任免の行の記名者も本人以外へ移す(ADR-0110 決定2 の記名者1人を保つ)
