@@ -58,6 +58,9 @@ p = trialChecklistProblems(
   TODAY
 );
 check('項目の行へ数値と所在を書き足した写しは、項目の欠けと読まない', p.length === 0, p.join('\n'));
+// 突合の再確認 2回目: 括弧の中の「該当なし」で未確認の検出を逃れない
+p = trialChecklistProblems(FORM.replace('参加者の稼働時間が公式に確保されている(見込み工数と確保時間を数値で記載)', '参加者の稼働時間が公式に確保されている(外部委託分は該当なし、専任3名)'), FORM, TODAY);
+check('印の無い行の括弧の中の「該当なし」は、該当なしに数えず未確認として出す', p.some((x) => x.startsWith('未確認の項目') && x.includes('専任3名')), p.join(String.fromCharCode(10)));
 // 突合の再確認 新-1: 括弧の外の文を書き換えた行・消した行は、様式の項目の欠けとして出す
 p = trialChecklistProblems(allChecked.replace(/^- \[x\] 支援担当\(EN-1\)が割り当てられ、関与の期間が定められている\r?\n/m, ''), FORM, TODAY);
 check('EN-1 の項目を消した写しは、似た書き出しの別の項目があっても欠けとして出す', p.length === 1 && p[0].includes('支援担当(EN-1)が割り当てられ'), p.join('\n'));

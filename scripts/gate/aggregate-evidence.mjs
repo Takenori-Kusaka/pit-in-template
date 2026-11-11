@@ -4075,8 +4075,11 @@ if (isMain) {
     // 区分が「算定できない」「対象外」のときは、見込みと残りの3行を「該当なし(理由)」と書いてよい(7.7.3 はこの2つを合格とも不合格とも書かない)
     // 区分の行に甲・乙・丙が1つも無く、算定できない・対象外だけのとき(案件の区分が算定できない・対象外)に限り、
     // 見込みと残りの3行の「該当なし(理由)」を受け付ける。理由の無い「該当なし」は受け付けない(突合の再確認 新-5)
-    const cls = String(rowValue(sec, '区分', false) ?? '').normalize('NFKC');
-    const undetermined = /算定できない|対象外/.test(cls) && !/[甲乙丙]/.test(cls);
+    // 案件の区分(「案件 <区分>」)があればそれで、無ければ括弧の中を除いた区分の欄に甲・乙・丙が無いかで決める(7.7.3: 算定できた組に
+    // 乙・丙が無ければ案件は算定できない。突合の再確認 2回目 中)
+    const cls = String(rowValue(sec, '区分', false) ?? '').normalize('NFKC').replace(/\([^()]*\)/g, '');
+    const caseCls = cls.match(/案件\s*[::]?\s*(甲|乙|丙|算定できない|対象外)/)?.[1] ?? null;
+    const undetermined = caseCls ? /算定できない|対象外/.test(caseCls) : /算定できない|対象外/.test(cls) && !/[甲乙丙]/.test(cls);
     const OPTIONAL_WHEN_UNDETERMINED = new Set(['期間の見込み', '費用の見込み', '比べる残り']);
     const blank = REACH_ROWS.filter((k) => {
       const v = String(rowValue(sec, k, false) ?? '').normalize('NFKC');

@@ -18,7 +18,16 @@ import { fileURLToPath } from 'node:url';
 import { ROOT } from './config.mjs';
 
 const ITEM_RE = /^\s*-\s*\[([ xX])\]\s*(.+?)\s*$/;
-const NA_RE = /該当なし\s*[::]?\s*(.*)$/;
+// 「該当なし」は行末の形(「該当なし: 理由」「該当なし(理由)」)だけを読む。括弧の中の語は該当なしに数えない(突合の再確認 2回目)
+const NA_RE = /該当なし\s*(?:[::]\s*([^()]*)|\(([^()]*)\))?\s*$/;
+const naOf = (text) => {
+  const t = text.normalize('NFKC');
+  const m = NA_RE.exec(t);
+  if (!m) return null;
+  const before = t.slice(0, m.index);
+  if ((before.match(/\(/g) ?? []).length !== (before.match(/\)/g) ?? []).length) return null;
+  return { reason: String(m[1] ?? m[2] ?? '').replace(/^<[^>]*>$/, '').trim(), index: m.index };
+};
 
 /**
  * 照合に使う項目の本文。括弧の中身(「(見込み工数と確保時間を数値で記載)」など)だけを除き、括弧の外の文は前も後ろもすべて残す。
@@ -26,7 +35,9 @@ const NA_RE = /該当なし\s*[::]?\s*(.*)$/;
  * 括弧の外の文を書き換えた行は、別の項目として読み、様式の項目の欠けを出す(突合の再確認 新-1)
  */
 function itemKey(text) {
-  return text.normalize('NFKC').replace(/該当なし[\s\S]*$/, '').replace(/\([^()]*\)/g, '').replace(/\s+/g, '');
+  const t = text.normalize('NFKC');
+  const na = naOf(text);
+  return (na ? t.slice(0, na.index) : t).replace(/\([^()]*\)/g, '').replace(/\s+/g, '');
 }
 
 function section(text, headingRe) {
@@ -75,14 +86,13 @@ export function trialChecklistProblems(text, formText, today) {
     if (!items.some((i) => i.key.startsWith(f.key))) problems.push(`項目が写しにありません: 「${f.text}」(様式 templates/trial-checklist.md の項目を消さない。該当しない項目は「該当なし: <理由>」と書く)`);
   }
   for (const i of items) {
-    const na = NA_RE.exec(i.text);
+    const na = naOf(i.text);
     if (!na) {
       if (!i.checked) problems.push(`未確認の項目: 「${i.text}」(未充足の項目がある状態で、試行を始めない)`);
       continue;
     }
     // 印の有無によらず、理由の無い「該当なし」は確認済みとして扱わない(突合 中-1)
-    const reason = na[1].replace(/^<[^>]*>$/, '').replace(/[))]\s*$/, '').trim();
-    if (!reason) problems.push(`理由の無い「該当なし」: 「${i.text}」(理由の無い「該当なし」を確認済みとして扱わない)`);
+    if (!na.reason) problems.push(`理由の無い「該当なし」: 「${i.text}」(理由の無い「該当なし」を確認済みとして扱わない)`);
   }
   const rows = sandboxRows(text);
   for (const r of rows) {

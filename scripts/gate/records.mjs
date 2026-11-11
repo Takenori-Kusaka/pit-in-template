@@ -505,18 +505,13 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url &
  *                  通過済みとも扱わず、「判定記録を読めない」として出す
  * records は両方の記録(記録用ブランチの記録は text を持つ)。branch を渡せばそれを使う(試験用)
  */
-export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = undefined, fetch = true, config = null } = {}) {
+export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = undefined, fetch = true, resolveJudge = null } = {}) {
   const isG1Pass = (r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過';
   // 記録用ブランチには PR の規則が無く、誰でも様式を置ける(recording.md「様式の届け方」)。通過済みに数えるのは、判定者の記名が
-  // 名簿の事業決裁者の席の責任者に対応づく記録だけにする(突合の再確認 新-2)。対応づかない通過の記録は、通過とも G-1 の前とも決めない。
-  // 記名の照合は自己申告であり、帰属の裏づけ(ホスティングの記録)は出荷判定の証跡の集約が確かめる
-  const normName = (v) => String(v ?? '').normalize('NFKC').replace(/\s+/g, '');
-  const approver = (() => {
-    const seat = (config?.seats ?? []).find((s) => s.role === 'biz-approver');
-    const person = seat ? (config?.people ?? []).find((p) => p.id === seat.accountable) : null;
-    return person ? normName(person.name) : null;
-  })();
-  const signedByApprover = (r) => config === null || (approver !== null && normName(judgeOfForm(r.text ?? '')) === approver);
+  // 名簿の人(resolveJudge。check-g1 は config.mjs の resolveSigner を渡す。氏名・名簿の id・アカウントの表記の揺れを吸収する)へ
+  // 対応づく記録だけにする(突合の再確認 新-2)。判定の時点の事業決裁者・代行者・交代の前の責任者を誤って外さないため、席の照合はしない。
+  // 対応づかない通過の記録は、通過とも G-1 の前とも決めない。記名の照合は自己申告であり、帰属の裏づけは出荷判定の証跡の集約が確かめる
+  const signed = (r) => resolveJudge === null || Boolean(resolveJudge(judgeOfForm(r.text ?? '')));
   let b = branch;
   if (b === undefined) {
     try {
@@ -530,7 +525,7 @@ export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = un
   const fromBranchAll = b?.available
     ? (b.gates ?? []).filter((g) => !baseNames.has(String(g.file).split('/').pop())).map((g) => ({ ...recordFromForm(g.text, g.file, 'records-branch'), text: g.text }))
     : [];
-  const unsigned = fromBranchAll.filter((r) => isG1Pass(r) && !signedByApprover(r));
+  const unsigned = fromBranchAll.filter((r) => isG1Pass(r) && !signed(r));
   const fromBranch = fromBranchAll.filter((r) => !unsigned.includes(r));
   const records = [...baseRecords, ...fromBranch];
   if (records.some(isG1Pass)) return { passed: true, records, reason: null };
@@ -538,11 +533,11 @@ export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = un
     return {
       passed: null,
       records,
-      reason: `記録用ブランチの G-1 の通過の記録(${unsigned.map((r) => r.file).join('、')})の判定者が、名簿の事業決裁者の席の責任者に対応づかない。通過済みに数えない`,
+      reason: `記録用ブランチの G-1 の通過の記録(${unsigned.map((r) => r.file).join('、')})の判定者の記名が、人の名簿(people[])の人に対応づかない。通過済みに数えない。判定者の記名と名簿を確かめる`,
     };
   }
   if (!b?.available) {
-    return { passed: null, records, reason: `記録用ブランチ records を読めない(まだ無い最初の判定の前の案件か、取得できない環境。${b?.reason ?? '理由不明'})` };
+    return { passed: null, records, reason: '記録用ブランチ records を読めない(まだ無い最初の判定の前の案件か、取得できない環境。records を取得できる環境で実行し直す)' };
   }
   return { passed: false, records, reason: null };
 }

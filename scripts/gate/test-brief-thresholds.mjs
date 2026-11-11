@@ -110,7 +110,7 @@ function workspace() {
 const G1_FORM = ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 企画承認 |', '| 対象 | P-001 |', '| 判定者 | 判定 花子 |', '| 判定日時 | 2026-11-04 10:00 |', '| 結果 | 通過 |', '| 確定の形態 | 人確定 |', '| 参照した D-0 の版 | v1.0 |', ''].join('\n');
 check('g1PassState: 記録用ブランチの様式の G-1 の通過を通過済みと読む', g1PassState({ baseRecords: [], branch: { available: true, gates: [{ file: 'records/gates/g1.md', text: G1_FORM }] } }).passed === true);
 check('g1PassState: 両方を読めて通過が無ければ G-1 の前', g1PassState({ baseRecords: [], branch: { available: true, gates: [] } }).passed === false);
-check('g1PassState: 記録用ブランチを読めず基底にも無ければ、決めない(null と理由)', (() => { const r = g1PassState({ baseRecords: [], branch: { available: false, reason: 'テストの理由', gates: [] } }); return r.passed === null && r.reason.includes('テストの理由'); })());
+check('g1PassState: 記録用ブランチを読めず基底にも無ければ、決めない(null と理由)', (() => { const r = g1PassState({ baseRecords: [], branch: { available: false, reason: 'テストの理由', gates: [] } }); return r.passed === null && r.reason.includes('記録用ブランチ records を読めない'); })());
 check('g1PassState: 基底に通過があれば、記録用ブランチを読めなくても通過済み', g1PassState({ baseRecords: [{ gate: 'G-1 企画承認', result: '通過' }], branch: { available: false, reason: 'x', gates: [] } }).passed === true);
 {
   const W = workspace();
@@ -122,7 +122,7 @@ check('g1PassState: 基底に通過があれば、記録用ブランチを読め
   W.write('process.config.json', JSON.stringify({ configured: true, people: [{ id: 'p1', name: '判定 花子', accounts: ['hanako'] }, { id: 'p2', name: '別 太郎', accounts: ['taro'] }], seats: [{ role: 'biz-approver', accountable: 'p1' }] }) + '\n');
   // 記録用ブランチを読めない(リポジトリでない置き場): 遡って失敗させず、黙って通さず、「判定記録を読めない」として出す
   let r = W.g1();
-  check('入口: 記録用ブランチを読めず G-1 の通過を決められないとき、「判定記録を読めない」で失敗し、欠けた行を添える', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない') && r.out.includes('記録用ブランチ records を読めない') && r.out.includes('「停止条件の値」がありません'), r.out);
+  check('入口: 記録用ブランチを読めず G-1 の通過を決められないとき、「G-1 の通過を判定記録で決められない」で失敗し、欠けた行を添える', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない') && r.out.includes('記録用ブランチ records を読めない') && r.out.includes('「停止条件の値」がありません'), r.out);
   check('入口: 決められないとき、欠けた行を「G-1 の前の失敗」として単独では出さない', !/^.*「停止条件の値」がありません.*標準 第3章 3.12.10 の要求事項4\)\s*$/m.test(r.out.split('\n').filter((l) => !l.includes('判定記録を読めない')).join('\n')), r.out);
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');
@@ -151,12 +151,22 @@ check('g1PassState: 基底に通過があれば、記録用ブランチを読め
   check('入口: 同じ企画書で、閾値の行も記録用ブランチの通過で欠落として出す(#419 と同じ根)', /「エスカレーション閾値」が未記入です.*遡って失敗させません/.test(r.out), r.out);
   // 判定者が事業決裁者の席の責任者でない通過の記録は、通過済みに数えず、決められないとして出す(突合の再確認 新-2)
   git('checkout', '-q', 'records');
-  fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM.replace('| 判定者 | 判定 花子 |', '| 判定者 | 別 太郎 |'));
+  fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM.replace('| 判定者 | 判定 花子 |', '| 判定者 | 名簿に無い 次郎 |'));
   git('add', '-A');
   git('commit', '-q', '-m', 'G-1 by other');
   git('checkout', '-q', 'main');
   r = W.g1();
-  check('入口: 判定者が事業決裁者の席の責任者に対応づかない記録用ブランチの通過は数えず、決められないとして失敗する', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない') && r.out.includes('名簿の事業決裁者の席の責任者に対応づかない'), r.out);
+  check('入口: 判定者の記名が名簿の人に対応づかない記録用ブランチの通過は数えず、決められないとして失敗する', !r.ok && r.out.includes('G-1 の通過を判定記録で決められない') && r.out.includes('人の名簿(people[])の人に対応づかない'), r.out);
+  // 交代の前の責任者・代行者・表記の揺れ(敬称・アカウント)は、名簿の人に対応づけば通過に数える(突合の再確認 2回目 高)
+  for (const judge of ['別 太郎', '判定 花子 様', 'hanako']) {
+    git('checkout', '-q', 'records');
+    fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM.replace('| 判定者 | 判定 花子 |', `| 判定者 | ${judge} |`));
+    git('add', '-A');
+    git('commit', '-q', '-m', `G-1 by ${judge}`);
+    git('checkout', '-q', 'main');
+    r = W.g1();
+    check(`入口: 判定者「${judge}」(名簿の人に対応づく)の記録用ブランチの通過は、通過済みとして欠落の注意にする`, r.out.includes('遡って失敗させません') && !r.out.includes('G-1 の通過を判定記録で決められない'), r.out);
+  }
   // 出荷の PR で基底ブランチへ複製した後は、同じ記録を二重に数えない(突合の再確認 新-4)
   const dup = g1PassState({ baseRecords: [{ file: 'docs/gates/g1-p001-2026-11-04.md', gate: 'G-1 企画承認', result: '通過' }], branch: { available: true, gates: [{ file: 'records/gates/g1-p001-2026-11-04.md', text: G1_FORM }] } });
   check('g1PassState: 基底ブランチへ複製した記録を、記録用ブランチの側から二重に読まない', dup.passed === true && dup.records.length === 1, JSON.stringify(dup.records.map((x) => x.file)));
