@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, directionLabel, rowKindsProblems } from './config.mjs';
-import { buildConfig } from '../init/generate-profile.mjs';
+import { buildConfig, authoritySourceForm } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -606,6 +606,24 @@ ${add2.out}` };
     } finally {
       fs.rmSync(wn.d, { recursive: true, force: true });
     }
+  }
+  // 再確認への裁定 新-中-2: 正当な1名の法人の書き方を、否定と読まない。否定と数の誤検出は引き続き拾わない
+  {
+    const form = (v) => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-359f-'));
+      try {
+        fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+        fs.writeFileSync(path.join(d, 'docs/D-0-governance.md'), `| 決裁の権限の出所 | ${v} |
+`);
+        return authoritySourceForm(d).form;
+      } finally {
+        fs.rmSync(d, { recursive: true, force: true });
+      }
+    };
+    const okCases = ['1名で代表権を持つ法人(他に代表権を持つ者はいない)', '代表取締役1名で代表権を持ち、取締役会を置かない', '1名で代表権を持つ法人(登記事項証明書 2026-10-01 取得)', '個人事業主本人'];
+    const ngCases = ['個人事業主ではない(株式会社。取締役11名、代表権は代表取締役)', '代表権を持つ取締役11名の法人', '代表権を持つ者が十一人の法人', '代表権を持たない1名の担当者', '代表権を持つ者が2名の法人'];
+    check('IMPL-0342:ok 正当な1名の法人・個人事業主の書き方を、法的な形態として読む', okCases.every((v) => form(v) !== null), JSON.stringify(okCases.map((v) => [v, form(v)])));
+    check('IMPL-0342:ng 否定・数の誤検出・代表権の否定・複数の代表権を、法的な形態として読まない', ngCases.every((v) => form(v) === null), JSON.stringify(ngCases.map((v) => [v, form(v)])));
   }
   // 法人で外部の記録(登記・議事録)への言及が無ければ、受け付けたうえで記録に残す(保証の開示の項目7 に「外部の記録の所在なし」)
   const wq = workspace('pit-in-359c-');

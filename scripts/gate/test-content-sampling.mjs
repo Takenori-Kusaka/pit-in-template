@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
-import { quarterOf, prevQuarter, quarterEnd, population, deriveSeed, sample, sampleCount, hadFindings, verifyRecord, samplingOverdueNote, BASE_COUNT } from './content-sampling.mjs';
+import { quarterOf, prevQuarter, quarterEnd, population, populationAt, deriveSeed, sample, sampleCount, hadFindings, verifyRecord, samplingOverdueNote, BASE_COUNT } from './content-sampling.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -53,7 +53,11 @@ try {
   git('config', 'user.name', 'tester');
   git('config', 'core.autocrlf', 'false');
   git('add', '-A');
-  git('commit', '-q', '-m', 'fixture');
+  execFileSync('git', ['commit', '-q', '-m', 'fixture'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: '2026-10-20T09:00:00', GIT_COMMITTER_DATE: '2026-10-20T09:00:00' } });
+  const at = (day, msg) => {
+    git('add', '-A');
+    execFileSync('git', ['commit', '-q', '-m', msg], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: `${day}T09:00:00`, GIT_COMMITTER_DATE: `${day}T09:00:00` } });
+  };
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) };
   const node = (...a) => {
     const r = spawnSync(process.execPath, ['scripts/gate/content-sampling.mjs', ...a], { cwd: dir, encoding: 'utf8', env });
@@ -86,6 +90,19 @@ try {
   r = node('--verify', '2026Q4');
   check('IMPL-0174:ok --verify: 記入して1回でコミットした記録は通る', r.status === 0, r.out);
   check('/pit: 検証を通る記録があれば注記を出さない', samplingOverdueNote({ root: dir, today, items }) === null);
+  // 再確認への裁定: 母集団は四半期の締めの時点のコミットの木から取る。締めの後の名前の変更と遡った記録の追加は効かない
+  check('母集団: 四半期の締めの時点の木の記録を数える', JSON.stringify(populationAt(dir, '2026Q4').map((x) => x.id)) === JSON.stringify([...popIds].sort()), JSON.stringify(populationAt(dir, '2026Q4')));
+  fs.renameSync(path.join(dir, 'docs/gates/g2.md'), path.join(dir, 'docs/gates/g2-renamed.md'));
+  fs.writeFileSync(path.join(dir, 'docs/gates/late.md'), ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 判定 |', '| 対象 | F-099 |', '| 判定者 | 判定 花子 |', '| 判定日時 | 2026-12-20 10:00 |', '| 結果 | 通過 |', ''].join('\n'));
+  at('2027-01-03', 'chore: 締めの後の名前の変更と、遅れて入った記録');
+  r = node('--verify', '2026Q4');
+  check('IMPL-0174:ok 締めの後に名前を変えても、判定日時を遡らせた記録を足しても、四半期の母集団と抽出は変わらない', r.status === 0 && !populationAt(dir, '2026Q4').some((x) => x.id === 'late.md' || x.id === 'g2-renamed.md'), r.out);
+  check('母集団: 締めの後に遅れて入った記録(と名前を変えた記録)は、入った四半期の母集団に入る', populationAt(dir, '2027Q1').some((x) => x.id === 'late.md') && populationAt(dir, '2027Q1').some((x) => x.id === 'g2-renamed.md'), JSON.stringify(populationAt(dir, '2027Q1')));
+  // 抽出の記録の誤字の訂正は、別の訂正の記録を追記する形で受け付ける(抽出の記録そのものは変えない)
+  fs.writeFileSync(path.join(dir, 'docs/content-sampling/2026Q4-訂正-1.md'), '# 2026Q4 の抽出の記録の訂正\n\n| 項目 | 値 |\n| --- | --- |\n| 訂正する箇所 | 確かめた者の氏名の誤字 |\n| 理由 | 監査 一郎 の表記の誤り |\n| 記名 | 監査 一郎 |\n');
+  at('2027-01-04', 'docs: 2026Q4 の抽出の記録の訂正');
+  r = node('--verify', '2026Q4');
+  check('入口: 別の訂正の記録を追記しても、抽出の記録は1回のコミットのまま検証を通る', r.status === 0, r.out);
   // 書き換え(2回目のコミット)は済ませたことに数えない
   fs.writeFileSync(recPath, fs.readFileSync(recPath, 'utf8').replace('監査 一郎 | なし |', '監査 次郎 | なし |'));
   git('add', '-A');

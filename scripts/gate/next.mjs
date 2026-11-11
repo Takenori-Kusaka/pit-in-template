@@ -46,7 +46,7 @@ import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, r
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { readTrialChecklist } from './trial-checklist.mjs';
-import { readPopulation, samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
+import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
@@ -1056,7 +1056,7 @@ export function computeNext({ fetch = true, network = true } = {}) {
       try {
         const d = new Date();
         const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const sn = samplingOverdueNote({ root: ROOT, today, items: readPopulation(ROOT, { fetch: false }).items, startQuarter: sampleQuarterOf(config.changeLog?.[0]?.date ?? config.generatedAt ?? null) });
+        const sn = samplingOverdueNote({ root: ROOT, today, startQuarter: sampleQuarterOf(config.changeLog?.[0]?.date ?? config.generatedAt ?? null) });
         if (sn) result.notes.push(sn);
       } catch {
         // 読めなければ出さない(次の一手は止めない)

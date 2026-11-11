@@ -4,7 +4,11 @@
 //   node scripts/gate/content-sampling.mjs --verify 2026Q4
 //
 // 母集団は、その四半期に作成した判定記録の人が書く欄を持つ記録(様式: 基底ブランチの docs/gates/ と記録用ブランチの records/gates/、
-// 承認レビューの写し: 記録用ブランチの records/reviews/ の本文のあるレビュー)。
+// 承認レビューの写し: 記録用ブランチの records/reviews/ の本文のあるレビュー)。四半期の締めの時点のコミットの木にあり、直前の四半期の
+// 締めの時点の木に無かった記録を数える(締めの後に遅れて入った記録は、次の四半期の母集団に入る)。
+// 抽出の記録の誤字の訂正は、別の訂正の記録(docs/content-sampling/<四半期>-訂正-<N>.md。理由と記名)を追記する形で行い、
+// 抽出の記録そのものと抽出の結果は変えない。
+// 当事者がリポジトリを支配している以上、機械の統制だけでは抽出の選び直しを閉じない。止めるのは判定者以外の確かめる者である(EV-0249)。
 // 種は実行者が選べない値から導く: 四半期の識別と、四半期の締めの時点の母集団の記録の識別子の一覧(並べ替えたもの)のハッシュ。
 // 四半期が締まる前は抽出しない。--seed は照合の用途に限り、導いた種と違えば拒否する(標準 要求事項2。当事者に抽出を選ばせない)。
 // 件数は5件(母集団が5件以下なら全件)。前の四半期の記録に所見があれば10件。--count は増やす向きだけ受け付ける。
@@ -171,11 +175,12 @@ export function verifyRecord({ text, quarter, items, commits, prevText = null })
  * /pit の注記。直前の四半期に母集団があり、その四半期の抽出の記録が無いか、検証を通らなければ文を返す(無ければ null)。
  * 規定を運び始めた四半期(EFFECTIVE_QUARTER)と、案件の開始の四半期(startQuarter)より前には、遡って出さない
  */
-export function samplingOverdueNote({ root = ROOT, today, items, startQuarter = null, commitsOf = recordCommits }) {
+export function samplingOverdueNote({ root = ROOT, today, items = null, startQuarter = null, commitsOf = recordCommits }) {
   const prev = prevQuarter(quarterOf(today));
   if (!prev) return null;
   if (quarterLess(prev, EFFECTIVE_QUARTER)) return null;
   if (startQuarter && quarterLess(prev, startQuarter)) return null;
+  if (items === null) items = populationAt(root, prev) ?? [];
   const n = items.filter((i) => i.quarter === prev).length;
   if (!n) return null;
   const rel = `${RECORD_DIR}/${prev}.md`;
@@ -188,7 +193,64 @@ export function samplingOverdueNote({ root = ROOT, today, items, startQuarter = 
   return `判定記録の記述の内容の四半期の抽出(標準 第5章 5.7.4)の ${prev} の記録が、抽出を済ませたことに数えられない: ${problems.join(' / ')}(\`node scripts/gate/content-sampling.mjs --verify ${prev}\`)`;
 }
 
-/** リポジトリから母集団を読む */
+const gitOut = (root, args) => {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+};
+/** ref の、day の終わり(手元の時刻の 23:59:59)より前の最後のコミット。無ければ null */
+function commitBefore(root, ref, day) {
+  const out = gitOut(root, ['rev-list', '-1', `--before=${day} 23:59:59`, ref]);
+  return out ? out.trim() || null : null;
+}
+/** コミットの木にある判定記録の識別子(様式の名前と、写しの本文のあるレビュー) */
+function idsInTree(root, rev, { gatesDirs, reviewsDir = null }) {
+  const ids = new Set();
+  if (!rev) return ids;
+  for (const dir of gatesDirs) {
+    const out = gitOut(root, ['ls-tree', '-r', '--name-only', rev, '--', dir]) ?? '';
+    for (const f of out.split('\n').filter((x) => x.endsWith('.md'))) ids.add(f.split('/').pop());
+  }
+  if (reviewsDir) {
+    const out = gitOut(root, ['ls-tree', '-r', '--name-only', rev, '--', reviewsDir]) ?? '';
+    for (const f of out.split('\n').filter((x) => /pr-(\d+)\.json$/.test(x))) {
+      const pr = Number(f.match(/pr-(\d+)\.json$/)[1]);
+      try {
+        const copy = JSON.parse(gitOut(root, ['show', `${rev}:${f}`]) ?? 'null');
+        for (const rv of copy?.reviews ?? []) if (String(rv?.body ?? '').trim()) ids.add(`PR #${pr} review ${rv.id}`);
+      } catch {
+        // 読めない写しは数えない
+      }
+    }
+  }
+  return ids;
+}
+/** 記録用ブランチの手元の ref(無ければ null) */
+function recordsRef(root) {
+  for (const r of ['refs/remotes/origin/records', 'refs/heads/records']) if (gitOut(root, ['rev-parse', '--verify', '--quiet', r])) return r;
+  return null;
+}
+/**
+ * 四半期の母集団(再確認への裁定)。四半期の締めの時点のコミットの木(基底ブランチの HEAD と記録用ブランチ)にあり、直前の四半期の
+ * 締めの時点の木に無かった判定記録。締めの後の名前の変更や、遡った記録の追加は、締めの時点の木を変えないので効かない。
+ * 締めの後に遅れて入った記録は、入った四半期の母集団に入る。リポジトリの履歴を読めなければ null
+ */
+export function populationAt(root, q) {
+  if (gitOut(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return null;
+  const rref = recordsRef(root);
+  const idsAt = (day) => {
+    const ids = idsInTree(root, commitBefore(root, 'HEAD', day), { gatesDirs: ['docs/gates'] });
+    if (rref) for (const id of idsInTree(root, commitBefore(root, rref, day), { gatesDirs: ['records/gates'], reviewsDir: 'records/reviews' })) ids.add(id);
+    return ids;
+  };
+  const now = idsAt(quarterEnd(q));
+  const before = idsAt(quarterEnd(prevQuarter(q)));
+  return [...now].filter((id) => !before.has(id)).sort().map((id) => ({ id, quarter: q }));
+}
+
+/** リポジトリから母集団を読む(作業ツリーの記録。四半期の抽出は populationAt を使う) */
 export function readPopulation(root = ROOT, { fetch = true } = {}) {
   let branch = { available: false, gates: [], reviews: new Map() };
   try {
@@ -218,7 +280,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exit(1);
     }
     const prevFile = path.join(ROOT, RECORD_DIR, `${prevQuarter(verifyQ)}.md`);
-    const problems = verifyRecord({ text: fs.readFileSync(path.join(ROOT, rel), 'utf8'), quarter: verifyQ, items: readPopulation(ROOT).items, commits: recordCommits(ROOT, rel), prevText: fs.existsSync(prevFile) ? fs.readFileSync(prevFile, 'utf8') : null });
+    const problems = verifyRecord({ text: fs.readFileSync(path.join(ROOT, rel), 'utf8'), quarter: verifyQ, items: populationAt(ROOT, verifyQ) ?? [], commits: recordCommits(ROOT, rel), prevText: fs.existsSync(prevFile) ? fs.readFileSync(prevFile, 'utf8') : null });
     for (const p of problems) console.log(`- ${p}`);
     if (problems.length) {
       console.log(`${rel}: ${problems.length} 件。抽出を済ませたことに数えない`);
@@ -251,8 +313,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error(problem);
     process.exit(1);
   }
-  const { items, branchAvailable, branchReason } = readPopulation(ROOT);
-  const pop = items.filter((i) => i.quarter === q);
+  const items = populationAt(ROOT, q);
+  if (items === null) {
+    console.error('リポジトリの履歴を読めない。四半期の締めの時点の母集団を導けない');
+    process.exit(1);
+  }
+  const branchAvailable = Boolean(recordsRef(ROOT));
+  const branchReason = branchAvailable ? null : '記録用ブランチ records が手元に無い';
+  const pop = items;
   const seed = deriveSeed(q, pop.map((p) => p.id));
   const given = arg('--seed');
   if (given !== null && given !== seed) {
