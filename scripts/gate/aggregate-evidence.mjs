@@ -852,6 +852,26 @@ export function controlApprovalSummary(prs, config, { beforeRuleOf = () => false
   return out;
 }
 
+/**
+ * 様式の判定記録 g(通過)が、同じゲート・同じ対象の後の判定で打ち消されているか(process-compass #368 の突合 X-2)。
+ * 打ち消す記録は、判定日時が g と同じか後で、結果が「通過」でないもの(差し戻し、結果欄が2値でない記録)。成立した記録は
+ * 書き換えず、判定者が新しい記録で判定し直す運用のため、効いている判定は最新の記録である。同じ時刻は安全側に打ち消しとみなす。
+ * sameTarget(o) は、o が g と同じ対象を指すか。様式と写し(レビュー)の間の前後は比べない(判定日時の形が違う)
+ */
+export function supersededByLater(g, pool, sameTarget) {
+  const word = (v) => String(v ?? '').replace(/\*/g, '').trim();
+  const gate = String(g?.gate ?? '').match(/^(G-\d|SG-\d)/)?.[1] ?? null;
+  if (!gate) return false;
+  const at = String(g.judgedAt ?? '').trim();
+  return pool.some((o) => o !== g && String(o.gate ?? '').startsWith(gate) && sameTarget(o) && word(o.result) !== '通過' && String(o.judgedAt ?? '').trim() >= at);
+}
+
+/** 写しの宣言行(G-2・G-3・G-4)の通過 j が、同じゲート・同じ仕様の後の差し戻しの宣言で打ち消されているか(提出日時で比べる) */
+export function reviewSupersededByLater(j, judgements, spec) {
+  const at = Date.parse(j.submittedAt ?? '');
+  return judgements.some((o) => o !== j && o.gate === j.gate && o.result !== '通過' && (o.specs ?? []).includes(spec) && o.judgeOk !== false && Date.parse(o.submittedAt ?? '') >= at);
+}
+
 // --- 集約の本体 ----------------------------------------------------------------
 //
 // ここから末尾までが、コマンドとして実行したときの本体である。上の関数は、試験が本体を動かさずに import する。
@@ -1120,7 +1140,7 @@ if (isMain) {
    * 記録であり、事前の承認ではない。独立した人の確認には数えない(第4章 G-6「記録」)
    */
   const g6RecordsFor = (refers) =>
-    gateDetails.filter((g) => /G-6/.test(g.gate ?? '') && passed(g) && g.mode !== MODE_LABEL.delegated && refers(g.target));
+    gateDetails.filter((g) => /G-6/.test(g.gate ?? '') && passed(g) && g.mode !== MODE_LABEL.delegated && refers(g.target) && !supersededByLater(g, gateDetails, (o) => refers(o.target)));
 
   // 当該出荷の範囲(期間の指定では、当該期間)で追加された判定記録。過去の出荷の記録で、今回の完備を示さない
   // (標準 第4章 G-7 基準5・9)
@@ -2724,10 +2744,12 @@ if (isMain) {
   ];
   // 判定者本人のレビュー(宣言行 G-4: 通過)で記録した仕様の PR。commit_id がマージ時の head と一致し、判定する席の責任者でない
   // 者の宣言行でないものに限る。仕様の対応づけは、その PR のトレーラ Spec と、変更したファイル(specs/F-NNN/)による
-  const g4ByReview = (spec) => reviewJudgements.some((j) => j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(spec));
+  const g4ByReview = (spec) => reviewJudgements.some((j) => j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(spec) && !reviewSupersededByLater(j, reviewJudgements, spec));
+  const specRe = (spec) => new RegExp(`(?<![A-Za-z0-9])${spec}(?!\\d)`);
   const g4Approved = (spec) =>
-    // 対応は判定記録の「対象」欄が仕様の ID を指していることで確かめる。ファイル名だけでは対応づけない
-    gateDetails.some((g) => /G-4/.test(g.gate ?? '') && passed(g) && new RegExp(`(?<![A-Za-z0-9])${spec}(?!\\d)`).test(String(g.target ?? ''))) || g4ByReview(spec);
+    // 対応は判定記録の「対象」欄が仕様の ID を指していることで確かめる。ファイル名だけでは対応づけない。
+    // 通過の後に同じ仕様の差し戻しの記録があれば、その通過は効いていない(process-compass #368 の突合 X-2)
+    gateDetails.some((g) => /G-4/.test(g.gate ?? '') && passed(g) && specRe(spec).test(String(g.target ?? '')) && !supersededByLater(g, gateDetails, (o) => specRe(spec).test(String(o.target ?? '')))) || g4ByReview(spec);
   const specsWithoutG4 = isActive('g4') ? [...new Set(specChanges.flatMap((c) => c.specs))].filter((s) => !g4Approved(s)) : [];
   for (const s of specsWithoutG4) {
     gaps.push(
@@ -4409,15 +4431,15 @@ if (isMain) {
   const releaseWord = period ? '期間' : 'リリース';
   // 条件2: 層2 の保証範囲(企画書の4欄)と、G-1 の判定記録(通過)
   const briefScope = readBriefScope();
-  const g1Passed = gateDetails.some((g) => /G-1/.test(g.gate ?? '') && passed(g));
+  const g1Passed = gateDetails.some((g) => /G-1/.test(g.gate ?? '') && passed(g) && !supersededByLater(g, gateDetails, () => true));
   let cond2Reason = null;
   if (!isActive('g1')) cond2Reason = `G-1 が${config.gates.g1?.state === 'unmet' ? '未達' : '省略'}の構成であり、層2 の保証範囲を G-1 で宣言していない`;
   else if (!briefScope.declared) cond2Reason = briefScope.reason;
   else if (!g1Passed) cond2Reason = '企画承認(G-1)の判定記録(結果が通過)が無い';
   // 条件4: 出荷判定(G-7)と残存リスクの受容(G-8)を、別の自然人が記名している。出荷判定を記名した人は、範囲内の変更の作成を指示した者でも G-6 の承認者でもない
   const targetsRelease = (g) => !recordsInRange || recordsInRange.has(g.file) || (to !== 'HEAD' && (g.target ?? '').includes(to));
-  const g7For = period ? [] : gateDetails.filter((g) => /G-7/.test(g.gate ?? '') && passed(g) && targetsRelease(g));
-  const g8For = g8Records.filter((g) => passed(g));
+  const g7For = period ? [] : gateDetails.filter((g) => /G-7/.test(g.gate ?? '') && passed(g) && targetsRelease(g) && !supersededByLater(g, gateDetails, targetsRelease));
+  const g8For = g8Records.filter((g) => passed(g) && !supersededByLater(g, g8Records, () => true));
   const humanSigner = (name) => Boolean(name) && !nameProblems(config, name, { requireRoster: true }).length;
   let cond4 = { ok: false, basis: null, reason: null };
   const qaWho = seatOf('qa-gatekeeper')?.accountable ?? null;

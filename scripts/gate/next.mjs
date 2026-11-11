@@ -6,7 +6,7 @@
 //   node scripts/gate/next.mjs --role <ロール>   ロールの詳細(判定するゲート・受信箱など)と、そのロールの次の一手
 //   node scripts/gate/next.mjs --scopes   標準の条項の適用範囲と判定の単位
 //   node scripts/gate/next.mjs --offline  記録用ブランチの fetch と gh api を行わない(手元の参照だけで読む)
-//   node scripts/gate/next.mjs --intake <ラベル> <対象>   受信箱から拾った作業単位に、着手の前提の判定記録があるか(第3章 3.5.5 要求事項5)
+//   node scripts/gate/next.mjs --pickup <ラベル> <対象> [--from <前のラベル>]   受信箱から拾った作業単位に、着手の前提の判定記録があるか(第3章 3.5.5 要求事項5)
 //
 // 未確定事項の印([NEEDS CLARIFICATION])が残る機能は G-2・G-4 の判定待ちへ進めない(G-2・G-4 の前提条件1)。
 // G-4 の判定待ちには、どのタスクにも現れない受入基準の一覧を材料として添える(G-4 基準6。合否は出さない)。
@@ -376,10 +376,33 @@ export function prInfoLookup(copy, { network = true } = {}) {
   }
 }
 
-/** 判定が成立しているか。結果の語の完全一致(通過)で、通過に数えない理由(issue)の無い記録だけを数える */
+/** 通過に数える記録(結果の語の完全一致で、通過に数えない理由の無いもの) */
+const validPass = (r) => r.result === PASS && !r.issue;
+/**
+ * 後の判定として前の通過を打ち消す記録。差し戻し、結果欄が2値でない様式、宣言行の無い変更要求など、通過でない判定の記録。
+ * 承認レビュー(APPROVED)で通過に数えなかったもの(失効・挙動要約なし・名簿の外)は、判定のやり直しではなく承認の不備のため含めない
+ */
+const overrides = (r) => !validPass(r) && String(r.state ?? '').toUpperCase() !== 'APPROVED';
+const timeOf = (r) => r.judgedAt ?? '';
+
+/**
+ * 同じ対象の記録の集合で、通過が最新の判定として効いているか(process-compass #368 の突合 X-2)。
+ * 通過の記録より後(同じ時刻を含む。様式の判定日時は分の精度のため、同時刻は安全側に打ち消しとみなす)に、通過でない判定の記録が
+ * あれば、その通過は効いていない。成立した記録は書き換えず、判定者が新しい記録で判定し直す運用(recordIssues の注記)と同じ読み方
+ */
+export function latestPassIn(own) {
+  return own.some((p) => validPass(p) && !own.some((s) => s !== p && overrides(s) && timeOf(s) >= timeOf(p)));
+}
+
+/** 同じ対象の記録の集合で、差し戻しが最新の判定として効いているか(差し戻しより後に通過が無い) */
+export function latestRejectIn(own) {
+  return own.some((s) => s.result === REJECT && !own.some((p) => validPass(p) && timeOf(p) > timeOf(s)));
+}
+
+/** 判定が成立しているか。対象の記録のうち、最新の判定が通過であるものだけを成立と見る(latestPassIn) */
 export function passed(records, gateKey, target = null) {
   const prefix = gateArg(gateKey);
-  return records.some((r) => r.gate?.startsWith(prefix) && r.result === PASS && !r.issue && forTarget(r, target));
+  return latestPassIn(records.filter((r) => r.gate?.startsWith(prefix) && forTarget(r, target)));
 }
 
 /**
@@ -438,7 +461,7 @@ export function g6Status(records, prs) {
   const out = [];
   for (const p of prs) {
     const own = records.filter((r) => r.gate?.startsWith('G-6') && refersPr(r, p.pr));
-    const ok = own.some((r) => r.result === PASS && !r.issue);
+    const ok = latestPassIn(own);
     out.push({ pr: p.pr, task: p.task, passed: ok, issues: ok ? [] : own.map((r) => r.issue).filter(Boolean) });
   }
   return out;
@@ -451,31 +474,48 @@ function withIssues(step, issues) {
 
 // ---------------------------------------------------------------- 着手の前の判定記録の確認(標準 第3章 3.5.5 要求事項5。process-compass #368 / IMPL-0331)
 //
-//   node scripts/gate/next.mjs --intake <ラベル> <対象> [--offline]
+//   node scripts/gate/next.mjs --pickup <ラベル> <対象> [--from <前のラベル>] [--offline]
 //
 // 受信箱から作業単位を拾った席が、着手の前に実行する。ラベルが遷移していて、その遷移の前提の判定記録が無い作業単位は、
-// 未判定のまま渡ったものとして扱い、着手しない(判定者へ差し戻す)。前提の判定記録は、標準 第3章 3.5.5 のラベルの語彙
-// (付ける席)と状態の遷移(遷移の契機)から導く。
-//   state:needs-dev(対象は機能 F-NNN)  G-2・G-4 の通過(有効なものだけ。次の一手が /implement を出す条件と同じ)
-//   state:ready-to-merge(対象は PR)     G-6 の通過(独立レビュアが G-6 の判定記録を作成してから付ける)
-//   state:qm-blocked(対象は PR)         G-6 の差し戻し。無ければ判定できない(出荷判定者の記録の突合による差し戻しは、
-//                                         テンプレートに判定記録の様式が無いため、機械では確かめない)
-//   遷移の前提に判定記録を置かないラベル(dev-done・needs-po・needs-tech・needs-owner・needs-audit・needs-platform)は着手してよい
-// 判定記録の読み方は次の一手と同じ 3 つの出所。開いている PR の判定はマージの前で写しが無いため、PR のレビューを gh api で読む
-// (--offline では読まない。読めずに記録が見つからなければ「判定できない」であり、着手しない)。
+// 未判定のまま渡ったものとして扱い、着手しない(判定者へ差し戻す)。オプションの名は、/process-change の種別 intake
+// (準拠テンプレートの更新の取り込み)と別物であることを示すため pickup とした(#368 の突合 X-9)。
+// 前提の判定記録(#368 の突合 X-1 の裁定で、3.5.5 の状態の遷移の表から導ける範囲にそろえた):
+//   state:ready-to-merge(対象は PR)  G-6 の通過。3.5.5 の語彙「独立レビュアが G-6 の判定記録を作成し」から
+//   state:qm-blocked(対象は PR)      G-6 の差し戻し。3.5.5 の遷移「G-6 で差し戻しを判定記録へ書く」から。無ければ判定できない
+//                                      (出荷判定者の記録の突合による差し戻しは、テンプレートに判定記録の様式が無い)
+//   state:needs-dev(対象は機能 F-NNN。--from で前のラベルを渡す)
+//     --from state:needs-tech        G-3 の通過。3.5.5 の遷移「技術判断者が G-3 の判定記録を作成し」から
+//     --from state:needs-po / needs-owner  価値責任者の判断・事業決裁者の決裁の記録。テンプレートに様式が無く、機械では読まない
+//     いずれの経路でも G-2・G-4 の通過を求める。これは 3.5.5 からではなく、第5章 5.8.5 の禁止事項1(受入基準を確定せずに
+//     実装を始めない)と /implement の前提による。次の一手が /implement を出す条件と同じ
+//   --from が無い needs-dev、機能へ対応づけない作業単位は、前提を導けないため判定できない
+//   遷移の前提に特定の判定記録を置かないラベル(dev-done・needs-po・needs-tech・needs-owner・needs-audit・needs-platform)は着手してよい
+// 判定記録は最新の判定で読む(passed・latestPassIn。#368 の突合 X-2)。構成にゲートのキーが無い・状態が語彙に無いときは
+// 判定できない(X-3)。判定記録の読み方は次の一手と同じ 3 つの出所。開いている PR の判定はマージの前で写しが無いため、
+// PR のレビューを gh api で読む(--offline では読まない。読めずに記録が見つからなければ判定できない)。
 // 出力: 着手してよい(終了コード 0) / 着手しない(3) / 判定できない(4)。判定者の本人性・人数は確かめない(G-5 と出荷の証跡の集約が見る)
 
 /** 遷移の前提の判定記録 */
-export const INTAKE_RULES = {
+export const PICKUP_RULES = {
   'state:needs-dev': { target: 'feature', gates: ['g2', 'g4'], result: PASS },
   'state:ready-to-merge': { target: 'pr', gates: ['g6'], result: PASS },
   'state:qm-blocked': { target: 'pr', gates: ['g6'], result: REJECT },
 };
-/** 遷移の前提に判定記録を置かないラベル(標準 第3章 3.5.5 のラベルの語彙で、付ける席が判定を経ずに付ける) */
-export const INTAKE_NO_RECORD = ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-audit', 'state:needs-platform'];
+/** state:needs-dev へ替えた前のラベル(3.5.5 の状態の遷移で needs-dev へ入る経路)と、その経路で足す判定記録 */
+export const PICKUP_FROM = {
+  'state:needs-po': { gates: [], unread: '価値責任者の判断の記録' },
+  'state:needs-tech': { gates: ['g3'], unread: null },
+  'state:needs-owner': { gates: [], unread: '事業決裁者の決裁の記録' },
+};
+/**
+ * 遷移の前提に特定の判定記録を置かないラベル。3.5.5 の語彙で、開発者・AI維持管理者・誰でも付けられ、付ける契機を判定に限らない
+ * (state:needs-po へは監査の判定・G-3 の差し戻しの後にも遷移するが、誰でも付けられるため特定の記録を前提にしない)
+ */
+export const PICKUP_NO_RECORD = ['state:dev-done', 'state:needs-po', 'state:needs-tech', 'state:needs-owner', 'state:needs-audit', 'state:needs-platform'];
+const GATE_STATES = new Set(['required', 'simplified', 'omitted', 'unmet']);
 
 /** 作業単位の指定(F-NNN、F-NNN / Task-N、PR #N、#N、N)を読む。読めなければ null */
-export function parseIntakeTarget(text) {
+export function parsePickupTarget(text) {
   const s = String(text ?? '').trim();
   const f = s.match(/^(F-\d+)(?:\s*\/\s*(Task-\d+))?$/i);
   if (f) return { feature: f[1].toUpperCase(), task: f[2] ? `Task-${f[2].split('-')[1]}` : null };
@@ -489,34 +529,46 @@ export function parseIntakeTarget(text) {
  * 起こした記録 { available, reason, records }(PR の対象のときだけ。null は読んでいない)。
  * 戻り値: { decision: 'start' | 'hold' | 'undetermined', label, target, reason, required, returnTo, issues }
  */
-export function intakeCheck({ label, target, records = [], config = null, openPr = null }) {
+export function pickupCheck({ label, target, from = null, records = [], config = null, openPr = null }) {
   const res = (decision, reason, extra = {}) => ({ decision, label, target, reason, required: [], returnTo: null, issues: [], ...extra });
   if (!config || config.configured === false) return res('undetermined', '構成が未設定です(/process-init)。前提の判定記録を導けない');
-  if (INTAKE_NO_RECORD.includes(label)) return res('start', `${label} への遷移は、判定記録を前提にしない(標準 第3章 3.5.5 のラベルの語彙。付ける席が判定を経ずに付ける)`);
-  const rule = INTAKE_RULES[label];
+  if (PICKUP_NO_RECORD.includes(label)) return res('start', `${label} への遷移は、特定の判定記録を前提にしない(標準 第3章 3.5.5 のラベルの語彙。開発者・AI維持管理者・誰でも付けられ、付ける契機を判定に限らない)`);
+  const rule = PICKUP_RULES[label];
   if (!rule) return res('undetermined', `ラベル ${label ?? '(無し)'} は引き渡しのラベルの語彙(標準 第3章 3.5.5)に無い。推測で着手しない`);
-  const t = parseIntakeTarget(target);
-  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけられない作業単位は、前提の判定記録を導けない。推測で着手せず、付けた席へ確かめる`);
+  const t = parsePickupTarget(target);
+  if (rule.target === 'feature' && !t?.feature) return res('undetermined', `${label} の作業単位は機能 ID(F-NNN)で指定する。機能へ対応づけない作業単位は、テンプレートが前提の判定記録を読めない。推測で着手せず、付けた席へ確かめる`);
   if (rule.target === 'pr' && !t?.pr) return res('undetermined', `${label} の作業単位は PR の番号(PR #N)で指定する`);
   const judgeSeat = (key) => {
     const role = gateRole(config, key);
     return role ? seatOf(config, role.id) : null;
   };
+  // 構成のゲートの状態。キーが無い・語彙に無い状態は、有効かどうかを導けない(#368 の突合 X-3)
+  const unknownGates = (keys) => keys.filter((k) => !GATE_STATES.has(config.gates?.[k]?.state));
+  const unknownRes = (keys) => res('undetermined', `構成の gates に ${keys.map(gateArg).join('・')} のキーが無いか、状態が語彙(required・simplified・omitted・unmet)に無い。前提の判定記録を導けない。構成を /process-change で直す`);
 
   if (rule.target === 'feature') {
-    const active = rule.gates.filter((g) => isGateActive(config, g));
-    if (!active.length) return res('start', `${rule.gates.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない。着手の前提の判定記録は無い(省略・未達は PROCESS-PROFILE.md の開示による)`);
+    const route = PICKUP_FROM[from];
+    if (!route) return res('undetermined', `${label} へ替えた前のラベルを --from で渡す(${Object.keys(PICKUP_FROM).join(' / ')}。作業単位のラベルの履歴で確かめる)。経路によって前提の判定記録が違う(3.5.5 の状態の遷移)ため、前のラベルが無ければ導けない`);
+    const keys = [...rule.gates, ...route.gates];
+    const unknown = unknownGates(keys);
+    if (unknown.length) return unknownRes(unknown);
+    if (route.gates.some((g) => !isGateActive(config, g))) return res('undetermined', `${from} を経たが、${route.gates.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない。経路の判定記録の様式を導けない。付けた席へ確かめる`);
+    const active = keys.filter((g) => isGateActive(config, g));
+    const note = route.unread ? `。${route.unread}はテンプレートに様式が無く、読んでいない` : '';
+    if (!active.length) return res('start', `${keys.map((g) => gateLabel(config, g)).join('・')} がこの構成で有効でない(省略・未達は PROCESS-PROFILE.md の開示による)${note}`);
     const missing = active.filter((g) => !passed(records, g, t.feature));
-    if (!missing.length) return res('start', `${active.map((g) => gateLabel(config, g)).join('・')} の通過の記録がある(対象 ${t.feature})`, { required: active.map(gateArg) });
-    const g = missing[0];
+    if (!missing.length) return res('start', `${active.map((g) => gateLabel(config, g)).join('・')} の通過が最新の判定として記録にある(対象 ${t.feature})${note}`, { required: active.map(gateArg) });
+    const g = missing.find((x) => route.gates.includes(x)) ?? missing[0];
     return res(
       'hold',
-      `${gateLabel(config, g)} の通過の記録が無い(対象 ${t.feature})。${label} は付いているが、未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`,
+      `${gateLabel(config, g)} の通過が最新の判定として記録に無い(対象 ${t.feature})。${label} は付いているが、未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`,
       { required: active.map(gateArg), missing: missing.map(gateArg), returnTo: judgeSeat(g), issues: recordIssues(records, g, t.feature) }
     );
   }
 
   // 対象が PR(G-6)
+  const unknown = unknownGates(['g6']);
+  if (unknown.length) return unknownRes(unknown);
   if (!isGateActive(config, 'g6')) {
     return res(
       'undetermined',
@@ -527,8 +579,8 @@ export function intakeCheck({ label, target, records = [], config = null, openPr
   }
   const all = [...records, ...(openPr?.records ?? [])];
   const own = all.filter((r) => r.gate?.startsWith('G-6') && refersPr(r, t.pr));
-  const ok = rule.result === PASS ? own.some((r) => r.result === PASS && !r.issue) : own.some((r) => r.result === REJECT);
-  if (ok) return res('start', `G-6 の${rule.result}の記録がある(PR #${t.pr})`, { required: ['G-6'] });
+  const ok = rule.result === PASS ? latestPassIn(own) : latestRejectIn(own);
+  if (ok) return res('start', `G-6 の${rule.result}が最新の判定として記録にある(PR #${t.pr})`, { required: ['G-6'] });
   const issues = own.map((r) => r.issue).filter(Boolean);
   if (!openPr?.available) {
     return res('undetermined', `PR #${t.pr} の G-6 の${rule.result}の記録が、手元の記録(docs/gates/・記録用ブランチ)に無く、開いている PR のレビューを読んでいない(${openPr?.reason ?? '読んでいない'})。推測で着手しない。--offline を外して実行するか、人が確かめる`, { required: ['G-6'], issues });
@@ -536,7 +588,7 @@ export function intakeCheck({ label, target, records = [], config = null, openPr
   if (rule.result === REJECT) {
     return res('undetermined', `PR #${t.pr} に G-6 の差し戻しの記録(宣言行 \`G-6: 差し戻し / 基準 N / 期限 YYYY-MM-DD\` の変更要求、または様式)が無い。出荷判定者の記録の突合による差し戻しは機械では確かめない。着手せず、差し戻した席へ理由の所在を確かめる`, { required: ['G-6'], returnTo: judgeSeat('g6'), issues });
   }
-  return res('hold', `PR #${t.pr} に G-6 の通過の記録(承認者本人の挙動要約つきの承認)が無い。${label} は付いているが、未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`, { required: ['G-6'], missing: ['G-6'], returnTo: judgeSeat('g6'), issues });
+  return res('hold', `PR #${t.pr} に G-6 の通過(承認者本人の挙動要約つきの承認)が最新の判定として記録に無い。${label} は付いているが、未判定のまま渡ったものとして扱う(標準 第3章 3.5.5 要求事項5)`, { required: ['G-6'], missing: ['G-6'], returnTo: judgeSeat('g6'), issues });
 }
 
 /** 開いている PR のレビューを gh api で読み、写しと同じ形にして記録を起こす(着手の前の確認だけが使う) */
@@ -554,12 +606,12 @@ export function openPrRecords(n, { network = true, config = null } = {}) {
   }
 }
 
-const INTAKE_HEAD = { start: '[着手してよい]', hold: '[着手しない]', undetermined: '[判定できない]' };
-export const INTAKE_EXIT = { start: 0, hold: 3, undetermined: 4 };
+const PICKUP_HEAD = { start: '[着手してよい]', hold: '[着手しない]', undetermined: '[判定できない]' };
+export const PICKUP_EXIT = { start: 0, hold: 3, undetermined: 4 };
 
 /** 着手の前の確認の出力 */
-export function renderIntake(c) {
-  const L = [`${INTAKE_HEAD[c.decision]} ${c.label ?? ''} ${c.target ?? ''}: ${c.reason}`];
+export function renderPickup(c) {
+  const L = [`${PICKUP_HEAD[c.decision]} ${c.label ?? ''} ${c.target ?? ''}: ${c.reason}`];
   if (c.issues?.length) L.push(`- 通過に数えなかった記録: ${c.issues.join(' / ')}`);
   if (c.decision === 'hold') {
     const seat = c.returnTo;
@@ -1518,29 +1570,38 @@ function main() {
   }
   // --brief(セッションの開始時)と --offline では、記録用ブランチの fetch と gh api を行わず、手元の参照だけで読む
   const local = argv.includes('--offline') || argv.includes('--brief');
-  const ii = argv.indexOf('--intake');
-  if (ii >= 0) {
+  const pi = argv.indexOf('--pickup');
+  if (pi >= 0) {
     // 着手の前の判定記録の確認(標準 第3章 3.5.5 要求事項5)。段階の導出(computeNext)は行わない
-    const [label, ...rest] = argv.slice(ii + 1).filter((a) => !a.startsWith('--'));
-    const target = rest.join(' ');
-    let config = null;
+    const rest = argv.slice(pi + 1);
+    const fi = rest.indexOf('--from');
+    const from = fi >= 0 ? rest[fi + 1] ?? null : null;
+    const [label, ...words] = rest.filter((a, i) => !a.startsWith('--') && !(fi >= 0 && i === fi + 1));
+    const target = words.join(' ');
+    let c;
     try {
-      config = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
-    } catch {
-      /* intakeCheck が構成なしとして扱う */
-    }
-    let branch;
-    try {
-      branch = readRecordsBranch({ cwd: ROOT, fetch: !local });
+      let config = null;
+      try {
+        config = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
+      } catch {
+        /* pickupCheck が構成なしとして扱う */
+      }
+      let branch;
+      try {
+        branch = readRecordsBranch({ cwd: ROOT, fetch: !local });
+      } catch (e) {
+        branch = { available: false, reason: `記録用ブランチ ${RECORDS_REF} を読めない(${String(e.message).split('\n')[0]})` };
+      }
+      const { records } = collectRecords({ gateRecords: readGateRecords(), branch, prInfoOf: (copy) => prInfoLookup(copy, { network: !local }), config });
+      const t = parsePickupTarget(target);
+      const openPr = PICKUP_RULES[label]?.target === 'pr' && t?.pr ? openPrRecords(t.pr, { network: !local, config }) : null;
+      c = pickupCheck({ label, target, from, records, config, openPr });
     } catch (e) {
-      branch = { available: false, reason: `記録用ブランチ ${RECORDS_REF} を読めない(${String(e.message).split('\n')[0]})` };
+      // 記録を読めない(置き場の破損など)は、手順に無い出力で終えず、判定できないとして出す(#368 の突合 X-5)
+      c = { decision: 'undetermined', label, target, reason: `判定記録を読めない(${String(e.message).split('\n')[0].slice(0, 120)})。推測で着手しない`, issues: [] };
     }
-    const { records } = collectRecords({ gateRecords: readGateRecords(), branch, prInfoOf: (copy) => prInfoLookup(copy, { network: !local }), config });
-    const t = parseIntakeTarget(target);
-    const openPr = INTAKE_RULES[label]?.target === 'pr' && t?.pr ? openPrRecords(t.pr, { network: !local, config }) : null;
-    const c = intakeCheck({ label, target, records, config, openPr });
-    console.log(renderIntake(c));
-    process.exit(INTAKE_EXIT[c.decision]);
+    console.log(renderPickup(c));
+    process.exit(PICKUP_EXIT[c.decision]);
   }
   const r = computeNext({ fetch: !local, network: !local });
   const ri = argv.indexOf('--role');
@@ -1559,6 +1620,9 @@ function main() {
       process.exit(2);
     }
     console.log(card);
+    console.log('');
+    // 受信箱から拾った作業単位に着手する前の確認(標準 第3章 3.5.5 要求事項5。#368 の突合 X-6)
+    console.log('受信箱から作業単位を拾ったら、着手の前に `node scripts/gate/next.mjs --pickup <ラベル> <対象>`(state:needs-dev は `--from <前のラベル>` も)を実行する。終了コードが 0 でなければ着手しない(`.claude/skills/pit/reference/handoff.md`「拾った作業単位に着手する前に」)');
     console.log('');
     console.log('### エスカレーションの段階とラベル');
     console.log('');

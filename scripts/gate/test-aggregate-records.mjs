@@ -34,6 +34,8 @@ import {
   prRecordFromCopy,
   targetOfForm,
   judgeOfForm,
+  supersededByLater,
+  reviewSupersededByLater,
 } from './aggregate-evidence.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -392,6 +394,22 @@ const config = {
   check('prRecordFromCopy: gate-g5 の結果・ラベル・作成日時・レビューは写しに無い(null・空)', r.statusCheckRollup === null && r.labels.length === 0 && r.createdAt === null && r.reviews === null);
   check('prRecordFromCopy: 本文の無い写し(旧い形)と写し無しは null', prRecordFromCopy({ pr: 7, reviews: [] }) === null && prRecordFromCopy(null) === null);
   check('prRecordFromCopy: 作成者の無い写しは author=null', prRecordFromCopy({ pr: 7, body: 'x', reviews: [] }).author === null);
+}
+
+// ---------------------------------------------------------------- 最新の判定で読む(process-compass #368 の突合 X-2)
+{
+  const g = (gate, target, result, judgedAt) => ({ file: `docs/gates/${gate}-${judgedAt}.md`, gate, target, result, judgedAt });
+  const pass = g('G-4 機能仕様承認', 'F-001 / abc', '通過', '2026-10-20 09:00');
+  const reject = g('G-4 機能仕様承認', 'F-001 / def', '差し戻し', '2026-10-21 09:00');
+  const onF001 = (o) => /F-001(?!\d)/.test(String(o.target ?? ''));
+  check('集約: G-4 の通過の後に同じ仕様の差し戻しがあれば、通過は打ち消される', supersededByLater(pass, [pass, reject], onF001) === true);
+  check('集約: 差し戻しの後の通過は打ち消されない', supersededByLater(g('G-4', 'F-001', '通過', '2026-10-22 09:00'), [pass, reject], onF001) === false);
+  check('集約: 別の仕様・別のゲートの差し戻しは打ち消さない', supersededByLater(pass, [pass, g('G-4', 'F-002', '差し戻し', '2026-10-21 09:00'), g('G-6', 'F-001', '差し戻し', '2026-10-21 09:00')], onF001) === false);
+  check('集約: 同じ時刻の差し戻しは打ち消す(安全側)', supersededByLater(pass, [pass, g('G-4', 'F-001', '差し戻し', '2026-10-20 09:00')], onF001) === true);
+  const rj = (result, at, specs = ['F-001'], judgeOk = true) => ({ gate: 'G-4', result, submittedAt: at, specs, judgeOk });
+  const rp = rj('通過', '2026-10-20T00:00:00Z');
+  check('集約: 写しの G-4 の通過の後に同じ仕様の差し戻しの宣言があれば、打ち消される', reviewSupersededByLater(rp, [rp, rj('差し戻し', '2026-10-21T00:00:00Z')], 'F-001') === true);
+  check('集約: 写しの差し戻しが前か、別の仕様か、判定する席の責任者でない者のものなら打ち消さない', reviewSupersededByLater(rp, [rp, rj('差し戻し', '2026-10-19T00:00:00Z'), rj('差し戻し', '2026-10-21T00:00:00Z', ['F-002']), rj('差し戻し', '2026-10-21T00:00:00Z', ['F-001'], false)], 'F-001') === false);
 }
 
 console.log('');
