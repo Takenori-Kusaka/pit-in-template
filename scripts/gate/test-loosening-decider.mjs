@@ -251,6 +251,9 @@ try {
     fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(blank), null, 2) + '\n');
     fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
     fs.copyFileSync(path.join(d, 'templates/00-d0-governance.md'), path.join(d, 'docs/D-0-governance.md'));
+    // 自己の決定の根拠(D-0 節11「決裁の権限の出所」。process-compass #432 突合 X-7)を書いておく
+    const d0p = path.join(d, 'docs/D-0-governance.md');
+    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 個人事業主本人(試験) |'));
     git('add', '-A');
     git('commit', '-q', '-m', 'chore: init');
     const run = (obj) => {
@@ -362,7 +365,8 @@ try {
   try {
     // 2名の名簿で全席を1人目(決定者)に置く初回の記入は、決定者が当事者の兼務になり、1人目の記名では通らない(process-compass #432)
     const fill = wa.run({ summary: '体制を記入', people: [P[0], ORG], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
-    const leave = wa.run({ summary: '1人目が離脱', people: [P[1], ORG], seats: seatsBy(SEAT_IDS.map(() => null)) });
+    // 名簿への追加は記名を要する(ADR-0108 決定3。#432 突合 X-2)。決定者(1人目)が外れる変化点なので、組織上の任命権者が記名する
+    const leave = wa.run({ summary: '1人目が離脱', people: [P[1], ORG], seats: seatsBy(SEAT_IDS.map(() => null)), decidedBy: ORG.name, reason: '2人目を名簿へ足す' });
     check('#376 (a): 前提の記入と離脱を受け付ける', fill.ok && leave.ok, `${fill.out}\n${leave.out}`);
     const before = wa.raw();
     const mixed = wa.run({ summary: '後任の任命と確認者', people: [P[1], P[2], ORG], seats: seatsBy([1, 1, 1, 1, 2, 2, 1, 1, 2]), decidedBy: ORG.name, reason: '前任の離脱に伴う後任の任命' });
@@ -391,7 +395,9 @@ try {
   const wc = workspace('pit-in-376c-');
   try {
     const fill = wc.run({ summary: '体制を記入', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
-    const leave = wc.run({ summary: '1人目が離脱', people: [P[1]], seats: seatsBy(SEAT_IDS.map(() => null)) });
+    // 名簿への追加は記名を要する。決定者(1人目)が残る間に足し、その後に離脱する
+    const add2 = wc.run({ summary: '2人目', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '2人目を名簿へ足す' });
+    const leave = add2.ok ? wc.run({ summary: '1人目が離脱', people: [P[1]], seats: seatsBy(SEAT_IDS.map(() => null)) }) : add2;
     const none = wc.run({ summary: '後任の任命と確認者', people: [P[1], P[2]], seats: seatsBy([1, 1, 1, 1, 2, 1, 1, 1, 2]), decidedBy: P[1].name, reason: '前任の離脱に伴う後任の任命' });
     check(
       '#376: 任免の段を記名できる者が名簿にいないときは、緩める向きの行を含んでも分け方を案内しない(任免の拒否だけを出す)',
@@ -430,23 +436,48 @@ try {
     // IMPL-0480:ng 名簿へ人を足す行に、決定者でない名簿の人が記名した変化点を受け付けない
     const addByOther = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] }], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[0].name, reason: '試験' });
     check('IMPL-0480:ng 名簿へ人を足す行に、決定者でない名簿の人の記名を受け付けない', !addByOther.ok && /名簿の変更です/.test(addByOther.out), addByOther.out);
-    // IMPL-0480:ok 記名なしの追加は反映する(人を足す反映は止めない)
-    const addUnsigned = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] }], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]) });
-    check('IMPL-0480:ok 名簿へ人を足すだけの変化点は、記名なしで反映する', addUnsigned.ok, addUnsigned.out);
+    // IMPL-0480:ng 記名の無い追加も受け付けない(ADR-0108 決定3。#432 突合 X-2)
+    const ext = { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] };
+    const addUnsigned = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, ext], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]) });
+    check('IMPL-0480:ng 名簿へ人を足す変化点を、記名なしでは受け付けない', !addUnsigned.ok && /人の名簿への追加/.test(addUnsigned.out), addUnsigned.out);
+    // IMPL-0480:ok 決定者(2人目)の記名なら反映する
+    const addSigned = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, ext], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[1].name, reason: '外部の確認者を名簿へ' });
+    check('IMPL-0480:ok 名簿へ人を足す変化点を、決定者の記名で受け付ける', addSigned.ok, addSigned.out);
   } finally {
     fs.rmSync(wd.d, { recursive: true, force: true });
   }
   const we = workspace('pit-in-432e-');
   try {
     const one = we.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
-    const add = we.run({ summary: '2人目', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]) });
+    const add = we.run({ summary: '2人目', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '2人目を名簿へ足す' });
     const e = we.cfg().changeLog.at(-1);
     // IMPL-0481:ok 1人体制で入った兼務は、2人目を足す変化点で決定待ちの行になり、記名を要しない。行は当事者の id を持つ
     check(
-      'IMPL-0481:ok 2人目を足す変化点(記名なし)を反映し、続く兼務に当事者つきの「選択の余地が生じた(決定待ち)」の行を出す',
+      'IMPL-0481:ok 2人目を足す変化点(決定者の記名。兼務の決定の記名は待たない)を反映し、続く兼務に当事者つきの「選択の余地が生じた(決定待ち)」の行を出す',
       one.ok && add.ok && e.diff.filter((l) => /の兼務\(当事者の id p1。山田 太郎\): 選択の余地が生じた/.test(l)).length === 2,
       `${one.out}\n${add.out}\n${JSON.stringify(e.diff)}`
     );
+    // 旧い構成からの移行(#432 突合 X-6): 当事者を書いた行の無い記録の決定待ちは、版の切り替えの記録が無ければ、
+    // この規定を含む版で記録した最初の変化点を起点とする。それより前の判定記録は数えない
+    {
+      const gp = await import('../init/generate-profile.mjs');
+      const now = we.cfg();
+      const legacyLog = now.changeLog.map((x) => ({ ...x, diff: (x.diff ?? []).map((l) => String(l).replace(/\(当事者の id [^)]*\)/, '')) }));
+      const legacy = { ...now, changeLog: legacyLog };
+      const st = gp.separationStates(legacy);
+      const rec = [{ file: 'docs/gates/g1-old.md', gate: 'G-1 企画承認', judgedAt: '2026-10-01 10:00' }];
+      check(
+        'IMPL-0482:ok 移行の決定待ちで起点の記録が無ければ、それより前の判定記録を欠落に数えない',
+        st.length === 2 && st.every((x) => x.state === 'pending' && x.migrated && !x.since) && gp.pendingSeparationProblems(legacy, rec).length === 0,
+        JSON.stringify(st)
+      );
+      const next = gp.diffConfig(legacy, { ...legacy, answers: { ...legacy.answers } });
+      check(
+        '#432 X-6: 移行の後の最初の変化点に「決定待ち(旧い構成からの移行)」の行を出し、そこを起点にする',
+        next.diff.filter((l) => /: 決定待ち\(旧い構成からの移行/.test(l)).length === 2,
+        JSON.stringify(next.diff)
+      );
+    }
     // IMPL-0482:ok 決定待ちでも、判定記録が無ければ契約検査は決定待ちを問題にしない
     check('IMPL-0482:ok 決定待ちでも、期限の前(判定記録なし)は契約検査が問題にしない', !/決定待ちです/.test(we.contract().out), we.contract().out);
     // IMPL-0482:ng 決定待ちのまま記録したゲート判定を、契約検査が記載の欠落として扱う

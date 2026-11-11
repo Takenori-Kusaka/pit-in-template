@@ -1291,7 +1291,7 @@ export function separationStates(config) {
           state = null;
           since = null;
           decidedBy = null;
-        } else if (/^選択の余地が生じた/.test(text)) {
+        } else if (/^(選択の余地が生じた|決定待ち\(旧い構成からの移行)/.test(text)) {
           state = 'pending';
           since = at;
         } else if (/^選択の余地が無くなった/.test(text)) {
@@ -1346,27 +1346,104 @@ export function separationStates(config) {
   return out;
 }
 
+/** D-0 節11 の「決裁の権限の出所」が書かれているか(様式のままの山括弧・空欄を書かれていないとする。#432 突合 X-7) */
+export function authoritySourceFilled(root = ROOT) {
+  const file = path.join(root, 'docs/D-0-governance.md');
+  if (!fs.existsSync(file)) return false;
+  const m = fs.readFileSync(file, 'utf8').match(/^\| 決裁の権限の出所 \|([^\n]*)\|\s*$/m);
+  const v = m ? m[1].trim() : '';
+  return Boolean(v) && !v.startsWith('<') && v !== '—' && v !== '-';
+}
+/** 判定記録の判定日時の比べる形(分までの手元の時刻、時刻が無ければ日付) */
+const judgedKeyOf = (r) => {
+  const j = String(r?.judgedAt ?? '').trim();
+  const t = j.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  return t ? `${t[1]}T${t[2]}` : /^\d{4}-\d{2}-\d{2}/.test(j) ? j.slice(0, 10) : null;
+};
+/** 判定記録のゲートの識別(G-1・SG など) */
+const gateCodeOf = (r) => String(r?.gate ?? '').match(/^(G-\d+|SG(-\d+)?)/)?.[1] ?? null;
+/** a が b より前か後か。日付だけの側があれば日付で比べる(同じ日は ambiguous) */
+const cmpKey = (a, b) => {
+  if (a.length === 10 || b.length === 10) {
+    const x = a.slice(0, 10);
+    const y = b.slice(0, 10);
+    return x === y ? 0 : x < y ? -1 : 1;
+  }
+  return a === b ? 0 : a < b ? -1 : 1;
+};
+
 /**
- * 決定待ちのまま記録したゲート判定(#432 1-D)。期限は、選択の余地が生じた変化点の後の最初のゲート判定より前。
- * 決定待ちの兼務があり、期限の起点より後(同じ時刻を含む)の判定記録があれば、記載の欠落として返す。起点が記録に無い移行の件は、すべての判定記録を数える。
- * 判定記録の時刻は、変化点の記録と同じ時刻帯で書かれたものとして比べる。決定した後は、決定より前の判定記録を数えない
+ * 決定待ちの期間(#432 1-D・突合 X-5)。変化点の記録の行から、兼務ごとに決定待ちの始まりと終わり(決定・解消・発生へ戻る)を導く。
+ * 旧い構成から移行した決定待ちで、行の無いもの(この規定を含む版で記録した変化点がまだ無い)は、版の切り替えの記録があればそこを起点とし、無ければ数えない(X-6)
+ */
+export function separationPendingIntervals(config) {
+  const log = Array.isArray(config?.changeLog) ? config.changeLog : [];
+  const open = new Map();
+  const out = [];
+  for (const e of log) {
+    const at = e?.at ?? e?.date ?? null;
+    (e?.diff ?? []).forEach((line, j) => {
+      const m = String(line).match(PARTY_ROW);
+      if (!m) return;
+      const key = `${m[1]}@${m[2]}`;
+      const text = m[3];
+      const kind = e.rowKinds?.[j];
+      const start = () => {
+        if (!open.has(key)) open.set(key, { label: m[1], party: m[2], start: at });
+      };
+      const end = () => {
+        const o = open.get(key);
+        if (o) {
+          out.push({ ...o, end: at });
+          open.delete(key);
+        }
+      };
+      if (/が解消する/.test(text) || /^選択の余地が無くなった/.test(text)) end();
+      else if (/^(選択の余地が生じた|決定待ち\(旧い構成からの移行)/.test(text)) start();
+      else if (kind === 'loosen') {
+        const signer = e.decidedBy ? personKey(config, e.decidedBy) : null;
+        if (signer && (signer !== m[2] || e.selfDecided === true)) end();
+        else start();
+      }
+    });
+  }
+  for (const o of open.values()) out.push({ ...o, end: null });
+  // 行の無い移行の決定待ち(版の切り替えの記録を起点とする。記録が無ければ数えない)
+  for (const st of separationStates(config)) {
+    if (st.state !== 'pending' || !st.migrated || !st.since) continue;
+    if (out.some((o) => o.label === st.label && o.party === st.party && o.end === null)) continue;
+    out.push({ label: st.label, party: st.party, start: st.since, end: null, migrated: true });
+  }
+  return out;
+}
+
+/**
+ * 決定待ちのまま記録したゲート判定(#432 1-D・突合 X-5)。期限は、選択の余地が生じた変化点の後の最初のゲート判定より前。
+ * 決定待ちの期間に記録した判定記録を、記載の欠落として返す。後で決定(または解消)しても欠落のまま残り、解くのは、
+ * 決定の後にそのゲートを判定し直した記録だけである。判定記録の時刻は、変化点の記録と同じ時刻帯で書かれたものとして比べる
  */
 export function pendingSeparationProblems(config, gateRecords = []) {
   const out = [];
-  for (const s of separationStates(config)) {
-    if (s.state !== 'pending') continue;
-    const sinceKey = s.since ? String(s.since).slice(0, 16) : null;
+  for (const iv of separationPendingIntervals(config)) {
+    if (!iv.start) continue;
+    const startKey = String(iv.start).slice(0, 16);
+    const endKey = iv.end ? String(iv.end).slice(0, 16) : null;
     const hits = gateRecords.filter((r) => {
-      const j = String(r?.judgedAt ?? '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}/.test(j)) return false;
-      if (!sinceKey) return true;
-      const t = j.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
-      return t ? `${t[1]}T${t[2]}` >= sinceKey : j.slice(0, 10) >= sinceKey.slice(0, 10);
+      const k = judgedKeyOf(r);
+      if (!k || cmpKey(k, startKey) < 0) return false;
+      if (endKey && cmpKey(k, endKey) > 0) return false;
+      if (!endKey) return true;
+      // 決定の後に同じゲートを判定し直した記録があれば、欠落を解く
+      const code = gateCodeOf(r);
+      return !gateRecords.some((x) => x !== r && code && gateCodeOf(x) === code && judgedKeyOf(x) && cmpKey(judgedKeyOf(x), endKey) > 0);
     });
     if (!hits.length) continue;
+    const who = personName(config, iv.party);
     out.push(
-      `${s.label}(当事者 ${s.partyName ?? '不明'})は決定待ちです(選択の余地が生じた時点: ${s.since ?? (s.migrated ? '版を切り替えた変化点の記録が無い' : '不明')}${s.migrated ? '。旧い構成からの移行' : ''})。` +
-        `決定待ちのまま記録したゲート判定(${hits.map((r) => r.file).join(', ')})は、記載の欠落です。兼務を解くか、本人以外の記名で兼務を続ける決定(/process-change の keepSeparations)を出します(標準 第3章 3.5・3.13.3)`
+      iv.end
+        ? `${iv.label}(当事者 ${who})の決定待ちの間(${iv.start} 〜 ${iv.end})に記録したゲート判定(${hits.map((r) => r.file).join(', ')})は、記載の欠落です。決定の後に、そのゲートを判定し直した記録で解きます(標準 第3章 3.5)`
+        : `${iv.label}(当事者 ${who})は決定待ちです(起点: ${iv.start}${iv.migrated ? '。旧い構成からの移行' : ''})。` +
+            `決定待ちのまま記録したゲート判定(${hits.map((r) => r.file).join(', ')})は、記載の欠落です。兼務を解くか、本人以外の記名で兼務を続ける決定(/process-change の keepSeparations)を出し、その後にゲートを判定し直します(標準 第3章 3.5・3.13.3)`
     );
   }
   return out;
@@ -1462,7 +1539,7 @@ export function changeLogEntry(e) {
     reason: e.reason ?? null,
     // 前任の決定者が体制から外れ、組織上の任命権者の記名で任免を決定した(第3章 3.13.3 / 3.13.4 記録5)
     ...(e.appointerSigned ? { appointerSigned: true } : {}),
-    // 決定者が自分に関わる変更を、本人以外に決められる者がいない1名の体制で自分の記名で決めた(自己の決定。第3章 3.13.3 / #432)
+    // 決定者が自分に関わる変更を、当事者以外で記名できる者がいない体制で自分の記名で決めた(自己の決定。第3章 3.13.3 / #432)
     ...(e.selfDecided ? { selfDecided: true } : {}),
     // 人の名簿の表記の変更(同じ人の氏名またはアカウント)。旧い値と新しい値を残す(K67)
     ...(e.rosterEdits?.length ? { rosterEdits: e.rosterEdits } : {}),
@@ -1797,6 +1874,9 @@ export function diffConfig(before, after, opts = {}) {
           `${d.label}(当事者 ${personName(after, party)})は決定待ちになった。この後の最初のゲート判定より前に、兼務を解くか、/process-change の keepSeparations に "${d.separationId}" を書いて兼務を続ける決定をする。` +
             '当事者が D-0 表1 の決定者なら、本人以外が記名する。決めないまま記録したゲート判定は、判定記録の検査と出荷の証跡の集約が記載の欠落として扱う(標準 第3章 3.5・3.13.3)'
         );
+      } else if (choiceAfter && st?.state === 'pending' && st.migrated) {
+        // 旧い構成から移行した決定待ち。この規定を含む版で記録した最初の変化点を、期限の起点とする(#432 突合 X-6)
+        diff.push(`${rowLabel}: 決定待ち(旧い構成からの移行。この後の最初のゲート判定より前に、兼務を解くか、記名で兼務を続ける決定をする)`);
       } else if (!choiceAfter && st && st.state !== 'arising') {
         diff.push(`${rowLabel}: 選択の余地が無くなった(体制の内の人が1人。発生の扱いへ戻る)`);
         mark('arising');
@@ -2611,9 +2691,20 @@ export function selfDecisionContext(config, report, before = null) {
       if (p.appointer === true) signers.add(p.id);
     } else if (holders.has(p.id) || insidersRef.length === 2) signers.add(p.id);
   }
-  // 例外は本人に限る(変化点より前の体制の内の、ただ1人)。この変化点で新しく決定者になる行は当たらない
-  const sole = insidersRef.length === 1 && !appointerIn && deciderIds.has(insidersRef[0].id);
-  return { rows, deciderIds, signers, sole, soleId: sole ? insidersRef[0].id : null };
+  // 例外の条件は人数ではなく、当事者以外で記名できる者(組織上の任命権者を含む)がいないこと(#432 突合 X-1 への裁定)。
+  // 記名できるのは本人(変化点より前の決定者。初回の記入では、ただ1人の体制の内の人)に限る。新任の決定者は当たらない(3.13.3)
+  const soleId =
+    signers.size === 0 && !appointerIn
+      ? report.allBlankBefore
+        ? insidersRef.length === 1
+          ? insidersRef[0].id
+          : null
+        : report.priorDeciderPresent
+          ? report.priorDecider
+          : null // 決定者が体制から外れた後は、組織上の任命権者の経路による(自己の任命の例外の記録の経路は IMPL-0342)
+      : null;
+  const sole = Boolean(soleId) && deciderIds.has(soleId);
+  return { rows, deciderIds, signers, sole, soleId: sole ? soleId : null };
 }
 
 /** この記名が、1名の体制の自己の決定(本人以外に決められる者がいない場合の例外)に当たるか。変化点の記録の selfDecided に残す */
@@ -2645,12 +2736,8 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
     'この変化点のすべての任免の行と、決定者が当事者になる行は、本人以外が記名します。記名できるのは、組織上の任命権者(名簿に external: true と appointer: true で、この変化点より前に記載した人)、' +
     `本人以外の席の責任者、または2名の体制のもう1人(この変化点より前から名簿にいる人。新任の決定者と外部の確認者を除く)です("${decidedBy}" は該当しません)。` +
     (key && key === firstDecider && !report.allBlankBefore ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。' : '') +
-    (self.signers.size
-      ? ''
-      : self.sole
-        ? ''
-        : '今の名簿には、本人以外に記名できる者がいません。組織上の任命権者を名簿へ置く変化点を先に出します(決定者が体制に残っている間は、決定者の記名で置けます)。') +
-    '本人以外に決められる者がいない1名の体制(任命権者を置いていない)に限り、本人の記名を自己の決定として受け付け、保証の開示の項目7 へ出します(標準 第3章 3.13.3)';
+    '体制の内に当事者以外で記名できる者(組織上の任命権者を含む)がいない場合に限り、本人(変化点より前の決定者)の記名を自己の決定として受け付け、保証の開示の項目7 へ出します。' +
+    'そのときは、D-0 節11 の「決裁の権限の出所」に根拠を書きます(標準 第3章 3.13.3)';
   for (const item of report.appointItems ?? []) {
     if (selfMode) {
       // 決定者が当事者になる行を含む変化点では、任免の行の記名者も本人以外へ移す(ADR-0110 決定2 の記名者1人を保つ)
@@ -2670,9 +2757,16 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
         '離脱(席を空ける)だけの変化点は記名なしで反映できます。後任の任命は、別の変化点として決定者の記名と理由をつけて出します(標準 第3章 3.13.3)'
     );
   }
-  // 名簿への追加(標準 第4章「アカウントと人の対応表」。#433 IMPL-0480)。記名を待たずに反映できる(#432 1-D)。記名した場合の記名者は、
-  // 変更前の D-0 表1 の決定者(外れていれば組織上の任命権者。初回の記入では決定者の席に記入する人)に限る
+  // 名簿への追加(標準 第4章「アカウントと人の対応表」・ADR-0108 決定3。#433 IMPL-0480)。記名と理由を要する(記名の無い追加は入口で拒む)。
+  // 記名者は、変更前の D-0 表1 の決定者(外れていれば組織上の任命権者。初回の記入では決定者の席に記入する人)
   for (const item of report.addItems ?? []) {
+    // 決定者が当事者になる行を含む変化点では、人を足す行の記名の要件も、本人以外の記名者が満たす(R-3。#432 突合 X-3)。
+    // 初回の記入では、同じ変化点で記入されるもう1人が記名できる(ADR-0111 の初回の例外)
+    if (selfMode) {
+      if (selfOk) continue;
+      out.push(selfText(item.line));
+      continue;
+    }
     if (soloFirst) continue;
     if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned) continue;
     out.push(
@@ -2682,7 +2776,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
           : report.priorDeciderPresent
             ? '変更前の D-0 表1「体制と運用形態」の決定者'
             : '組織上の任命権者(前任の決定者が体制から外れているため)'
-      }です("${decidedBy}" は該当しません)。名簿へ人を足すだけの変更は、記名なしでも反映できます(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)`
+      }です("${decidedBy}" は該当しません。標準 第4章「アカウントと人の対応表」・第3章 3.13.3)`
     );
   }
   // 名簿の表記の変更(K67)。決定者の記名と理由を要する(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)。
@@ -5996,12 +6090,22 @@ if (isMain) {
       if (!dryRun) reject(msg);
       console.log(`[要記名] ${msg}`);
     }
+    // 名簿への追加は効力を持つ記録であり、記名と理由を要する(標準 第4章「アカウントと人の対応表」・ADR-0108 決定3。#432 突合 X-2)。
+    // 決定待ちの兼務のために追加を止めることはない(#432 1-D は兼務の決定の記名を待たない意味)。どの席にも責任者が記入されたことのない間は要しない
+    if (report.addItems?.length && !report.allBlankBefore && !signedNow) {
+      const msg =
+        `人の名簿への追加(${report.addItems.map((i) => i.line.replace(/^人の名簿: 追加 /, '')).join('、')})を含みます。名簿の変更は効力を持つ記録であり、` +
+        (report.priorDeciderPresent ? '変更前の D-0 表1「体制と運用形態」の決定者' : '組織上の任命権者(前任の決定者が体制から外れているため)') +
+        'の記名(decidedBy)と理由(reason)が要ります。AI が決めてはなりません(標準 第4章「アカウントと人の対応表」)。決定待ちの兼務があっても、追加は止まりません(標準 第3章 3.5)';
+      if (!dryRun) reject(msg);
+      console.log(`[要記名] ${msg}`);
+    }
     if (report.renameItems.length && !report.appointItems.length && !signedNow) {
       const msg =
         '人の名簿の表記の変更(氏名だけ、またはアカウントだけ)を含みます。同じ人の表記の変更として扱い、D-0 表1「体制と運用形態」の決定者の記名(decidedBy)と理由(reason)が要ります。' +
         'AI が決めてはなりません(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)。' +
         (report.renameItems.some((i) => i.self)
-          ? '決定者本人の行の変更は、本人以外(組織上の任命権者、本人以外の席の責任者、または2名の体制のもう1人)の記名を要します。本人以外に決められる者がいない1名の体制(任命権者を置いていない)に限り、本人の記名を自己の決定として受け付けます(標準 第3章 3.13.3)'
+          ? '決定者本人の行の変更は、本人以外(組織上の任命権者、本人以外の席の責任者、または2名の体制のもう1人)の記名を要します。当事者以外で記名できる者(組織上の任命権者を含む)がいない体制に限り、本人の記名を自己の決定として受け付けます(D-0 節11 の「決裁の権限の出所」の記載を要する。標準 第3章 3.13.3)'
           : '');
       if (!dryRun) reject(msg);
       console.log(`[要記名] ${msg}`);
@@ -6109,8 +6213,15 @@ if (isMain) {
     const heldDecision = intentApplied[0] ?? widenApplied[0] ?? ruleActivated[0] ?? null;
     // 前任の決定者が体制から外れ、組織上の任命権者の記名で任免を決定した(第3章 3.13.3。保証の開示の項目7 へ出す)
     const appointerSigned = report.appointItems.length > 0 && !report.priorDeciderPresent && isAppointer(config, change.decidedBy);
-    // 決定者が自分に関わる変更を、本人以外に決められる者がいない1名の体制で自分の記名で決めた(自己の決定。第3章 3.13.3。保証の開示の項目7 へ出す。#432)
+    // 決定者が自分に関わる変更を、当事者以外で記名できる者がいない体制で自分の記名で決めた(自己の決定。第3章 3.13.3。保証の開示の項目7 へ出す。#432)
     const selfDecided = signedNow && selfDecisionOf(cfgB, { ...report, loosenItems: openItems }, change.decidedBy, prior);
+    // 自己の決定の根拠は、自己の任命の例外と同じく D-0 節11 の「決裁の権限の出所」に書く。機械は記載の有無を確かめる(#432 突合 X-7)
+    if (selfDecided && !authoritySourceFilled(ROOT)) {
+      reject(
+        '自己の決定(本人以外に決められる者がいない体制で、決定者が自分に関わる変更を自分の記名で決める)には、D-0 体制図(docs/D-0-governance.md)節11 の「決裁の権限の出所」に、' +
+          '本人の上に任命の権限を持つ者がいない根拠(個人事業主本人、1名で代表権を持つ法人など)を書きます(標準 第3章 3.13.3)。組織上の任命権者がいるなら、名簿へ置いてその記名で決めます'
+      );
+    }
 
     const approvedRules = (config.delegation.rules ?? []).filter((r) => approvedNow.includes(r.id));
     const closing =

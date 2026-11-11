@@ -4189,7 +4189,7 @@ if (isMain) {
         decidedBy: e.decidedBy ?? null,
         // 前任の決定者が体制から外れ、組織上の任命権者の記名で任免を決定した(第3章 3.13.3)
         appointerSigned: e.appointerSigned === true,
-        // 本人以外に決められる者がいない1名の体制で、決定者が自分に関わる変更を自分の記名で決めた(自己の決定。第3章 3.13.3。#432)
+        // 当事者以外で記名できる者がいない体制で、決定者が自分に関わる変更を自分の記名で決めた(自己の決定。第3章 3.13.3。#432)
         selfDecided: e.selfDecided === true,
         // 委任の規則の承認(AI維持管理者)が、委任を決定した者と同一人物の変化点(#288 第8巡 Y7)
         samePersonApproval: e.ruleApproval?.samePersonAsDecider === true,
@@ -5741,7 +5741,7 @@ if (isMain) {
               ? `${external ? '記録あり' : `${e.notice.to}${e.notice.noTarget || resolveSigner(config, e.notice.to) ? '' : '(名簿の人でない名義)'}`}(${e.notice.at})${also.length ? `。あわせて: ${also.join(' / ')}` : ''}`
               : '**未記入**';
         const decided =
-          (external ? (e.decidedBy ? '記名あり' : '—') : (e.decidedBy ?? '—')) + (e.appointerSigned ? '(決定者の任命を、組織上の任命権者の記名で行った)' : '') + (e.selfDecided ? '(自己の決定。本人以外に決められる者がいない1名の体制で、決定者が自分に関わる変更を自分の記名で決めた)' : '');
+          (external ? (e.decidedBy ? '記名あり' : '—') : (e.decidedBy ?? '—')) + (e.appointerSigned ? '(決定者の任命を、組織上の任命権者の記名で行った)' : '') + (e.selfDecided ? '(自己の決定。当事者以外で記名できる者がいない体制で、決定者が自分に関わる変更を自分の記名で決めた)' : '');
         R.push(
           `| ${e.date} | ${KIND_NOTE[e.kind] ?? `${e.changePoint ?? '—'} ${e.kind}`} | ${summary} | ${e.result === 'no-change' ? '構成の変更なし' : '変更あり'} | ${directionLabel(e)} | ${decided} | ${noticeText} |`
         );
