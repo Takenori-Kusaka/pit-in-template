@@ -63,6 +63,44 @@ export function match(pattern, target) {
   return globToRegExp(pattern).test(target);
 }
 
+/**
+ * 照合の前にパスを正規化する(process-compass #358 突合 X-1)。NTFS では別の綴りが同じファイルを指す。
+ *  - 代替データストリームの記法(`settings.json::$DATA`・`settings.json:x`)は、ストリーム名を除いて本体のパスにする
+ *  - Windows は末尾のドットと空白を落とす(`settings.json.`)
+ *  - 存在するパスは realpath(fs.realpathSync.native)で長い名前へ解く(8.3 の短い名前 `SETTIN~1.JSO`・シンボリックリンク)。
+ *    無いパスは、存在する最も深い親を解いて残りをつなぐ
+ *  - 解けない成分に 8.3 の形(`~` の後に数字)や `:` が残るものは suspicious として返す(保護の下なら呼び出し側が拒否する)
+ * 戻り値: { abs, suspicious }
+ */
+export function normalizeTarget(filePath) {
+  const win = process.platform === 'win32';
+  let abs = path.resolve(filePath);
+  const root = path.parse(abs).root;
+  let rest = abs.slice(root.length);
+  const parts = rest.split(/[\/]+/).filter((p) => p !== '');
+  const cleaned = parts.map((p) => {
+    let q = p.replace(/:.*$/, ''); // ストリームの指定
+    if (win && q !== '.' && q !== '..') q = q.replace(/[. ]+$/, '');
+    return q === '' ? p : q;
+  });
+  abs = path.join(root, ...cleaned);
+  // 存在する最も深い親を解く
+  let head = abs;
+  const tail = [];
+  while (!fs.existsSync(head) && path.dirname(head) !== head) {
+    tail.unshift(path.basename(head));
+    head = path.dirname(head);
+  }
+  let resolved = head;
+  try {
+    resolved = fs.realpathSync.native(head);
+  } catch {
+    /* 解けなければそのまま */
+  }
+  const suspicious = tail.length > 0 && (tail.some((p) => /~[0-9]/.test(p)) || parts.some((p) => p.includes(':')));
+  return { abs: path.join(resolved, ...tail), suspicious };
+}
+
 function readStdin() {
   try {
     return fs.readFileSync(0, 'utf8');
@@ -86,8 +124,15 @@ function main() {
   const filePath = input?.tool_input?.file_path ?? input?.tool_input?.notebook_path;
   if (!filePath) process.exit(0);
 
-  const rel = path.relative(ROOT, path.resolve(filePath)).split(path.sep).join('/');
-  if (rel.startsWith('..')) process.exit(0); // リポジトリ外は対象にしない
+  const target = normalizeTarget(filePath);
+  let realRoot = ROOT;
+  try {
+    realRoot = fs.realpathSync.native(ROOT);
+  } catch {
+    /* ROOT が解けなければそのまま */
+  }
+  const rel = path.relative(realRoot, target.abs).split(path.sep).join('/');
+  if (rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0); // リポジトリ外は対象にしない
 
   const deny = (reason, rule) => {
     const line = `${new Date().toISOString()}\t${rule}\t${rel}\n`;
@@ -99,6 +144,17 @@ function main() {
     console.error(`[強制層] ${rel} への書き込みを拒否しました。\n\n${reason}`);
     process.exit(2);
   };
+
+  // 0. 解けなかった成分に 8.3 の形や `:` を含むパスが、強制層の置き場の下にあれば拒否する(別の綴りで保護の型を通る経路を塞ぐ。X-1)
+  if (target.suspicious && guard.enabled !== false) {
+    const roots = new Set();
+    for (const item of [...(guard.protectedPatterns ?? []), ...(guard.appendOnlyPatterns ?? [])]) {
+      const p = typeof item === 'object' && item !== null && 'pattern' in item ? item.pattern : item;
+      const seg = String(p).split('/')[0];
+      if (String(p).includes('/') && !/[*?]/.test(seg)) roots.add(seg.toLowerCase());
+    }
+    if (roots.has(rel.split('/')[0].toLowerCase())) deny('別の綴り(8.3 の短い名前・`:` を含むストリームの指定)で強制層の下を指すパスは書き込めません', 'protected-alias');
+  }
 
   // 1. 強制層そのもの。構成の guard の上書き(期限と理由つき)で一時緩和されている場合だけ適用しない(事業ステージでは外さない。#290)
   if (guard.enabled !== false) {

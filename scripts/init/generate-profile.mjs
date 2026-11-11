@@ -6572,7 +6572,7 @@ if (isMain) {
  * 初期化が強制層の要約値を、書く前の内容から記録するために分けた(process-compass #317 / ADR-0087 決定2)。
  * 戻り値: { guardText, settingsText, messages }
  */
-function tailorGuardAndSettings(config, guardSource, settingsSource) {
+export function tailorGuardAndSettings(config, guardSource, settingsSource) {
   const messages = [];
   const guardObj = JSON.parse(guardSource);
   const settingsObj = JSON.parse(settingsSource);

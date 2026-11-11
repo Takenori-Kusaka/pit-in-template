@@ -573,6 +573,24 @@ scenario('指示資産: ディレクトリの木の図の形を一覧に出し�
 // IMPL-0502:ok(木の図の無い変更は 0 件で、限界の定型の文を出す)
 scenario('指示資産: 木の図の無い変更は 0 件で、0 件を根拠にしない旨を出す', SETUP, () => write('AGENTS.md', '# 規約\n\n- 行1\n'), passes(expect_((r) => r.instructionAssets?.treeForms.length === 0 && /導出できる内容が無いことを示さない/.test(renderG6Material(r)), (r) => JSON.stringify(r.instructionAssets))));
 scenario('指示資産: 製品のコードだけの変更では、指示資産の一覧を出さない', {}, () => write('src/a.js', lines(21)), passes(expect_((r) => r.instructionAssets?.changed.length === 0 && !/### 指示資産の変更/.test(renderG6Material(r)), (r) => JSON.stringify(r.instructionAssets))));
+// 大文字と小文字を区別しない照合と、下位の .claude/(突合 X-8)
+scenario('指示資産: claude.local.md(小文字)も個人用のファイルとして失敗', SETUP, () => write('claude.local.md', '# 手元だけ\n'), failsWith(/個人の作業環境に固有の指示 claude\.local\.md/));
+scenario('指示資産: 下位の .claude/skills/ と .claude/output-styles/ も指示資産に数える', SETUP, () => {
+  write('pkg/.claude/skills/x/SKILL.md', '# x\n');
+  write('.claude/output-styles/a.md', '# a\n');
+}, passes(expect_((r) => r.instructionAssets?.changed.includes('pkg/.claude/skills/x/SKILL.md') && r.instructionAssets.changed.includes('.claude/output-styles/a.md'), (r) => JSON.stringify(r.instructionAssets))));
+// 上限の値が不正なときは、設定の誤りとして失敗させる(突合 X-9)
+git('switch', '-q', 'main');
+{
+  const g = JSON.parse(read('.claude/guard.json'));
+  g.instructionAssetLimit = { maxLinesPerFile: '200' };
+  write('.claude/guard.json', g);
+}
+git('add', '-A');
+git('commit', '-q', '-m', 'invalid instruction asset limit');
+scenario('指示資産: 上限の値が文字列(不正)なら、設定の誤りとして失敗', SETUP, () => write('CLAUDE.md', '# 規約\n- 行\n'), failsWith(/指示資産の上限の設定が不正です/));
+git('switch', '-q', 'main');
+git('reset', '-q', '--hard', 'HEAD~1');
 // 上限を既定ブランチの強制層の設定に置く
 git('switch', '-q', 'main');
 {

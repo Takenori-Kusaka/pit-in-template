@@ -375,7 +375,19 @@ export const CONTROL_FILES = [
  * エージェント指示資産(誘導層・再利用層)。変更に AI維持管理者本人の承認を要する(標準 第3章 3.11.5。process-compass #358 / IMPL-0227)。
  * 統制の設定(CONTROL_FILES)と違い、陰性の確認(3b)を課さない。誘導層は止める仕組みではなく、陰性の確認の対象にならないため
  */
-export const INSTRUCTION_ASSET_FILES = ['CLAUDE.md', 'AGENTS.md', '**/CLAUDE.md', '**/AGENTS.md', '.claude/skills/**', '.claude/rules/**', '.claude/agents/**', '.claude/commands/**'];
+export const INSTRUCTION_ASSET_FILES = [
+  'CLAUDE.md', 'AGENTS.md', '**/CLAUDE.md', '**/AGENTS.md',
+  '.claude/skills/**', '.claude/rules/**', '.claude/agents/**', '.claude/commands/**', '.claude/output-styles/**',
+  // 下位のディレクトリの .claude/(基盤が読む場合がある。突合 X-8)
+  '**/.claude/skills/**', '**/.claude/rules/**', '**/.claude/agents/**', '**/.claude/commands/**', '**/.claude/output-styles/**',
+];
+/**
+ * 承認(3c)の対象に数えるが、陰性の確認(3b)は課さない統制の設定。止める仕組みではなく、書く「通した違反の場面」が定まらないため
+ * (.mcp.json はエージェントに道具を足す一覧。process-compass #358 突合 X-3)。CONTROL_FILES から外すと承認なしで外部ツールが足せるので外さない
+ */
+export const CONTROL_APPROVAL_ONLY_FILES = ['.mcp.json'];
+/** 大文字と小文字を区別しない照合。NTFS・APFS では同じファイルを指すため(突合 X-8) */
+const matchAnyCI = (globs, f) => matchAny(globs.map((g) => g.toLowerCase()), String(f).toLowerCase());
 /** 個人の作業環境に固有の指示(版管理から除外する。標準 第3章 3.11.5。IMPL-0504) */
 export const PERSONAL_INSTRUCTION_FILES = ['CLAUDE.local.md', '**/CLAUDE.local.md', '.claude/settings.local.json', '**/.claude/settings.local.json'];
 
@@ -510,7 +522,7 @@ export function controlTouchedOf(files, thresholdGlobs = THRESHOLD_FILES) {
   const out = new Set();
   for (const e of files ?? []) {
     // 指示資産(INSTRUCTION_ASSET_FILES)も承認の範囲に数える(陰性の確認は課さない。#358 / IMPL-0227)
-    for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f) || matchAny(INSTRUCTION_ASSET_FILES, f)) out.add(f);
+    for (const f of [e?.path, e?.from].filter(Boolean)) if (matchAny(CONTROL_FILES, f) || matchAny(thresholdGlobs, f) || matchAnyCI(INSTRUCTION_ASSET_FILES, f)) out.add(f);
   }
   return [...out];
 }
@@ -544,7 +556,7 @@ export function controlTouchedBetween(git, parent, commit) {
   const touched = controlTouchedOf(entries, globs).filter((f) => {
     // 指示資産の承認(#358 / IMPL-0227)は、変更の前の版の判定のコードがこの規則を持つ変更にだけ数える。規則の前に入った指示資産の
     // 変更を、出荷の集約が遡って承認の欠けにしないため(統制の設定の承認の境 beforeRule と同じ考え方)
-    if (matchAny(CONTROL_FILES, f) || matchAny(globs, f) || !matchAny(INSTRUCTION_ASSET_FILES, f)) return true;
+    if (matchAny(CONTROL_FILES, f) || matchAny(globs, f) || !matchAnyCI(INSTRUCTION_ASSET_FILES, f)) return true;
     return /INSTRUCTION_ASSET_FILES/.test(git(['show', `${parent}:scripts/gate/check-pr.mjs`]) ?? '');
   });
   // 依存と設定を兼ねるファイルの中の閾値の表(#363)。表の中身が変わったファイルだけを数える
@@ -1635,7 +1647,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   // 初回の設定(基底に無い・基底の構成が未設定)と、依存の更新の bot の PR は対象外。場面が実際に止まるかは、この検査では確かめない
   const controlChanged = [
     ...thresholdChanges,
-    ...all.filter((e) => matchAny(CONTROL_FILES, e.path) && !thresholdChanges.includes(e.path) && atBase(e.from ?? e.path) !== null).map((e) => e.path),
+    ...all.filter((e) => matchAny(CONTROL_FILES, e.path) && !matchAny(CONTROL_APPROVAL_ONLY_FILES, e.path) && !thresholdChanges.includes(e.path) && atBase(e.from ?? e.path) !== null).map((e) => e.path),
   ];
   result.negativeCheck = { changed: controlChanged, record: null };
   if (controlChanged.length && baseConfigured && !DEPENDENCY_BOTS.includes(String(pr.author ?? ''))) {
@@ -2048,17 +2060,22 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   // --- 4e. 指示資産の変更(標準 第3章 3.11.5。process-compass #358 / IMPL-0501・IMPL-0502・IMPL-0504) ---
   {
     const head = (f) => atHead(f);
-    const changedAssets = all.filter((e) => matchAny(INSTRUCTION_ASSET_FILES, e.path) && head(e.path) !== null).map((e) => e.path);
+    const changedAssets = all.filter((e) => matchAnyCI(INSTRUCTION_ASSET_FILES, e.path) && head(e.path) !== null).map((e) => e.path);
     // IMPL-0504: 個人の作業環境に固有の指示(CLAUDE.local.md・.claude/settings.local.json)を版管理へ入れる変更は失敗(消す変更は通す)
     for (const e of all) {
-      if (matchAny(PERSONAL_INSTRUCTION_FILES, e.path) && head(e.path) !== null) {
+      if (matchAnyCI(PERSONAL_INSTRUCTION_FILES, e.path) && head(e.path) !== null) {
         result.errors.push(`個人の作業環境に固有の指示 ${e.path} を版管理へ入れています。共有の指示資産へ混入させないため、追跡から外す(.gitignore にある。標準 第3章 3.11.5)`);
       }
     }
     // IMPL-0501: 1ファイルあたりの分量。上限は強制層の設定(.claude/guard.json の instructionAssetLimit.maxLinesPerFile)を既定ブランチから読む。
     // 値は組織が定める(ADR-0084)。未設定なら「上限未設定」と出して判定しない(上限内とは記録しない。失敗にもしない)
     const guardAtPolicy = json(atPolicy('.claude/guard.json'));
-    const maxLines = Number.isInteger(guardAtPolicy?.instructionAssetLimit?.maxLinesPerFile) && guardAtPolicy.instructionAssetLimit.maxLinesPerFile > 0 ? guardAtPolicy.instructionAssetLimit.maxLinesPerFile : null;
+    const rawLimit = guardAtPolicy?.instructionAssetLimit?.maxLinesPerFile;
+    const maxLines = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : null;
+    // 値が置かれているのに正の整数でないときは、設定の誤りとして失敗させる(定めたつもりの上限が効いていないことに気づけるように。突合 X-9)。未設定(null・undefined)は判定しない
+    if (rawLimit !== undefined && rawLimit !== null && maxLines === null) {
+      result.errors.push(`指示資産の上限の設定が不正です: .claude/guard.json の instructionAssetLimit.maxLinesPerFile が ${JSON.stringify(rawLimit)} (正の整数でなければならない)。この値では上限が効かないため、直すまで判定できません(標準 第3章 3.11.4 要求事項1)`);
+    }
     const sizes = changedAssets.map((f) => {
       const t = String(head(f) ?? '').replace(/\r\n/g, '\n');
       return { file: f, lines: t === '' ? 0 : t.replace(/\n$/, '').split('\n').length, chars: [...t].length };

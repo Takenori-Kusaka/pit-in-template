@@ -188,9 +188,13 @@ const hasErr = (r, re) => r.errors.some((e) => re.test(e));
   check('指示資産(.claude/skills/)の追加に、承認のレビューが無ければ落ちる', hasErr(b, /統制の設定の変更の承認/), JSON.stringify(b.errors));
   const c = pr('.mcp.json を足し、承認なし', () => write('.mcp.json', '{ "mcpServers": { "x": { "command": "npx" } } }\n'));
   check('外部ツールの一覧(.mcp.json)の追加に、承認のレビューが無ければ落ちる', hasErr(c, /統制の設定の変更の承認/) && c.controlApproval?.changed.includes('.mcp.json'), JSON.stringify(c.errors));
+  // .mcp.json は承認の対象だが、陰性の確認は求めない(突合 X-3)
+  const c2 = pr('.mcp.json を足し、承認あり', () => write('.mcp.json', '{ "mcpServers": { "y": { "command": "npx" } } }\n'), { body: BODY(), reviews: [review('suzuki')] });
+  check('外部ツールの一覧(.mcp.json)は、承認があれば通り、陰性の確認を求めない', !hasErr(c2, /統制の設定の変更の承認/) && !hasErr(c2, /陰性の確認/), JSON.stringify(c2.errors));
   // IMPL-0227:ok(AI維持管理者本人の承認があれば通り、指示資産だけの変更には陰性の確認を求めない)
   const d = pr('CLAUDE.md を変え、承認あり', () => write('CLAUDE.md', '# 規約\n\n- 規則を足す\n'), { body: BODY(), reviews: [review('suzuki')] });
   check('指示資産の変更に AI維持管理者本人の承認があれば通り、陰性の確認を求めない', !hasErr(d, /統制の設定の変更の承認/) && !hasErr(d, /陰性の確認/), JSON.stringify(d.errors));
+  check('controlTouchedOf: 大文字と小文字を変えた指示資産と、下位の .claude/skills/・output-styles/ も数える', JSON.stringify(controlTouchedOf([{ path: 'claude.md' }, { path: 'pkg/.Claude/Skills/x/SKILL.md' }, { path: '.claude/output-styles/a.md' }]).sort()) === JSON.stringify(['.claude/output-styles/a.md', 'claude.md', 'pkg/.Claude/Skills/x/SKILL.md']));
   check('controlTouchedOf: 下位の CLAUDE.md・AGENTS.md を数え、文書の *.md は数えない', JSON.stringify(controlTouchedOf([{ path: 'pkg/CLAUDE.md' }, { path: 'AGENTS.md' }, { path: 'docs/design.md' }]).sort()) === JSON.stringify(['AGENTS.md', 'pkg/CLAUDE.md']));
 }
 {

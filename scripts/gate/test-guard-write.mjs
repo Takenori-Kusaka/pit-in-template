@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tailorGuardAndSettings } from '../init/generate-profile.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const HOOK = path.join(ROOT, '.claude/hooks/guard-write.mjs');
@@ -24,26 +25,14 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'ok  ' : 'NG  '} ${name}${ok || !detail ? '' : `\n       ${String(detail).slice(0, 400)}`}`);
 }
 
-// 構成の生成が書く既定(guard.enabled が真)の形に合わせる。テストのパターンはテンプレートの guard.json から読む
-const tplGuard = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/guard.json'), 'utf8'));
-const GUARD = {
-  enabled: true,
-  testPatterns: tplGuard.testPatterns,
-  protectedPatterns: [
-    { pattern: '.claude/settings.json', reason: '権限設定' },
-    { pattern: '.claude/guard.json', reason: '遮断の定義' },
-    { pattern: '.claude/hooks/**', reason: 'フック' },
-    { pattern: '.github/workflows/**', reason: 'ワークフロー' },
-    { pattern: '.github/rulesets/**', reason: 'ルールセット' },
-    { pattern: 'scripts/gate/**', reason: 'ゲートのスクリプト' },
-    'adapters/**',
-  ],
-  appendOnlyPatterns: [{ pattern: 'docs/gates/**', reason: '判定記録' }],
-  protectedReason: '強制層',
-  selfHealLockFile: '.claude/.self-heal',
-  selfHealReason: '自己修正のロック中',
-  denyLog: '.claude/denied.log',
-};
+// 構成の生成(generate-profile.mjs の tailorGuardAndSettings)が書く guard.json を、そのまま使う(guard.enabled が真の既定)。
+// 保護の型を試験の中に別に持たない(構成の生成から型が落ちたら、この試験が落ちる。突合 X-7)
+const tplGuardText = fs.readFileSync(path.join(ROOT, '.claude/guard.json'), 'utf8');
+const tplSettingsText = fs.readFileSync(path.join(ROOT, '.claude/settings.json'), 'utf8');
+const GUARD = JSON.parse(tailorGuardAndSettings({}, tplGuardText, tplSettingsText).guardText);
+const patternOf = (x) => (typeof x === 'object' && x !== null ? x.pattern : x);
+check('構成の生成が書く guard.json は enabled が真で、保護の型を持つ', GUARD.enabled === true && (GUARD.protectedPatterns ?? []).length >= 10, JSON.stringify(GUARD).slice(0, 200));
+const TMP_DIRS = [];
 
 function sandbox(guard = GUARD) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-write-'));
@@ -69,17 +58,27 @@ const logOf = (dir) => {
 {
   const dir = sandbox();
   // IMPL-0198:ng(違反と適合の対。強制層への書き込みは遮断し、記録へ残す)
-  const denied = ['.claude/settings.json', '.claude/guard.json', '.claude/hooks/guard-bash.mjs', '.github/workflows/gate-g5.yml', '.github/rulesets/team.json', 'scripts/gate/check-pr.mjs', 'adapters/node.json'];
+  const concrete = (p) => p.split('**').join('x/y').split('*').join('z');
+  const denied = GUARD.protectedPatterns.map((x) => concrete(patternOf(x)));
   for (const rel of denied) {
     const r = run(dir, rel, 'Edit');
     check(`強制層の遮断: ${rel}`, r.code === 2 && /強制層/.test(r.err), `code=${r.code} ${r.err}`);
   }
   const log = logOf(dir);
+  check('強制層の型に 8 件以上(.claude/settings.json・scripts/gate/**・process.config.json を含む)', denied.length >= 8 && denied.includes('.claude/settings.json') && denied.includes('process.config.json'), denied.join(','));
   check('遮断した操作が denied.log に残る(件数)', log.trim().split('\n').filter(Boolean).length === denied.length, log);
   check('denied.log の行に規則(protected)とパスがある', denied.every((rel) => log.includes(`\tprotected\t${rel}`)), log);
   check('NotebookEdit の notebook_path も遮断する', run(dir, 'scripts/gate/x.ipynb', 'NotebookEdit').code === 2);
   // 大文字と小文字を変えたパス(NTFS・APFS では同じファイル)も遮断する(#358)
   for (const rel of ['.CLAUDE/Settings.json', '.github/Workflows/x.yml', 'Scripts/Gate/check-pr.mjs']) check(`大文字と小文字を変えても遮断: ${rel}`, run(dir, rel, 'Edit').code === 2);
+  // 別の綴りで同じファイルを指す経路(NTFS の代替データストリーム・8.3 の短い名前・末尾のドット。突合 X-1)も遮断する
+  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude/settings.json'), '{}');
+  for (const rel of ['.claude/settings.json::$DATA', '.claude/settings.json:x', '.claude/SETTIN~1.JSO', '.claude/hooks/GUARD-~1.MJS', 'scripts/gate/CHECK-P~1.MJS', 'scripts/gate/new.mjs:evil']) {
+    const r = run(dir, rel, 'Write');
+    check(`別の綴りでも遮断: ${rel}`, r.code === 2, `code=${r.code} ${r.err}`);
+  }
+  if (process.platform === 'win32') check('末尾のドットでも遮断: .claude/settings.json.', run(dir, '.claude/settings.json.', 'Write').code === 2);
   // IMPL-0198:ok(強制層の外は遮断しない。記録も増やさない)
   const before = logOf(dir);
   const allowed = ['src/app.js', 'docs/design.md', 'specs/F-001/spec.md', 'scripts/build.mjs', '.claude/skills/pit/SKILL.md', 'CLAUDE.md'];
@@ -121,10 +120,10 @@ const logOf = (dir) => {
 // ---- 追記だけの置き場(既にある記録の書き換えだけを遮断する)
 {
   const dir = sandbox();
-  check('追記だけの置き場の新しいファイルは通す', run(dir, 'docs/gates/G-2-F-001.md').code === 0);
-  fs.mkdirSync(path.join(dir, 'docs/gates'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'docs/gates/G-2-F-001.md'), '# 判定');
-  check('追記だけの置き場の既存のファイルは遮断', run(dir, 'docs/gates/G-2-F-001.md', 'Edit').code === 2);
+  check('追記だけの置き場の新しいファイルは通す', run(dir, 'records/gates/G-2-F-001.md').code === 0);
+  fs.mkdirSync(path.join(dir, 'records/gates'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'records/gates/G-2-F-001.md'), '# 判定');
+  check('追記だけの置き場の既存のファイルは遮断', run(dir, 'records/gates/G-2-F-001.md', 'Edit').code === 2);
 }
 
 // ---- 権限設定の結線(フックが Edit・Write・MultiEdit・NotebookEdit で呼ばれる登録が、テンプレートの設定にあること)
@@ -139,4 +138,11 @@ const logOf = (dir) => {
 }
 
 console.log(`\n${checks - failures}/${checks} 件が期待どおり`);
+for (const d of TMP_DIRS) {
+  try {
+    fs.rmSync(d, { recursive: true, force: true });
+  } catch {
+    /* 消せなくても試験の結果には影響しない */
+  }
+}
 process.exit(failures ? 1 : 0);
