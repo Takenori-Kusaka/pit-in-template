@@ -13,6 +13,10 @@
 //   - 確認の記名者の資格の例外は、第3章 3.13.3 の初回の記入に限る(追加の裁定 AR-1)。外部の人だけが前の名簿にいる初回でない変化点では数えない
 //   - 1名の体制に2人目を足す変化点は、本人の自己申告を確認待ちとして受け付け、確認待ちのままでは契約検査と集約が欠落として扱い、
 //     次の変化点で本人以外が確認すれば解ける(追加の裁定 AR-2)
+//   - 後で数えられない確認(氏名・アカウント名)は、明示したものを記録の時点で拒否する。拒否の根拠は数え方の関数そのもの。
+//     名簿に既にある確認の旨は、数えられない記名者の変化点では記録へ載せず、注意を出す(process-compass #434 / ADR-0120 決定1)
+//   - 本人以外の確認を記録する変化点に限り、既存の記録の記名者を、その確認を数えた後の構成で照らす。照合はその変化点の日付の
+//     照合として記録に載り、既存の記録は書き換えない。確認の変化点の外と、同じ変化点で追加した記録には使わない(ADR-0120 決定2)
 // 一時の置き場で試し、GitHub へ問い合わせません。日付は過去(2026-10-01)に固定します。
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -321,6 +325,129 @@ try {
       !gem.ok && /記名者 "Claude Dupont" は、この変化点で氏名の確認が確認待ちになる本人です/.test(gem.out) && raw() === before5,
       gem.out
     );
+
+    // #434 経路2(ADR-0120 決定2): 記録の無い旧い確認(#296 より前の構成を模す。記録から nameConfirmations・nameOverrides と要約値の連鎖を除く)
+    const toLegacy = () => {
+      const c = cfg();
+      for (const e of c.changeLog ?? []) {
+        delete e.nameConfirmations;
+        delete e.nameOverrides;
+        delete e.stateHash;
+        delete e.prevHash;
+        delete e.chainStart;
+      }
+      delete c.schemaVersion;
+      fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2) + '\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'chore: legacy');
+    };
+    const setupLegacySolo = () => {
+      resetTo('blank12');
+      run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+      run({ kind: 'mode', summary: '委任', seats: { 'dev-verifier': { mode: 'delegated', performer: P, fallback: 'human', qualification: DQ } }, delegation: { rules: [DRULE], changeTypes: DTYPES }, ruleApprovedBy: 'Claude Dupont', decidedBy: 'Claude Dupont', reason: '委任する' });
+      toLegacy();
+    };
+    const UNLOCK = { summary: 'Dupont の氏名を確認', people: [DUPONT, TAKAHASHI], decidedBy: '高橋 次郎', reason: '氏名を確認した' };
+    const kept = () => {
+      const c = cfg();
+      return c.delegation.rules.some((r) => r.id === 'DR-001' && r.decidedBy === 'Claude Dupont') && c.delegation.changeTypes.some((t) => t.registeredBy === 'Claude Dupont') && seatOf('dev-verifier').mode === 'delegated';
+    };
+    // 2b: 旧い確認のまま1名の間に委任を記録し、2人目を足し、2人目が確認する
+    setupLegacySolo();
+    const add2b = run({ summary: '高橋が加わった', people: [DUPONT, TAKAHASHI], seats: { 'independent-reviewer': { accountable: '高橋 次郎' } }, decidedBy: 'Claude Dupont', reason: '確認者を置く' });
+    git('tag', 'legacy-2b');
+    const logBefore2b = JSON.stringify(cfg().changeLog);
+    const un2b = run(UNLOCK);
+    const last2b = un2b.ok ? cfg().changeLog.at(-1) : {};
+    const k2b = un2b.ok ? contract() : { out: '' };
+    check(
+      'IMPL-0473:ok #434 2b: 記録の無い旧い確認の人が記名した既存の規則と変更種別を、本人以外の確認の変化点で、その確認を数えた後の構成で照らして受け付ける。規則・種別・委任の席が保たれる',
+      add2b.ok && un2b.ok && kept() && !/::error::.*(Dupont|DR-001|表示文言)/.test(k2b.out),
+      `${add2b.out}\n----\n${un2b.out}\n----\n${k2b.out}`
+    );
+    check(
+      '#434 2b: 照合はこの変化点の日付の照合として記録に自動で載り(laterSignerCheck)、既存の記録は書き換えない',
+      un2b.ok &&
+        JSON.stringify(cfg().changeLog.slice(0, -1)) === logBefore2b &&
+        last2b.date === DAY &&
+        last2b.decidedBy === '高橋 次郎' &&
+        JSON.stringify(last2b.laterSignerCheck?.confirmations) === JSON.stringify(['dupont']) &&
+        (last2b.laterSignerCheck?.records ?? []).some((r) => r.includes('変更種別 "表示文言" の登録')) &&
+        (last2b.laterSignerCheck?.records ?? []).some((r) => r.includes('委任の規則 DR-001')),
+      JSON.stringify(last2b)
+    );
+    check(
+      '#434 2b: 確認の差分に、裏づける既存の記録を列挙する。D-0 の変化点の履歴に、作られた時点の確認でないことを区別して出す',
+      /Claude Dupont の氏名を実在の人の氏名として確認した[^\n]*この確認で記名者を照合する既存の記録: 変更種別 "表示文言" の登録[^\n]*委任の規則 DR-001/.test(un2b.out) &&
+        /この変化点の本人以外の確認で記名者を照合した既存の記録\(作られた時点の確認ではない\)/.test(fs.readFileSync(path.join(dir, 'docs/D-0-governance.md'), 'utf8')),
+      un2b.out
+    );
+    // 確認の変化点の外は救わない。同じ変化点で追加した記録の記名者には使わない(確認する人の資格と新しい記録は前の構成で照らす)
+    {
+      resetTo('legacy-2b');
+      const before = raw();
+      const unsigned = run({ summary: '高橋の所属', people: [DUPONT, { ...TAKAHASHI, team: '品質' }] });
+      check(
+        'IMPL-0473:ng #434 2b の否定: 本人以外の確認を含まない変化点(記名なし)は、既存の登録を確認の前の構成で照らして拒否し、原因と本人以外が確認すれば通ることを案内する',
+        !unsigned.ok && /変更種別 "表示文言" を登録した者 "Claude Dupont"/.test(unsigned.out) && /本人以外の名簿の人がその氏名を確認する変化点では、確認を数えた後の構成で照合するため通ります/.test(unsigned.out) && raw() === before,
+        unsigned.out
+      );
+      const newRule = run({ ...UNLOCK, kind: 'mode', delegation: { rules: [DRULE, { ...DRULE, id: 'DR-002', paths: ['src/copy/**'] }], changeTypes: DTYPES } });
+      check('#434 2b の否定: 確認と同じ変化点で追加した規則の決定者(旧い確認の人)には、その確認を使わず拒否する', !newRule.ok && /委任の規則 DR-002: 決定した者の記名を受け付けられない\("Claude Dupont"/.test(newRule.out) && raw() === before, newRule.out);
+      const newType = run({ ...UNLOCK, delegation: { changeTypes: [...DTYPES, { ...DTYPES[0], id: '画像', registeredAt: DAY }] } });
+      check('#434 2b の否定: 確認と同じ変化点で登録した変更種別の登録者(旧い確認の人)には、その確認を使わず拒否する', !newType.ok && /変更種別 "画像" を登録した者 "Claude Dupont" は [^。]*。AI の名義の記名を受け付けない/.test(newType.out) && raw() === before, newType.out);
+    }
+    // 2f: 1名→2名を経ない旧い2名の構成(記録の無い確認の人が既存の委任の記録の記名者)
+    {
+      resetTo('blank12');
+      run({ summary: '1名', people: [DUPONT], seats: all('Claude Dupont'), decidedBy: 'Claude Dupont', reason: '初期の体制を記入する' });
+      run({ kind: 'mode', summary: '委任', seats: { 'dev-verifier': { mode: 'delegated', performer: P, fallback: 'human', qualification: DQ } }, delegation: { rules: [DRULE], changeTypes: DTYPES }, ruleApprovedBy: 'Claude Dupont', decidedBy: 'Claude Dupont', reason: '委任する' });
+      run({ summary: '高橋が加わった', people: [DUPONT, TAKAHASHI], seats: { 'independent-reviewer': { accountable: '高橋 次郎' } }, decidedBy: 'Claude Dupont', reason: '確認者を置く' });
+      toLegacy();
+      const un2f = run(UNLOCK);
+      check('#434 2f: 旧い2名の構成でも、本人以外の確認の変化点で既存の記録を照合して受け付け、規則・種別・委任の席を保つ', un2f.ok && kept() && (cfg().changeLog.at(-1).laterSignerCheck?.records ?? []).length >= 2, un2f.out);
+    }
+  }
+
+  // #434 経路1(ADR-0120 決定1): 後で数えられない確認は、明示したものを記録の時点で拒否し、名簿に既にある確認は記録へ載せない
+  {
+    resetTo('base3');
+    const d = run({ summary: 'Dupont が加わった', people: [...PEOPLE3, DUPONT], decidedBy: '山田 太郎', reason: '氏名を確認した' });
+    git('tag', 'dupont-ok');
+    const before = raw();
+    const g = run({ summary: 'Gemini が加わった', people: [...PEOPLE3, DUPONT, GEMINI], decidedBy: 'Claude Dupont', reason: '氏名を確認した' });
+    check(
+      'IMPL-0472:ng #434 1a: 本人以外が確認済みの、AI を示す語を含む氏名の人(Dupont)が記名した氏名の確認を、記録の時点で拒否する(構成を書き換えない)',
+      d.ok && !g.ok && /氏名の確認\(Gemini Sato\)の記名を受け付けられません/.test(g.out) && /AI を示す語を含む氏名の人の記名は、AI の名義の記名に当たり/.test(g.out) && raw() === before,
+      g.out
+    );
+    const a = run({ summary: '田中が加わった', people: [...PEOPLE3, DUPONT, { id: 'tanaka', name: '田中 三郎', accounts: [{ login: 'copilot-tanaka', id: 4022 }], accountsConfirmed: ['copilot-tanaka'] }], decidedBy: 'Claude Dupont', reason: 'アカウントを確認した' });
+    check('#434 1g: 同じ人の記名によるアカウント名の確認も、記録の時点で拒否する', !a.ok && /アカウント名の確認\(copilot-tanaka\)の記名を受け付けられません/.test(a.out) && raw() === before, a.out);
+    const y = run({ summary: 'Gemini が加わった', people: [...PEOPLE3, DUPONT, GEMINI], decidedBy: '山田 太郎', reason: '氏名を確認した' });
+    check('IMPL-0472:ok #434 1a の対照: 同じ確認を AI を示す語を含まない名簿の人(山田)が記名すれば受け付ける', y.ok && JSON.stringify(cfg().changeLog.at(-1).nameConfirmations) === JSON.stringify([{ id: 'gsato' }]), y.out);
+    // 1d: 名簿に既にある、効いていない確認の旨(記録の無い旧い確認を模す)。Dupont が記名する無関係の変化点は受け付け、確認を記録へ載せない
+    {
+      const c = cfg();
+      for (const e of c.changeLog ?? []) {
+        if (Array.isArray(e.nameConfirmations)) e.nameConfirmations = e.nameConfirmations.filter((x) => x.id !== 'gsato');
+        delete e.stateHash;
+        delete e.prevHash;
+        delete e.chainStart;
+      }
+      delete c.schemaVersion;
+      fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2) + '\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'chore: legacy gemini');
+    }
+    const ppl = (team) => [PEOPLE3[0], PEOPLE3[1], { ...PEOPLE3[2], team }, PEOPLE3[3], DUPONT, GEMINI];
+    const u = run({ summary: '鈴木の所属', people: ppl('品質'), decidedBy: 'Claude Dupont', reason: '所属の変更' });
+    check(
+      '#434 1d: 名簿に既にある確認の旨は、数えられない記名者(Dupont)の無関係の変化点を止めず、記録へ載せずに注意を出す',
+      u.ok && !(cfg().changeLog.at(-1).nameConfirmations ?? []).length && /\[注意\] Gemini Sato の氏名の確認\(名簿に既にある確認の旨\)は、この変化点の記名者 "Claude Dupont" の記名では数えられない/.test(u.out) && !/Gemini Sato の氏名を実在の人の氏名として確認した/.test(u.out),
+      u.out
+    );
+    const yy = run({ summary: '鈴木の所属', people: ppl('開発'), decidedBy: '山田 太郎', reason: '所属の変更' });
+    check('#434 1d の対照: 数えられる記名者(山田)の変化点では、名簿に既にある確認を記録へ載せる', yy.ok && JSON.stringify(cfg().changeLog.at(-1).nameConfirmations) === JSON.stringify([{ id: 'gsato' }]), yy.out);
   }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });

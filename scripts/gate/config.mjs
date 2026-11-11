@@ -506,6 +506,32 @@ export function awaitingConfirmationIds(config) {
     .map((p) => p.id);
 }
 
+/**
+ * この変化点の記名者による氏名の確認が、記録を足した後の構成で数えられるか(process-compass #434 / ADR-0120 決定1)。
+ * 数え方の関数(confirmedNames と nameConfirmationState)そのものに、この変化点の記録1件だけを渡して照らす。
+ * 'other'(本人以外の記名として数える)・'self'(体制の内の人が1名の名簿の本人の記名として数える)・null(数えない)を返す。
+ * 確認待ちの本人の記名(AR-5)・AI を示す語を含む氏名の人の記名(本人以外の確認が済んでいても)・名簿に無い人の記名・
+ * 2名以上の名簿の本人の記名は、どれも null になる
+ */
+export function nameConfirmationCount(config, id, decidedBy) {
+  const person = (Array.isArray(config?.people) ? config.people : []).find((p) => p?.id === id);
+  if (!person || !decidedBy) return null;
+  const { nameConfirmPending, ...rest } = config;
+  const st = nameConfirmationState({ ...rest, changeLog: [{ decidedBy, nameConfirmations: [{ id }] }] }, person);
+  return st === 'other' || st === 'self' ? st : null;
+}
+
+/**
+ * 本人以外の確認による、既存の記録の記名者の照合(process-compass #434 / ADR-0120 決定2)。変化点の記録の laterSignerCheck を
+ * 古い順に返す。{ date, decidedBy, confirmations, records }。照合の日付と記名者は、その変化点の記録から読む(別の欄を持たない)。
+ * 既存の記録が作られた時点の確認ではない。判定の出力と保証の開示で、作られた時点の照合と区別して出す
+ */
+export function laterSignerChecks(config) {
+  return (config?.changeLog ?? [])
+    .filter((e) => Array.isArray(e?.laterSignerCheck?.records) && e.laterSignerCheck.records.length)
+    .map((e) => ({ date: e.date ?? null, decidedBy: e.decidedBy ?? null, confirmations: e.laterSignerCheck.confirmations ?? [], records: e.laterSignerCheck.records }));
+}
+
 /** 既存の記録の記名者を、その記録が作られた時点の効力で照らすための構成(AR-4)。確認待ちの氏名を効かせる。構成へは書かない */
 export function recordSignerContext(config) {
   const ids = awaitingConfirmationIds(config);
@@ -2538,6 +2564,16 @@ export function confirmedAccounts(config) {
     }
   }
   return out;
+}
+
+/**
+ * この変化点の記名者によるアカウント名の確認が、記録を足した後の構成で数えられるか(process-compass #434 / ADR-0120 決定1)。
+ * 数え方の関数(confirmedAccounts)そのものに、この変化点の記録1件だけを渡して照らす
+ */
+export function accountConfirmationCounts(config, id, account, decidedBy) {
+  if (!decidedBy || !id) return false;
+  const v = confirmedAccounts({ ...config, changeLog: [{ decidedBy, accountConfirmations: [{ id, account }] }] }).get(accountKey(account));
+  return Boolean(v && v.id === id);
 }
 
 /** 名簿の accountsConfirmed のうち、本人以外の記名の記録が無い確認(契約検査が落とす) */

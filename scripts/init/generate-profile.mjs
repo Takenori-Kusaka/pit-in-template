@@ -96,6 +96,10 @@ import {
   DEFAULT_STRUCTURE_DECIDER,
   qualificationAuthorityProblems,
   recordSignerContext,
+  nameConfirmationCount,
+  accountConfirmationCounts,
+  laterSignerChecks,
+  aiNameBlocked,
   changeTypeProblems,
   protectedPathsProblems,
   CHAINED_SCHEMA_VERSION,
@@ -717,9 +721,17 @@ export function ruleStanding(ctx, rule) {
  * 席を委任にできるのは、有効な規則が1つ以上ある場合である。未承認の規則を足しても、承認済みの
  * 既存の規則による委任は協働へ落とさない。承認待ちになるのは、足した・広げた規則だけである
  */
-export function clampSeats(seats, delegation, people = [], governance = null, { changeLog = [], priorChangeLog = changeLog, nameConfirmPending = [] } = {}) {
+export function clampSeats(
+  seats,
+  delegation,
+  people = [],
+  governance = null,
+  { changeLog = [], priorChangeLog = changeLog, nameConfirmPending = [], laterConfirmation = null, existingRuleIds = null } = {}
+) {
   const clamps = [];
   clamps.inactiveRules = [];
+  // 本人以外の確認で記名者を照合した既存の規則(process-compass #434 / ADR-0120 決定2)。{ id, seat, seatName }
+  clamps.laterChecked = [];
   // 評価の時点は2類に分ける(process-compass #375 / ADR-0111 決定2・3)。
   //   類A 付与される者の前提条件(席の責任者・適合性確認の実施者と承認者に置かれる人の名義): この変化点の記録を足した後の構成
   //   類B 記名・承認する者の資格(委任の規則の決定者・承認者): 変化点の前の構成
@@ -728,6 +740,16 @@ export function clampSeats(seats, delegation, people = [], governance = null, { 
   // 規則の成立は、既存の規則・変更種別の記名者を、記録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。
   // 追加の裁定 2 の AR-4)。この変化点で追加・変更した規則の記名者は、/process-change が前の構成で別に照らして拒否する
   const ctxPrior = recordSignerContext({ ...ctx, changeLog: priorChangeLog });
+  // 本人以外の確認を記録する変化点に限り、既存の規則(この変化点で追加・変更していない規則)の記名者を、その確認を数えた後の構成で照らす。
+  // 照合はこの変化点の日付の照合であり、既存の記録を書き換えない(ADR-0120 決定2)。確認する人の資格は /process-change が前の構成で照らす
+  const ctxLater = laterConfirmation && existingRuleIds ? recordSignerContext({ ...ctx, changeLog: [...priorChangeLog, laterConfirmation] }) : null;
+  const standingOf = (s, r) => {
+    const before = ruleStanding(ctxPrior, r);
+    if (!ctxLater || !existingRuleIds.has(r.id) || !before.problems.length) return before;
+    const later = ruleStanding(ctxLater, r);
+    if (later.problems.length < before.problems.length) clamps.laterChecked.push({ id: r.id, seat: s.role, seatName: s.name });
+    return later;
+  };
   for (const s of seats) {
     let limit = s.modeCeiling;
     let why = '席の上限(第5章 5.5.6)';
@@ -735,7 +757,7 @@ export function clampSeats(seats, delegation, people = [], governance = null, { 
     if (limit === 'delegated') {
       const rules = delegation.rules.filter((r) => r.seat === s.role);
       // 委任の範囲を定めるのは人である。規則の形式、決定した者の記名、AI維持管理者の承認を確かめる(類B)
-      const standing = rules.map((r) => ({ id: r.id ?? '(id なし)', ...ruleStanding(ctxPrior, r) }));
+      const standing = rules.map((r) => ({ id: r.id ?? '(id なし)', ...standingOf(s, r) }));
       const inactive = standing.filter((x) => x.problems.length);
       for (const x of inactive) clamps.inactiveRules.push({ id: x.id, seat: s.role, seatName: s.name, reason: x.problems[0], pending: x.pending });
       let block = null;
@@ -834,6 +856,9 @@ export function buildConfig(answers, opts = {}) {
     changeLog: opts.pendingRecord ? [...priorLog, opts.pendingRecord] : priorLog,
     priorChangeLog: priorLog,
     nameConfirmPending: Array.isArray(opts.nameConfirmPending) ? opts.nameConfirmPending : [],
+    // 本人以外の確認による既存の規則の照合(ADR-0120 決定2)。構成へは書かない
+    laterConfirmation: opts.laterConfirmation ?? null,
+    existingRuleIds: opts.existingRuleIds instanceof Set ? opts.existingRuleIds : null,
   });
 
   const accountableOf = (role) => seats.find((s) => s.role === role)?.accountable ?? null;
@@ -1282,6 +1307,9 @@ export function changeLogEntry(e) {
     ...(e.accountConfirmations?.length ? { accountConfirmations: e.accountConfirmations } : {}),
     // 氏名の確認(nameConfirmed)の記録(本人以外の記名。decidedBy が記名。#296 裁定 8 の付記)
     ...(e.nameConfirmations?.length ? { nameConfirmations: e.nameConfirmations } : {}),
+    // 本人以外の確認で記名者を照合した既存の記録(process-compass #434 / ADR-0120 決定2)。照合の日付と記名者は、この記録の date と decidedBy。
+    // 既存の記録が作られた時点の確認ではない。既存の記録は書き換えない
+    ...(e.laterSignerCheck?.records?.length ? { laterSignerCheck: e.laterSignerCheck } : {}),
     // 承認待ちのあいだ保持していた委任の宣言を、この変化点で有効にした席(宣言した時点の決定者と理由)
     ...(e.intentApplied?.length ? { intentApplied: e.intentApplied } : {}),
     // 委任の規則の追加・拡大を承認した者(AI維持管理者の席の責任者)と、対象の規則(ADR-0038)
@@ -1328,21 +1356,48 @@ const RULESET_RANK = { regulated: 3, safety: 2, team: 1 };
  * 人の離脱などで統制が成立しなくなった変化は、緩める向きの決定ではなく、未達・逸脱・列挙に無い離脱の
  * 発生である。arising へ入れ、記名を待たずに反映する(第3章 3.13.3)。
  */
+/** 後で数えられない確認の拒否の文(process-compass #434 / ADR-0120 決定1)。原因と、記名できる人を案内する */
+function uncountableConfirmationText(what, decidedBy) {
+  const why = aiNameReason(decidedBy)
+    ? `記名者の名義 "${decidedBy}" は AI を示す語を含みます(${aiNameReason(decidedBy)})。本人以外の確認が済んでいても、AI を示す語を含む氏名の人の記名は、AI の名義の記名に当たり、確認の記録として数えません`
+    : `記名者 "${decidedBy}" の記名は、確認の数え方(本人以外の、AI を示す語を含まない名簿の人の記名。体制の内の人が1名の名簿では本人の記名も)に当たりません`;
+  return (
+    `${what}の記名を受け付けられません: ${why}。後で数えられない確認は、記録の時点で受け付けません。` +
+    '確認される本人以外の、AI を示す語を含まない、この変化点より前から名簿にいる人が記名します(確認と任命は同じ変化点で出せます)'
+  );
+}
+
 /**
  * この変化点で記名して記録する氏名の確認(nameConfirmed)の対象。{ id, name } の一覧。
  * 記録で効いている確認(本人以外の記名、1名の体制の本人の記名)は含めない。未記録の確認と、2名以上になって本人の記名では
  * 足りなくなった確認を含める(process-compass #296 裁定 8 の付記と追加の裁定)。
  * 差分(diffConfig の nameConfirmItems)と、変化点の記録の nameConfirmations は、この1つの関数から作る(#375 / ADR-0111 決定2)
  */
-export function pendingNameConfirmations(before, after) {
+export function pendingNameConfirmations(before, after, { decidedBy = null } = {}) {
+  return nameConfirmationCandidates(before, after).filter((c) => !(decidedBy && !c.explicit && !nameConfirmationCount(after, c.id, decidedBy)));
+}
+
+/**
+ * 名簿に既にある確認の旨のうち、この変化点の記名者の記名では数えられないため、変化点の記録へ載せない確認(process-compass #434 / ADR-0120 決定1)。
+ * 記名者が明示した確認(この変化点で確認の旨を書いた確認)は含めない。明示した確認で数えられないものは、記録の時点で拒否する
+ */
+export function droppedNameConfirmations(before, after, decidedBy) {
+  if (!decidedBy) return [];
+  return nameConfirmationCandidates(before, after).filter((c) => !c.explicit && !nameConfirmationCount(after, c.id, decidedBy));
+}
+
+// 記録で効いていない確認の旨の一覧。explicit は、この変化点で確認の旨を書いた(前の名簿に同じ氏名の確認の旨が無い)確認
+function nameConfirmationCandidates(before, after) {
   const out = [];
   // 確認待ち(1名から2名以上へ移る変化点の、本人の自己申告の確認)は、この変化点では記名を求めない。後の変化点で本人以外が確認する(AR-2)
   const awaiting = new Set(awaitingSelfConfirmations(before, after));
+  const had = new Map((Array.isArray(before?.people) ? before.people : []).map((p) => [p?.id, p]));
   for (const p of Array.isArray(after?.people) ? after.people : []) {
     if (!p?.id || p.nameConfirmed !== true || !aiNameReason(p.name) || awaiting.has(p.id)) continue;
     const st = nameConfirmationState({ ...after, changeLog: before?.changeLog ?? [] }, p);
     if (st === 'other' || st === 'self') continue;
-    out.push({ id: p.id, name: p.name });
+    const prev = had.get(p.id);
+    out.push({ id: p.id, name: p.name, explicit: !(prev?.nameConfirmed === true && prev.name === p.name) });
   }
   return out;
 }
@@ -1366,7 +1421,7 @@ export function awaitingSelfConfirmations(before, after) {
   return out;
 }
 
-export function diffConfig(before, after) {
+export function diffConfig(before, after, opts = {}) {
   const diff = [];
   const loosenItems = [];
   const tightens = [];
@@ -1657,10 +1712,10 @@ export function diffConfig(before, after) {
   // 氏名の確認(nameConfirmed)。有効な記録(本人以外の記名)が無いまま true の確認は、この変化点で本人以外の記名を要する
   // (#296 より前に書いた確認を含む。nameConfirmItems。process-compass #296 裁定 8 の付記)
   const nameConfirmItems = [];
-  for (const { id, name } of pendingNameConfirmations(before, after)) {
+  for (const { id, name, explicit } of pendingNameConfirmations(before, after, opts)) {
     const line = `人の名簿: ${name} の氏名を実在の人の氏名として確認した(名義の機械検査の上書き${insiderCount(after) === 1 ? '。1名の体制のため本人の記名を受け付け、自己申告の氏名として開示する' : ''})`;
     diff.push(line);
-    nameConfirmItems.push({ id, name, line });
+    nameConfirmItems.push({ id, name, line, explicit });
   }
   // アカウント名の確認済みの上書き(#296)。足した確認は、本人以外の決定した者の記名を要する(accountConfirmItems)
   const accountConfirmItems = [];
@@ -2790,6 +2845,10 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
         e.sgRecord ? `SG の判定記録: ${e.sgRecord}` : null,
         // 名簿の表記の変更は、旧い値と新しい値を出す(K74)
         e.rosterEdits?.length ? `名簿の表記の変更: ${e.rosterEdits.map(rosterEditText).join(' / ')}` : null,
+        // 本人以外の確認で記名者を照合した既存の記録(ADR-0120 決定2)。作られた時点の照合と区別して出す
+        e.laterSignerCheck?.records?.length
+          ? `この変化点の本人以外の確認で記名者を照合した既存の記録(作られた時点の確認ではない): ${e.laterSignerCheck.records.join(' / ')}`
+          : null,
       ]
         .filter(Boolean)
         .join('。');
@@ -3448,6 +3507,10 @@ export function renderProfileMd(config, result) {
         e.sgRecord ? `SG の判定記録: ${e.sgRecord}` : null,
         // 名簿の表記の変更は、旧い値と新しい値を出す(K74)
         e.rosterEdits?.length ? `名簿の表記の変更: ${e.rosterEdits.map(rosterEditText).join(' / ')}` : null,
+        // 本人以外の確認で記名者を照合した既存の記録(ADR-0120 決定2)。作られた時点の照合と区別して出す
+        e.laterSignerCheck?.records?.length
+          ? `この変化点の本人以外の確認で記名者を照合した既存の記録(作られた時点の確認ではない): ${e.laterSignerCheck.records.join(' / ')}`
+          : null,
       ]
         .filter(Boolean)
         .join('。');
@@ -4672,8 +4735,19 @@ if (isMain) {
   // 評価と、変化点の記録の書き出しの両方に使う(process-compass #375 / ADR-0111 決定1・2)。類B の検査(記名・承認する者の資格)は、
   // この記録を足さない変化点の前の構成で照らす
   const thisRecord = change
-    ? { decidedBy: change.decidedBy ?? null, nameConfirmations: pendingNameConfirmations(prior, { people: peopleInput }).map(({ id }) => ({ id })) }
+    ? {
+        decidedBy: change.decidedBy ?? null,
+        // 名簿に既にある確認の旨は、この変化点の記名者の記名で数えられなければ載せない(process-compass #434 / ADR-0120 決定1)
+        nameConfirmations: pendingNameConfirmations(prior, { people: peopleInput }, { decidedBy: change.decidedBy ?? null }).map(({ id }) => ({ id })),
+      }
     : null;
+  // 本人以外の確認(この変化点の記名者の記名で、本人以外の記名として数える確認)。この確認を記録する変化点に限り、既存の記録の
+  // 記名者を、その確認を数えた後の構成で照らす(ADR-0120 決定2)。この変化点の日付の照合であり、既存の記録は書き換えない
+  const signerKeyNow = change?.decidedBy ? personKey({ people: peopleInput }, change.decidedBy) : null;
+  const laterIds = thisRecord && signerKeyNow
+    ? thisRecord.nameConfirmations.filter(({ id }) => id !== signerKeyNow && nameConfirmationCount({ people: peopleInput }, id, change.decidedBy) === 'other')
+    : [];
+  const laterConfirmation = laterIds.length ? { decidedBy: change.decidedBy, date: day, nameConfirmations: laterIds } : null;
   const logWithThis = (log) => [...(Array.isArray(log) ? log : []), ...(thisRecord ? [thisRecord] : [])];
   // 確認待ちの氏名(AR-2)。この変化点の評価に限り、前の名簿で効いていた本人の自己申告の確認を効かせる。構成へは書かない
   const awaiting = change && prior ? awaitingSelfConfirmations(prior, { people: peopleInput }) : [];
@@ -4866,6 +4940,17 @@ if (isMain) {
   }
   const d0Version = change || !prior ? d0InFile : (prior.d0Version ?? null);
 
+  // 既存の規則(この変化点で追加・変更・承認していない規則)。本人以外の確認による照合の対象(ADR-0120 決定2)
+  const existingRuleIds = laterConfirmation
+    ? new Set(
+        (delegationInput.rules ?? [])
+          .filter((r) => {
+            const p = (prior?.delegation?.rules ?? []).find((x) => x?.id === r?.id);
+            return p && !approvedNow.includes(r.id) && canonicalJsonOf(p) === canonicalJsonOf(r);
+          })
+          .map((r) => r.id)
+      )
+    : null;
   let built;
   try {
     built = buildConfig(answers, {
@@ -4894,6 +4979,8 @@ if (isMain) {
       changeLog: prior?.changeLog,
       // 席の責任者の名義(類A)を照らすための、この変化点の記録(ADR-0111 決定3)。構成へは書かない
       pendingRecord: thisRecord,
+      laterConfirmation,
+      existingRuleIds,
       nameConfirmPending: awaiting,
       reviewSourcing: { ...Object.fromEntries((prior?.unmet ?? []).map((u) => [u.gate, u.reviewSourcing])), ...(S.reviewSourcing ?? {}) },
       guard: guardNow,
@@ -5044,7 +5131,37 @@ if (isMain) {
         seat.intent = { mode: 'delegated', decidedBy: change.decidedBy, reason: change.reason, at: day };
       }
     }
-    const report = diffConfig(prior, config);
+    const report = diffConfig(prior, config, { decidedBy: change.decidedBy ?? null });
+    // 本人以外の確認で記名者を照合した既存の記録(process-compass #434 / ADR-0120 決定2)。照合はこの変化点の日付の照合であり、
+    // 既存の記録が作られた時点の確認とはみなさない。確認の差分の行に列挙し、変化点の記録(laterSignerCheck)へ自動で載せる
+    const laterChecked = [];
+    if (laterConfirmation) {
+      const ids = new Set(laterConfirmation.nameConfirmations.map(({ id }) => id));
+      const keyOf = (n) => (n ? personKey(config, n) : null);
+      const ctxNow = recordSignerContext(withAwaiting(config));
+      const ctxLater = recordSignerContext(withAwaiting({ ...config, changeLog: [...(config.changeLog ?? []), laterConfirmation] }));
+      const priorTypeJson = new Set((prior.delegation?.changeTypes ?? []).map((t) => JSON.stringify(t)));
+      for (const t of config.delegation?.changeTypes ?? []) {
+        if (priorTypeJson.has(JSON.stringify(t)) && ids.has(keyOf(t.registeredBy)) && aiNameBlocked(ctxNow, t.registeredBy) && !aiNameBlocked(ctxLater, t.registeredBy)) {
+          laterChecked.push({ id: keyOf(t.registeredBy), record: `変更種別 "${t.id}" の登録(登録した者 ${t.registeredBy}、${t.registeredAt})` });
+        }
+      }
+      for (const x of clamps.laterChecked ?? []) {
+        const r = (config.delegation?.rules ?? []).find((y) => y.id === x.id);
+        const roles = [[r?.decidedBy, '決定'], [r?.approvedBy, '承認']].filter(([w]) => w && ids.has(keyOf(w)));
+        for (const k of [...new Set(roles.map(([w]) => keyOf(w)))]) {
+          const mine = roles.filter(([w]) => keyOf(w) === k);
+          laterChecked.push({ id: k, record: `委任の規則 ${x.id}(${x.seatName}の席。${mine.map(([, l]) => l).join('・')}した者 ${mine[0][0]})` });
+        }
+      }
+      for (const i of report.nameConfirmItems ?? []) {
+        const mine = laterChecked.filter((c) => c.id === i.id).map((c) => c.record);
+        if (!mine.length) continue;
+        const at = report.diff.indexOf(i.line);
+        i.line = `${i.line}。この確認で記名者を照合する既存の記録: ${mine.join(' / ')}(この変化点の日付の照合であり、作られた時点の確認ではない。既存の記録は書き換えない)`;
+        if (at >= 0) report.diff[at] = i.line;
+      }
+    }
     // 保持していた宣言による委任は、宣言した時点で決定済みである。今回の記名を求めない
     for (const item of report.loosenItems) {
       const applied = intentApplied.find((x) => x.seat === item.seat);
@@ -5233,6 +5350,13 @@ if (isMain) {
           '(/process-change 種別 accountable で名簿をそのまま渡し、decidedBy と reason を付ける。同じ PR に入れてかまいません)'
       );
     }
+    // 名簿に既にある確認の旨で、この変化点の記名者の記名では数えられないもの。記録へ載せず、注意を出す(ADR-0120 決定1)
+    for (const d of droppedNameConfirmations(prior, { people: config.people }, change.decidedBy)) {
+      console.log(
+        `[注意] ${d.name} の氏名の確認(名簿に既にある確認の旨)は、この変化点の記名者 "${change.decidedBy}" の記名では数えられないため、この変化点の記録へ載せません。` +
+          '本人以外の確認が済んでいても、AI を示す語を含む氏名の人の記名は、AI の名義の記名に当たります。確認は、確認される本人以外の、AI を示す語を含まない名簿の人が記名する変化点で記録します'
+      );
+    }
     // 記名の欄(名簿、席の責任者、適合性確認の承認者)。AI の名義と、名簿に無い名義を拒否する
     for (const p of namingProblems(withThis)) refused.push(`記名を受け付けられません: ${p}`);
     // 離脱した人が責任者だった席。後任か、未記入かを、入力で示してもらう
@@ -5295,8 +5419,23 @@ if (isMain) {
     }
     const priorTypes = new Set((prior.delegation?.changeTypes ?? []).map((t) => JSON.stringify(t)));
     const newTypes = new Set((config.delegation.changeTypes ?? []).filter((t) => !priorTypes.has(JSON.stringify(t))).map((t) => String(t?.id ?? '').trim()));
-    // 既存の登録の登録者は、登録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。AR-4)
-    for (const p of changeTypeProblems(cfgB, { only: newTypes, existingConfig: recordSignerContext(cfgB) })) refused.push(`標準変更カタログ: ${p}`);
+    // 既存の登録の登録者は、登録した時点の効力で照らす(氏名の確認の状態の移り変わりで照らし直さない。AR-4)。
+    // 本人以外の確認を記録する変化点では、その確認を数えた後の構成で照らす(ADR-0120 決定2。この変化点の日付の照合)
+    // 拒否の原因が、既存の登録の登録者の氏名の確認に本人以外の記録が無いことか(名簿の人で確認の旨がある)。案内を足す
+    const legacySigner = (p) => {
+      const id = /変更種別 "([^"]+)" を登録した者/.exec(p)?.[1];
+      const t = id ? (config.delegation?.changeTypes ?? []).find((x) => String(x?.id ?? '').trim() === id) : null;
+      return Boolean(t && !newTypes.has(id) && /AI の名義の記名を受け付けない/.test(p) && findPerson(config, t.registeredBy)?.nameConfirmed === true);
+    };
+    const existingSignerCtx = laterConfirmation ? recordSignerContext(withAwaiting({ ...config, changeLog: [...(config.changeLog ?? []), laterConfirmation] })) : recordSignerContext(cfgB);
+    for (const p of changeTypeProblems(cfgB, { only: newTypes, existingConfig: existingSignerCtx })) {
+      refused.push(
+        `標準変更カタログ: ${p}` +
+          (!laterConfirmation && legacySigner(p)
+            ? '。既存の登録の登録者の氏名の確認に、本人以外が記名した記録がありません(記録の無い旧い確認は、既存の記録の照合に使いません)。本人以外の名簿の人がその氏名を確認する変化点では、確認を数えた後の構成で照合するため通ります(/process-change 種別 accountable で名簿をそのまま渡し、本人以外の decidedBy と reason を付ける。同じ PR でかまいません)'
+            : '')
+      );
+    }
     // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
     if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
     // 登録する者がリリース判定会(B-4)のとき、機械が確かめるのは、登録した者が名簿にいることだけである
@@ -5394,6 +5533,7 @@ if (isMain) {
       );
     }
     // 氏名の確認(nameConfirmed)も、名簿の変更として、本人以外が記名した場合に限る(#296 裁定 8 の付記)
+    const refusedAtName = refused.length;
     if (report.nameConfirmItems?.length) {
       if (!change.decidedBy) {
         refused.push(
@@ -5428,9 +5568,16 @@ if (isMain) {
         for (const i of report.nameConfirmItems) {
           if (by === i.id && !single) refused.push(`${i.name} の氏名の確認を、本人の記名では確定できません。体制の内の人が2名以上の名簿では、本人以外の人の名簿の人が記名します`);
         }
+        // 一般の規則(process-compass #434 / ADR-0120 決定1): 明示した確認が、数え方の関数そのもの(nameConfirmationCount)で
+        // 記録を足した後の構成で数えられなければ、記録の時点で拒否する。上の確認待ちの本人の記名(AR-5)は、この規則の特例である
+        if (refused.length === refusedAtName) {
+          const bad = report.nameConfirmItems.filter((i) => i.explicit && !nameConfirmationCount(config, i.id, change.decidedBy));
+          if (bad.length) refused.push(uncountableConfirmationText(`氏名の確認(${bad.map((i) => i.name).join(', ')})`, change.decidedBy));
+        }
       }
     }
     // アカウント名の確認済みの上書きは、名簿の変更として、そのアカウントの本人以外が記名した場合に限る(#296)
+    const refusedAtAccount = refused.length;
     if (report.accountConfirmItems?.length) {
       if (!change.decidedBy) {
         refused.push(
@@ -5442,6 +5589,11 @@ if (isMain) {
         const by = personKey(config, change.decidedBy);
         for (const i of report.accountConfirmItems) {
           if (by === i.id) refused.push(`アカウント ${i.account} の確認を、本人(${i.name})の記名では確定できません。本人以外の人の名簿の人が記名します`);
+        }
+        // 一般の規則(ADR-0120 決定1): 数え方の関数そのもの(accountConfirmationCounts)で数えられない確認は、記録の時点で拒否する
+        if (refused.length === refusedAtAccount) {
+          const bad = report.accountConfirmItems.filter((i) => !accountConfirmationCounts(config, i.id, i.account, change.decidedBy));
+          if (bad.length) refused.push(uncountableConfirmationText(`アカウント名の確認(${bad.map((i) => i.account).join(', ')})`, change.decidedBy));
         }
       }
     }
@@ -5667,6 +5819,8 @@ if (isMain) {
         accountConfirmations: (report.accountConfirmItems ?? []).map(({ id, account }) => ({ id, account })),
         // 評価(withThis)と同じ記録から書く(ADR-0111 決定2)
         nameConfirmations: thisRecord.nameConfirmations,
+        // 本人以外の確認で記名者を照合した既存の記録(ADR-0120 決定2)。照合の日付と記名者は、この記録の date と decidedBy
+        laterSignerCheck: laterChecked.length ? { confirmations: laterConfirmation.nameConfirmations.map(({ id }) => id), records: laterChecked.map((c) => c.record) } : null,
         ruleApprovedBy: approvedNow.length ? change.ruleApprovedBy : null,
         nameOverrides: nameOverrides(withThis),
         ruleApproval: approvedNow.length

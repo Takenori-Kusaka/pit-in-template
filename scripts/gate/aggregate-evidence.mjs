@@ -94,6 +94,7 @@ import {
   aiNameBlocked,
   nameOverrides,
   nameOverrideDetails,
+  laterSignerChecks,
   configIntegrityProblems,
   isRealDay,
   localDay,
@@ -3376,6 +3377,8 @@ if (isMain) {
     nameOverrides: nameOverrides(config),
     // 上書きの内訳。self は自己申告の氏名(1名の体制の本人の記名)、unrecorded は未記録の確認(追加の裁定)
     nameOverrideDetails: nameOverrideDetails(config),
+    // 本人以外の確認で記名者を照合した既存の記録(process-compass #434 / ADR-0120 決定2)。作られた時点の照合と区別して開示する
+    laterSignerChecks: laterSignerChecks(config),
     changes: {
       total: changesTotal,
       withoutIndependentHuman,
@@ -5409,6 +5412,22 @@ if (isMain) {
           `名義の機械検査を人が上書きした: ${n}` +
             (h === 'self' ? '(自己申告の氏名。1名の体制で、本人の記名による確認)' : h === 'unrecorded' ? '(未記録の確認。1名の体制のため効かせている。変化点の記録が無い)' : '')
         );
+      }
+    }
+    {
+      const later = A.independence.laterSignerChecks ?? [];
+      const n = later.reduce((k, x) => k + x.records.length, 0);
+      if (n && external) {
+        R.push('');
+        R.push(`後の本人以外の確認で記名者を照合した既存の記録: ${n} 件(作られた時点の確認ではない。内容は組織の内側の開示にある)`);
+      } else {
+        for (const x of later) {
+          R.push('');
+          R.push(
+            `後の本人以外の確認で記名者を照合した既存の記録: ${x.records.join(' / ')}(${x.date ?? '日付なし'} の変化点で ${x.decidedBy ?? '記名なし'} が記名した確認による照合。` +
+              '作られた時点では、記名者の氏名の確認に本人以外の記録が無かった。既存の記録は書き換えていない)'
+          );
+        }
       }
     }
     if (!A.independence.rosterPresent) {
