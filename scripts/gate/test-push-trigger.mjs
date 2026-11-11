@@ -8,7 +8,8 @@
 //   - 写しへ入れた変異を検出する(gate-g5.yml へ push を戻す・workflow_call を外す、gate-g5-push.yml を消す・絞りを外す・
 //     タグを足す・条件を ref_name にする・呼び先を変える・ジョブの名や ID を gate-g5 にする・名を式にする、
 //     呼び出し側のジョブへ secrets: inherit を足す・最上位へ concurrency を足す、
-//     ほかのワークフローへ名が gate-g5 のジョブを足す)
+//     ほかのワークフローへ名が gate-g5 のジョブを足す、gate-g5.yml の pull_request を外す、字下げが 0 のコメント行や
+//     「jobs: # x」の後へジョブ gate-g5 を足す)。ブロック形の branches の列(- '**')は正当な構成として通す
 //   - next.mjs の既定ブランチの読み方が、既定ブランチが trunk のリポジトリで trunk を返す
 // GitHub 上の振る舞い(skipped の呼び出し側のジョブの check run の名など)は確かめない(EV-0245。実機の観測は
 // process-compass research/362-deliberation/)。
@@ -62,6 +63,10 @@ const mutants = [
   ['呼び出し側のジョブの名を式にする', { [PUSH_WORKFLOW_FILE]: sub(push, '    name: default-push', "    name: ${{ github.event_name == 'push' && 'default-push' || 'gate-g5' }}") }, /名が default-push でない|必須チェックの名 gate-g5/],
   ['呼び出し側のジョブへ secrets: inherit を足す', { [PUSH_WORKFLOW_FILE]: sub(push, '    uses: ./.github/workflows/gate-g5.yml', '    uses: ./.github/workflows/gate-g5.yml\n    secrets: inherit') }, /ジョブ default-push に name・if・uses のほかの鍵がある\(secrets/],
   ['最上位へ concurrency を足す', { [PUSH_WORKFLOW_FILE]: sub(push, '\npermissions:', '\nconcurrency:\n  group: gate-g5-push\n  cancel-in-progress: true\n\npermissions:') }, /最上位に name・on・permissions・jobs のほかの鍵がある\(concurrency/],
+  ['gate-g5.yml の pull_request を外す', { [G5_WORKFLOW_FILE]: sub(g5, '  pull_request:\n', '  merge_group:\n') }, /pull_request を契機に持たない/],
+  // 迂回の写し(#362 作り直しの確認 Z-1): 字下げが 0 のコメント行と、行末にコメントのある jobs: の後のジョブも読む
+  ['gate-g5-push.yml の末尾のコメント行の後に、条件なしのジョブ gate-g5 を足す', { [PUSH_WORKFLOW_FILE]: `${push.replace(/\n*$/, '\n')}# --- 追加 ---\n  gate-g5:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n` }, /gate-g5-push\.yml のジョブ gate-g5\(名 なし\)が必須チェックの名 gate-g5 を持つ/],
+  ['ほかのワークフローの jobs: # x の後に、ジョブ gate-g5 を足す', { '.github/workflows/extra2.yml': 'name: extra2\non:\n  push:\njobs: # x\n  gate-g5:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n' }, /extra2\.yml のジョブ gate-g5/],
   ['ほかのワークフローへ名が gate-g5 のジョブを足す', { '.github/workflows/extra.yml': 'name: extra\non:\n  push:\njobs:\n  check:\n    name: gate-g5\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n' }, /extra\.yml のジョブ check/],
   ['gate-g5.yml の集約以外のジョブの名を gate-g5 にする', { [G5_WORKFLOW_FILE]: sub(g5, '    name: gate-contract', '    name: gate-g5') }, /gate-g5\.yml のジョブ contract/],
 ];
@@ -75,6 +80,14 @@ for (const [name, patch, re] of mutants) {
   }
   // IMPL-0485:ng
   check(`変異: ${name} を検出する`, probs.some((p) => re.test(p)), probs.join(' / ') || '検出なし');
+}
+
+// 正当な構成(#362 作り直しの確認 Z-4): ブロック形の branches の列(- '**')は、流れ形の ['**'] と同じものとして通す
+{
+  const block = withFiles({ [PUSH_WORKFLOW_FILE]: sub(push, "    branches: ['**']", "    branches:\n      - '**'") });
+  check("正当な構成: push の絞りをブロック形の列(- '**')で書いても不備にしない", pushTriggerProblems(block).length === 0, pushTriggerProblems(block).join(' / '));
+  const blockMain = withFiles({ [PUSH_WORKFLOW_FILE]: sub(push, "    branches: ['**']", '    branches:\n      - main') });
+  check('変異: ブロック形の列で絞りを main に固定する を検出する', pushTriggerProblems(blockMain).some((p) => /branches: \['\*\*'\] でない/.test(p)), pushTriggerProblems(blockMain).join(' / ') || '検出なし');
 }
 
 // next.mjs の既定ブランチの読み方(一時のリポジトリ。既定ブランチが trunk で、origin の HEAD を持つ)

@@ -15,7 +15,8 @@
 // (2026-11-11 の実機の確認。既定ブランチでないブランチへの push の skipped のジョブで、PR の検査が落ちる変更をマージできた)。
 // 確かめないこと: GitHub 上の振る舞い(呼び出し側のジョブが skipped のときの check run の名、呼ばれた側の github コンテキスト)。
 // それは実機の観測に依る(EV-0245)。YAML は、このテンプレートの書き方(jobs: の下の 2 字下げのジョブ、4 字下げのジョブの鍵)
-// だけを読む。読まない書き方: 4 字下げのジョブ、流れ形({ ... })のジョブ、matrix や format で組んだ名、引用符つきの事象のキー。
+// だけを読む。読まない書き方: 4 字下げのジョブ・流れ形({ ... })のジョブ・matrix や format で組んだ名・引用符つきの事象のキー。
+// コメント(字下げが 0 の行、行末)は除いてから読み、branches はブロック形の列(- '**')も流れ形と同じに読む。
 // テンプレートのワークフローはすべて読む書き方で書く。採用者が足す別の書き方のワークフローは、統制の設定の変更のレビューで
 // 確かめる(process-compass #362 の独立の突合 X-6、裁定 R-7)。
 
@@ -45,6 +46,11 @@ const stripComment = (line) => {
   }
   return line;
 };
+/**
+ * jobs: の下のジョブ。コメントを先に除いてから jobsOf へ渡す。字下げが 0 のコメント行はジョブの区間を終えず、
+ * 行末にコメントのある「jobs: # x」も jobs: として読む(YAML ではコメントは字下げに縛られない。#362 作り直しの確認 Z-1)
+ */
+const jobsOfText = (text) => jobsOf(lf(text).split('\n').map(stripComment).join('\n'));
 const unquote = (v) => String(v ?? '').trim().replace(/^(['"])(.*)\1$/, '$2');
 
 /** on: の下の事象 → 事象の本文の行(コメントを除く) */
@@ -81,7 +87,7 @@ const norm = (v) => unquote(v).replace(/\$\{\{\s*|\s*\}\}/g, '').replace(/"/g, "
 /** ID か名が gate-g5 のジョブ(名の式に 'gate-g5' の文字列を含むものも数える) */
 function requiredNamedJobs(text) {
   const out = [];
-  for (const [id, body] of jobsOf(text)) {
+  for (const [id, body] of jobsOfText(text)) {
     const name = keyOf(body, 'name');
     const n = name === null ? null : unquote(name);
     if (id === REQUIRED || n === REQUIRED || (n !== null && /\$\{\{/.test(n) && /['"]gate-g5['"]/.test(n))) out.push({ id, name: n });
@@ -111,8 +117,20 @@ export function pushTriggerProblems(files) {
     if (others.length) problems.push(`gate-g5-push.yml が push のほかの契機を持つ(${others.join('・')})`);
     if (pev.has('push')) {
       const body = pev.get('push').join('\n');
-      const br = body.match(/^ {4}branches:\s*(.*)$/m);
-      const vals = br ? br[1].replace(/[[\]]/g, '').split(',').map((s) => unquote(s)).filter(Boolean) : [];
+      const br = body.match(/^ {4}branches:[ \t]*(.*)$/m);
+      let vals = br ? br[1].replace(/[[\]]/g, '').split(',').map((s) => unquote(s)).filter(Boolean) : [];
+      // ブロック形の列(branches: の次の行から「- '**'」)は、流れ形の ['**'] と同じものとして読む(#362 作り直しの確認 Z-4)
+      if (br && !br[1].trim()) {
+        const rest = body.split('\n');
+        const at = rest.findIndex((l) => /^ {4}branches:\s*$/.test(l));
+        vals = [];
+        for (const l of rest.slice(at + 1)) {
+          if (!l.trim()) continue;
+          const m = l.match(/^ {5,}-\s*(.*)$/);
+          if (!m) break;
+          vals.push(unquote(m[1]));
+        }
+      }
       if (!br || vals.length !== 1 || vals[0] !== '**') problems.push(`gate-g5-push.yml の push の絞りが branches: ['**'] でない(${br ? br[1] : '絞りなし。タグの push でも起動する'})`);
       const extra = [...body.matchAll(/^ {4}([a-z-]+):/gm)].map((m) => m[1]).filter((k) => k !== 'branches');
       if (extra.length) problems.push(`gate-g5-push.yml の push が branches のほかの絞りを持つ(${extra.join('・')})`);
@@ -120,7 +138,7 @@ export function pushTriggerProblems(files) {
     const top = lf(push).split('\n').map(stripComment).map((l) => l.match(/^(['"]?)([A-Za-z_][A-Za-z0-9_-]*)\1:/)).filter(Boolean).map((m) => m[2]);
     const topExtra = top.filter((k) => !PUSH_TOP_KEYS.includes(k));
     if (topExtra.length) problems.push(`gate-g5-push.yml の最上位に ${PUSH_TOP_KEYS.join('・')} のほかの鍵がある(${topExtra.join('・')}。concurrency の cancel-in-progress は既定ブランチのコミットの実行を欠く)`);
-    const jobs = jobsOf(push);
+    const jobs = jobsOfText(push);
     if (jobs.size !== 1) problems.push(`gate-g5-push.yml のジョブが1つでない(${jobs.size} 件)`);
     for (const [id, body] of jobs) {
       const name = keyOf(body, 'name');

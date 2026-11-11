@@ -355,8 +355,9 @@ export function printPreflight(result, log = console.log) {
     log(`[告げる] ${t.place}: ${t.text}${r ? `(一覧の扱い: ${r.disposition || '未記入'})` : ''}`);
   }
   if (result.facts.defaultBranch) log(`[事実] 既定ブランチ: ${result.facts.defaultBranch.name ?? '不明'}(${result.facts.defaultBranch.how})。コミット ${result.facts.commits ?? '?'} 件、根のコミット ${result.facts.roots ?? '?'} 件`);
-  // 既定ブランチの名では止めない(#362 / ADR-0123)。読み方が origin の HEAD でないときは、読み違いの可能性を添える
-  if (result.facts.defaultBranch && result.facts.defaultBranch.how !== 'origin の HEAD') log(`[事実] 既定ブランチは origin の HEAD から読めていない。適用の開始の境と出荷の範囲は既定ブランチの主系列の上に置くため、GitHub の既定ブランチと一致するかを人が確かめる(git remote set-head origin --auto で origin の HEAD を取得できる)`);
+  // 既定ブランチの名では止めない(#362 / ADR-0123)。読み方が現在のブランチ(origin の HEAD も手元の main も無い)のときは、
+  // 読み違いの可能性を添える(裁定 R-2 の文言。#362 作り直しの確認 Z-3)
+  if (result.facts.defaultBranch && /^現在のブランチ/.test(result.facts.defaultBranch.how ?? '')) log(`[事実] 既定ブランチを現在のブランチから読んだ(origin の HEAD も手元の main も無い)。適用の開始の境と出荷の範囲は既定ブランチの主系列の上に置くため、GitHub の既定ブランチと一致するかを人が確かめる(git remote set-head origin --auto で origin の HEAD を取得できる)`);
   log(
     result.stops.length
       ? `事前点検: 止める項目が ${result.stops.length} 件あります。初期化は構成を書きません`
