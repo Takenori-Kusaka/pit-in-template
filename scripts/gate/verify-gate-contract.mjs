@@ -88,7 +88,7 @@ import { seatSeparationFindings, ruleStanding, pendingSeparationProblems } from 
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
-import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL } from './coverage-check.mjs';
+import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL, coverageFormatOf, isLanguageAdapter, COVERAGE_FORMATS } from './coverage-check.mjs';
 import { stackCoverageReport } from './stack-coverage.mjs';
 
 const config = loadConfig();
@@ -771,6 +771,9 @@ if (adapter && config.gates?.g5?.state !== 'omitted') {
   const sc = coverageScopeOf(config, adapter);
   if (sc.invalid !== undefined) problems.push(`構成 ci.coverageScope の値 "${sc.invalid}" は changed / whole のいずれでもありません`);
   else {
+    // 被覆の記録の形式と、言語のアダプタの集計の記録(IMPL-0259・IMPL-0495。process-compass #360)
+    if (coverageFormatOf(adapter) === null) problems.push(`アダプタ ${adapter.id} の coverageFormat "${adapter.coverageFormat}" は ${Object.keys(COVERAGE_FORMATS).join(' / ')} のいずれでもありません`);
+    if (isLanguageAdapter(adapter) && !adapter.coverageSummary) problems.push(`アダプタ ${adapter.id} はカバレッジの集計の記録(coverageSummary)を持ちません。言語のアダプタでは基準3 は未実施で、未実施は失敗に数えます。adapters/${adapter.id}.json に集計の記録と形式(coverageFormat)を書いてください`);
     if (sc.scope === 'changed' && !canMeasureChanged(adapter)) {
       problems.push(`構成のカバレッジの測る範囲は「変更で加えた・変えたコード」ですが、アダプタ ${adapter.id} は行単位の被覆(coverageDetail)を持たず、変更の範囲を測れません。範囲を whole にするか、アダプタに行単位の被覆を足してください`);
     }

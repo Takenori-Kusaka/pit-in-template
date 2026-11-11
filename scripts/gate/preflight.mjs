@@ -15,8 +15,8 @@
 // (docs/adoption-inventory.md)へ載せることを求めます。一覧に無い資産と、扱いを確定していない資産は止めます(一覧の網羅を人の申告だけに頼らない)。
 // 共通の祖先の無い履歴の併合(根のコミットが2つ以上)は止めず、一覧へ載せることを求めます(#315 突合 X-4)。開始より前の履歴は
 // 出所を問わず主張の外で、古い併合は履歴を書き換えないと戻せないためです。準拠テンプレートの履歴を併合しない定め1 は保ちます。
-// カバレッジの測定の欠落は、一覧へ載せれば止めません。node では G-5 の test ジョブが失敗し、go では G-5 基準3 を「実施しない」と
-// 記録するため、黙っては外れません(#315 突合 X-12。ADR-0028 の「未達」ではない)。
+// カバレッジの測定の欠落は、一覧へ載せれば止めません。node・python・go では、被覆の記録が出なければ G-5 の基準3 が未実施として
+// 失敗するため、黙っては外れません(#315 突合 X-12。go を「実施しない」と記録して通す扱いは誤りだったため改めた。process-compass ADR-0124)。
 // 既存の違反の基準線(新しい違反だけを止める記録)は設けません。既存の違反は、未達・前提の受容・例外承認の3つの経路で扱います。
 
 import { execFileSync } from 'node:child_process';
@@ -284,8 +284,8 @@ export function preflight(root = ROOT) {
   for (const f of (stacks.get('python') ?? []).filter((x) => /pyproject\.toml$/.test(x))) {
     if (!/pytest-cov/.test(readText(root, f) ?? '')) coverageGaps.push(`${f} に pytest-cov が無い(アダプタは pytest --cov で測る)`);
   }
-  if ((stacks.get('go') ?? []).length) coverageGaps.push('go のアダプタはカバレッジの要約を持たず、判定は「実施しない」として記録される');
-  if (coverageGaps.length) asset('coverage', 'カバレッジの測定', 'カバレッジの測定', `${coverageGaps.join('。')}。止めない(node では G-5 の test ジョブが失敗し、go では G-5 基準3 を「実施しない」と記録するため、黙っては外れない)`);
+  if ((stacks.get('go') ?? []).length) coverageGaps.push('go のアダプタは coverage.out から測る。記録が出ない構成と、変更の範囲を測る環境に go が無い構成は、G-5 基準3 の未実施として失敗する');
+  if (coverageGaps.length) asset('coverage', 'カバレッジの測定', 'カバレッジの測定', `${coverageGaps.join('。')}。止めない(記録が出なければ G-5 基準3 が未実施として失敗するため、黙っては外れない)`);
   const gi = readText(root, '.gitignore');
   const giLines = new Set((gi ?? '').split(/\r?\n/).map((l) => l.trim()));
   const giMissing = TEMPLATE_GITIGNORE_LINES.filter((l) => !giLines.has(l));

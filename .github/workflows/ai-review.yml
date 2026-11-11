@@ -17,7 +17,8 @@
 #
 # **このファイルは許す形の一覧で検査します**(scripts/gate/test-base-judge-workflow.mjs の aiReviewWorkflowProblems)。
 # 契機は pull_request_target だけ、ジョブは ai-review と ai-review-notice の2つだけ、権限・式(${{ }})・使う action・手順は一覧に
-# あるものだけです。手順は、決まった手順(checkout・有効かどうかの確認・PR の先頭の取得・差分の書き出し・失敗の表示)を
+# あるものだけです。手順は、決まった手順(checkout・有効かどうかの確認・PR の先頭の取得・差分の書き出し・入力の記録・
+# 入力の記録の成果物・失敗の表示・道具の側の入力と指摘の欠落の表示)を
 # このファイルのとおりに置き、採用者が書き換えてよいのは手順「レビューの実行」の run: と、env の秘密情報の行だけです。
 # その run: では、PR の先頭・PR のイベント・PR の API を読む書き方(refs/remotes/pr/・FETCH_HEAD・refs/pull/・GITHUB_EVENT_PATH・
 # gh pr・gh api)と、作業ツリーへ木を展開する git の操作を拒みます。手元の action(uses: ./)は、作業ツリーが既定ブランチでも
@@ -135,6 +136,30 @@ jobs:
             echo "既定ブランチに .github/ai-review/instructions.md が無いため、AI レビューを実行していません" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # 確認側へ渡す入力のうち、ワークフローが列挙できるものを、差し込み口の前に記録する(標準 附属書H H.4「確認側へ渡した入力の記録」。
+      # IMPL-0253。process-compass #360)。既定ブランチの作業ツリーのスクリプトで動く(PR の側のスクリプトを実行しない)。
+      # 指示の置き場 .github/ai-review/ のファイル・差分(diff.patch)・変更したファイルの一覧(files.txt)・既定ブランチと基底と PR の先頭の SHA・
+      # 作業ツリーにある自動読込の候補(CLAUDE.md・AGENTS.md・.claude/ 配下など、既知の名前に限る)を、パスと sha256 でジョブの要約と
+      # $RUNNER_TEMP/ai-review/record/inputs.json へ書く。候補は読み込まれうるものの上限であり、実際に読み込まれたものではない。
+      # 入力の記録は、確かめたことを示さない。差し込み口より前に書くため、差し込んだ手順はこの要約を書き換えられない
+      - name: 入力を記録する
+        id: inputs
+        if: steps.gate.outputs.run_ai == 'yes' && steps.input.outputs.instructions == 'yes'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: node scripts/gate/ai-review-record.mjs inputs --dir "$RUNNER_TEMP/ai-review"
+
+      # 入力の記録(inputs.json)を、差し込み口の前に成果物へ上げる。保持は 90 日(retention-days。リポジトリ・組織の設定の上限が短ければ
+      # そちらが効く)。四半期の抜き取りまで残ることは、この手順では保証しない(記録の保持は IMPL-0492。#358)。上げるのは
+      # このスクリプトが書いた入力の記録だけで、AI の出力を含まない。どのジョブもこの成果物を取り込まない(書き込みのジョブへ渡さない)
+      - uses: actions/upload-artifact@v4
+        if: steps.inputs.outcome == 'success'
+        with:
+          name: ai-review-inputs
+          path: ${{ runner.temp }}/ai-review/record/inputs.json
+          retention-days: 90
+          if-no-files-found: warn
+
       # ここに任意の AI レビューを差し込みます。採用者が書き換えてよいのは、この手順の run: と、env の秘密情報の行だけです。
       # 指示は AI_REVIEW_INSTRUCTIONS(既定ブランチの作業ツリーのファイル)だけから読みます。PR の側の指示を読んではなりません。
       # PR の head 側のカスタム指示を読む道具(GitHub Copilot のカスタム指示など)をそのまま使う構成は、この条件を満たしません
@@ -148,7 +173,13 @@ jobs:
       # 「実行の結果を述べる指摘は、実行の記録の所在を含める。所在を示せない場合は、実行したコマンドと観測した
       # 結果を書いてよいが、実行で確かめたとは記録しない」。修正案・代替案は求めません(標準 附属書H H.4)。
       # 所在か根拠を欠く指摘は、人が採否の欄に「不採用(所在・根拠なし)」と記録してよいものです。
-      # このワークフローは、差し込んだレビューの出力がこれらを満たすかを確かめません(AI維持管理者が四半期に抜き取ります)。
+      # 差し込み口の契約(.github/ai-review/README.md): 差し込む手順は、道具の側の入力(起動の指示・道具の定義・実際に読んだファイル)を
+      # AI_REVIEW_TOOL_INPUTS(tool-inputs.json)へ、道具の実行の記録から書きます。無ければ、後段の決まった手順が「道具の側の入力を
+      # 列挙できない確認(文脈を渡していない確認として記録してはならない)」と要約に出します(契約の実装は採用者。IMPL-0493)。
+      # 構造化された指摘を出す場合は AI_REVIEW_FINDINGS(findings.json)へ書きます。後段の決まった手順が、所在・根拠・実行の記録の
+      # 所在の欠落を要約に表示します(指摘を消さない。合否に使わない。IMPL-0155)。散文だけなら「構造が無いため欠落を検査していない」と
+      # 出ます。構造を満たしたことは、指摘の内容が成り立つ根拠ではありません。
+      # このワークフローは、差し込んだレビューの出力の中身が正しいかを確かめません(AI維持管理者が四半期に抜き取ります)。
       # 承認(gh pr review --approve)を行う実装を追加してはなりません。
       # 追加した場合、契約検査(verify-gate-contract)の意図と矛盾します。
       - name: レビューの実行(未設定)
@@ -159,6 +190,8 @@ jobs:
           AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md
           AI_REVIEW_DIFF: ${{ runner.temp }}/ai-review/diff.patch
           AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt
+          AI_REVIEW_TOOL_INPUTS: ${{ runner.temp }}/ai-review/tool-inputs.json
+          AI_REVIEW_FINDINGS: ${{ runner.temp }}/ai-review/findings.json
         run: |
           echo "::notice::AI レビューの実装は未設定です。使いたい仕組みをこのステップへ追加してください(指示: ${AI_REVIEW_INSTRUCTIONS})"
 
@@ -169,6 +202,13 @@ jobs:
         run: |
           echo "::warning::AI レビューの手順が失敗しました。指摘は出ていません。PR へコメントする実装は read の権限で失敗します。出し先をジョブの要約へ移してください"
           echo "**AI レビューの手順が失敗しました。指摘は出ていません**(指摘が無いことと区別してください)。PR へコメントする実装は read の権限で失敗します" >> "$GITHUB_STEP_SUMMARY"
+
+      # 差し込み口の契約のファイルを読み、道具の側の入力の有無と、構造化された指摘の欄の欠落を要約に表示する(IMPL-0253 の表示・
+      # IMPL-0155。process-compass #360)。指摘を消さない・書き換えない。合否に使わない(スクリプトは欠落があっても 0 で終わる)。
+      # 表示はこのジョブの要約だけで、PR へ書くジョブ(ai-review-notice)へは渡さない。中身の正しさは確かめない
+      - name: 道具の側の入力と指摘の欠落を表示する
+        if: steps.review.outcome == 'success' || steps.review.outcome == 'failure'
+        run: node scripts/gate/ai-review-record.mjs findings --dir "$RUNNER_TEMP/ai-review"
 
   # 位置づけの定型の文を PR へ書く。書き込みはこのジョブだけ。PR の内容に依らない入力(PR の番号と、既定ブランチの構成から読んだ
   # 有効かどうか)だけを受け取る。checkout しない。秘密情報を参照しない。AI の出力を受け取らない。

@@ -244,7 +244,7 @@ function aiReviewDenylistProblems(text) {
 const normBlock = (s) => String(s).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim()).join('\n');
 
 /**
- * ai-review.yml の決まった部分(process-compass #369 の突合 F-2)。採用者が書き換えてよいのは、手順「レビューの実行」の run: と、
+ * ai-review.yml の決まった部分(process-compass #369 の突合 F-2。#360 で入力の記録・その成果物・欠落の表示の手順を足した)。採用者が書き換えてよいのは、手順「レビューの実行」の run: と、
  * その env の秘密情報の行(1つの名前ごとに secrets から)だけ。ほかはこの形と一致しなければならない。
  * 値は stripComments の後の本文(コメント行を除き、字下げを残す)
  */
@@ -253,6 +253,9 @@ const AI_REVIEW_FIXED = {
   gate: "      - name: 有効かどうかを確認する\n        id: gate\n        env:\n          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}\n          REPO: ${{ github.repository }}\n        run: |\n          enabled=$(node -e \"const c=require('./process.config.json');console.log(c.aiReview?.enabled ? 'yes':'no')\")\n          forks=$(node -e \"const c=require('./process.config.json');console.log(c.aiReview?.allowForks === true ? 'yes':'no')\")\n          run_ai=no\n          if [ \"$enabled\" = \"yes\" ]; then\n            if [ \"$HEAD_REPO\" = \"$REPO\" ] || [ \"$forks\" = \"yes\" ]; then\n              run_ai=yes\n            else\n              echo \"::notice::フォークからの PR のため、AI の手順を動かしません(既定。構成の aiReview.allowForks で変える)\"\n              echo \"フォークからの PR のため、AI の手順を動かしていません(aiReview.allowForks が true でない)\" >> \"$GITHUB_STEP_SUMMARY\"\n            fi\n          fi\n          echo \"enabled=$enabled\" >> \"$GITHUB_OUTPUT\"\n          echo \"run_ai=$run_ai\" >> \"$GITHUB_OUTPUT\"\n          echo \"AI レビューの指示の版(既定ブランチ): $(git rev-parse HEAD)\" >> \"$GITHUB_STEP_SUMMARY\"",
   fetch: "      - name: PR の先頭を取得する\n        if: steps.gate.outputs.run_ai == 'yes'\n        env:\n          GH_TOKEN: ${{ github.token }}\n          PR_NUMBER: ${{ github.event.pull_request.number }}\n          BASE_REF: ${{ github.base_ref }}\n        run: |\n          set -euo pipefail\n          auth=\"AUTHORIZATION: basic $(printf 'x-access-token:%s' \"$GH_TOKEN\" | base64 -w0)\"\n          git -c \"http.https://github.com/.extraheader=$auth\" fetch --no-tags --no-recurse-submodules origin \\\n            \"+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head\" \\\n            \"+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}\"",
   input: "      - name: 差分を書き出す\n        id: input\n        if: steps.gate.outputs.run_ai == 'yes'\n        env:\n          BASE_REF: ${{ github.base_ref }}\n        run: |\n          set -euo pipefail\n          mkdir -p \"$RUNNER_TEMP/ai-review\"\n          git diff --no-ext-diff --no-textconv \"origin/${BASE_REF}...refs/remotes/pr/head\" > \"$RUNNER_TEMP/ai-review/diff.patch\"\n          git diff --no-ext-diff --no-textconv --name-status \"origin/${BASE_REF}...refs/remotes/pr/head\" > \"$RUNNER_TEMP/ai-review/files.txt\"\n          if [ -f .github/ai-review/instructions.md ]; then\n            echo \"instructions=yes\" >> \"$GITHUB_OUTPUT\"\n          else\n            echo \"instructions=no\" >> \"$GITHUB_OUTPUT\"\n            echo \"::warning::既定ブランチに .github/ai-review/instructions.md がありません。指示の置き場を既定ブランチへ入れるまで、AI レビューを実行しません\"\n            echo \"既定ブランチに .github/ai-review/instructions.md が無いため、AI レビューを実行していません\" >> \"$GITHUB_STEP_SUMMARY\"\n          fi",
+  inputs: "      - name: 入力を記録する\n        id: inputs\n        if: steps.gate.outputs.run_ai == 'yes' && steps.input.outputs.instructions == 'yes'\n        env:\n          BASE_REF: ${{ github.base_ref }}\n        run: node scripts/gate/ai-review-record.mjs inputs --dir \"$RUNNER_TEMP/ai-review\"",
+  upload: "      - uses: actions/upload-artifact@v4\n        if: steps.inputs.outcome == 'success'\n        with:\n          name: ai-review-inputs\n          path: ${{ runner.temp }}/ai-review/record/inputs.json\n          retention-days: 90\n          if-no-files-found: warn",
+  findings: "      - name: 道具の側の入力と指摘の欠落を表示する\n        if: steps.review.outcome == 'success' || steps.review.outcome == 'failure'\n        run: node scripts/gate/ai-review-record.mjs findings --dir \"$RUNNER_TEMP/ai-review\"",
   failure: "      - name: レビューの失敗を表示する\n        if: steps.review.outcome == 'failure'\n        run: |\n          echo \"::warning::AI レビューの手順が失敗しました。指摘は出ていません。PR へコメントする実装は read の権限で失敗します。出し先をジョブの要約へ移してください\"\n          echo \"**AI レビューの手順が失敗しました。指摘は出ていません**(指摘が無いことと区別してください)。PR へコメントする実装は read の権限で失敗します\" >> \"$GITHUB_STEP_SUMMARY\"",
   head: "    name: ai-review\n    if: '!github.event.pull_request.draft'\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: read\n    outputs:\n      enabled: ${{ steps.gate.outputs.enabled }}",
   noticeHead: "    name: ai-review-notice\n    needs: ai-review\n    if: always() && needs.ai-review.outputs.enabled == 'yes'\n    runs-on: ubuntu-latest\n    permissions:\n      pull-requests: write",
@@ -265,10 +268,18 @@ const AI_REVIEW_FIXED = {
     '          AI_REVIEW_INSTRUCTIONS: .github/ai-review/instructions.md',
     '          AI_REVIEW_DIFF: ${{ runner.temp }}/ai-review/diff.patch',
     '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt',
+    '          AI_REVIEW_TOOL_INPUTS: ${{ runner.temp }}/ai-review/tool-inputs.json',
+    '          AI_REVIEW_FINDINGS: ${{ runner.temp }}/ai-review/findings.json',
   ],
   noticeEnv: ['        env:', '          GH_TOKEN: ${{ github.token }}', '          REPO: ${{ github.repository }}', '          PR_NUMBER: ${{ github.event.pull_request.number }}'],
   noticeRunFirst: '          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(cat <<\'MD\'',
 };
+/**
+ * 決まった手順の並び。入力の記録(inputs)と成果物(upload)は差し込み口(review)の前に置き、差し込んだ手順が書き換えられない時点で
+ * 要約と成果物へ出す。欠落の表示(findings)は差し込み口の後(process-compass #360 論点C。IMPL-0253・0155)。
+ * 各手順は複数回置けない(並びの比較で、同じ手順の重複も拒む)
+ */
+const AI_REVIEW_ORDER = ['checkout', 'gate', 'fetch', 'input', 'inputs', 'upload', 'review', 'failure', 'findings'];
 /** 式(${{ }})として許すもの。secrets.<名前> は手順「レビューの実行」の env の行でだけ許す */
 const AI_REVIEW_EXPRESSIONS = new Set([
   'steps.gate.outputs.enabled', 'github.event.repository.default_branch', 'github.event.pull_request.head.repo.full_name', 'github.repository',
@@ -322,7 +333,7 @@ export function aiReviewAllowlistProblems(text) {
     if (st.length !== 1) p.push('ジョブ ai-review の steps: が1つでない');
     const steps = stepsOf(st.join('')).map(normBlock);
     const kinds = steps.map((s) => {
-      for (const k of ['checkout', 'gate', 'fetch', 'input', 'failure']) if (s === AI_REVIEW_FIXED[k]) return k;
+      for (const k of ['checkout', 'gate', 'fetch', 'input', 'inputs', 'upload', 'failure', 'findings']) if (s === AI_REVIEW_FIXED[k]) return k;
       const sl = s.split('\n');
       if (ALLOWED_SETUP.test(sl[0]) && (sl.length === 1 || (sl[1] === '        with:' && sl.slice(2).every((x) => ALLOWED_SETUP_WITH.test(x))))) return 'setup';
       if (/^ {6}- name: /.test(sl[0]) && sl[1] === AI_REVIEW_FIXED.reviewHead[0]) return 'review';
@@ -332,7 +343,7 @@ export function aiReviewAllowlistProblems(text) {
       if (kinds[i] === 'other') p.push(`許していない手順(${s.split('\n')[0].trim()}。決まった手順は書き換えない。足せるのは actions/setup-* だけ)`);
     });
     const order = kinds.filter((k) => k !== 'setup' && k !== 'other');
-    if (order.join(',') !== 'checkout,gate,fetch,input,review,failure') p.push(`決まった手順の並びが違う(期待: checkout・有効かどうか・PR の先頭の取得・差分の書き出し・レビューの実行・失敗の表示。実際: ${order.join('・')})`);
+    if (order.join(',') !== AI_REVIEW_ORDER.join(',')) p.push(`決まった手順の並びが違う(期待: checkout・有効かどうか・PR の先頭の取得・差分の書き出し・入力の記録・入力の記録の成果物・レビューの実行・失敗の表示・道具の側の入力と指摘の欠落の表示。実際: ${order.join('・')})`);
     if (kinds[0] !== 'checkout') p.push('最初の手順が既定ブランチの checkout でない');
     for (const s of steps.filter((_, i) => kinds[i] === 'review')) p.push(...reviewStepProblems(s));
   }

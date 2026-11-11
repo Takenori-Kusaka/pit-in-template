@@ -752,6 +752,66 @@ export function copyCoverage(prNumbers, copies) {
 }
 
 /**
+ * 既定ブランチ以外へ取り込んだマージの、マージの後の検出が拾わない形の定型の文(第4章 G-7 / 手動のスタックの中間の層のマージ。
+ * process-compass #360 H-4・H-5 / IMPL-0248)。0 件のときも出す(0 件は「拾わない形が無かった」を意味しない)
+ */
+export const OFF_DEFAULT_MERGE_LIMIT_TEXT =
+  'PR を経ない push による取り込み(手元で上の層を下の層へ git merge して git push する経路を含む)は、承認レビューの写しが作られないため拾いません。' +
+  '写しの base.ref は、マージの時点の PR の基底です。マージの前に基底を付け替えた経過は見ません。検出は合否・出荷の失敗に使いません';
+
+/**
+ * 既定ブランチ以外へ取り込んだマージの、マージの後の検出(IMPL-0248。process-compass #360 H-4)。出荷の範囲の写し(record-copy の
+ * 写し)の base.ref を、写しの default_branch(マージの時点の既定ブランチ。無ければ fallback)と比べる。合否・欠落に使わない。
+ *   copies        PR 番号 → { copy }(mergeRecordSources の copies)
+ *   inRange(n, c) 出荷の範囲の写しか
+ *   missing       出荷の範囲のマージのうち写しの無い PR 番号(copyCoverage の missing。base.ref を読めないため未確認)
+ *   skipped       読めない写しのファイル([{ file, reason }])。番号が範囲に入るもの・番号を読めないものを未確認に数える
+ *   available     写しの置き場(記録用ブランチまたは基底ブランチの複製)を読めたか。読めなければ全体を未確認とする
+ *   defaultBranch 写しに default_branch が無いときに使う既定ブランチ({ name, how })
+ * 返す status: detected(検出あり)/ none(0 件)/ unconfirmed(未確認)。検出があれば、未確認の写しがあっても detected
+ */
+export function offDefaultMerges({ copies, inRange = () => true, missing = [], skipped = [], available = true, defaultBranch = null } = {}) {
+  const out = { status: 'none', detected: [], unconfirmed: [], checked: 0, defaultBranch: defaultBranch?.name ? { ...defaultBranch } : null, reason: null, limit: OFF_DEFAULT_MERGE_LIMIT_TEXT };
+  if (!available) {
+    out.status = 'unconfirmed';
+    out.reason = '写しの置き場(記録用ブランチ・基底ブランチの複製)を読めない';
+    return out;
+  }
+  for (const [n, entry] of [...(copies ?? new Map())].sort((a, b) => a[0] - b[0])) {
+    const copy = entry?.copy ?? null;
+    if (!inRange(n, copy)) continue;
+    out.checked++;
+    const base = typeof copy?.base?.ref === 'string' && copy.base.ref.trim() ? copy.base.ref.trim() : null;
+    const def = typeof copy?.default_branch === 'string' && copy.default_branch.trim() ? copy.default_branch.trim() : (defaultBranch?.name ?? null);
+    if (!base) out.unconfirmed.push({ pr: n, reason: '写しに base.ref が無い' });
+    else if (!def) out.unconfirmed.push({ pr: n, reason: '既定ブランチの名前を確かめられない(写しに default_branch が無く、集約の側でも読めない)' });
+    else if (base !== def) out.detected.push({ pr: n, baseRef: base, defaultBranch: def, defaultFrom: copy?.default_branch ? '写し' : (defaultBranch?.how ?? '集約') });
+  }
+  for (const pr of [...new Set(missing)].sort((a, b) => a - b)) out.unconfirmed.push({ pr, reason: '写しが無い' });
+  for (const s of skipped ?? []) {
+    const m = /pr-(\d+)\.json$/.exec(String(s?.file ?? ''));
+    if (m && !inRange(Number(m[1]), null)) continue;
+    out.unconfirmed.push({ pr: m ? Number(m[1]) : null, file: s?.file ?? null, reason: `写しが読めない(${s?.reason ?? '理由不明'})` });
+  }
+  out.status = out.detected.length ? 'detected' : out.unconfirmed.length ? 'unconfirmed' : 'none';
+  return out;
+}
+
+/** offDefaultMerges の結果を、保証の開示の表の1升の文にする(値だけ。評価の語を足さない) */
+export function offDefaultMergesText(r) {
+  if (!r) return '未確認(記録なし)';
+  const list = (xs) => xs.map((x) => (x.pr != null ? `#${x.pr}` : x.file) + (x.baseRef ? `(base.ref ${x.baseRef})` : `(${x.reason})`)).join(', ');
+  const head =
+    r.status === 'detected'
+      ? `**検出あり ${r.detected.length} 件**(${list(r.detected)}。既定ブランチ ${[...new Set(r.detected.map((d) => d.defaultBranch))].join('・')})`
+      : r.status === 'none'
+        ? `0 件(範囲の写し ${r.checked} 件の base.ref が既定ブランチ${r.defaultBranch?.name ? ` ${r.defaultBranch.name}` : ''})`
+        : `**未確認**(${r.reason ?? `確かめられない写し ${r.unconfirmed.length} 件`})`;
+  const tail = r.status !== 'unconfirmed' && r.unconfirmed.length ? `。確かめられない写し ${r.unconfirmed.length} 件(${list(r.unconfirmed)})` : r.status === 'unconfirmed' && r.unconfirmed.length ? `: ${list(r.unconfirmed)}` : '';
+  return `${head}${tail}。${r.limit}`;
+}
+
+/**
  * 様式の帰属の裏づけ(IMPL-0128 / 第4章「判定記録を基底ブランチへ入れる操作」。process-compass #379 / ADR-0109 決定3)。
  * 裏づけは、記名者本人のアカウントの操作をホスティングの記録で確かめたものに限る。効力を持つ記録の照合(material-attribution.mjs の
  * introducedBacking)と同じ関数・同じ強さで照らす(名義の共有・帰属の確認者を置けない体制の扱いも同じ):
@@ -2855,6 +2915,43 @@ if (isMain) {
   // 宣言行の無い承認レビューを G-6 の記録として数えた PR(宣言行のある G-6 の判定を持つ PR は、上の判定の側で数える)
   const copyG6InRange = prs.filter((p) => p.copy && p.g6.independentHuman && p.g6.reviewerSummarySource === 'review' && !reviewJudgements.some((j) => j.pr === p.number && j.gate === 'G-6'));
   const copyRange = copyCoverage([...anyPrByNumber.keys()], recordSources.copies);
+  // 既定ブランチ以外へ取り込んだマージの、マージの後の検出(process-compass #360 H-4 / IMPL-0248)。出荷の範囲の写しの base.ref を
+  // 既定ブランチと比べる。合否・欠落に使わない(gaps へ入れない)。範囲の写しは、範囲の PR(マージコミットで突合したもの・件名の候補)と、
+  // マージの時刻が範囲(起点のコミットの日付より後、終点のコミットの日付まで。期間の指定では期間の日付)に入るもの。中間の層の
+  // スカッシュのマージは既定ブランチの履歴に残らないため、時刻でも拾う。既定ブランチの名前は写しの default_branch を先に使い、
+  // 無ければホスティング、次に origin の HEAD から読む。読めなければ推測で埋めず未確認とする
+  const offDefault = (() => {
+    const dateOf = (rev) => (rev ? git(['log', '-1', '--format=%cI', rev]) || null : null);
+    const since = !period && from ? dateOf(from) : null;
+    const until = !period ? dateOf(to) : null;
+    const known = new Set([...anyPrByNumber.keys(), ...candidateNumbers]);
+    const inRange = (n, copy) => {
+      if (known.has(n)) return true;
+      const at = copy?.merged_at ? new Date(copy.merged_at) : null;
+      if (!at || Number.isNaN(at.getTime())) return false;
+      if (period) {
+        const day = localDay(at);
+        return day >= period.from && day <= period.to;
+      }
+      return (!since || at > new Date(since)) && (!until || at <= new Date(until));
+    };
+    let fallback = null;
+    const hosted = repo ? gh(['api', `repos/${repo}`]) : null;
+    if (hosted?.default_branch) fallback = { name: hosted.default_branch, how: 'ホスティング(repos/' + repo + ' の default_branch)' };
+    else {
+      const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+      if (sym) fallback = { name: sym.replace(/^refs\/remotes\/origin\//, ''), how: 'origin の HEAD' };
+    }
+    return offDefaultMerges({
+      copies: recordSources.copies,
+      inRange,
+      missing: copyRange.missing,
+      skipped: recordsBranch.available ? recordsBranch.skipped : [],
+      available: recordsBranch.available || baseCopies.present,
+      defaultBranch: fallback,
+    });
+  })();
+  if (offDefault.status === 'detected') warn(`既定ブランチ以外へ取り込んだマージ ${offDefault.detected.length} 件(${offDefault.detected.map((d) => `#${d.pr} → ${d.baseRef}`).join(', ')})。合否には使いません(保証の開示 項目1)`);
   // 写しの不一致(基底ブランチの複製と記録用ブランチ)は、記録用ブランチの側の書き換えとして欠落に数える(第4章 G-7 基準5)
   for (const m of recordSources.mismatches) gaps.push(m.text);
   // 写しとホスティングの記録の突合の欠落(不変の欄の不一致・写しにだけあるレビュー)と、ホスティングで照合できなかった写し
@@ -4335,6 +4432,8 @@ if (isMain) {
     },
     base: { present: baseCopies.present, copies: baseCopies.reviews.size, skipped: baseCopies.skipped },
     range: copyRange,
+    // 既定ブランチ以外へ取り込んだマージ(マージの後の検出。合否に使わない。process-compass #360 H-4 / IMPL-0248)
+    offDefaultMerges: offDefault,
     mismatches: recordSources.mismatches.map((m) => m.text),
     copyFindings: [...prs, ...recordPrs].flatMap((p) => p.copy?.findings ?? []),
     staleApprovals: [...prs, ...recordPrs].filter((p) => (p.copy?.stale ?? []).length).map((p) => `#${p.number}(${p.copy.stale.map((s) => `@${s.login ?? '?'}`).join('・')})`),
@@ -5327,6 +5426,10 @@ if (isMain) {
       );
       R.push(
         `| 出荷の範囲のマージと写しの一致(第4章 G-7 基準5) | 範囲内のマージ ${rc.range.merged} 件 / 写し ${rc.range.copied} 件 / 欠け ${rc.range.missing.length} 件${rc.range.missing.length ? `(${rc.range.missing.map((n) => `#${n}`).join(', ')})` : ''} | ${prevRc((r) => `マージ ${r.range.merged} 件 / 写し ${r.range.copied} 件 / 欠け ${r.range.missing.length} 件`)} |`
+      );
+      // 既定ブランチ以外へ取り込んだマージ(手動のスタックの中間の層のマージ。マージの後の検出。合否に使わない。process-compass #360 H-4 / IMPL-0248)
+      R.push(
+        `| 既定ブランチ以外へ取り込んだマージ(写しの base.ref。検出あり / 0 件 / 未確認。合否・出荷の失敗に使わない) | ${offDefaultMergesText(rc.offDefaultMerges)} | ${prevRc((r) => (r.offDefaultMerges ? (r.offDefaultMerges.status === 'detected' ? `検出あり ${r.offDefaultMerges.detected.length} 件` : r.offDefaultMerges.status === 'none' ? '0 件' : '未確認') : null))} |`
       );
       if (rc.writers) {
         // 記録用ブランチへ書き込める主体(構成ごとの固定の文)と、履歴の走査の件数。外へ渡す開示にも同じ文を載せる(process-compass #379 / IMPL-0439)

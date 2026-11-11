@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
-import { criterionNumbers, readPlanMappings, unmappedCriteria, countClarifications, readClarifications } from './verification-trace.mjs';
+import { criterionNumbers, readPlanMappings, readPlanTargets, unmappedCriteria, countClarifications, readClarifications } from './verification-trace.mjs';
 import { clarificationStep, withG4Material } from './next.mjs';
 
 let failures = 0;
@@ -172,6 +172,20 @@ check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', J
   check('--gate に G-2・G-4 以外を渡すと落ちる', !r.ok && /G-2 か G-4/.test(r.out), r.out);
   r = run('--gate', 'G-4', 'specs/F-404');
   check('--gate で機能仕様が無いと落ちる', !r.ok && /spec\.md がありません/.test(r.out), r.out);
+}
+
+// 11. 実装計画の「変更の対象パス」の升(標準 第5章 5.8.6 要求事項10。process-compass #360 / IMPL-0205)
+{
+  const plan = '# 実装計画\n\n## タスク\n\n| ID | 内容 | 対応する受入基準 | 変更の対象パス |\n| --- | --- | --- | --- |\n| Task-1 | a | 1 | `src/invite/**`, `src/api/invite.ts` |\n| Task-2 | b | 2 | 招待の画面 |\n| Task-3 | c | 3 | `docs/` |\n';
+  const t = readPlanTargets('F-001', { text: plan });
+  // IMPL-0205:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('対象パスの升のバッククォートの中を glob として読み、** を強調の記号として消さない', t.column && JSON.stringify(t.tasks[0].globs) === '["src/invite/**","src/api/invite.ts"]' && !t.tasks[0].unreadable, JSON.stringify(t));
+  // IMPL-0205:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('バッククォートの無い升は推定せず、読めない升として出す', t.tasks[1].unreadable && t.tasks[1].globs.length === 0 && t.tasks[1].cell === '招待の画面', JSON.stringify(t.tasks[1]));
+  check('末尾が / の対象パスは、その下のすべてとして読む', JSON.stringify(t.tasks[2].globs) === '["docs/**"]', JSON.stringify(t.tasks[2]));
+  const noCol = readPlanTargets('F-001', { text: '## タスク\n\n| ID | 内容 |\n| --- | --- |\n| Task-1 | a |\n' });
+  check('列の無い計画は column: false', noCol.plan && !noCol.column, JSON.stringify(noCol));
+  check('計画が無い(本文が null)なら plan: false', readPlanTargets('F-001', { text: null }).plan === false);
 }
 
 // 10. next.mjs の段階(未確定事項が残る機能を判定待ちへ進めない。G-4 待ちに一覧を添える)

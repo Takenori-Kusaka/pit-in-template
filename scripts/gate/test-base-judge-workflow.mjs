@@ -28,6 +28,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { baseJudgeWorkflowProblems, baseJudgeLayers, recordCopyWorkflowProblems, aiReviewWorkflowProblems, aiReviewAllowlistProblems, aiReviewCheckPlan } from './base-judge.mjs';
 import { CONTROL_FILES, CONTROL_CONFIG_KEYS, controlTouchedOf } from './check-pr.mjs';
+import crypto from 'node:crypto';
+import { collectInputs, inputsSummary, toolInputsCheck, findingsCheck, findingsSummary, NOTE as RECORD_NOTE } from './ai-review-record.mjs';
 
 let failures = 0;
 let n = 0;
@@ -37,7 +39,8 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'NG  '} ${name}${ok ? '' : `\n       ${detail}`}`);
 };
 
-const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+// 読み込みの側で改行を LF へ揃える(Windows の作業ツリーは CRLF で取り出される。照合の正規表現・置換の文字列は LF のまま緩めない。#360 H-8)
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const wf = read('.github/workflows/gate-g5-base.yml');
 // IMPL-0455:ok
 check('gate-g5-base.yml: 既定ブランチの定義で動き、PR のコードを checkout せず、最小の権限で、check run で結果を出す', baseJudgeWorkflowProblems(wf).length === 0, baseJudgeWorkflowProblems(wf).join(' / '));
@@ -132,7 +135,7 @@ check('ai-review.yml: 指示の置き場(.github/ai-review/instructions.md)が�
 {
   // 許す形の範囲の内側の書き換え(誤検出しない側)
   const RUN = '          echo "::notice::AI レビューの実装は未設定です。';
-  const KEY = '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt';
+  const KEY = '          AI_REVIEW_FINDINGS: ${{ runner.temp }}/ai-review/findings.json'; // 差し込みの手順の env の決まった行の最後
   const fine = [
     ['差し込みの run: で依存を導入して道具を動かす', ar.replace(RUN, `          npm ci\n          node tools/review.mjs "$AI_REVIEW_INSTRUCTIONS" "$AI_REVIEW_DIFF" >> "$GITHUB_STEP_SUMMARY"\n${RUN}`)],
     ['秘密情報を1つの名前ごとに env で渡す', ar.replace(KEY, `${KEY}\n          MODEL_API_KEY: \${{ secrets.MODEL_API_KEY }}`)],
@@ -175,7 +178,7 @@ check('ai-review.yml: 指示の置き場(.github/ai-review/instructions.md)が�
   // #369 の独立の突合 F-2・F-3・F-5 の変異。否定のリストの外の書き方を、許す形の一覧の検査(aiReviewAllowlistProblems)が検出する
   const RUN = '          echo "::notice::AI レビューの実装は未設定です。';
   const ins = (lines) => ar.replace(RUN, `${lines}\n${RUN}`);
-  const KEY = '          AI_REVIEW_FILES: ${{ runner.temp }}/ai-review/files.txt';
+  const KEY = '          AI_REVIEW_FINDINGS: ${{ runner.temp }}/ai-review/findings.json'; // 差し込みの手順の env の決まった行の最後
   const mutants = [
     ['FETCH_HEAD から PR の先頭の指示を読む', ins('          git show FETCH_HEAD:.github/ai-review/instructions.md > /tmp/i.md')],
     ['変数を経由して PR の先頭の指示を読む', ins('          F=.github/ai-review/instructions.md\n          R=refs/remotes/pr/head\n          git show "$R:$F" > /tmp/i.md')],
@@ -211,6 +214,162 @@ check('ai-review.yml: 指示の置き場(.github/ai-review/instructions.md)が�
     check(`ai-review.yml の変異(${what})を許す形の一覧の検査が検出する`, text !== ar && probs.length > 0, `変異が入っていない、または検出しない(${text === ar ? '変異なし' : '検出なし'})`);
   }
 }
+{
+  // #360 論点C: 入力の記録(IMPL-0253)・その成果物・欠落の表示(IMPL-0155)の決まった手順。実物の定義にあり、許す形の外の書き換えと
+  // 許す形の外の手順の追加は従来どおり拒む(違反と適合の対)
+  const INPUTS = /( {6}- name: 入力を記録する\n[\s\S]*?ai-review-record\.mjs inputs --dir "\$RUNNER_TEMP\/ai-review"\n)/;
+  const UPLOAD = /( {6}- uses: actions\/upload-artifact@v4\n[\s\S]*?if-no-files-found: warn\n)/;
+  const FINDINGS = /( {6}- name: 道具の側の入力と指摘の欠落を表示する\n[\s\S]*?ai-review-record\.mjs findings --dir "\$RUNNER_TEMP\/ai-review"\n)/;
+  const REVIEW_NAME = '      - name: レビューの実行(未設定)';
+  const inputsStep = ar.match(INPUTS)?.[1] ?? '';
+  // IMPL-0253:ok
+  check('ai-review.yml: 差し込み口の前に入力の記録の手順と成果物の手順があり、差し込み口の後に欠落の表示の手順がある', inputsStep !== '' && UPLOAD.test(ar) && FINDINGS.test(ar)
+    && ar.indexOf(inputsStep) < ar.indexOf(REVIEW_NAME) && ar.search(UPLOAD) < ar.indexOf(REVIEW_NAME) && ar.search(FINDINGS) > ar.indexOf(REVIEW_NAME));
+  // IMPL-0253:ok
+  check('ai-review.yml: 入力の記録の成果物は保持日数を明記し、上げるのはスクリプトが書いた入力の記録だけ', /retention-days: 90\n/.test(ar.match(UPLOAD)?.[1] ?? '') && /path: \$\{\{ runner\.temp \}\}\/ai-review\/record\/inputs\.json\n/.test(ar.match(UPLOAD)?.[1] ?? ''));
+  // IMPL-0155:ok
+  check('ai-review.yml: 差し込みの手順へ契約のファイルの置き場(AI_REVIEW_TOOL_INPUTS・AI_REVIEW_FINDINGS)を渡す', /AI_REVIEW_TOOL_INPUTS: \$\{\{ runner\.temp \}\}\/ai-review\/tool-inputs\.json\n {10}AI_REVIEW_FINDINGS: \$\{\{ runner\.temp \}\}\/ai-review\/findings\.json\n/.test(ar));
+  const before = (re) => ar.replace(re, '').replace(REVIEW_NAME, `${ar.match(re)?.[1] ?? ''}${REVIEW_NAME}`);
+  const mutants = [
+    ['入力の記録の手順を消す', ar.replace(INPUTS, ''), /並びが違う/],
+    ['入力の記録の手順を差し込み口の後へ動かす', ar.replace(INPUTS, '').replace('      - name: レビューの失敗を表示する', `${inputsStep}      - name: レビューの失敗を表示する`), /並びが違う/],
+    ['入力の記録の手順を2つ置く', ar.replace(INPUTS, `$1$1`), /並びが違う/],
+    ['入力の記録の失敗を黙って消す(|| true)', ar.replace('ai-review-record.mjs inputs --dir "$RUNNER_TEMP/ai-review"', 'ai-review-record.mjs inputs --dir "$RUNNER_TEMP/ai-review" || true'), /許していない手順/],
+    ['入力の記録を PR の側のスクリプトで書く', ar.replace('run: node scripts/gate/ai-review-record.mjs inputs', 'run: node "$RUNNER_TEMP/pr/scripts/gate/ai-review-record.mjs" inputs'), /許していない手順/],
+    ['成果物の保持日数を消す', ar.replace('          retention-days: 90\n', ''), /許していない手順/],
+    ['成果物へ AI の出力(findings.json)を上げる', ar.replace('path: ${{ runner.temp }}/ai-review/record/inputs.json', 'path: ${{ runner.temp }}/ai-review/findings.json'), /許していない手順/],
+    ['成果物を差し込み口の後で上げる(差し込んだ手順が記録を書き換えうる)', ar.replace(UPLOAD, '').replace('      - name: レビューの失敗を表示する', `${ar.match(UPLOAD)?.[1] ?? ''}      - name: レビューの失敗を表示する`), /並びが違う/],
+    ['欠落の表示の手順を消す', ar.replace(FINDINGS, ''), /並びが違う/],
+    ['欠落の表示を差し込み口の前へ動かす', before(FINDINGS), /並びが違う/],
+    ['欠落の表示の結果を後のジョブへ出す(GITHUB_OUTPUT)', ar.replace('ai-review-record.mjs findings --dir "$RUNNER_TEMP/ai-review"', 'ai-review-record.mjs findings --dir "$RUNNER_TEMP/ai-review" >> "$GITHUB_OUTPUT"'), /許していない手順/],
+    ['欠落の表示を合否に使う(欠落で落とす引数)', ar.replace('ai-review-record.mjs findings --dir "$RUNNER_TEMP/ai-review"', 'ai-review-record.mjs findings --dir "$RUNNER_TEMP/ai-review" --fail-on-gap'), /許していない手順/],
+    ['差し込みの env から道具の側の入力の置き場を消す', ar.replace('          AI_REVIEW_TOOL_INPUTS: ${{ runner.temp }}/ai-review/tool-inputs.json\n', ''), /レビューの実行」の id・条件/],
+    ['許す形の外の手順(任意の run:)を差し込み口の前に足す', ar.replace(REVIEW_NAME, `      - name: 前処理\n        run: echo x\n${REVIEW_NAME}`), /許していない手順/],
+    ['許す形の外の手順を欠落の表示の後に足す', ar.replace(FINDINGS, '$1      - name: 後処理\n        run: echo x\n'), /許していない手順/],
+  ];
+  for (const [what, text, re] of mutants) {
+    const probs = aiReviewAllowlistProblems(text);
+    // IMPL-0253:ng
+    check(`ai-review.yml の変異(${what})を許す形の一覧の検査が検出する`, text !== ar && probs.some((x) => re.test(x)), `変異が入っていない、または検出しない(${text === ar ? '変異なし' : probs.join(' / ') || '検出なし'})`);
+  }
+}
+}
+
+// #360 論点C: 決まった手順が呼ぶ記録のスクリプト(scripts/gate/ai-review-record.mjs)。違反と適合の対
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-ai-review-record-'));
+  const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  const put = (rel, s) => { fs.mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true }); fs.writeFileSync(path.join(tmp, rel), s); };
+  try {
+    const root = path.join(tmp, 'root');
+    const dir = path.join(tmp, 'ai-review');
+    put('root/.github/ai-review/instructions.md', '指示');
+    put('root/.github/ai-review/README.md', '契約');
+    put('root/CLAUDE.md', 'c');
+    put('root/sub/AGENTS.md', 'a');
+    put('root/.claude/settings.json', '{}');
+    put('root/node_modules/x/CLAUDE.md', 'n');
+    put('root/src/a.ts', 'x');
+    put('ai-review/diff.patch', 'diff');
+    put('ai-review/files.txt', 'M\tsrc/a.ts');
+    const shaOf = (ref) => ({ HEAD: 'b'.repeat(40), 'refs/remotes/origin/main': 'c'.repeat(40), 'refs/remotes/pr/head': 'd'.repeat(40) })[ref] ?? null;
+    const rec = collectInputs({ root, dir, baseRef: 'main', shaOf });
+    const paths = (xs) => xs.map((x) => x.path);
+    const sum = inputsSummary(rec);
+    // IMPL-0253:ok
+    check('入力の記録: 指示の置き場・差分・ファイルの一覧・3つの SHA・自動読込の候補を、パスと sha256 で書く', JSON.stringify(paths(rec.instructions)) === JSON.stringify(['.github/ai-review/README.md', '.github/ai-review/instructions.md'])
+      && rec.instructions.find((x) => x.path.endsWith('instructions.md')).sha256 === sha('指示')
+      && rec.artifacts.every((x) => x.sha256) && rec.artifacts[0].sha256 === sha('diff')
+      && rec.shas.defaultBranch === 'b'.repeat(40) && rec.shas.base === 'c'.repeat(40) && rec.shas.prHead === 'd'.repeat(40)
+      && JSON.stringify(paths(rec.autoloadCandidates)) === JSON.stringify(['.claude/settings.json', 'CLAUDE.md', 'sub/AGENTS.md'])
+      && rec.autoloadCandidates.find((x) => x.path === 'CLAUDE.md').sha256 === sha('c'), JSON.stringify(rec));
+    // IMPL-0253:ok
+    check('入力の記録: 要約に「候補は上限で、実際に読み込まれたものではない」「入力の記録は確かめたことを示さない」を定型で出す', sum.includes(RECORD_NOTE.candidates) && sum.includes(RECORD_NOTE.notVerified) && sum.includes('d'.repeat(40)), sum);
+    {
+      fs.rmSync(path.join(dir, 'diff.patch'));
+      const r2 = collectInputs({ root, dir, baseRef: 'main', shaOf: () => null });
+      // IMPL-0253:ng
+      check('入力の記録: 差分が無い・SHA を取れない場合も、行を落とさず sha256 なしと理由・取得できない旨を出す', r2.artifacts.length === 2 && r2.artifacts[0].sha256 === null && /読めない/.test(r2.artifacts[0].note)
+        && /PR の先頭: \(取得できない\)/.test(inputsSummary(r2)), JSON.stringify(r2.artifacts));
+      put('ai-review/diff.patch', 'diff');
+    }
+    // 道具の側の入力(差し込み口の契約)
+    const fullTool = JSON.stringify({ launch: { command: 'tool review', prompt: '.github/ai-review/instructions.md', sha256: sha('指示') }, tools: [], read: [{ path: 'CLAUDE.md', sha256: sha('c') }], source: 'run log' });
+    const toolCases = [
+      ['契約のファイルが無い', null, 'absent'],
+      ['JSON として読めない', '{', 'unreadable'],
+      ['起動の指示(launch)を欠く', JSON.stringify({ tools: [], read: [], source: 'x' }), 'incomplete'],
+      ['実際に読んだファイル(read)を欠く', JSON.stringify({ launch: 'x', tools: [], source: 'x' }), 'incomplete'],
+      ['道具の定義(tools)を欠く', JSON.stringify({ launch: 'x', read: [], source: 'x' }), 'incomplete'],
+    ];
+    for (const [what, text, state] of toolCases) {
+      const t = toolInputsCheck(text);
+      const s = findingsSummary(t, findingsCheck(null));
+      // IMPL-0253:ng
+      check(`道具の側の入力(${what}): 「道具の側の入力を列挙できない確認」と要約に出す`, t.state === state && s.includes(RECORD_NOTE.toolMissing) && !s.includes(RECORD_NOTE.toolSelfReport), `${t.state}: ${s}`);
+    }
+    {
+      const t = toolInputsCheck(fullTool);
+      const s = findingsSummary(t, findingsCheck(null));
+      // IMPL-0253:ok
+      check('道具の側の入力(契約の欄がそろう): 列挙できない旨を出さず、申告であって一致を確かめていない旨と読んだファイルを出す', t.state === 'present' && !s.includes(RECORD_NOTE.toolMissing) && s.includes(RECORD_NOTE.toolSelfReport) && s.includes(`${sha('c')}  CLAUDE.md`), s);
+    }
+    // 構造化された指摘の欠落(IMPL-0155)
+    {
+      const absent = findingsSummary(toolInputsCheck(fullTool), findingsCheck(null));
+      // IMPL-0155:ok
+      check('指摘の欠落: findings.json が無い(散文だけ)なら「構造が無いため欠落を検査していない」と出し、拒まない', absent.includes(RECORD_NOTE.noStructure) && absent.includes(RECORD_NOTE.structureNotBasis), absent);
+      const bad = findingsSummary(toolInputsCheck(fullTool), findingsCheck('[oops'));
+      // IMPL-0155:ng
+      check('指摘の欠落: findings.json を JSON として読めないなら、構造が無いとして出す', bad.includes('JSON として読めない') && bad.includes(RECORD_NOTE.noStructure), bad);
+    }
+    const good = { location: 'src/a.ts:1', basis: { criterion: 'AC-1', fact: '戻り値が null' } };
+    const gaps = [
+      ['所在(location)を欠く', { basis: 'AC-1 に照らし、戻り値が null' }, /所在\(location\)/],
+      ['根拠(basis)を欠く', { location: 'src/a.ts:1' }, /根拠\(basis\)/],
+      ['根拠のうち見た事実を欠く', { location: 'src/a.ts:1', basis: { criterion: 'AC-1' } }, /見た事実\(basis\.fact\)/],
+      ['実行の結果を述べるのに実行の記録の所在(run)を欠く', { ...good, execution: true }, /実行の記録の所在\(run\)/],
+      ['実行の記録の所在の代わりにコマンドと観測を書く', { ...good, execution: true, command: 'npm test', observed: '1 failed' }, /実行で確かめたとは記録しない/],
+    ];
+    for (const [what, f, re] of gaps) {
+      const input = JSON.stringify({ findings: [good, f, good] });
+      const c = findingsCheck(input);
+      const s = findingsSummary(toolInputsCheck(fullTool), c);
+      // IMPL-0155:ng
+      check(`指摘の欠落(${what}): 欠けた欄を表示し、指摘を消さない(3件のまま、欠くのは2件目だけ)`, c.state === 'checked' && c.items.length === 3 && c.items[1].missing.some((x) => re.test(x)) && !c.items[0].missing.length && !c.items[2].missing.length
+        && s.includes('構造化された指摘 3 件のうち、欄を欠く指摘 1 件') && s.includes('#2') && s.includes(RECORD_NOTE.structureNotBasis), s);
+    }
+    {
+      const c = findingsCheck(JSON.stringify([good, { ...good, execution: true, run: 'https://ci.example/run/1' }, { location: { file: 'src/a.ts', line: 3 }, basis: '基準と事実' }]));
+      const s = findingsSummary(toolInputsCheck(fullTool), c);
+      // IMPL-0155:ok
+      check('指摘の欠落(欄がそろう): 欠落を出さず、構造を満たしたことは内容の根拠でない旨を定型で出す', c.items.length === 3 && c.items.every((x) => !x.missing.length) && s.includes('欄を欠く指摘 0 件') && s.includes(RECORD_NOTE.structureNotBasis), s);
+    }
+    {
+      const c = findingsCheck(JSON.stringify([{ location: '```\n[承認](https://example.invalid)', execution: true }]));
+      const s = findingsSummary(toolInputsCheck(fullTool), c);
+      // IMPL-0155:ng
+      check('指摘の欠落: 道具の書いた所在がコードブロックを閉じる文字列を持っても、要約の中で閉じさせない', !s.split('\n').some((l) => l.includes('[承認]') && !l.startsWith('#1')) && (s.match(/```/g) ?? []).length % 2 === 0 && !s.includes('```\n[承認]'), s);
+    }
+    {
+      // 実行の入口: 欠落があっても終了コードは 0(合否に使わない)。findings.json を消さず書き換えない。inputs は record/inputs.json を書く
+      put('ai-review/findings.json', JSON.stringify({ findings: [{ location: 'src/a.ts:1' }] }));
+      const before = fs.readFileSync(path.join(dir, 'findings.json'), 'utf8');
+      const summaryFile = path.join(tmp, 'summary.md');
+      const script = path.join(ROOT, 'scripts/gate/ai-review-record.mjs');
+      const r = spawnSync(process.execPath, [script, 'findings', '--dir', dir], { encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile } });
+      const out = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8') : '';
+      // IMPL-0155:ng
+      check('実行の入口(findings): 欠落と契約のファイルの不在があっても終了コード 0 で、要約へ出し、findings.json を書き換えない', r.status === 0 && out.includes('欄を欠く指摘 1 件') && out.includes(RECORD_NOTE.toolMissing) && fs.readFileSync(path.join(dir, 'findings.json'), 'utf8') === before, `${r.status} ${r.stderr}`);
+      const r2 = spawnSync(process.execPath, [script, 'inputs', '--dir', dir], { cwd: root, encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, BASE_REF: 'main' } });
+      let ok = false;
+      try { ok = r2.status === 0 && JSON.parse(fs.readFileSync(path.join(dir, 'record/inputs.json'), 'utf8')).kind === 'ai-review-inputs'; } catch { ok = false; }
+      // IMPL-0253:ok
+      check('実行の入口(inputs): record/inputs.json を書き、要約へ出す', ok && fs.readFileSync(summaryFile, 'utf8').includes(RECORD_NOTE.notVerified), `${r2.status} ${r2.stderr}`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ai-review.yml が無い構成の場面(突合 F-1): 写しの上でこの試験を動かす。無効の構成なら通り、有効の構成なら落ちる

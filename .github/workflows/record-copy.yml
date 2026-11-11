@@ -29,7 +29,7 @@
 #
 # 写しに含めるのは最小の組だけです: pr・merge_commit_sha・head_sha・copied_at、PR の作成者 author{id,login}(作成を指示した者との別と
 # G-6 の独立の判定に要る)、reviews[] の id・state・commit_id・submitted_at・user{id,login,type}(User / Bot は API の値。`[bot]` の接尾で推定しない)・body、
-# および任意の欄として merged_at・merged_by.login・base.ref・title・body・head_ref(next.mjs が機能 ID を Spec: トレーラから引く)。
+# および任意の欄として merged_at・merged_by.login・base.ref・default_branch(マージの時点の既定ブランチ)・title・body・head_ref(next.mjs が機能 ID を Spec: トレーラから引く)。
 # 同じ期間の bypass・保護の変更の記録(監査ログ)は、無料のプランでは API で取れません。取れないことを写しに書きます。
 #
 # 出荷の証跡の集約(aggregate-evidence.mjs)と next.mjs は、この写しを scripts/gate/records.mjs で読みます(段階 2)。
@@ -90,6 +90,8 @@ jobs:
           MERGED_AT: ${{ github.event.pull_request.merged_at }}
           MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # マージの時点の既定ブランチの名前。出荷の集約が base.ref と比べ、既定ブランチ以外へ取り込んだマージを検出する(process-compass #360 H-4 / IMPL-0248。合否に使わない)
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           # 題名・本文・head のブランチ名は任意の欄。next.mjs が機能 ID(Spec: トレーラ・F-NNN)を写しから引く。
           # 本文は API の値をそのまま(推定・要約しない)。環境変数で渡し、シェルへ展開しない
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -123,6 +125,7 @@ jobs:
             --arg merged_at "$MERGED_AT" \
             --arg merged_by "$MERGED_BY" \
             --arg base_ref "$BASE_REF" \
+            --arg default_branch "$DEFAULT_BRANCH" \
             --arg head_ref "$HEAD_REF" \
             --arg title "$PR_TITLE" \
             --arg body "$PR_BODY" \
@@ -140,6 +143,7 @@ jobs:
               merged_at: $merged_at,
               merged_by: {login: $merged_by},
               base: {ref: $base_ref},
+              default_branch: $default_branch,
               copied_at: $copied,
               copied_by: "record-copy workflow (GITHUB_TOKEN)",
               reviews: $reviews[0],

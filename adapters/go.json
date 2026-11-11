@@ -13,6 +13,8 @@
     "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
   "thresholdFiles": [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"],
-  "coverageSummary": null,
-  "note": "coverage.out はテキスト形式のため、カバレッジ判定はワークフロー側の go tool cover の出力で行ってください。thresholdFiles は、閾値・除外設定のファイル(第4章 G-5「基準値と除外設定の変更」。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
+  "coverageSummary": "coverage.out",
+  "coverageDetail": "coverage.out",
+  "coverageFormat": "go-coverprofile",
+  "note": "coverage.out(go test -coverprofile。coverageFormat go-coverprofile)を、全体と変更の範囲の両方に使う(scripts/gate/coverage-check.mjs が読む。go tool cover -func の出力は表示のため)。全体の割合は文の数の割合(Σ 回数 > 0 のブロックの文の数 / Σ 文の数。go tool cover -func の合計と同じ)。変更の範囲は、ソースの構文木(scripts/gate/_go-stmt-lines を go run で実行する。go が要る)で各文の開始行を得て、その文を含む最も内側のブロックの回数を当てる(gocov 系の方式の近似。結果の approximation に出す)。記録のパス(import のパス)は projectDir の go.mod の module 行で戻す(go.work の複数の module・replace の先は扱わない)。coverage.out が出なければ基準3 の未実施として失敗する(process-compass #360)。thresholdFiles は、閾値・除外設定のファイル(第4章 G-5「基準値と除外設定の変更」。scripts/gate/check-pr.mjs が製品のコードとの同時変更を検査する)"
 }

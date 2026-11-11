@@ -111,6 +111,14 @@ const linesOf = (out, id) => out.split('\n').filter((l) => l.includes(`コミッ
   check('判断記録の要否: 指す判断記録がそのコミットに無ければ欠落にする', linesOf(r.out, ghost).some((l) => /ADR-0009\)が、そのコミットの context\/decisions\/ に無い/.test(l)), linesOf(r.out, ghost).join('\n') || r.out);
   // IMPL-0389:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('判断記録の要否: 実在する判断記録を指すコミットには出さない', !linesOf(r.out, withAdr).some((l) => /判断記録の要否/.test(l)), linesOf(r.out, withAdr).join('\n'));
+  // 既定ブランチ以外へ取り込んだマージの検出(process-compass #360 H-4 / IMPL-0248)を、集約の本体の出力で確かめる。
+  // 記録用ブランチも基底ブランチの複製も無い構成では「未確認」で、0 件と出さない。限界の定型の文も出す。合否に使わない
+  {
+    const ev = JSON.parse(w.read('evidence/evidence.json'));
+    const od = ev.assurance?.records?.offDefaultMerges;
+    check('マージの後の検出: 写しの置き場が無ければ evidence.json に「未確認」を出す', od?.status === 'unconfirmed' && /読めない/.test(od?.reason ?? ''), JSON.stringify(od));
+    check('マージの後の検出: 保証の開示に3値の行と、PR を経ない push を拾わない定型の文を出す', /\| 既定ブランチ以外へ取り込んだマージ\(写しの base\.ref。検出あり \/ 0 件 \/ 未確認。合否・出荷の失敗に使わない\) \| \*\*未確認\*\*.*PR を経ない push による取り込み/.test(r.report), r.report.split('\n').filter((l) => /既定ブランチ以外/.test(l)).join('\n') || r.report.slice(0, 400));
+  }
   check('規則と製品のコードを同じコミットで変えたら欠落にする', linesOf(r.out, both).some((l) => /区分の下限の規則\(process\.config\.json の riskFloor\)と製品のコード/.test(l)), linesOf(r.out, both).join('\n') || r.out);
   w.done();
 }

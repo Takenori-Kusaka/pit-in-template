@@ -52,6 +52,12 @@
 //      の controlApprovalBacking(出荷の証跡の集約と同じ)
 //   4. 既存のテストの変更: 基底にあるテスト(.claude/guard.json の testPatterns)の削除・名前の変更・行の削除を
 //      一覧にする。独立レビュー(G-6)の材料であり、合否には使わない。--comment で PR へ出す
+//   4b. 機械の検出の一覧(process-compass #360。G-6 の必須の確認事項。合否には使わない): 検証を弱める変更(基底に無い新しいテストの
+//      ファイルを含む。追加行の skip・only・todo・落ちることを期待する印、対の無い削除行のアサーション、同じ塊の中の期待値の改めの旧・新。
+//      IMPL-0204)、PR 本文の `## 期待値の改め` の根拠の解決、印の注釈 `pit-in: known-failure` の欠け・見直しの時期の超過(IMPL-0488)、
+//      製品のコードを変えずに既存のテストを変えた変更(IMPL-0486)、実装計画の対象のパスとの差(既定ブランチの先端の計画。IMPL-0205)。
+//      0 件でも検出の限界の文を出す。正本は gate-g5-base のジョブの要約。ただし pytest の strict の無い xfail の付与(印の strict=True も
+//      構成の xfail_strict = true も無い、strict=False、pytest.xfail( の呼び出し)は失敗させる(IMPL-0489。予期せず通った場合は試験の失敗)
 //   5. リスク区分: PR の本文の「リスク区分」の節に R1 / R2 / R3 のいずれか1つだけが残っていること。変更の種類に
 //      依らない(文書・記録だけの PR、Spec: setup の PR、依存の更新の bot の PR を含む)。区分は変更ごとに確定する
 //      記録であり(標準 第3章 3.8.1)、出荷判定の証跡の集約が同じ読み方(delegation.mjs の riskClassOf)で欠落にする
@@ -155,7 +161,7 @@ import {
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
-import { stageOf } from './verification-trace.mjs';
+import { stageOf, readPlanTargets } from './verification-trace.mjs';
 import {
   exceptionReviewBacking,
   stopReviewCandidates,
@@ -1396,7 +1402,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
 }
 
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
-export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head = null, requireControlApproval = false }) {
+export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head = null, requireControlApproval = false, today = null }) {
   const git = gitIn(root);
   const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
   // 判定の対象の版。head を渡したとき(基底から読む判定。gate-g5-base.yml)は、PR の先頭を取得した参照をデータとして読み、
@@ -1558,6 +1564,9 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     }
   } else if (maxLines === null || maxFiles === null) {
     result.notices.push('変更規模: 基準値が null(基準なし)で、この変更に効く。規模の確認を要さない(担保水準 L2 の宣言と根拠が実在し、確約範囲・コア指定のパスが宣言され、R3 でコア外の変更)');
+    // IMPL-0494: 基準なしが効いた PR には毎回、根拠の中身を機械で確かめていないことを定型で出す(process-compass #360 H-6)
+    size.assuranceContentUnchecked = ASSURANCE_CONTENT_UNCHECKED;
+    result.notices.push(`変更規模: ${ASSURANCE_CONTENT_UNCHECKED}`);
   }
   result.size = size;
 
@@ -1960,6 +1969,60 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     const assertions = removedLines.filter((l) => ASSERTION.test(l)).map((l) => l.slice(1).trim().slice(0, 120));
     result.testChanges.push({ file: e.path, kind: e.from ? `名前の変更と行の削除(${from} →)` : '行の削除・書き換え', removed: e.removed, assertions });
   }
+
+  // --- 4b. 検証を弱める変更の検出・期待値の改めの根拠・落ちることを期待する印(process-compass #360。合否に使わない。IMPL-0489 だけは失敗) ---
+  // IMPL-0204・IMPL-0488・IMPL-0489。対象は基底にあるテストと、基底に無い新しいテストのファイルの両方
+  {
+    const listDir = head
+      ? (dir) => String(git(['ls-tree', '--name-only', `${head}:${dir}`]) ?? '').split(/\r?\n/).filter(Boolean)
+      : (dir) => (fs.existsSync(path.join(root, dir)) ? fs.readdirSync(path.join(root, dir)) : []);
+    const decisions = listDir('context/decisions');
+    const adapter = json(atPolicy(`adapters/${(policyConfig ?? baseConfig ?? headConfig).adapters?.stack ?? ''}.json`));
+    const dirs = ['.', typeof adapter?.projectDir === 'string' ? adapter.projectDir.replace(/^\.\/?/, '') || '.' : '.'];
+    const checkDay = today ?? pr.today ?? new Date().toISOString().slice(0, 10);
+    const w = weakeningFindings({
+      diffText: git(['diff', '-U0', '-M', mergeBase, HEADREF]) ?? '',
+      isTest,
+      atHead,
+      atBase,
+      body: pr.body,
+      today: checkDay,
+      pytestStrict: pytestXfailStrict(atHead, dirs),
+      adrExists: (id) => decisions.some((f) => f.startsWith(`${id}-`) && f.endsWith('.md')),
+      specText: (feature) => atHead(`specs/${feature}/spec.md`),
+    });
+    w.today = checkDay;
+    result.weakening = w;
+    // IMPL-0489: strict の無い pytest の xfail の付与は試験の失敗の扱い(本文「予期せず通った場合は試験の失敗」)の強制であり、検出の表示と分ける
+    for (const e of w.strictErrors) {
+      result.errors.push(`落ちることを期待する印(pytest の xfail): ${e}。予期せず通った場合を試験の失敗にするため、印に strict=True を書くか、構成に xfail_strict = true を置く(標準 第5章 5.8.5 の後の段落)`);
+    }
+  }
+
+  // --- 4c. 製品のコードを変えずに既存のテストを変えた変更(IMPL-0486。合否に使わない。静的な近似) ---
+  {
+    const existingTests = all.filter((e) => isTest(e.from ?? e.path) && atBase(e.from ?? e.path) !== null).map((e) => e.path);
+    const productNonTest = productCode.filter((f) => !isTest(f));
+    result.testOnly = { detected: existingTests.length > 0 && productNonTest.length === 0, files: existingTests, limit: TEST_ONLY_LIMIT };
+  }
+
+  // --- 4d. 実装計画の対象のパスと、変更されたパスの差(IMPL-0205。標準 第5章 5.8.6 要求事項10。合否に使わない) ---
+  if (result.spec?.skipped || !result.spec?.specs?.length) {
+    result.planTrace = {
+      skipped: result.spec?.skipped
+        ? `対象外(${result.spec.skipped})。Spec: setup・依存の更新の bot・製品のコードを変えない PR はタスクを持たないため、計画の対象パスとの突合をしない`
+        : 'トレーラ Spec: F-NNN / Task-N を読めないため、計画の対象パスとの突合をしない',
+    };
+  } else {
+    result.planTrace = planPathTrace({
+      specs: result.spec.specs,
+      atPolicy,
+      atHead,
+      changed: all.flatMap((e) => (e.from ? [e.from, e.path] : [e.path])),
+      isTest,
+      readTargets: readPlanTargets,
+    });
+  }
   return result;
 }
 
@@ -1979,6 +2042,366 @@ export function renderTestChanges(changes) {
   return L.join('\n');
 }
 
+// ---------------------------------------------------------------- G-6 の材料: 検証を弱める変更の検出(process-compass #360)
+//
+// 標準 第5章 5.8.5 の後の段落(検証を弱める変更・期待値の改め・落ちることを期待する印)と 5.8.6 要求事項10(対象のパスの突合)。
+// すべて合否に使わない表示である(本文「検出を G-5 の合否に使ってはならない」)。例外は pytest の strict の無い xfail の付与
+// (IMPL-0489)で、これは検出ではなく「予期せず通った場合は試験の失敗」の強制のため、G-5(pr-rules)の失敗にする。
+// 正本は、既定ブランチのコードで計算するジョブ(gate-g5-base)の要約(--report と GITHUB_STEP_SUMMARY)。PR のコメントは閲覧の便宜。
+// ラベルは付けない(ラベルは誰でも外せ、外すと一覧から消えたように見えるため)。
+
+/** 追加行の skip 相当の印(IMPL-0204)。[表示, 正規表現] */
+export const SKIP_MARKS = [
+  ['.skip( / .todo( / .only(', /\b(?:it|test|describe|context|suite)\.(?:skip|todo|only)\s*\(/],
+  ['xit( / xdescribe( / xtest(', /\b(?:xit|xdescribe|xtest)\s*\(/],
+  ['pytest.skip(', /\bpytest\.skip\s*\(/],
+  ['@pytest.mark.skip / skipif', /\bpytest\.mark\.skip(?:if)?\b/],
+  ['@unittest.skip*', /\bunittest\.skip\w*/],
+  ['t.Skip( / Skipf( / SkipNow(', /\b\w+\.(?:SkipNow|Skipf|Skip)\s*\(/],
+  ['@Disabled', /@Disabled\b/],
+  ['@Ignore', /@Ignore\b/],
+  ['{ skip: true }', /\bskip\s*:\s*true\b/],
+];
+/** 追加行の落ちることを期待する印(IMPL-0204・IMPL-0488)。[表示, 正規表現, 枠組み] */
+export const XFAIL_MARKS = [
+  ['@pytest.mark.xfail', /\bpytest\.mark\.xfail\b/, 'pytest-marker'],
+  ['pytest.xfail(', /\bpytest\.xfail\s*\(/, 'pytest-imperative'],
+  ['test.fails( / it.fails(', /\b(?:test|it)\.fails\s*\(/, 'vitest'],
+  ['test.failing( / it.failing(', /\b(?:test|it)\.failing\s*\(/, 'jest'],
+  ['expectFailure', /\bexpectFailure\b/, 'node-test'],
+  ['@unittest.expectedFailure', /(?:\bunittest\.|@)expectedFailure\b/, 'unittest'],
+];
+/** 注釈の行の印(IMPL-0488)。`pit-in: known-failure issue=#NNN match="<照合する失敗の理由>" review=YYYY-MM` */
+export const KNOWN_FAILURE_NOTE = /pit-in:\s*known-failure\b(.*)$/;
+/** 注釈を探す範囲: 印の行と、その直前の行数 */
+export const KNOWN_FAILURE_LOOKBACK = 3;
+/** 検出の限界の定型の文(IMPL-0204)。0 件でも出す */
+export const WEAKENING_LIMIT =
+  '検出の限界: 列挙した語(skip・only・todo・xfail・fails・failing・expectFailure・expectedFailure・Disabled・Ignore・アサーションの語)以外の弱め方は拾わない。' +
+  '早期の return、試験の注釈化、別名を経た skip、自前の検証・印、設定による除外(-k・--deselect・testPathIgnorePatterns など)、テストのパスの外のテスト、製品のコードの側で検証を無効にする変更は、一覧に出ない';
+/** 「製品のコードを変えずに既存のテストを変えた変更」の検出の限界の定型の文(IMPL-0486)。0 件でも出す */
+export const TEST_ONLY_LIMIT = '検出の限界: 同じ PR で製品とテストを変えた場合、ローカルで解消した失敗は拾わない(PR の全体の差分だけを見る静的な近似。失敗が解消したことは確かめない)';
+/** 担保水準 L2 で規模の基準なし(null)が効いた PR に毎回出す定型の文(IMPL-0494) */
+export const ASSURANCE_CONTENT_UNCHECKED =
+  '担保水準の根拠の中身は機械で確かめていない: 機械が確かめたのは L2 の宣言の根拠のパスの実在と見直し日だけである。根拠が L2 の条件(記録で示す)を満たすかは、' +
+  '変化点の決定者が /process-change の種別 settings の手順で根拠の中身を読んで確かめる(L2 の採点の稼働を機械で検証することは課さない)';
+/** 対象のパスの突合の限界の定型の文(IMPL-0205) */
+export const PLAN_TRACE_LIMIT = '計画は既定ブランチの先端から読む。差・列の変更は合否に使わない。glob は ** と * だけを読む({a,b}・? は読まない)';
+
+const COMMENT_LINE = /^\s*(?:\/\/|#|\/\*|\*|--|<!--)/;
+const ASSERTION_IN_COMMENT = /\b(expect|assert\w*|toBe|toEqual|toMatch\w*|toStrictEqual|toHaveBeenCalled\w*|Equals|require\.\w+|t\.(Error|Fatal)\w*)\b/;
+/** 行がアサーションか。注釈の行では誤検出の多い should・Equal を数えない */
+const isAssertionLine = (text) => (COMMENT_LINE.test(text) ? ASSERTION_IN_COMMENT.test(text) : ASSERTION.test(text));
+
+/**
+ * `git diff -U0` の出力を、ファイルと塊(hunk)に分ける。
+ * 返り値: [{ file: 変更後のパス(削除なら null), from: 変更前のパス(追加なら null), hunks: [{ lines: [{ type: '+'|'-', text, line }] }] }]
+ * line は、追加行では変更後の行番号、削除行では変更前の行番号
+ */
+export function parseUnifiedDiff(text) {
+  const files = [];
+  let cur = null;
+  let hunk = null;
+  let oldLine = 0;
+  let newLine = 0;
+  for (const raw of String(text ?? '').split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      cur = { file: null, from: null, hunks: [] };
+      files.push(cur);
+      hunk = null;
+      continue;
+    }
+    if (!cur) continue;
+    if (!hunk && raw.startsWith('--- ')) {
+      cur.from = raw === '--- /dev/null' ? null : raw.replace(/^--- (?:a\/)?/, '');
+      continue;
+    }
+    if (!hunk && raw.startsWith('+++ ')) {
+      cur.file = raw === '+++ /dev/null' ? null : raw.replace(/^\+\+\+ (?:b\/)?/, '');
+      continue;
+    }
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (h) {
+      oldLine = Number(h[1]);
+      newLine = Number(h[2]);
+      hunk = { lines: [] };
+      cur.hunks.push(hunk);
+      continue;
+    }
+    if (!hunk) continue;
+    if (raw.startsWith('+')) hunk.lines.push({ type: '+', text: raw.slice(1), line: newLine++ });
+    else if (raw.startsWith('-')) hunk.lines.push({ type: '-', text: raw.slice(1), line: oldLine++ });
+    else if (raw.startsWith(' ')) {
+      oldLine++;
+      newLine++;
+    }
+  }
+  return files;
+}
+
+/** 注釈 `pit-in: known-failure ...` の欄を読み、欠け・超過の理由を返す。today は検査の日(YYYY-MM-DD) */
+export function knownFailureProblems(noteText, today) {
+  if (noteText === null || noteText === undefined) return ['注釈 `pit-in: known-failure issue=#NNN match="..." review=YYYY-MM` が印の行にも直前の行にも無い'];
+  const m = KNOWN_FAILURE_NOTE.exec(noteText);
+  const rest = m ? m[1] : '';
+  const problems = [];
+  if (!/\bissue=#\d+\b/.test(rest)) problems.push('issue=#NNN の欄が無い');
+  if (!/\bmatch="[^"]*\S[^"]*"/.test(rest)) problems.push('match="<照合する失敗の理由>" の欄が無い');
+  const rv = /\breview=(\d{4})-(\d{2})\b/.exec(rest);
+  if (!rv || Number(rv[2]) < 1 || Number(rv[2]) > 12) problems.push('review=YYYY-MM の欄が無い');
+  else if (today && `${rv[1]}-${rv[2]}` < String(today).slice(0, 7)) problems.push(`見直しの時期 review=${rv[1]}-${rv[2]} を過ぎている(検査の日 ${String(today).slice(0, 10)})`);
+  return problems;
+}
+
+/** ini・toml の真偽の値(pytest の ini の bool と同じ語) */
+const truthy = (v) => /^(?:true|1|yes|y|t|on)$/i.test(String(v ?? '').trim().replace(/^["']|["']$/g, ''));
+
+/**
+ * pytest の構成の xfail_strict(IMPL-0489)。pytest が構成のファイルを選ぶ順(pytest.ini → pyproject.toml の
+ * [tool.pytest.ini_options] → tox.ini の [pytest] → setup.cfg の [tool:pytest])で、最初に当たったファイルだけを読む。
+ * dirs は探す置き場(リポジトリの直下 '.' とアダプタの projectDir)。返り値: { file, strict } | null(構成が無い)
+ */
+export function pytestXfailStrict(read, dirs = ['.']) {
+  const candidates = [
+    ['pytest.ini', 'pytest', false, true],
+    ['pyproject.toml', 'tool.pytest.ini_options', true, false],
+    ['tox.ini', 'pytest', false, false],
+    ['setup.cfg', 'tool:pytest', false, false],
+  ];
+  for (const dir of [...new Set(dirs)]) {
+    for (const [name, table, toml, always] of candidates) {
+      const file = dir === '.' || !dir ? name : `${dir.replace(/\/+$/, '')}/${name}`;
+      const text = read(file);
+      if (text === null || text === undefined) continue;
+      const section = tableSection(text, table, { toml });
+      if (!section && !always) continue;
+      const v = /^xfail_strict\s*=\s*(.+)$/m.exec(section);
+      return { file, strict: Boolean(v && truthy(v[1])) };
+    }
+  }
+  return null;
+}
+
+/** 印の行から、括弧が閉じるまで(最大 10 行)の本文を返す(複数行に分けた @pytest.mark.xfail( ... strict=True) を読む) */
+function markCall(headLines, lineNo) {
+  let out = '';
+  let depth = 0;
+  let opened = false;
+  for (let i = lineNo - 1; i < Math.min(headLines.length, lineNo + 9); i++) {
+    const l = headLines[i] ?? '';
+    out += `${l}\n`;
+    for (const c of l) {
+      if (c === '(') {
+        depth++;
+        opened = true;
+      } else if (c === ')') depth--;
+    }
+    if (!opened || depth <= 0) break;
+  }
+  return out;
+}
+
+/**
+ * PR 本文の `## 期待値の改め` の表(`ファイル | 旧 | 新 | 根拠`)を読む。節が無ければ null。
+ * 根拠の識別子は ADR-NNNN・F-NNN/AC-N(受入基準)・条項の番号(第N章 N.N.N、N.N.N、附属書X)に限る。Issue の番号だけは数えない
+ */
+export function expectationTableOf(body) {
+  const lines = String(body ?? '').replace(/\r\n/g, '\n').split('\n');
+  const start = lines.findIndex((l) => /^#{2,3}\s*期待値の改め/.test(l));
+  if (start < 0) return null;
+  const rows = [];
+  let header = null;
+  let inComment = false;
+  for (const l of lines.slice(start + 1)) {
+    if (/^#{1,3}\s/.test(l)) break;
+    if (/<!--/.test(l) && !/-->/.test(l)) inComment = true;
+    if (inComment) {
+      if (/-->/.test(l)) inComment = false;
+      continue;
+    }
+    const t = l.trim();
+    if (!t.startsWith('|')) continue;
+    if (/^\|[\s|:-]+\|$/.test(t)) continue;
+    const cells = t.slice(1, t.endsWith('|') ? -1 : undefined).split('|').map((c) => c.trim());
+    if (!header) {
+      header = cells;
+      continue;
+    }
+    if (cells.every((c) => !c || /^[—–-]$/.test(c))) continue;
+    rows.push({ file: cells[0] ?? '', old: cells[1] ?? '', new: cells[2] ?? '', basis: cells[3] ?? '' });
+  }
+  return { rows };
+}
+
+/** 表の「ファイル」の升をパスへ(バッククォートと末尾の :行 を除く) */
+const tableFileOf = (cell) => String(cell ?? '').replace(/`/g, '').trim().replace(/:\d+(?:-\d+)?$/, '');
+
+/** 根拠の升の識別子を解決する。ctx: { adrExists(id4), specText(feature) }。返り値: { ids: [表示], problems: [理由] } */
+export function basisProblems(cell, { adrExists, specText }) {
+  const text = String(cell ?? '').normalize('NFKC');
+  const ids = [];
+  const problems = [];
+  for (const m of text.matchAll(/ADR-(\d{1,5})/g)) {
+    const id = String(Number(m[1])).padStart(4, '0');
+    ids.push(`ADR-${id}`);
+    if (!adrExists(id)) problems.push(`ADR-${id} が context/decisions/ に無い`);
+  }
+  for (const m of text.matchAll(/\b(F-\d+)\s*[/#:]?\s*AC-?(\d+)\b/g)) {
+    ids.push(`${m[1]}/AC-${m[2]}`);
+    const spec = specText(m[1]);
+    if (spec === null || spec === undefined) problems.push(`${m[1]}/AC-${m[2]} の仕様 specs/${m[1]}/spec.md が無い`);
+    else if (!new RegExp(`^\\|\\s*${m[2]}\\s*\\|`, 'm').test(spec)) problems.push(`${m[1]}/AC-${m[2]} の受入基準が specs/${m[1]}/spec.md の表に無い`);
+  }
+  const clauses = [...text.matchAll(/(?:第\s*\d+\s*章\s*)?\b\d+(?:\.\d+){1,4}\b|附属書\s*[A-Z](?:\.\d+)*/g)].map((m) => m[0].replace(/\s+/g, ' '));
+  ids.push(...clauses.map((c) => `条項 ${c}`));
+  if (!ids.length) problems.push(/#\d+/.test(text) ? 'Issue の番号だけで、根拠の識別子(ADR・受入基準・条項)が無い' : '根拠の識別子(ADR-NNNN・F-NNN/AC-N・条項の番号)が無い');
+  return { ids, clausesUnresolved: clauses.length > 0, problems };
+}
+
+/**
+ * 検証を弱める変更の検出(IMPL-0204)・期待値の改めの根拠・落ちることを期待する印の注釈(IMPL-0488)・pytest の strict(IMPL-0489)。
+ * diffText: `git diff -U0 -M <基底> <先頭>` の全体。isTest: テストのパスの判定。atHead・atBase: 本文を読む関数。
+ * 返り値: { files, skips, xfails, removedAssertions, pairs, newTestFiles, strictErrors, expectation, limit }
+ */
+export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '', today = null, pytestStrict = null, adrExists = () => false, specText = () => null }) {
+  const out = { newTestFiles: [], skips: [], xfails: [], removedAssertions: [], pairs: [], strictErrors: [], notes: [], expectation: null, limit: WEAKENING_LIMIT };
+  const headCache = new Map();
+  const headLinesOf = (f) => {
+    if (!headCache.has(f)) headCache.set(f, String(atHead(f) ?? '').replace(/\r\n/g, '\n').split('\n'));
+    return headCache.get(f);
+  };
+  let jsFails = false;
+  for (const d of parseUnifiedDiff(diffText)) {
+    if (!d.file) continue; // 削除したテストのファイルは、既存のテストの変更の一覧(IMPL-0203)が出す
+    if (!isTest(d.file) && !(d.from && isTest(d.from))) continue;
+    if (!d.from || atBase(d.from) === null) out.newTestFiles.push(d.file);
+    for (const h of d.hunks) {
+      const removed = h.lines.filter((l) => l.type === '-' && isAssertionLine(l.text));
+      const added = h.lines.filter((l) => l.type === '+' && isAssertionLine(l.text));
+      removed.forEach((r, i) => {
+        const a = added[i];
+        if (a) out.pairs.push({ file: d.file, line: a.line, old: r.text.trim().slice(0, 160), new: a.text.trim().slice(0, 160) });
+        else out.removedAssertions.push({ file: d.from ?? d.file, line: r.line, text: r.text.trim().slice(0, 160) });
+      });
+      for (const l of h.lines) {
+        if (l.type !== '+' || COMMENT_LINE.test(l.text)) continue;
+        const skip = SKIP_MARKS.find(([, re]) => re.test(l.text));
+        if (skip) out.skips.push({ file: d.file, line: l.line, mark: skip[0], text: l.text.trim().slice(0, 160) });
+        const xf = XFAIL_MARKS.find(([, re]) => re.test(l.text));
+        if (!xf) continue;
+        const headLines = headLinesOf(d.file);
+        const from = Math.max(0, l.line - 1 - KNOWN_FAILURE_LOOKBACK);
+        const near = headLines.slice(from, l.line).reverse().find((x) => KNOWN_FAILURE_NOTE.test(x)) ?? null;
+        const problems = knownFailureProblems(near, today);
+        out.xfails.push({ file: d.file, line: l.line, mark: xf[0], framework: xf[2], text: l.text.trim().slice(0, 160), note: near ? near.trim().slice(0, 200) : null, problems });
+        // IMPL-0489: pytest は、予期せず通った場合に失敗にする strict を要する。Jest・Vitest は枠組みが予期せぬ通過を失敗にする
+        if (xf[2] === 'pytest-marker') {
+          const call = markCall(headLines, l.line);
+          if (/\bstrict\s*=\s*False\b/.test(call)) out.strictErrors.push(`${d.file}:${l.line} の @pytest.mark.xfail が strict=False を指定している(予期せず通っても失敗にならない)`);
+          else if (!/\bstrict\s*=\s*True\b/.test(call) && !pytestStrict?.strict) {
+            out.strictErrors.push(`${d.file}:${l.line} の @pytest.mark.xfail に strict=True が無く、構成${pytestStrict ? `(${pytestStrict.file})` : '(pytest.ini・pyproject.toml・tox.ini・setup.cfg)'}にも xfail_strict = true が無い(予期せず通っても失敗にならない)`);
+          }
+        } else if (xf[2] === 'pytest-imperative') {
+          out.strictErrors.push(`${d.file}:${l.line} の pytest.xfail( は、呼んだ時点で試験を xfail として終えるため、予期せず通ったことを検出できない(strict は効かない)。@pytest.mark.xfail(strict=True) で書く`);
+        } else if (xf[2] === 'vitest' || xf[2] === 'jest') jsFails = true;
+      }
+    }
+  }
+  if (jsFails) out.notes.push('test.fails(Vitest)・test.failing(Jest)は、予期せず通ると枠組みが試験を失敗にするため、strict の検査をしない');
+  // 期待値の改めの根拠(PR 本文の表)
+  const table = expectationTableOf(body);
+  const pairFiles = [...new Set(out.pairs.map((p) => p.file))];
+  const rows = (table?.rows ?? []).map((r) => ({ ...r, file: tableFileOf(r.file), ...basisProblems(r.basis, { adrExists, specText }) }));
+  const listed = new Set(rows.map((r) => r.file));
+  out.expectation = { section: Boolean(table), rows, unlisted: pairFiles.filter((f) => !listed.has(f)) };
+  return out;
+}
+
+/**
+ * 実装計画の対象のパスと、変更されたパスの差(IMPL-0205)。specs: トレーラ Spec の [{ feature, task }]。
+ * atPolicy: 既定ブランチの先端(--policy-base。無ければ基底)の本文、atHead: PR の先頭の本文。changed: 変更されたパス(名前の変更は前後とも)
+ */
+export function planPathTrace({ specs, atPolicy, atHead, changed, isTest, readTargets }) {
+  const out = { tasks: [], notInBase: [], unreadable: [], columnChanges: [], outside: [], outsideTests: [], limit: PLAN_TRACE_LIMIT };
+  const globs = [];
+  const seenFeatures = new Set();
+  for (const s of specs) {
+    const file = `specs/${s.feature}/plan.md`;
+    const base = readTargets(s.feature, { text: atPolicy(file) });
+    const head = readTargets(s.feature, { text: atHead(file) });
+    const t = base.tasks.find((x) => x.id === s.task);
+    if (!base.plan) out.notInBase.push(`${s.feature} / ${s.task}(既定ブランチに ${file} が無い)`);
+    else if (!base.column) out.unreadable.push(`${s.feature} の計画に「変更の対象パス」の列が無い`);
+    else if (!t) out.notInBase.push(`${s.feature} / ${s.task}(既定ブランチの ${file} の表に無い)`);
+    else if (t.unreadable) out.unreadable.push(`${s.feature} / ${s.task}: ${t.cell || '(空)'}`);
+    else globs.push(...t.globs);
+    if (t) out.tasks.push({ feature: s.feature, task: s.task, globs: t.globs });
+    if (seenFeatures.has(s.feature)) continue;
+    seenFeatures.add(s.feature);
+    // 計画の対象パスの列そのものの変更(この PR が計画の範囲を広げていないか)
+    const before = new Map(base.tasks.map((x) => [x.id, x.cell]));
+    for (const x of head.tasks) {
+      if (!before.has(x.id)) {
+        if (base.plan) out.columnChanges.push({ feature: s.feature, task: x.id, before: null, after: x.cell });
+      } else if (before.get(x.id) !== x.cell) out.columnChanges.push({ feature: s.feature, task: x.id, before: before.get(x.id), after: x.cell });
+    }
+    for (const [id, cell] of before) if (!head.tasks.some((x) => x.id === id)) out.columnChanges.push({ feature: s.feature, task: id, before: cell, after: null });
+  }
+  const inPlan = (f) => globs.some((g) => matchGlob(g, f));
+  for (const f of [...new Set(changed)]) {
+    if (inPlan(f)) continue;
+    (isTest(f) ? out.outsideTests : out.outside).push(f);
+  }
+  return out;
+}
+
+const esc = (s) => String(s ?? '').replace(/[|`]/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** G-6 の材料(機械の検出の一覧)を Markdown にする。既存のテストの変更(IMPL-0203)に、検出の一覧を足したもの。合否には使わない */
+export function renderG6Material(r) {
+  const L = [renderTestChanges(r.testChanges ?? []), ''];
+  const w = r.weakening;
+  if (w) {
+    L.push('### 検証を弱める変更の検出(G-6 の必須の確認事項。合否には使わない)', '');
+    L.push(`- 新しいテストのファイル: ${w.newTestFiles.length ? w.newTestFiles.map((f) => `\`${esc(f)}\``).join(', ') : 'なし'}`);
+    L.push(`- 追加行の skip・only・todo: ${w.skips.length} 件`);
+    for (const s of w.skips.slice(0, 20)) L.push(`  - \`${esc(s.file)}:${s.line}\` ${s.mark}: \`${esc(s.text)}\``);
+    L.push(`- 追加行の落ちることを期待する印: ${w.xfails.length} 件`);
+    for (const x of w.xfails.slice(0, 20)) L.push(`  - \`${esc(x.file)}:${x.line}\` ${x.mark}${x.problems.length ? ` — 注釈: ${x.problems.join('、')}` : ` — 注釈: \`${esc(x.note)}\``}`);
+    L.push(`- 削除行のアサーション(対の無いもの): ${w.removedAssertions.length} 件`);
+    for (const a of w.removedAssertions.slice(0, 20)) L.push(`  - \`${esc(a.file)}:${a.line}\` \`${esc(a.text)}\``);
+    L.push(`- 同じ塊の中の期待値の改め(旧 → 新): ${w.pairs.length} 件`);
+    for (const p of w.pairs.slice(0, 20)) L.push(`  - \`${esc(p.file)}:${p.line}\` \`${esc(p.old)}\` → \`${esc(p.new)}\``);
+    for (const n of w.notes) L.push(`- ${n}`);
+    const e = w.expectation;
+    L.push('', '#### 期待値の改めの根拠(PR 本文の `## 期待値の改め`)', '');
+    if (!e.section) L.push(w.pairs.length ? '- PR 本文に `## 期待値の改め` の表が無い。上の改めの根拠(ADR・受入基準・条項)が示されていない' : '- PR 本文に `## 期待値の改め` の表は無い');
+    for (const row of e.rows) L.push(`- \`${esc(row.file)}\`: 根拠 ${row.ids.length ? row.ids.join(', ') : '—'}${row.problems.length ? ` — **${row.problems.join('、')}**` : ''}${row.clausesUnresolved ? '(条項の番号は書式だけを見て、実在は確かめない)' : ''}`);
+    if (e.unlisted.length) L.push(`- 表に無い改め: ${e.unlisted.map((f) => `\`${esc(f)}\``).join(', ')}`);
+    L.push('- 機械が確かめるのは識別子の実在までで、引いた決定がその挙動を定めているかは確かめない', '', `> ${w.limit}`, '');
+  }
+  if (r.testOnly) {
+    L.push('### 製品のコードを変えずに既存のテストを変えた変更(合否には使わない)', '');
+    L.push(r.testOnly.detected ? `- 検出: 製品のコードの変更が無く、既存のテスト ${r.testOnly.files.map((f) => `\`${esc(f)}\``).join(', ')} を変えている` : '- 検出なし');
+    L.push('', `> ${r.testOnly.limit}`, '');
+  }
+  const p = r.planTrace;
+  if (p) {
+    L.push('### 実装計画の対象のパスとの差(標準 第5章 5.8.6 要求事項10。合否には使わない)', '');
+    if (p.skipped) L.push(`- ${p.skipped}`);
+    else {
+      L.push(`- 計画の対象パスに当たらない変更: ${p.outside.length ? p.outside.map((f) => `\`${esc(f)}\``).join(', ') : 'なし'}`);
+      L.push(`- 計画の対象パスに当たらないテストのパス: ${p.outsideTests.length ? p.outsideTests.map((f) => `\`${esc(f)}\``).join(', ') : 'なし'}`);
+      L.push(`- 計画の対象パスの列の変更: ${p.columnChanges.length ? p.columnChanges.map((c) => `${c.feature} / ${c.task}(${esc(c.before ?? '(無し)')} → ${esc(c.after ?? '(削除)')})`).join('、') : 'なし'}`);
+      L.push(`- 既定ブランチの計画に無いタスク: ${p.notInBase.length ? p.notInBase.join('、') : 'なし'}`);
+      L.push(`- 読めない升: ${p.unreadable.length ? p.unreadable.map(esc).join('、') : 'なし'}`);
+      L.push('', `> ${p.limit}`);
+    }
+    L.push('');
+  }
+  return L.join('\n').trimEnd();
+}
+
 function renderReport(r) {
   const L = ['## G-5 PR の検査(check-pr)', ''];
   L.push(`- 失敗: ${r.errors.length} 件`);
@@ -1991,7 +2414,7 @@ function renderReport(r) {
     if (r.size.test?.files) L.push(`- テスト・fixture・snapshot(別集計): ${r.size.test.lines} 行 / ${r.size.test.files} ファイル`);
     if (r.size.excluded.length) L.push(`- 算定から除いたもの: ${r.size.excluded.slice(0, 10).join(', ')}${r.size.excluded.length > 10 ? ` ほか ${r.size.excluded.length - 10} 件` : ''}`);
   }
-  L.push('', renderTestChanges(r.testChanges));
+  L.push('', renderG6Material(r));
   return L.join('\n');
 }
 
@@ -2080,6 +2503,10 @@ if (isMain) {
     for (const w of r.warnings) warn(w);
     for (const n of r.notices) notice(n);
     if (r.testChanges.length) warn(`既存のテストの変更が ${r.testChanges.length} 件あります(G-6 の材料。合否には使わない)`);
+    const w = r.weakening;
+    if (w && w.skips.length + w.xfails.length + w.removedAssertions.length + w.pairs.length) {
+      warn(`検証を弱める変更の検出: skip ${w.skips.length} / 落ちることを期待する印 ${w.xfails.length} / 削除行のアサーション ${w.removedAssertions.length} / 期待値の改め ${w.pairs.length}(G-6 の必須の確認事項。合否には使わない)`);
+    }
   }
   const report = renderReport(r);
   const out = arg('--report');
@@ -2089,7 +2516,8 @@ if (isMain) {
   }
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + '\n');
   if (argv.includes('--comment')) {
-    const why = upsertComment(renderTestChanges(r.testChanges), pr.number);
+    // PR のコメントは閲覧の便宜。正本は既定ブランチのコードで計算するジョブ(gate-g5-base)の要約
+    const why = upsertComment(renderG6Material(r), pr.number);
     if (why) warn(`既存のテストの変更の一覧を PR へ出せませんでした(${why})。ジョブの要約に出しています`);
   }
   process.exit(r.errors.length ? 1 : 0);

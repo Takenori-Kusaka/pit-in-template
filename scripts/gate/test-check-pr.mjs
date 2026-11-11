@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -218,15 +218,16 @@ scenario('保証の所在: 担保水準 L1 の宣言と根拠が実在すれば�
   write('src/big.js', lines(450, 'x'));
 }, passes(overOk));
 rewindBase();
+// IMPL-0494:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('基準なし(null): 根拠の無い L2 の宣言では効かず、既定値で判定する', { body: OVER_BODY(ATT()) }, () => {
   const cfg = JSON.parse(read('process.config.json'));
   cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/none.md', reviewAt: '2099-01-01' } };
   write('process.config.json', cfg);
   advanceBase('null');
   write('src/big.js', lines(450, 'x'));
-}, passes(overOk, (r) => (r.notices.some((m) => /基準値 null.*既定値/.test(m)) ? [] : ['null が効かない旨を出していない'])));
+}, passes(overOk, (r) => (r.notices.some((m) => /基準値 null.*既定値/.test(m)) ? [] : ['null が効かない旨を出していない']), (r) => (r.notices.some((m) => /担保水準の根拠の中身は機械で確かめていない/.test(m)) ? ['基準なしが効かない PR に IMPL-0494 の定型の文を出した'] : [])));
 rewindBase();
-// IMPL-0267:ok IMPL-0281:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+// IMPL-0267:ok IMPL-0281:ok IMPL-0494:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア外の変更は、規模の確認を要さない', {}, () => {
   const cfg = JSON.parse(read('process.config.json'));
   cfg.task = { ...cfg.task, maxChangedLines: null, maxChangedFiles: null, assurance: { level: 'L2', basis: 'docs/assurance.md', declaredBy: '鈴木 一郎', declaredAt: '2026-10-01', reviewAt: '2099-01-01' } };
@@ -236,7 +237,7 @@ scenario('基準なし(null): L2 の宣言と根拠が実在し、R3 でコア�
   write('src/auth/login.js', lines(3, 'l'));
   advanceBase('null-l2');
   write('src/big.js', lines(450, 'x'));
-}, passes((r) => (!r.size.sizeOver && r.size.maxLines === null ? [] : ['基準なしが効いていない'])));
+}, passes((r) => (!r.size.sizeOver && r.size.maxLines === null ? [] : ['基準なしが効いていない']), (r) => (r.notices.some((m) => /担保水準の根拠の中身は機械で確かめていない/.test(m)) && r.size.assuranceContentUnchecked ? [] : ['IMPL-0494 の定型の文が出ていない'])));
 rewindBase();
 // IMPL-0267:ng IMPL-0281:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('基準なし(null): コア指定のパスが追跡中のファイルに1件も当たらなければ未宣言として扱い、効かない(#296 L-9)', { body: OVER_BODY(ATT()) }, () => {
@@ -391,6 +392,150 @@ if (!md.startsWith('<!-- pit-in:g6-test-changes -->') || !md.includes('test/a.te
   failures++;
   console.log('NG   一覧の Markdown に印とファイルが出ていない');
 } else console.log('ok   一覧の Markdown に印とファイルが出る');
+
+// ---------------------------------------------------------------- 検証を弱める変更の検出(G-6 の材料。合否に使わない。process-compass #360)
+const W = (r) => r.weakening ?? { skips: [], xfails: [], pairs: [], removedAssertions: [], newTestFiles: [], strictErrors: [], expectation: { rows: [], unlisted: [] } };
+const expect_ = (cond, msg) => (r) => (cond(r) ? [] : [typeof msg === 'function' ? msg(r) : msg]);
+const PY_TEST = (mark, note = '') => `import pytest\n\n${note}${mark}\ndef test_x():\n    assert 1 == 2\n`;
+// IMPL-0204:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('既存のテストへ skip の行を足すだけ(削除行が無くても一覧に出る。失敗にはしない)', {}, () => {
+  write('test/a.test.js', read('test/a.test.js').replace("test('b', () => {", "test.skip('b', () => {\n  // skipped\n});\ntest('c', () => {"));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).skips.some((s) => s.file === 'test/a.test.js' && /skip/.test(s.mark)), (r) => `skip を検出していない: ${JSON.stringify(W(r).skips)}`)));
+scenario('基底に無い新しいテストのファイルの it.only・xit を一覧に出す', {}, () => {
+  write('test/n.test.js', "it.only('n', () => {\n  expect(1).toBe(1);\n});\nxit('m', () => {});\n");
+  write('src/b.js', lines(5, 'b'));
+}, passes(testListed(0), expect_((r) => W(r).newTestFiles.includes('test/n.test.js') && W(r).skips.length === 2, (r) => `新しいテストのファイルの印: ${JSON.stringify(W(r))}`)));
+scenario('同じ塊の中の期待値の改めを旧・新の対で出し、対の無い削除行のアサーションを別に出す', {}, () => {
+  write('test/a.test.js', read('test/a.test.js').replace('expect(line1).toBe(1)', 'expect(line1).toBe(2)').replace('  expect(2).toBe(2);\n', ''));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).pairs.length === 1 && /toBe\(1\)/.test(W(r).pairs[0].old) && /toBe\(2\)/.test(W(r).pairs[0].new) && W(r).removedAssertions.length === 1, (r) => `対・削除行: ${JSON.stringify(W(r).pairs)} / ${JSON.stringify(W(r).removedAssertions)}`)));
+scenario('注釈の行の should の削除はアサーションに数えない', {}, () => {
+  write('test/old.test.js', "// this should never happen\ntest('old', () => {\n  expect(true).toBe(true);\n});\n");
+  advanceBase('should-comment');
+  write('test/old.test.js', "test('old', () => {\n  expect(true).toBe(true);\n});\n");
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).removedAssertions.length === 0, (r) => `注釈の should を数えた: ${JSON.stringify(W(r).removedAssertions)}`)));
+rewindBase();
+// IMPL-0204:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+const rW0 = scenario('弱める変更の無い PR でも、検出の限界の定型の文を出す(0 件)', {}, () => {
+  write('test/b.test.js', "test('new', () => {\n  expect(1).toBe(1);\n});\n");
+  write('src/b.js', lines(5, 'b'));
+}, passes(expect_((r) => W(r).skips.length === 0 && W(r).xfails.length === 0 && W(r).pairs.length === 0 && W(r).removedAssertions.length === 0, '検出が 0 件でない')));
+{
+  const mdW = renderG6Material(rW0);
+  const ok = mdW.startsWith('<!-- pit-in:g6-test-changes -->') && /列挙した語.*以外の弱め方は拾わない/.test(mdW) && /追加行の skip・only・todo: 0 件/.test(mdW);
+  if (!ok) failures++;
+  console.log(`${ok ? 'ok  ' : 'NG  '} 機械の検出の一覧の Markdown は、0 件でも検出の限界を出す(印は既存のコメントと同じ)`);
+}
+
+// 期待値の改めの根拠(PR 本文の `## 期待値の改め`。合否に使わない)
+const EXP = (rows) => `## 期待値の改め\n\n| ファイル | 旧 | 新 | 根拠 |\n| --- | --- | --- | --- |\n${rows.map((r) => `| ${r.join(' | ')} |`).join('\n')}\n\n`;
+const CHANGE_A = () => {
+  write('test/a.test.js', read('test/a.test.js').replace('expect(line1).toBe(1)', 'expect(line1).toBe(2)'));
+  write('src/a.js', lines(21));
+};
+scenario('期待値の改め: 表が無い改めを「表に無い改め」として出す', {}, CHANGE_A, passes(expect_((r) => W(r).expectation.unlisted.includes('test/a.test.js') && !W(r).expectation.section, (r) => JSON.stringify(W(r).expectation))));
+scenario('期待値の改め: 解決できない ADR と Issue の番号だけの根拠を出す', { body: `${EXP([['`test/a.test.js`', '1', '2', 'ADR-0099'], ['`test/b.test.js`', '1', '2', '#123 で合意']])}${BODY()}` }, CHANGE_A, passes(expect_((r) => {
+  const rows = W(r).expectation.rows;
+  return rows.length === 2 && /ADR-0099 が context\/decisions\/ に無い/.test(rows[0].problems.join()) && /Issue の番号だけ/.test(rows[1].problems.join()) && W(r).expectation.unlisted.length === 0;
+}, (r) => JSON.stringify(W(r).expectation))));
+scenario('期待値の改め: 実在する ADR と受入基準・条項を引いた行は問題を出さない', { body: `${EXP([['`test/a.test.js:3`', 'toBe(1)', 'toBe(2)', 'ADR-0001 決定2、F-001/AC-1、第5章 5.8.5']])}${BODY()}` }, () => {
+  write('context/decisions/0001-invite.md', '# ADR-0001\n');
+  write('specs/F-001/spec.md', '# 機能仕様: 招待\n\n## 受入基準\n\n| # | 型 | 受入基準 |\n| --- | --- | --- |\n| 1 | 常時 | x |\n');
+  CHANGE_A();
+}, passes(expect_((r) => W(r).expectation.rows.length === 1 && W(r).expectation.rows[0].problems.length === 0 && W(r).expectation.unlisted.length === 0, (r) => JSON.stringify(W(r).expectation))));
+
+// 落ちることを期待する印の注釈(IMPL-0488。表示)と、pytest の strict(IMPL-0489。G-5 の失敗)
+const KF = (review = '2026-12') => `# pit-in: known-failure issue=#42 match="ZeroDivisionError" review=${review}\n`;
+// IMPL-0488:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('印の注釈: 注釈の無い xfail の付与を出す(表示。合否に使わない)', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(strict=True)'));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).xfails.length === 1 && /注釈 .* が印の行にも直前の行にも無い/.test(W(r).xfails[0].problems.join()), (r) => JSON.stringify(W(r).xfails))));
+scenario('印の注釈: 見直しの時期を過ぎた注釈と、欄の欠けを出す(検査の日を注入)', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(strict=True)', KF('2026-10')));
+  write('tests/test_y.py', PY_TEST('@pytest.mark.xfail(strict=True)', '# pit-in: known-failure issue=#42 review=2027-01\n'));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => {
+  const by = (f) => W(r).xfails.find((x) => x.file === f)?.problems.join() ?? '';
+  return /review=2026-10 を過ぎている/.test(by('tests/test_x.py')) && /match=/.test(by('tests/test_y.py'));
+}, (r) => JSON.stringify(W(r).xfails))));
+// IMPL-0488:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('印の注釈: 3つの欄を持ち、見直しの時期の前の注釈は問題を出さない', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(strict=True)', KF('2026-11')));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).xfails.length === 1 && W(r).xfails[0].problems.length === 0, (r) => JSON.stringify(W(r).xfails))));
+// IMPL-0489:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('pytest の strict: strict=True も構成の xfail_strict も無い xfail の付与は失敗', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(reason="bug")', KF()));
+  write('src/a.js', lines(21));
+}, failsWith(/pytest の xfail.*strict=True が無く.*xfail_strict = true が無い/));
+scenario('pytest の strict: 構成が xfail_strict = true でも、印の strict=False は失敗', { today: '2026-11-12' }, () => {
+  write('pytest.ini', '[pytest]\nxfail_strict = true\n');
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(reason="bug", strict=False)', KF()));
+  write('src/a.js', lines(21));
+}, failsWith(/strict=False を指定している/));
+scenario('pytest の strict: pytest.xfail( の呼び出しは予期せぬ通過を検出できないため失敗', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', `import pytest\n\ndef test_x():\n    ${KF().trim()}\n    pytest.xfail("bug")\n`);
+  write('src/a.js', lines(21));
+}, failsWith(/pytest\.xfail\( は、呼んだ時点で/));
+// IMPL-0489:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('pytest の strict: 構成(pyproject.toml の [tool.pytest.ini_options])の xfail_strict = true で通る', { today: '2026-11-12' }, () => {
+  write('pyproject.toml', '[project]\nname = "x"\n\n[tool.pytest.ini_options]\nxfail_strict = true\n');
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(reason="bug")', KF()));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).xfails.length === 1 && W(r).strictErrors.length === 0, (r) => JSON.stringify(W(r)))));
+scenario('pytest の strict: 複数行に分けた印の strict=True で通る', { today: '2026-11-12' }, () => {
+  write('tests/test_x.py', PY_TEST('@pytest.mark.xfail(\n    reason="bug",\n    strict=True,\n)', KF()));
+  write('src/a.js', lines(21));
+}, passes());
+scenario('Jest の test.failing・Vitest の test.fails は strict を検査せず、その旨を出す', { today: '2026-11-12' }, () => {
+  write('test/f.test.js', `${KF().replace('#', '//')}test.failing('f', () => {\n  expect(1).toBe(2);\n});\n// pit-in: known-failure issue=#43 match="x" review=2026-12\nit.fails('g', () => {});\n`);
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).xfails.length === 2 && W(r).xfails.every((x) => !x.problems.length) && W(r).notes.some((x) => /枠組みが試験を失敗にする/.test(x)), (r) => JSON.stringify(W(r)))));
+
+// 製品のコードを変えずに既存のテストを変えた変更(IMPL-0486。表示。静的な近似)
+// IMPL-0486:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('テストだけの変更: 製品のコードを変えずに既存のテストを変えた PR を出す(失敗にはしない)', {}, () => {
+  write('test/a.test.js', read('test/a.test.js').replace('expect(line1).toBe(1)', 'expect(line1).toBe(2)'));
+}, passes(expect_((r) => r.testOnly?.detected === true && r.testOnly.files.includes('test/a.test.js'), (r) => JSON.stringify(r.testOnly))));
+// IMPL-0486:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+const rT0 = scenario('テストだけの変更: 製品のコードも変えた PR は検出せず、拾わない形の定型の文を出す', {}, CHANGE_A, passes(expect_((r) => r.testOnly?.detected === false && /同じ PR で製品とテストを変えた場合、ローカルで解消した失敗は拾わない/.test(r.testOnly.limit), (r) => JSON.stringify(r.testOnly))));
+{
+  const ok = /同じ PR で製品とテストを変えた場合、ローカルで解消した失敗は拾わない/.test(renderG6Material(rT0)) && /検出なし/.test(renderG6Material(rT0));
+  if (!ok) failures++;
+  console.log(`${ok ? 'ok  ' : 'NG  '} テストだけの変更の一覧の Markdown は、0 件でも拾わない形を出す`);
+}
+
+// 実装計画の対象のパスと、変更されたパスの差(IMPL-0205。標準 第5章 5.8.6 要求事項10。表示)。計画は既定ブランチの先端から読む
+git('switch', '-q', 'main');
+write('specs/F-001/plan.md', '# 実装計画\n\n## タスク\n\n| ID | 内容 | 対応する受入基準 | 変更の対象パス |\n| --- | --- | --- | --- |\n| Task-1 | 招待 | 1 | `src/a.js`, `src/inv/**` |\n| Task-2 | 一覧 | 2 | 一覧の画面 |\n');
+git('commit', '-q', '-am', 'plan targets');
+// IMPL-0205:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('対象のパス: 計画の対象パスの外の変更を出し、テストのパスを分けて出す', {}, () => {
+  write('src/b.js', lines(5, 'b'));
+  write('src/inv/x.js', lines(2, 'i'));
+  write('test/a.test.js', read('test/a.test.js') + '\n');
+}, passes(expect_((r) => JSON.stringify(r.planTrace?.outside) === '["src/b.js"]' && JSON.stringify(r.planTrace.outsideTests) === '["test/a.test.js"]', (r) => JSON.stringify(r.planTrace))));
+scenario('対象のパス: 同じ PR で計画の対象パスを広げても、差は既定ブランチの計画で出し、列の変更を別に出す', {}, () => {
+  write('specs/F-001/plan.md', read('specs/F-001/plan.md').replace('`src/a.js`, `src/inv/**`', '`src/**`'));
+  write('src/b.js', lines(5, 'b'));
+}, passes(expect_((r) => r.planTrace?.outside.includes('src/b.js') && r.planTrace.columnChanges.length === 1 && r.planTrace.columnChanges[0].task === 'Task-1', (r) => JSON.stringify(r.planTrace))));
+scenario('対象のパス: 読めない升(バッククォートの無い文章)を出す', { body: BODY('Spec: F-001 / Task-2') }, () => write('src/a.js', lines(21)), passes(expect_((r) => r.planTrace?.unreadable.some((u) => /Task-2: 一覧の画面/.test(u)) && r.planTrace.outside.includes('src/a.js'), (r) => JSON.stringify(r.planTrace))));
+scenario('対象のパス: 既定ブランチの計画に無いタスク(この PR で足した Task-3)を出す', { body: BODY('Spec: F-001 / Task-3') }, () => {
+  write('specs/F-001/plan.md', read('specs/F-001/plan.md') + '| Task-3 | 追加 | 3 | `src/b.js` |\n');
+  write('src/b.js', lines(5, 'b'));
+}, passes(expect_((r) => r.planTrace?.notInBase.some((x) => /Task-3/.test(x)) && r.planTrace.columnChanges.some((c) => c.task === 'Task-3' && c.before === null), (r) => JSON.stringify(r.planTrace))));
+// IMPL-0205:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+scenario('対象のパス: 計画の対象パスの中だけの変更は、差が無い', {}, () => {
+  write('src/a.js', lines(21));
+  write('src/inv/deep/y.js', lines(2, 'y'));
+}, passes(expect_((r) => r.planTrace && !r.planTrace.skipped && r.planTrace.outside.length === 0 && r.planTrace.outsideTests.length === 0 && r.planTrace.unreadable.length === 0 && r.planTrace.columnChanges.length === 0, (r) => JSON.stringify(r.planTrace))));
+scenario('対象のパス: Spec: setup の PR は対象外の旨を出す', { body: BODY('Spec: setup') }, () => write('.editorconfig', 'root = true\n'), passes(expect_((r) => /対象外.*Spec: setup/.test(r.planTrace?.skipped ?? ''), (r) => JSON.stringify(r.planTrace))));
+scenario('対象のパス: 依存の更新の bot の PR は対象外の旨を出す', { author: 'dependabot[bot]', body: BODY('') }, () => write('src/a.js', lines(21)), passes(expect_((r) => /対象外.*bot/.test(r.planTrace?.skipped ?? ''), (r) => JSON.stringify(r.planTrace))));
+git('switch', '-q', 'main');
+git('reset', '-q', '--hard', 'HEAD~1');
 
 // ---------------------------------------------------------------- 区分の下限と確定者(第3章 3.8.1。#288 第2巡)
 // IMPL-0062:ng(違反と適合の対。標準の実装マーク。process-compass #314)

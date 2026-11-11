@@ -4464,7 +4464,7 @@ export function scaffoldStack(stack, root = ROOT) {
       out.todo.push(
         'go.mod: `go mod init <モジュール名>` で作る',
         'govulncheck・go-licenses: CI の実行環境へ入れる手順(アダプタの audit・licenses のコマンドが使う)',
-        'カバレッジ: アダプタの coverageSummary が null のため、判定は「実施しない」として記録される(adapters/go.json の note)'
+        'カバレッジ: go test -coverprofile=coverage.out の記録から全体と変更の範囲を測る。coverage.out が出ない構成は基準3 の未実施として G-5 が失敗する。変更の範囲を測るには CI に go が要る(process-compass ADR-0124)'
       );
     }
     out.next.push('秘匿情報の検査は `npx` で secretlint を取得して実行する(ネットワークを要する)');

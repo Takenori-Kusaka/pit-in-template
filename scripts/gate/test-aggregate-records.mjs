@@ -11,6 +11,7 @@
 //   - G-6 の承認を写しから読む形と、写しと PR の記録の突合(本文の編集・dismiss・ghost 化)
 //   - 様式の帰属(記名者本人の承認レビュー / 署名コミット / 自己申告)と、記名者以外の承認(取り込みの事務)
 //   - 出荷の範囲のマージと写しの件数の一致
+//   - 既定ブランチ以外へ取り込んだマージの、写しの base.ref による検出(process-compass #360 H-4 / IMPL-0248)
 // 記録用ブランチの git からの読み取りそのものは test-records.mjs が確かめます。GitHub へ問い合わせません。
 
 import fs from 'node:fs';
@@ -30,6 +31,9 @@ import {
   lastReviewStates,
   machineFields,
   copyCoverage,
+  offDefaultMerges,
+  offDefaultMergesText,
+  OFF_DEFAULT_MERGE_LIMIT_TEXT,
   formAttribution,
   prRecordFromCopy,
   targetOfForm,
@@ -410,6 +414,46 @@ const config = {
   const rp = rj('通過', '2026-10-20T00:00:00Z');
   check('集約: 写しの G-4 の通過の後に同じ仕様の差し戻しの宣言があれば、打ち消される', reviewSupersededByLater(rp, [rp, rj('差し戻し', '2026-10-21T00:00:00Z')], 'F-001') === true);
   check('集約: 写しの差し戻しが前か、別の仕様か、判定する席の責任者でない者のものなら打ち消さない', reviewSupersededByLater(rp, [rp, rj('差し戻し', '2026-10-19T00:00:00Z'), rj('差し戻し', '2026-10-21T00:00:00Z', ['F-002']), rj('差し戻し', '2026-10-21T00:00:00Z', ['F-001'], false)], 'F-001') === false);
+}
+
+// ---------------------------------------------------------------- 既定ブランチ以外へ取り込んだマージ(process-compass #360 H-4 / IMPL-0248)
+// 出荷の範囲の写しの base.ref を既定ブランチと比べ、検出あり / 0 件 / 未確認 の3値で出す。合否・欠落に使わない(返り値に gaps を持たない)
+{
+  const cp = (pr, base, extra = {}) => [pr, { copy: { pr, merged_at: '2026-11-01T00:00:00Z', base: base === undefined ? undefined : { ref: base }, default_branch: 'main', ...extra } }];
+  const MAIN = { name: 'main', how: 'ホスティング' };
+
+  // IMPL-0248:ng(違反と適合の対。標準の実装マーク。process-compass #314)
+  // 手動のスタックの中間の層(feature/a)へ取り込んだマージを、PR 番号と base.ref で出す
+  const ng = offDefaultMerges({ copies: new Map([cp(21, 'main'), cp(22, 'feature/a')]), defaultBranch: MAIN });
+  check('中間の層のマージ: 写しの base.ref が既定ブランチでなければ「検出あり」', ng.status === 'detected', JSON.stringify(ng));
+  check('中間の層のマージ: PR 番号と base.ref の一覧を出す', same(ng.detected.map((d) => [d.pr, d.baseRef, d.defaultBranch]), [[22, 'feature/a', 'main']]), JSON.stringify(ng.detected));
+  check('中間の層のマージ: 検出しても欠落・失敗の値を持たない(合否に使わない)', !('gaps' in ng) && !('errors' in ng) && !('ok' in ng));
+  check('中間の層のマージ: 開示の文に PR 番号・base.ref と定型の限界の文を出す', /検出あり 1 件/.test(offDefaultMergesText(ng)) && /#22\(base\.ref feature\/a\)/.test(offDefaultMergesText(ng)) && offDefaultMergesText(ng).includes(OFF_DEFAULT_MERGE_LIMIT_TEXT));
+
+  // IMPL-0248:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  const ok = offDefaultMerges({ copies: new Map([cp(21, 'main'), cp(23, 'main')]), defaultBranch: MAIN });
+  check('既定ブランチへのマージだけ: 「0 件」', ok.status === 'none' && ok.detected.length === 0 && ok.checked === 2, JSON.stringify(ok));
+  check('0 件でも「PR を経ない push による取り込みは拾わない」の定型の文を出す', /PR を経ない push による取り込み/.test(offDefaultMergesText(ok)) && /^0 件/.test(offDefaultMergesText(ok)));
+
+  // 未確認: 写しが読めない・base.ref が無い・写しが無い・既定ブランチの名前が読めない
+  const noBase = offDefaultMerges({ copies: new Map([cp(24, undefined)]), defaultBranch: MAIN });
+  check('base.ref の無い写しは「未確認」(既定ブランチへのマージに数えない)', noBase.status === 'unconfirmed' && noBase.unconfirmed[0]?.pr === 24 && /base\.ref が無い/.test(noBase.unconfirmed[0]?.reason), JSON.stringify(noBase));
+  const unread = offDefaultMerges({ copies: new Map(), available: false });
+  check('写しの置き場を読めなければ「未確認」(0 件と出さない)', unread.status === 'unconfirmed' && /読めない/.test(unread.reason) && /^\*\*未確認\*\*/.test(offDefaultMergesText(unread)));
+  const skipped = offDefaultMerges({ copies: new Map([cp(21, 'main')]), skipped: [{ file: 'records/reviews/pr-25.json', reason: 'JSON として読めない' }], defaultBranch: MAIN });
+  check('読めない写しのファイルは「未確認」に数える', skipped.status === 'unconfirmed' && skipped.unconfirmed.some((u) => u.pr === 25), JSON.stringify(skipped));
+  const missing = offDefaultMerges({ copies: new Map([cp(21, 'main')]), missing: [26], defaultBranch: MAIN });
+  check('範囲のマージで写しの無いものは「未確認」に数える', missing.status === 'unconfirmed' && missing.unconfirmed.some((u) => u.pr === 26 && /写しが無い/.test(u.reason)));
+  const noDef = offDefaultMerges({ copies: new Map([cp(27, 'feature/a', { default_branch: undefined })]), defaultBranch: null });
+  check('写しにも集約にも既定ブランチの名前が無ければ、推測せず「未確認」', noDef.status === 'unconfirmed' && noDef.detected.length === 0, JSON.stringify(noDef));
+  const fb = offDefaultMerges({ copies: new Map([cp(28, 'feature/a', { default_branch: undefined })]), defaultBranch: MAIN });
+  check('写しに default_branch が無い古い写しは、集約の既定ブランチで比べる(出所を併記)', fb.status === 'detected' && fb.detected[0]?.defaultFrom === 'ホスティング', JSON.stringify(fb));
+  const own = offDefaultMerges({ copies: new Map([cp(29, 'develop', { default_branch: 'develop' })]), defaultBranch: MAIN });
+  check('写しの default_branch(マージの時点の既定ブランチ)を集約の値より先に使う', own.status === 'none', JSON.stringify(own));
+  const both = offDefaultMerges({ copies: new Map([cp(22, 'feature/a'), cp(24, undefined)]), defaultBranch: MAIN });
+  check('検出と未確認が並べば「検出あり」とし、未確認の写しも併記する', both.status === 'detected' && both.unconfirmed.length === 1 && /確かめられない写し 1 件/.test(offDefaultMergesText(both)));
+  const range = offDefaultMerges({ copies: new Map([cp(22, 'feature/a'), cp(30, 'feature/b')]), inRange: (n) => n === 30, skipped: [{ file: 'records/reviews/pr-22.json', reason: 'x' }], defaultBranch: MAIN });
+  check('出荷の範囲の外の写し・読めないファイルは数えない', same(range.detected.map((d) => d.pr), [30]) && range.unconfirmed.length === 0 && range.checked === 1, JSON.stringify(range));
 }
 
 console.log('');

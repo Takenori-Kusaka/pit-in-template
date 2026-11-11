@@ -113,7 +113,7 @@ for (const stack of ['node', 'python', 'go', 'undetermined', 'none', 'python-poe
   check('python: カバレッジの判定も、目印が下の階層にだけあると未実施として通さない', cc.code === 1 && /下の階層/.test(cc.out), cc.out);
 
   // IMPL-0475:ok(違反と適合の対。標準の実装マーク。process-compass #363)
-  const P = workspace('python', { ...files, 'services/api/coverage.json': JSON.stringify({ totals: { percent_covered: 90, num_statements: 10 } }) }, { projectDir: 'services/api' });
+  const P = workspace('python', { ...files, 'services/api/coverage.json': JSON.stringify({ meta: { format: 3 }, files: { 'api/handler.py': { executed_lines: [1, 2, 3, 4, 5, 6, 7, 8, 9], missing_lines: [10], excluded_lines: [] } }, totals: { percent_covered: 90, num_statements: 10 } }) }, { projectDir: 'services/api' });
   const t = P.adapter('test', '0');
   check('python: projectDir に所在を書くと、test をそこで実行する', t.code === 0 && P.ran('services/api', 'python') && !P.ran('.', 'python'), t.out);
   const tf = P.adapter('test', '1');

@@ -222,6 +222,43 @@ export function readPlanMappings(feature, { root = ROOT, text: given } = {}) {
 }
 
 /**
+ * 実装計画(specs/F-NNN/plan.md)の「タスク」の表の「変更の対象パス」の升(標準 第5章 5.8.6 要求事項10 の突合の材料。
+ * process-compass #360 / IMPL-0205)。升のバッククォートの中を glob として読む(`src/invite/**`・`src/api/invite.ts`)。
+ * 末尾が / のものはその下のすべて(`dir/` → `dir/**`)として読む。バッククォートを1つも持たない升(文章・空・「—」)は
+ * 推定せず、読めない升(unreadable)として出す。表のセルの ** を強調の記号として消さないため、行は生のまま区切る。
+ * 返り値: { plan: 計画があるか, column: 列があるか, tasks: [{ id, cell: 升の生の文字列, globs: [glob], unreadable }] }
+ */
+export function readPlanTargets(feature, { root = ROOT, text: given } = {}) {
+  const text = given !== undefined ? (given === null ? null : String(given).replace(/\r\n/g, '\n')) : readText(`specs/${feature}/plan.md`, root);
+  if (text === null || text === undefined) return { plan: false, column: false, tasks: [] };
+  const lines = headingLines(text, /タスク/);
+  let i = 0;
+  while (i < lines.length && !lines[i].trimStart().startsWith('|')) i++;
+  const split = (l) => {
+    const t = l.trim();
+    return t.slice(1, t.endsWith('|') ? -1 : undefined).split('|').map((c) => c.trim());
+  };
+  let header = null;
+  const rows = [];
+  for (; i < lines.length && lines[i].trimStart().startsWith('|'); i++) {
+    const l = lines[i].trim();
+    if (/^\|[\s|:-]+\|$/.test(l)) continue;
+    if (!header) header = split(l).map((c) => nfkc(c));
+    else rows.push(split(l));
+  }
+  const col = (header ?? []).findIndex((h) => /変更の対象パス|対象パス|対象のパス/.test(h));
+  if (col < 0) return { plan: true, column: false, tasks: [] };
+  const tasks = rows
+    .filter((r) => /^Task-\d+$/i.test(nfkc(r[0])))
+    .map((r) => {
+      const cell = r[col] ?? '';
+      const globs = [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()).filter(Boolean).map((g) => (g.endsWith('/') ? `${g}**` : g));
+      return { id: nfkc(r[0]), cell, globs, unreadable: globs.length === 0 };
+    });
+  return { plan: true, column: true, tasks };
+}
+
+/**
  * G-4 基準6 の材料: 機能仕様の受入基準のうち、実装計画のどのタスクの「対応する受入基準」にも現れないものの一覧。
  * 合否は出さない(判定者が一覧を見て判定する)。対応の内容と、タスクの束ね方は見ない。
  * 受入基準の識別子は readAcceptanceCriteria と同じ(受入基準の表の # 列の番号 → F-NNN/AC-N)。
