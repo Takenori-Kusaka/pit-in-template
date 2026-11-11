@@ -217,6 +217,21 @@ export function recordsSignatureRequired(config) {
   return config?.answers?.['q-quality'] === 'quality-regulated' || ['cl2', 'cl3'].includes(config?.answers?.['q-criticality']);
 }
 
+/**
+ * 署名を必須にする構成で、記録用ブランチ `records` が無いときの案内(無ければ null)。この構成では record-copy.yml が GITHUB_TOKEN で
+ * ブランチを初期化できず(初期コミットが署名を持たない)、写しが作られない。写しが無いと、出荷の集約は承認のレビューの本文の編集の記録
+ * (edited_by)を読めず、正当な承認が数えられずに止まる。/process-init が構成を書いた後に出す(process-compass #358 の裁定)。
+ * ローカルと origin の参照だけを読む(ネットワークに触れない)。読めないときも案内を出す(有ると決めつけない)
+ */
+export function recordsBranchNotice(config, cwd = process.cwd()) {
+  if (!recordsSignatureRequired(config)) return null;
+  const has = ['refs/heads/records', 'refs/remotes/origin/records'].some((r) => resolveRef(cwd, r));
+  if (has) return null;
+  return '署名を必須にする構成(規制業か安全重要度 CL2 以上)ですが、記録用ブランチ records が見つかりません。' +
+    'GITHUB_TOKEN では作れないため、最初のマージの前に作らないと承認レビューの写しが作られず、出荷の集約が承認を数えられません。' +
+    '作り方: 記録用ブランチ `records` の作り方は `.github/rulesets/README.md`「記録用ブランチの初期化」(署名コミットで作る、または records-signed.json を適用する前に最初のマージを 1 回通す)';
+}
+
 /** a が b の祖先(または同じコミット)か。読めないコミットがあれば null */
 export function isAncestorCommit(cwd, a, b) {
   if (!a || !b) return null;

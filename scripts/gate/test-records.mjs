@@ -33,6 +33,7 @@ import {
   targetOfForm,
   judgeOfForm,
   recordFromForm,
+  recordsBranchNotice,
 } from './records.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -311,6 +312,20 @@ try {
   // --- 別の名前のブランチ
   const re = readRecordsBranch({ cwd: A, ref: 'main', fetch: false });
   check('ref を変えると、そのブランチを読む(main には記録が無い)', re.available === true && re.reviews.size === 0 && re.gates.length === 0);
+  // 署名を必須にする構成で records ブランチが無いときの案内(process-compass #358)
+  const N = path.join(TMP, 'notice');
+  fs.mkdirSync(N);
+  git(N, 'init', '-q', '-b', 'main');
+  git(N, 'config', 'user.email', 't@example.com');
+  git(N, 'config', 'user.name', 't');
+  git(N, 'commit', '-q', '--allow-empty', '-m', 'init');
+  const signed = { answers: { 'q-quality': 'quality-regulated' } };
+  const notice = recordsBranchNotice(signed, N);
+  check('署名を必須にする構成で records ブランチが無ければ、作り方を案内する', typeof notice === 'string' && /records/.test(notice) && /記録用ブランチの初期化/.test(notice), String(notice));
+  check('CL2 でも案内する', typeof recordsBranchNotice({ answers: { 'q-criticality': 'cl2' } }, N) === 'string');
+  check('署名を必須にしない構成では案内しない', recordsBranchNotice({ answers: { 'q-quality': 'standard', 'q-criticality': 'cl1' } }, N) === null);
+  git(N, 'branch', 'records');
+  check('records ブランチがあれば案内しない', recordsBranchNotice(signed, N) === null);
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });
 }

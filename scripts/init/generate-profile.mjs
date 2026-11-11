@@ -43,6 +43,7 @@ import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded
 import { autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
+import { recordsBranchNotice } from '../gate/records.mjs';
 import { reductionProblems } from '../gate/cl-judgment.mjs';
 import {
   isFilledValue,
@@ -6556,6 +6557,12 @@ if (isMain) {
             ? '[名義] AI の担い手は自分たちのアカウントで動くと申告した(共有)。相手は席の責任者から補う。名簿を記入した後、/process-change(種別 performer)で person を書く。共有は列挙に無い離脱として表示し続ける'
             : `[名義] AI の担い手の名義は${pa === undefined ? '問いの回答が無い' : 'まだ決めていない'}(未申告)。担い手を宣言した席は、席の責任者と名義を共有するものとして扱い、列挙に無い離脱として表示する。決めたら /process-change(種別 performer)で申告する`
       );
+    }
+    // 署名を必須にする構成で記録用ブランチが無いとき、作り方を案内する(承認レビューの写しが作られず、承認が数えられなくなるため。#358)
+    const recordsNotice = recordsBranchNotice(config, ROOT);
+    if (recordsNotice) {
+      console.log('');
+      console.log(`[記録用ブランチ] ${recordsNotice}`);
     }
     // 次の一手(#286)。状態から機械が導出する。失敗しても構成の書き込みは終わっている
     const next = spawnSync(process.execPath, [path.join(ROOT, 'scripts/gate/next.mjs'), '--brief'], { cwd: ROOT, encoding: 'utf8' });
