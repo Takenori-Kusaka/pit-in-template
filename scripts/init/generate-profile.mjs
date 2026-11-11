@@ -2399,8 +2399,9 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
         '離脱(席を空ける)だけの変化点は記名なしで反映できます。後任の任命は、別の変化点として決定者の記名と理由をつけて出します(標準 第3章 3.13.3)'
     );
   }
-  // 名簿の表記の変更(K67)。決定者の記名と理由を要する。決定者本人の行の変更は、組織上の任命権者、または
-  // 本人以外の席の責任者1名の記名を要する(本人の記名では確定できない)
+  // 名簿の表記の変更(K67)。決定者の記名と理由を要する(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)。
+  // 決定者本人の行の変更は、組織上の任命権者、または本人以外の席の責任者1名の記名を要する(本人の記名では確定できない)。
+  // この要件はテンプレート独自の抑止であり、標準の本文は定めていない(未決。process-compass #432・#433)
   const otherHolders = new Set(
     (before?.seats ?? [])
       .map((s) => findPerson(before, s.accountable)?.id)
@@ -2414,7 +2415,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
       if (item.selfIdAddition && key === report.priorDecider) continue;
       out.push(
         `「${item.line}」は、D-0 表1「体制と運用形態」の決定者本人の行の変更です。決定できるのは、組織上の任命権者(名簿に external: true と appointer: true で、` +
-          `この変化点より前に記載した人)、または本人以外の席の責任者1名です("${decidedBy}" は該当しません)。本人の記名では確定できません(第3章 3.13.3)`
+          `この変化点より前に記載した人)、または本人以外の席の責任者1名です("${decidedBy}" は該当しません)。本人の記名では確定できません。この要件は準拠テンプレート独自の抑止です(標準の本文は、決定者本人の行の記名者を定めていません。未決の論点: process-compass #432)`
       );
       continue;
     }
@@ -2422,7 +2423,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
     out.push(
       `「${item.line}」は同じ人の表記の変更であり、決定できるのは${
         report.priorDeciderPresent ? '変更前の D-0 表1「体制と運用形態」の決定者' : '組織上の任命権者(前任の決定者が体制から外れている、または決定者の席が未記入のため)'
-      }です("${decidedBy}" は該当しません)。別の人を足すときは、既存の行を書き換えず、新しい id の行として足します(第3章 3.13.3)`
+      }です("${decidedBy}" は該当しません)。別の人を足すときは、既存の行を書き換えず、新しい id の行として足します(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)`
     );
   }
   for (const item of report.loosenItems) {
@@ -5712,10 +5713,10 @@ if (isMain) {
     if (report.renameItems.length && !report.appointItems.length && !signedNow) {
       const msg =
         '人の名簿の表記の変更(氏名だけ、またはアカウントだけ)を含みます。同じ人の表記の変更として扱い、D-0 表1「体制と運用形態」の決定者の記名(decidedBy)と理由(reason)が要ります。' +
+        'AI が決めてはなりません(標準 第4章「アカウントと人の対応表」・第3章 3.13.3)。' +
         (report.renameItems.some((i) => i.self)
-          ? '決定者本人の行の変更は、組織上の任命権者、または本人以外の席の責任者1名の記名を要します。'
-          : '') +
-        'AI が決めてはなりません(標準 第3章 3.13.3)';
+          ? '決定者本人の行の変更は、組織上の任命権者、または本人以外の席の責任者1名の記名を要します。この要件は準拠テンプレート独自の抑止です(標準の本文は、決定者本人の行の記名者を定めていません。未決の論点: process-compass #432)'
+          : '');
       if (!dryRun) reject(msg);
       console.log(`[要記名] ${msg}`);
     }
