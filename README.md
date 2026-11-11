@@ -348,7 +348,7 @@ node scripts/gate/adoption-trial.mjs verify <記録>   # 記録の末尾の要�
 │   ├── ai-review/          AI レビューの指示(既定ブランチの版から読む)
 │   ├── rulesets/           ブランチ保護(プロファイル別)
 │   └── PULL_REQUEST_TEMPLATE.md
-├── adapters/               言語ごとの検査コマンド(node / python / go / none)
+├── adapters/               言語ごとの検査コマンド(node / python / python-poetry / python-uv / go / none / undetermined)
 ├── scripts/gate/           ゲートの実装(Node 22、依存パッケージなし)
 ├── templates/              成果物テンプレート12種
 ├── context/                恒久層コンテキスト(用語集・判断記録・設計標準)
@@ -384,7 +384,7 @@ CI が固定するのは**ゲート契約**だけです。
 - 必須ステータスチェックの名前は `gate-g5`
 - 出荷判定の証跡は `evidence/evidence.json` のキー構造
 
-実際に走るテスト・静的解析・ライセンス検査のコマンドは `adapters/<stack>.json` から差し込みます。同梱するアダプタは `node` / `python` / `go` / `none` の4種です。プロセスの骨格が言語に汚染されません。
+実際に走るテスト・静的解析・ライセンス検査のコマンドは `adapters/<stack>.json` から差し込みます。同梱するアダプタは `node` / `python` / `python-poetry` / `python-uv` / `go` / `none` / `undetermined` の7種です。`python-poetry` と `python-uv` は、ロックファイル(`poetry.lock`・`uv.lock`)どおりに依存を入れます。どれを使うかは人が選びます(ロックファイルの有無からは選びません)。製品のコードがリポジトリの直下に無い場合は、アダプタの `projectDir` に所在を書きます(秘匿情報の検査のほかのコマンドをそこで実行する)。直下に目印が無く下の階層にある状態は、「対象なし」にせず G-5 で失敗します。秘匿情報の検査は、製品のコードの有無に依らずリポジトリの全体へ実行します(第4章 G-5 基準7 は対象なしを認めない)。プロセスの骨格が言語に汚染されません。
 
 ゲートのスクリプトは Node 22 の標準機能だけで動きます。依存パッケージのインストールは要りません。ワークフローは、ゲートのスクリプトを動かす前に `.github/gate-node-version` の版の Node を用意します(ランナーの既定の Node に依らない)。製品の実行環境の版は、アダプタの `runtimeVersion` が別に決めます。この固定を外した手順は `scripts/gate/test-gate-node.mjs` が見つけます。
 

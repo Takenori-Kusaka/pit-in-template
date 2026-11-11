@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -742,6 +742,69 @@ ${instr}
     console.log(`${pass ? 'ok  ' : 'NG  '} ${name}`);
   }
 }
+// ---------------------------------------------------------------- 依存と設定を兼ねるファイルの中の閾値の表(process-compass #363)
+// python のアダプタの thresholdFiles の「ファイル#表」(pyproject.toml#tool.ruff など)。表の中身が変わったときだけ閾値の変更に数える
+{
+  const unit = (name, pass) => {
+    if (!pass) failures++;
+    console.log(`${pass ? 'ok  ' : 'NG  '} ${name}`);
+  };
+  const toml = '[project]\nname = "app"\ndependencies = ["requests"]\n\n[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = ["E"]\n\n[tool.ruffx]\na = 1\n';
+  unit('表の中身: TOML の表と下位の表を読み、名が続くだけの別の表を含めない', tableSection(toml, 'tool.ruff') === '[tool.ruff]\nline-length = 100\n[tool.ruff.lint]\nselect = ["E"]');
+  unit('表の中身: INI の節([coverage:run])を読む', tableSection('[metadata]\nname = a\n[coverage:run]\nomit = x/*\n', 'coverage') === '[coverage:run]\nomit = x/*');
+  unit('表の中身: 空行と注記の違いは変更に数えない', tableSection('[tool.ruff]\n# c\nline-length = 1\n\n', 'tool.ruff') === tableSection('[tool.ruff]\nline-length = 1\n', 'tool.ruff'));
+  const sp = splitThresholdGlobs(['.coveragerc', 'pyproject.toml#tool.ruff']);
+  unit('thresholdFiles: 「ファイル#表」を分ける', sp.plain.join() === '.coveragerc' && sp.keyed.length === 1 && sp.keyed[0].file === 'pyproject.toml' && sp.keyed[0].table === 'tool.ruff');
+
+  const PYPROJECT = (f = {}) =>
+    `[project]\nname = "app"\nversion = "0.1.0"\ndependencies = [${f.deps ?? '"requests"'}]\n\n[project.optional-dependencies]\ndev = ["pytest", "pytest-cov", "ruff"]\n\n[tool.ruff]\nextend-exclude = [${f.exclude ?? '"legacy"'}]\n\n[tool.coverage.run]\nsource = ["src"]\n${f.omit ? `omit = [${f.omit}]\n` : ''}`;
+  const cur = JSON.parse(read('process.config.json'));
+  onBase(() => {
+    write('process.config.json', { ...cur, adapters: { stack: 'python' } });
+    write('adapters/python.json', fs.readFileSync(path.join(ROOT, 'adapters/python.json'), 'utf8'));
+    write('pyproject.toml', PYPROJECT());
+    write('src/app/core.py', 'def add(a, b):\n    return a + b\n');
+  });
+  const PY_CODE = 'def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n';
+  // IMPL-0202:ng(違反と適合の対。標準の実装マーク。process-compass #363)
+  scenario('pyproject.toml の [tool.ruff] の除外を広げ、製品のコードも変える', {}, () => {
+    write('pyproject.toml', PYPROJECT({ exclude: '"legacy", "src"' }));
+    write('src/app/core.py', PY_CODE);
+  }, failsWith(/基準値と除外設定の変更.*pyproject\.toml\(\[tool\.ruff\]\)/));
+  scenario('pyproject.toml の [tool.coverage.run] に omit を足し、製品のコードも変える', {}, () => {
+    write('pyproject.toml', PYPROJECT({ omit: '"src/app/core.py"' }));
+    write('src/app/core.py', PY_CODE);
+  }, failsWith(/基準値と除外設定の変更.*pyproject\.toml\(\[tool\.coverage\]\)/));
+  scenario('pyproject.toml の [tool.ruff] だけを変える PR は、閾値の変更として陰性の確認を求める(記録なし)', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}` }, () => {
+    write('pyproject.toml', PYPROJECT({ exclude: '"legacy", "build"' }));
+  }, failsWith(/統制の設定の陰性の確認/));
+  // IMPL-0202:ok(違反と適合の対。標準の実装マーク。process-compass #363)
+  scenario('pyproject.toml の依存だけを変え、製品のコードも変える(閾値の表は変えない)', {}, () => {
+    write('pyproject.toml', PYPROJECT({ deps: '"requests", "httpx"' }));
+    write('src/app/core.py', PY_CODE);
+  }, passes((r) => (r.thresholds.changed.length === 0 ? [] : [`閾値の変更と誤って数えた: ${r.thresholds.changed.join(', ')}`])));
+  scenario('pyproject.toml の [tool.ruff] だけを変える PR(陰性の確認の記録あり)は通る', { body: `閾値の変更\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
+    write('pyproject.toml', PYPROJECT({ exclude: '"legacy", "build"' }));
+  }, passes((r) => (r.thresholds.changed.includes('pyproject.toml([tool.ruff])') ? [] : ['閾値の変更として識別していない'])));
+  // 統制の設定の変更の承認の範囲(出荷の証跡の集約と同じ関数)も、表の中身の変更だけを数える
+  const gitA = (args) => {
+    try {
+      return git(...args);
+    } catch {
+      return null;
+    }
+  };
+  git('switch', '-q', '-C', 'touched-deps', 'main');
+  write('pyproject.toml', PYPROJECT({ deps: '"requests", "httpx"' }));
+  git('commit', '-q', '-am', 'deps');
+  unit('統制の設定の変更の承認の範囲: 依存だけの変更は数えない', !controlTouchedBetween(gitA, 'main', 'HEAD').includes('pyproject.toml'));
+  git('switch', '-q', '-C', 'touched-ruff', 'main');
+  write('pyproject.toml', PYPROJECT({ exclude: '"legacy", "src"' }));
+  git('commit', '-q', '-am', 'ruff');
+  unit('統制の設定の変更の承認の範囲: [tool.ruff] の変更を数える', controlTouchedBetween(gitA, 'main', 'HEAD').includes('pyproject.toml'));
+  git('switch', '-q', 'main');
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('');
 if (failures) {

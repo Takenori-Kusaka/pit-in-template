@@ -2479,26 +2479,96 @@ export function fail(msg) {
   console.log(`::error::${msg}`);
 }
 
-export function hasTarget(adapter) {
-  const adapterId = adapter.id;
-  if (adapterId === 'node') {
-    return fs.existsSync(path.join(ROOT, 'package.json'));
+// ---------------------------------------------------------------- アダプタの対象(標準 第4章 G-5「検査対象が存在しない場合の扱い」。process-compass #363)
+//
+// 製品のコードの所在は、アダプタの projectDir(リポジトリの直下からの相対のパス。既定は直下)で決める。アダプタのコマンドは
+// そこで実行する。秘匿情報の検査(基準7)だけは、所在に依らずリポジトリの直下から全体を検査する(対象なしを認めない)。
+// 目印が所在に無く、下の階層にある場合は「対象なし」にしない(実装が存在する段階で対象なしを用いないため)。
+
+/** スタックの系統ごとの目印のファイル(基本名)。preflight.mjs の STACK_MARKERS と同じ形 */
+export const TARGET_MARKERS = {
+  node: /^package\.json$/,
+  python: /^(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements[^/]*\.txt)$/,
+  go: /^go\.mod$/,
+};
+/** 下の階層の目印を探すときに見ない置き場 */
+const TARGET_SKIP_DIRS = /(^|\/)(node_modules|\.git|vendor|\.venv|venv|dist|build|target|coverage|evidence|graft)\//;
+/** 対象なしを認めない検査(基準7)。所在に依らず、リポジトリの直下で実行する */
+export const ALWAYS_PHASES = new Set(['secretScan']);
+
+/** アダプタの系統(目印の種類)。runtime が node・python・go のものはその系統。none・undetermined は null */
+export function adapterFamily(adapter) {
+  const r = adapter?.runtime;
+  return r && Object.hasOwn(TARGET_MARKERS, r) ? r : null;
+}
+
+/** アダプタの projectDir を正規化する(直下は '.')。絶対パスと、直下の外を指すパスは例外にする */
+export function adapterProjectDir(adapter) {
+  const raw = adapter?.projectDir;
+  if (raw === undefined || raw === null || String(raw).trim() === '' || String(raw).trim() === '.') return '.';
+  const v = String(raw).trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  if (path.isAbsolute(v) || /^[A-Za-z]:/.test(v) || v.split('/').includes('..')) {
+    throw new Error(`アダプタ ${adapter.id} の projectDir "${raw}" は、リポジトリの直下からの相対のパスで書いてください(直下の外は指せません)`);
   }
-  if (adapterId === 'python') {
-    const pyFiles = ['pyproject.toml', 'setup.py', 'setup.cfg', 'requirements.txt', 'Pipfile'];
-    return pyFiles.some((f) => fs.existsSync(path.join(ROOT, f)));
+  return v.replace(/^\.\//, '');
+}
+
+/**
+ * アダプタの対象の状態。{ present, dir, nested }
+ *   present: 所在(projectDir)に目印がある(none は test などのコマンドが書かれている)
+ *   dir: 所在(直下は '.')
+ *   nested: present が偽のとき、所在の外の下の階層で見つけた目印(追跡しているファイルと、無視されていない未追跡のファイル)
+ */
+export function targetState(adapter, root = ROOT) {
+  const dir = adapterProjectDir(adapter);
+  if (adapter.id === 'undetermined') return { present: false, dir, nested: [] };
+  if (adapter.id === 'none') {
+    // 秘匿情報の検査のコマンドは対象の有無の根拠にしない(対象なしでも実行するため)
+    const cmds = Object.entries(adapter.commands ?? {}).filter(([k]) => !ALWAYS_PHASES.has(k));
+    return { present: cmds.some(([, c]) => (c ?? '').trim().length > 0), dir, nested: [] };
   }
-  if (adapterId === 'go') {
-    return fs.existsSync(path.join(ROOT, 'go.mod'));
+  const family = adapterFamily(adapter);
+  if (!family) return { present: true, dir, nested: [] };
+  const re = TARGET_MARKERS[family];
+  const abs = path.join(root, dir);
+  let present = false;
+  try {
+    present = fs.readdirSync(abs, { withFileTypes: true }).some((e) => e.isFile() && re.test(e.name));
+  } catch {
+    present = false;
   }
-  if (adapterId === 'none') {
-    const cmds = Object.values(adapter.commands ?? {});
-    return cmds.some((c) => (c ?? '').trim().length > 0);
+  if (present) return { present, dir, nested: [] };
+  let listed = null;
+  try {
+    listed = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 });
+  } catch {
+    listed = null;
   }
-  if (adapterId === 'undetermined') {
-    return false;
-  }
-  return true;
+  const nested = (listed ?? '')
+    .split('\0')
+    .filter(Boolean)
+    .map((f) => f.replace(/\\/g, '/'))
+    .filter((f) => f.includes('/') && !TARGET_SKIP_DIRS.test(f) && re.test(f.slice(f.lastIndexOf('/') + 1)))
+    .filter((f) => path.posix.dirname(f) !== dir)
+    .sort();
+  return { present: false, dir, nested };
+}
+
+/** アダプタの対象が所在にあるか(targetState の present) */
+export function hasTarget(adapter, root = ROOT) {
+  return targetState(adapter, root).present;
+}
+
+/** 対象が所在に無く、下の階層に目印があるときの失敗の文。無ければ null */
+export function nestedTargetProblem(adapter, state) {
+  if (state.present || !state.nested.length) return null;
+  const where = state.dir === '.' ? 'リポジトリの直下' : `所在 ${state.dir}`;
+  const list = `${state.nested.slice(0, 5).join(', ')}${state.nested.length > 5 ? ` ほか ${state.nested.length - 5} 件` : ''}`;
+  return (
+    `アダプタ ${adapter.id}: ${where}に目印のファイルが無く、下の階層にあります(${list})。製品のコードがあるため、「対象なし」として通しません。` +
+    `adapters/${adapter.id}.json の projectDir に製品のコードの所在(例: "${path.posix.dirname(state.nested[0])}")を書いてください。` +
+    'アダプタの変更は統制の設定の変更です(標準 第4章 G-5「検査対象が存在しない場合の扱い」「統制の設定の変更の承認」)'
+  );
 }
 
 // ---------------------------------------------------------------- 承認と承認した版(標準 第4章 G-6。process-compass #296)

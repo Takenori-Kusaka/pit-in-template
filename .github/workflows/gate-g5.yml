@@ -155,6 +155,10 @@ jobs:
       - run: node scripts/gate/test-init-g5.mjs
       # カバレッジの測る範囲(変更で加えた・変えたコード / 全体)の判定と、範囲・分母・未計測の製品ファイルの件数(標準 第4章 G-5 基準3。process-compass #296)
       - run: node scripts/gate/test-coverage-scope.mjs
+      # アダプタの対象の扱い: 秘匿情報の検査(基準7)を製品のコードの有無に依らず実行すること、下の階層の製品のコードを
+      # 「対象なし」にしないこと、製品のコードの所在(projectDir)、python の依存の取得の入れ方(標準 第4章 G-5「検査対象が
+      # 存在しない場合の扱い」。process-compass #363)
+      - run: node scripts/gate/test-adapter.mjs
       # 自己修正ループの停止条件(無進捗・連続失敗)と保留の解除の名義(標準 第3章 3.12.10。process-compass #296)
       - run: node scripts/gate/test-self-heal.mjs
       # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)

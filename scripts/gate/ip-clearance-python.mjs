@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+// 製品のコードの所在(アダプタの projectDir)。adapter.mjs が渡す。無ければ直下(process-compass #363)
+const PROJECT = process.env.PIT_IN_PROJECT_DIR ? path.resolve(process.env.PIT_IN_PROJECT_DIR) : ROOT;
 
 // Read allowed licenses from environment or fallback to process.config.json
 const allowedEnv = process.env.PIT_IN_ALLOWED_LICENSES;
@@ -21,7 +23,7 @@ if (allowedEnv) {
 // Find current project name to ignore it
 let myProjectName = '';
 try {
-  const pyprojectPath = path.join(ROOT, 'pyproject.toml');
+  const pyprojectPath = path.join(PROJECT, 'pyproject.toml');
   if (fs.existsSync(pyprojectPath)) {
     const content = fs.readFileSync(pyprojectPath, 'utf8');
     // Try simple regex to find project name
@@ -35,7 +37,7 @@ try {
   // ignore
 }
 if (!myProjectName) {
-  myProjectName = path.basename(ROOT).toLowerCase();
+  myProjectName = path.basename(PROJECT).toLowerCase();
 }
 
 // Map common PyPI classifier strings or raw strings to standard/SPDX license identifiers

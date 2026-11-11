@@ -23,6 +23,7 @@ import path from 'node:path';
 import {
   loadConfig,
   loadAdapter,
+  adapterProjectDir,
   ROOT,
   fail,
   warn,
@@ -725,12 +726,18 @@ if (adapter) {
     if (!(adapter.commands?.licenses ?? '').trim()) {
       notes.push(`アダプタ ${adapter.id} の "licenses" が空です。依存関係のライセンス検査を実施しない扱いになります`);
     }
-    if (!(adapter.commands?.secretScan ?? '').trim()) {
-      problems.push(
-        `アダプタ ${adapter.id} の "secretScan" が空です。秘匿情報の検査は台帳記録による通過を認めない唯一の基準のため、` +
-          '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
-      );
-    }
+  }
+  // 秘匿情報の検査は、スタックが未確定(undetermined)のあいだも要る。基準7 は対象なしを認めない(標準 第4章 G-5。process-compass #363)
+  if (!(adapter.commands?.secretScan ?? '').trim()) {
+    problems.push(
+      `アダプタ ${adapter.id} の "secretScan" が空です。秘匿情報の検査は台帳記録による通過も対象なしによる通過も認めない基準のため、` +
+        '実行するコマンドが必要です。adapters/ のファイルへ書いてください'
+    );
+  }
+  try {
+    adapterProjectDir(adapter);
+  } catch (e) {
+    problems.push(e.message);
   }
 }
 

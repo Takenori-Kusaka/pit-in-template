@@ -16,6 +16,9 @@ coverage/
 .nyc_output/
 coverage.json
 coverage.out
+# pytest-cov のデータファイル(追跡すると、カバレッジの判定が製品のファイルとして数える。process-compass #363)
+.coverage
+.coverage.*
 
 # 出荷判定の証跡の作業領域(集約が毎回書く。ルート直下だけ)。docs/evidence/ は出荷の PR が保証の開示を置く記録の置き場であり、無視しない
 /evidence/

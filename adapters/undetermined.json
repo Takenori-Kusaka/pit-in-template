@@ -10,8 +10,8 @@
     "lint": "",
     "audit": "",
     "licenses": "",
-    "secretScan": ""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
   },
   "coverageSummary": null,
-  "note": "開発技術スタックが未確定の状態です。S0 探索を終え、SG-0 を通過するまでに、採用技術に合わせて node / python / go / none のいずれかへ切り替えてください。未確定のあいだは、テストや静的解析などの検査は「対象なし」として扱われます"
+  "note": "開発技術スタックが未確定の状態です。S0 探索を終え、SG-0 を通過するまでに、採用技術に合わせて node / python / go / none のいずれかへ切り替えてください。未確定のあいだは、テストや静的解析などの検査は「対象なし」として扱われます。秘匿情報の検査(secretScan。G-5 基準7)は対象なしを認めないため、未確定のあいだも実行する。リポジトリの直下に .secretlintrc.json を要する(/process-init が作る。process-compass #363)"
 }

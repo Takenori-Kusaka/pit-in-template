@@ -336,14 +336,15 @@ for (const n of [1, 3]) {
 }
 
 // ほかのスタックの初期化の出力
-for (const stack of ['python', 'go', 'none', 'undetermined']) {
+for (const stack of ['python', 'python-poetry', 'python-uv', 'go', 'none', 'undetermined']) {
   const W = workspace(stack);
   dirs.push(W.dir);
   const init = W.node('scripts/init/generate-profile.mjs', '--answers', answersFile({ ...ANSWERS[1], ...COMMON }), '--stack', stack);
   check(`${stack}: 初期化が通る`, init.ok, init.out);
   check(`${stack}: package.json を作らない`, !W.exists('package.json'));
   check(`${stack}: 初回の G-5 までに作るものを列挙する`, /初回の G-5 を通すまでに作るもの/.test(init.out), init.out);
-  if (stack === 'python' || stack === 'go') check(`${stack}: 秘匿情報の検査の設定を作る`, W.exists('.secretlintrc.json'));
+  // 秘匿情報の検査は、スタックに依らず、製品のコードが無くても実行する(G-5 基準7。process-compass #363)
+  check(`${stack}: 秘匿情報の検査の設定を作る`, W.exists('.secretlintrc.json'));
   const r = W.node('scripts/gate/spec-lint.mjs');
   check(`${stack}: 初期化の直後に spec-lint(引数なし)が通る`, r.ok, r.out);
 }

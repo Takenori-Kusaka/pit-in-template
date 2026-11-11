@@ -3994,7 +3994,7 @@ export function applyProcessRules(text, config) {
 // ---------------------------------------------------------------- 開発の基盤(#286)
 
 /**
- * 秘匿情報の検査(アダプタの secretScan が使う secretlint)の設定。node・python・go で共通。
+ * 秘匿情報の検査(アダプタの secretScan が使う secretlint)の設定。全スタックで共通(製品のコードの有無に依らず実行する。#363)。
  * secretlint とルールの版はアダプタのコマンドで固定している(CI の secret-scan ジョブは依存を取得しないため、
  * package.json の依存に頼らない)
  */
@@ -4043,11 +4043,21 @@ export function scaffoldStack(stack, root = ROOT) {
       out.next.push('`npm install` を実行して package-lock.json を作る(CI の `npm ci` はロックファイルを要する)。作ったロックファイルは、基盤のファイルと同じ PR に含める');
     }
     out.next.push('製品のコードは `src/` へ置く。別の場所へ置く場合は、package.json の coverage の `--include` を合わせる');
-  } else if (stack === 'python' || stack === 'go') {
+  } else if (stack === 'python' || stack === 'python-poetry' || stack === 'python-uv' || stack === 'go') {
     put('.secretlintrc.json', SECRETLINT_RC);
     if (stack === 'python') {
       out.todo.push(
-        'pyproject.toml: `pip install -e ".[dev]"` で入る開発用の依存(pytest・pytest-cov・ruff・pip-audit・pip-licenses)と、pytest-cov の測定の対象(製品のコードの置き場)',
+        'pyproject.toml: 開発用の依存(pytest・pytest-cov・ruff・pip-audit・pip-licenses)を extras dev(`[project.optional-dependencies] dev`)か PEP 735 の `[dependency-groups] dev` に書く。`[build-system]` が無ければ、製品をパッケージとして組まずに依存だけを入れる(scripts/gate/python-install.mjs)。pytest-cov の測定の対象(製品のコードの置き場)も書く',
+        'tests/: 受入基準ごとのテスト。pytest は、テストが0件だと終了コード 5 で失敗する(初回の G-5 を通すには、最初のテストが要る)'
+      );
+    } else if (stack === 'python-poetry') {
+      out.todo.push(
+        'pyproject.toml と poetry.lock: 開発用の依存(pytest・pytest-cov・ruff・pip-audit・pip-licenses)を任意でない依存の群(既定の `[tool.poetry.group.dev]`)に書き、`poetry lock` でロックファイルを作る(install は `poetry check --lock` で一致を確かめ、`poetry sync` でロックどおりに入れる)',
+        'tests/: 受入基準ごとのテスト。pytest は、テストが0件だと終了コード 5 で失敗する(初回の G-5 を通すには、最初のテストが要る)'
+      );
+    } else if (stack === 'python-uv') {
+      out.todo.push(
+        'pyproject.toml と uv.lock: 開発用の依存(pytest・pytest-cov・ruff)を PEP 735 の `[dependency-groups] dev` に書き、`uv lock` でロックファイルを作る(install は `uv sync --locked` でロックどおりに入れる。audit・licenses の道具は uvx で取得する)',
         'tests/: 受入基準ごとのテスト。pytest は、テストが0件だと終了コード 5 で失敗する(初回の G-5 を通すには、最初のテストが要る)'
       );
     } else {
@@ -4059,9 +4069,13 @@ export function scaffoldStack(stack, root = ROOT) {
     }
     out.next.push('秘匿情報の検査は `npx` で secretlint を取得して実行する(ネットワークを要する)');
   } else if (stack === 'none') {
-    out.todo.push('adapters/none.json の commands: テストの実行コマンド(test)と秘匿情報の検査(secretScan)は空のままでは G-5 が失敗する。ほかの検査は、空なら「実施しない」として記録される');
+    // 秘匿情報の検査は、製品のコードの有無に依らず実行する(G-5 基準7 は対象なしを認めない。process-compass #363)
+    put('.secretlintrc.json', SECRETLINT_RC);
+    out.todo.push('adapters/none.json の commands: テストの実行コマンド(test)は空のままでは G-5 が失敗する。秘匿情報の検査(secretScan)は secretlint を既定で書いてある。ほかの検査は、空なら「実施しない」として記録される');
   } else if (stack === 'undetermined') {
-    out.todo.push('スタックが未確定のため、基盤は作らない。確定したら /process-change(種別 settings の settings.stack)で反映し、アダプタの検査が求めるファイルを作る');
+    // スタックが未確定のあいだも、秘匿情報の検査は実行する(G-5 基準7 は対象なしを認めない。process-compass #363)
+    put('.secretlintrc.json', SECRETLINT_RC);
+    out.todo.push('スタックが未確定のため、秘匿情報の検査の設定のほかは基盤を作らない。確定したら /process-change(種別 settings の settings.stack)で反映し、アダプタの検査が求めるファイルを作る');
   }
   return out;
 }

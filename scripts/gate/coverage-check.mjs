@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, loadAdapter, ROOT, fail, notice, warn, hasTarget, matchGlob, isFilledValue } from './config.mjs';
+import { loadConfig, loadAdapter, ROOT, fail, notice, warn, targetState, nestedTargetProblem, adapterProjectDir, matchGlob, isFilledValue } from './config.mjs';
 import { isProductCode, THRESHOLD_FILES } from './check-pr.mjs';
 
 export const COVERAGE_SCOPES = ['changed', 'whole'];
@@ -254,7 +254,9 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
     say('warn', `アダプタ ${adapter.id} はカバレッジの集計ファイルを持ちません。判定を実施しない扱いで記録します`);
     return { code: 0, result: { measured: false, reason: 'coverageSummary が null', ...scopeInfo }, messages };
   }
-  const p = path.join(root, rel);
+  // 集計ファイルは、アダプタのコマンドを実行した所在(projectDir)の下に出る(#363)
+  const projBase = path.join(root, adapterProjectDir(adapter));
+  const p = path.join(projBase, rel);
   if (!fs.existsSync(p)) {
     say('fail', `カバレッジの集計ファイルがありません: ${rel}。テストの実行設定を確認してください`);
     return { code: 1, result: { measured: false, reason: '集計ファイルが無い', ...scopeInfo }, messages };
@@ -284,8 +286,8 @@ export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) 
   else if (raw.totals?.percent_covered !== undefined) wholePct = raw.totals.percent_covered;
   const wholeDenominator = raw.total?.lines?.total ?? raw.totals?.num_statements ?? null;
   let coverage = null;
-  if (canMeasureChanged(adapter) && fs.existsSync(path.join(root, adapter.coverageDetail))) {
-    coverage = indexCoverage(JSON.parse(fs.readFileSync(path.join(root, adapter.coverageDetail), 'utf8')), root);
+  if (canMeasureChanged(adapter) && fs.existsSync(path.join(projBase, adapter.coverageDetail))) {
+    coverage = indexCoverage(JSON.parse(fs.readFileSync(path.join(projBase, adapter.coverageDetail), 'utf8')), root);
   }
   // 行単位の記録に載らない製品のファイル。アダプタが測れない拡張子の製品のファイルも、測っていない製品のファイルに数える(突合 X-5)
   const wholeNotMeasurable = canMeasureChanged(adapter) ? product.filter((f) => !NODE_MEASURABLE.test(f)) : null;
@@ -394,7 +396,14 @@ function writeResult(root, o) {
 function main() {
   const config = loadConfig();
   const adapter = loadAdapter(config);
-  if (!hasTarget(adapter)) {
+  const state = targetState(adapter);
+  const nested = nestedTargetProblem(adapter, state);
+  if (nested) {
+    fail(nested);
+    writeResult(ROOT, { measured: false, reason: '目印が所在に無く、下の階層にある' });
+    process.exit(1);
+  }
+  if (!state.present) {
     notice(`カバレッジ判定: 対象プロジェクトが見つかりません。未実施として記録します`);
     writeResult(ROOT, { measured: false, reason: 'No target project found' });
     process.exit(0);

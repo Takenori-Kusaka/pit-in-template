@@ -85,7 +85,9 @@ node scripts/gate/preflight.mjs
 | id | 対象 |
 | --- | --- |
 | `node` | Node.js / TypeScript |
-| `python` | Python |
+| `python` | Python(pip。`pyproject.toml` の宣言どおりに入れる。ロックファイルは読まない) |
+| `python-poetry` | Python(poetry。`poetry.lock` どおりに入れる) |
+| `python-uv` | Python(uv。`uv.lock` どおりに入れる) |
 | `go` | Go |
 | `none` | 上記以外。コマンドを自分で書く |
 | `undetermined` | まだ決まっていない。S0 探索の完了(SG-0)までに確定させる |
@@ -149,9 +151,9 @@ node scripts/init/generate-profile.mjs --answers /tmp/answers.json --stack node 
 | スタック | 作るもの | 初期化の出力が列挙するもの(作らない) |
 | --- | --- | --- |
 | `node` | `package.json`(`test` と `coverage` のスクリプト、`c8` の固定の版)、`.secretlintrc.json`、`tests/README.md` | `npm install` でロックファイルを作る手順。製品のコードは `src/` へ置く |
-| `python` / `go` | `.secretlintrc.json` | `pyproject.toml` とテスト(python)、`go.mod` と検査の道具(go) |
-| `none` | なし | `adapters/none.json` のコマンド |
-| `undetermined` | なし | スタックを確定した後の手順(`--scaffold` で基盤だけを作れる) |
+| `python` / `python-poetry` / `python-uv` / `go` | `.secretlintrc.json` | `pyproject.toml` とテスト(python。poetry・uv ではロックファイルも)、`go.mod` と検査の道具(go) |
+| `none` | `.secretlintrc.json` | `adapters/none.json` のコマンド |
+| `undetermined` | `.secretlintrc.json`(秘匿情報の検査は、スタックが未確定のあいだも実行する) | スタックを確定した後の手順(`--scaffold` で基盤だけを作れる) |
 
 スタックを `/process-change` で確定・変更した後は、`node scripts/init/generate-profile.mjs --scaffold` で基盤だけを作ります(構成は書き換えません)。
 

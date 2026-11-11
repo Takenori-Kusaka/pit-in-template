@@ -146,7 +146,8 @@ export function readAggregate(root) {
  */
 export function machineCheckStatus({ adapter, hasTarget, aggregate, name, job, noRecord }) {
   if (!adapter) return noRecord;
-  if (!hasTarget) return '未実施(検査対象が存在しない)';
+  // 秘匿情報の検査(基準7)は対象なしを認めない。製品のコードが無くても実行する(標準 第4章 G-5。process-compass #363)
+  if (!hasTarget && name !== 'secretScan') return '未実施(検査対象が存在しない)';
   if (name && !(adapter.commands?.[name] ?? '').trim()) return '未実施(コマンドが未設定)';
   if (!aggregate) return `未実施(集約 ${G5_AGGREGATE_JOB} の定義 ${G5_WORKFLOW} が無い)`;
   if (!aggregate.effective.has(job)) return `未実施(ジョブ ${job} を集約 ${G5_AGGREGATE_JOB} が合否に使っていない)`;

@@ -104,7 +104,9 @@
 //     PR に分けても、検出しない(改訂前も同じ)。実施者が実際に読んだか、保証の所在の内容が正しいかは確かめない
 //   - 担保水準 L1・L2 の宣言は、根拠のパスの実在と見直し日だけを確かめる。根拠の中身(条件の充足)は確かめない
 //   - 生成物・機械的な変換のうち、上の印で識別できないものは算定に入る。例外承認か、先に印を基底へ入れる
-//   - package.json・pyproject.toml のように依存と設定を兼ねるファイルの中の閾値は、閾値のファイルとして扱わない
+//   - package.json のように依存と設定を兼ねるファイルの中の閾値は、閾値のファイルとして扱わない。python のアダプタは、
+//     pyproject.toml・setup.cfg・tox.ini の中の閾値・除外設定の表を「ファイル#表」の形で thresholdFiles に持ち、表の中身だけを比べる
+//     (#363)。表の見出しの外に書いた点つきの鍵と、[tool] の中の表の値は読まない
 //   - 例外承認の権限を持つ者か、作成を指示した者の全員と別の人かは確かめない(出荷判定の証跡の集約が確かめる)
 
 import { execFileSync } from 'node:child_process';
@@ -351,6 +353,84 @@ export const CONTROL_FILES = [
   '.github/ai-review/**',
 ];
 
+// ---------------------------------------------------------------- 依存と設定を兼ねるファイルの中の閾値(process-compass #363)
+//
+// アダプタの thresholdFiles の「ファイル#表」の形(例: pyproject.toml#tool.ruff、setup.cfg#coverage)は、そのファイルの中の
+// 表(TOML の [tool.ruff] とその下位の表 [tool.ruff.lint] など、INI の [coverage:run] のような節)だけを閾値・除外設定として比べる。
+// ファイルの全体を閾値にすると、依存の更新まで閾値の変更として止めるためである。
+// 限界: 表の見出しの外に書いた点つきの鍵(最上位の tool.ruff.line-length = …)と、[tool] の中の表の値(ruff = { … })は読まない
+
+/** thresholdFiles を、ファイルの glob と「ファイル#表」に分ける */
+export function splitThresholdGlobs(globs) {
+  const plain = [];
+  const keyed = [];
+  for (const g of globs ?? []) {
+    if (typeof g !== 'string' || !g) continue;
+    const i = g.indexOf('#');
+    if (i > 0 && i < g.length - 1) keyed.push({ file: g.slice(0, i), table: g.slice(i + 1) });
+    else plain.push(g);
+  }
+  return { plain, keyed };
+}
+
+/** 表の見出しの名(TOML の [a.b]・[[a.b]]、INI の [a:b])。見出しでない行は null */
+function tableHeader(line) {
+  const m = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:[#;].*)?$/.exec(line);
+  return m ? m[1].replace(/\s*\.\s*/g, '.').replace(/["']/g, '') : null;
+}
+
+/**
+ * TOML・INI の本文のうち、表 table とその下位の表(名が table に . : - で続くもの)の中身。比べるための正規の文字列を返す
+ * (空行と行の全体の注記を除き、前後の空白を除く)。該当する表が無ければ ''
+ */
+export function tableSection(text, table) {
+  if (text === null || text === undefined) return '';
+  const out = [];
+  let current = null;
+  for (const raw of String(text).replace(/\r\n/g, '\n').split('\n')) {
+    const h = tableHeader(raw);
+    if (h !== null) {
+      current = h === table || (h.startsWith(table) && /^[.:-]/.test(h.slice(table.length))) ? h : null;
+      if (current) out.push(`[${current}]`);
+      continue;
+    }
+    if (!current) continue;
+    const t = raw.trim();
+    if (!t || /^[#;]/.test(t)) continue;
+    out.push(t);
+  }
+  return out.join('\n');
+}
+
+/**
+ * 変更したファイルのうち、「ファイル#表」の表の中身が変わったもの。{ changed: [表示], initial: [表示], files: Set(パス) }
+ *   files: 「ファイル#表」のファイルに当たるパス(同時変更の検査で製品のコードに数えない)
+ *   before(path)・after(path): 変更の前・後の本文(無ければ null)
+ */
+export function keyedThresholdChanges(entries, keyed, before, after) {
+  const changed = [];
+  const initial = [];
+  const files = new Set();
+  if (!keyed.length) return { changed, initial, files };
+  for (const e of entries ?? []) {
+    const f = e?.path;
+    if (!f) continue;
+    const hits = keyed.filter((k) => matchAny([k.file], f));
+    if (!hits.length) continue;
+    files.add(f);
+    const b = before(e.from ?? f);
+    const a = after(f);
+    for (const { table } of hits) {
+      const sb = tableSection(b, table);
+      const sa = tableSection(a, table);
+      if (sb === sa) continue;
+      if (b === null || !sb) initial.push(`${f}([${table}]。基底に無い)`);
+      else changed.push(`${f}([${table}])`);
+    }
+  }
+  return { changed, initial, files };
+}
+
 /**
  * 統制の設定を変える変更の承認で数える、変更したファイル(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115)。
  * CONTROL_FILES と閾値・除外設定(thresholdGlobs)に当たる変更したファイル(名前の変更の元を含む)。陰性の確認(3b)と違い、
@@ -389,8 +469,15 @@ export function controlTouchedBetween(git, parent, commit) {
   const hc = json(git(['show', `${commit}:process.config.json`]));
   const stack = pc?.adapters?.stack ?? hc?.adapters?.stack ?? null;
   const adapter = stack ? json(git(['show', `${parent}:adapters/${stack}.json`])) : null;
-  const globs = [...THRESHOLD_FILES, ...(Array.isArray(adapter?.thresholdFiles) ? adapter.thresholdFiles : [])];
+  const { plain, keyed } = splitThresholdGlobs(Array.isArray(adapter?.thresholdFiles) ? adapter.thresholdFiles : []);
+  const globs = [...THRESHOLD_FILES, ...plain];
   const touched = controlTouchedOf(entries, globs);
+  // 依存と設定を兼ねるファイルの中の閾値の表(#363)。表の中身が変わったファイルだけを数える
+  const kc = keyedThresholdChanges(entries, keyed, (f) => git(['show', `${parent}:${f}`]), (f) => git(['show', `${commit}:${f}`]));
+  for (const label of [...kc.changed, ...kc.initial]) {
+    const f = label.slice(0, label.indexOf('('));
+    if (!touched.includes(f)) touched.push(f);
+  }
   if (entries.some((e) => e.path === 'process.config.json' || e.from === 'process.config.json') && pc && pc.configured !== false && CONTROL_CONFIG_KEYS.some((k) => canonicalJson(pc[k] ?? null) !== canonicalJson(hc?.[k] ?? null))) touched.push('process.config.json');
   return touched;
 }
@@ -1431,7 +1518,13 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   const product = all.filter((e) => !isNonProduct(e.path, atHead) && !matchAny(THRESHOLD_FILES, e.path) && !isLock(e.path)).map((e) => e.path);
   const stack = (policyConfig ?? baseConfig ?? headConfig).adapters?.stack ?? null;
   const baseAdapter = stack ? json(atPolicy(`adapters/${stack}.json`)) : null;
-  const thresholdGlobs = [...THRESHOLD_FILES, ...(Array.isArray(baseAdapter?.thresholdFiles) ? baseAdapter.thresholdFiles : [])];
+  const { plain: adapterThresholds, keyed: keyedThresholds } = splitThresholdGlobs(Array.isArray(baseAdapter?.thresholdFiles) ? baseAdapter.thresholdFiles : []);
+  const thresholdGlobs = [...THRESHOLD_FILES, ...adapterThresholds];
+  // 依存と設定を兼ねるファイル(pyproject.toml など)の中の閾値の表(アダプタの「ファイル#表」。#363)。
+  // 表の中身が変わったときだけ閾値の変更に数え、そのファイルは製品のコードに数えない
+  const keyedChange = keyedThresholdChanges(all, keyedThresholds, atBase, atHead);
+  thresholdChanges.push(...keyedChange.changed);
+  initial.push(...keyedChange.initial);
   for (const e of all) {
     const f = e.path;
     const isThreshold = matchAny(thresholdGlobs, f) || (stack && f === `adapters/${stack}.json`);
@@ -1447,7 +1540,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     }
   }
   // アダプタの thresholdFiles に当たるファイルは、製品のコードから外す(閾値のファイルを製品のコードと数えない)
-  const productCode = product.filter((f) => !matchAny(thresholdGlobs, f));
+  const productCode = product.filter((f) => !matchAny(thresholdGlobs, f) && !keyedChange.files.has(f));
   result.thresholds = { changed: thresholdChanges, initial, product: productCode.length };
   if (thresholdChanges.length && productCode.length) {
     result.errors.push(
