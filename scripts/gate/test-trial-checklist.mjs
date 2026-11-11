@@ -46,6 +46,18 @@ p = trialChecklistProblems(
 );
 check('理由のある「該当なし」は、確認済みとして扱う', p.length === 0, p.join('\n'));
 check('全項目を確認した写し(免除なし)は、問題を出さない', trialChecklistProblems(allChecked, FORM, TODAY).length === 0);
+// 突合 中-1: 印を付けた行の理由の無い「該当なし」も、確認済みとして扱わない
+p = trialChecklistProblems(allChecked.replace(/^- \[x\] (中止の条件が事前に定められている)$/m, '- [x] $1 該当なし'), FORM, TODAY);
+check('印を付けた行の理由の無い「該当なし」も出す', p.length === 1 && p[0].startsWith('理由の無い「該当なし」'), p.join('\n'));
+// 突合 中-2: 項目の行へ数値・所在を書き足した写しを、項目の欠けと読まない
+p = trialChecklistProblems(
+  allChecked
+    .replace('参加者の稼働時間が公式に確保されている(見込み工数と確保時間を数値で記載)', '参加者の稼働時間が公式に確保されている(見込み工数 40 時間 / 確保 40 時間)')
+    .replace('- [x] 中止の条件が事前に定められている', '- [x] 中止の条件が事前に定められている(docs/trial-exit.md)'),
+  FORM,
+  TODAY
+);
+check('項目の行へ数値と所在を書き足した写しは、項目の欠けと読まない', p.length === 0, p.join('\n'));
 
 // IMPL-0465:ng(違反と適合の対。標準の実装マーク)
 p = trialChecklistProblems(setRow(checkedAll, '| 品質規程 4.2 の承認の手続 |  | 申請 SB-1 | |'), FORM, TODAY);
@@ -59,6 +71,9 @@ check('免除の項目に印を付けて、免除の行が無い写しを出す'
 // IMPL-0465:ok(違反と適合の対。標準の実装マーク)
 p = trialChecklistProblems(setRow(checkedAll, '| 品質規程 4.2 の承認の手続 | 2026-10-31 | 申請 SB-1 | 2027-01-31(決定 D-12) |'), FORM, TODAY);
 check('元の期限を残し、新しい期限の決定を書き足した免除は通す', p.length === 0, p.join('\n'));
+// 突合 低-7: 元の期限より前の日付は、延長として読まない
+p = trialChecklistProblems(setRow(checkedAll, '| 品質規程 4.2 の承認の手続 | 2026-12-31 | 申請 SB-1 | 2026-09-30(決定 D-12) |'), FORM, TODAY);
+check('元の期限より前の日付の「延長」は延長として読まず、元の期限で判定する(期限の内なら通す)', p.length === 0, p.join('\n'));
 p = trialChecklistProblems(setRow(checkedAll, '| 品質規程 4.2 の承認の手続 | 2026-12-31 | 申請 SB-1 | |'), FORM, TODAY);
 check('期限の内の免除は通す', p.length === 0, p.join('\n'));
 check('免除の表の行を読む', sandboxRows(setRow(FORM, '| 条項 | 2026-12-31 | 所在 | |')).length === 1);
@@ -108,17 +123,13 @@ function workspace() {
   W.write('process.config.json', JSON.stringify(config, null, 2) + '\n');
   const NOTE_ABSENT = '試行前チェックリスト(docs/trial-checklist.md)がありません';
   let r = W.node('scripts/gate/next.mjs', '--offline');
-  check('/pit: G-1 の前に写しが無ければ、置くことを注記に出す', r.out.includes(NOTE_ABSENT), r.out.slice(-1500));
+  check('/pit: 写しが無いことは注記に出さない(T-1 を済ませた組織の案件に写しを求めない。突合 中-3)', !r.out.includes(NOTE_ABSENT) && !r.out.includes('試行前チェックリスト('), r.out.slice(-1500));
   W.write('docs/trial-checklist.md', FORM);
   r = W.node('scripts/gate/next.mjs', '--offline');
   check('/pit: 未確認の項目のある写しは、件数と始めないことを注記に出す', /試行前チェックリスト\(docs\/trial-checklist\.md\)に 16 件/.test(r.out) && r.out.includes('T-1 の限定試行を始めない'), r.out.slice(-1500));
   W.write('docs/trial-checklist.md', allChecked);
   r = W.node('scripts/gate/next.mjs', '--offline');
   check('/pit: 問題の無い写しは、注記を出さない', !r.out.includes('試行前チェックリスト('), r.out.slice(-1500));
-  fs.rmSync(path.join(W.dir, 'docs/trial-checklist.md'));
-  W.write('docs/gates/g1.md', ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 企画承認 |', '| 対象 | P-001 |', '| 判定者 | 名簿 戊 |', '| 判定日時 | 2026-11-04 10:00 |', '| 結果 | 通過 |', '| 確定の形態 | 人確定 |', '| 参照した D-0 の版 | v1.0 |', ''].join('\n'));
-  r = W.node('scripts/gate/next.mjs', '--offline');
-  check('/pit: G-1 を通過した後は、写しが無いことを注記に出さない', !r.out.includes(NOTE_ABSENT), r.out.slice(-1500));
   fs.rmSync(W.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 

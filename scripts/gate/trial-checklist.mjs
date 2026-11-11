@@ -20,9 +20,12 @@ import { ROOT } from './config.mjs';
 const ITEM_RE = /^\s*-\s*\[([ xX])\]\s*(.+?)\s*$/;
 const NA_RE = /該当なし\s*[::]?\s*(.*)$/;
 
-/** 項目の文から「該当なし: …」を除いた、照合に使う本文 */
+/**
+ * 照合に使う項目の本文。様式の項目の括弧の注記(「(見込み工数と確保時間を数値で記載)」など)より前を鍵にする。
+ * 写しの行は、鍵で始まれば同じ項目と読む(注記の中や行末へ数値・所在・「該当なし: …」を書き足してよい。突合 中-2)
+ */
 function itemKey(text) {
-  return text.replace(/[((]?\s*該当なし[\s\S]*$/, '').replace(/\s+/g, '').normalize('NFKC');
+  return text.normalize('NFKC').replace(/\s+/g, '').replace(/[((][\s\S]*$/, '').replace(/該当なし[\s\S]*$/, '');
 }
 
 function section(text, headingRe) {
@@ -67,17 +70,16 @@ const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 export function trialChecklistProblems(text, formText, today) {
   const problems = [];
   const items = checklistItems(text);
-  const have = new Set(items.map((i) => i.key));
   for (const f of checklistItems(formText)) {
-    if (!have.has(f.key)) problems.push(`項目が写しにありません: 「${f.text}」(様式 templates/trial-checklist.md の項目を消さない。該当しない項目は「該当なし: <理由>」と書く)`);
+    if (!items.some((i) => i.key.startsWith(f.key))) problems.push(`項目が写しにありません: 「${f.text}」(様式 templates/trial-checklist.md の項目を消さない。該当しない項目は「該当なし: <理由>」と書く)`);
   }
   for (const i of items) {
-    if (i.checked) continue;
     const na = NA_RE.exec(i.text);
     if (!na) {
-      problems.push(`未確認の項目: 「${i.text}」(未充足の項目がある状態で、試行を始めない)`);
+      if (!i.checked) problems.push(`未確認の項目: 「${i.text}」(未充足の項目がある状態で、試行を始めない)`);
       continue;
     }
+    // 印の有無によらず、理由の無い「該当なし」は確認済みとして扱わない(突合 中-1)
     const reason = na[1].replace(/^<[^>]*>$/, '').replace(/[))]\s*$/, '').trim();
     if (!reason) problems.push(`理由の無い「該当なし」: 「${i.text}」(理由の無い「該当なし」を確認済みとして扱わない)`);
   }
@@ -89,7 +91,8 @@ export function trialChecklistProblems(text, formText, today) {
       problems.push(`サンドボックスの免除「${label}」に、免除の期限(YYYY-MM-DD)がありません`);
       continue;
     }
-    const ext = (r.extension.match(DATE_RE) ?? []).sort();
+    // 延長の決定は、元の期限より後の日付だけを延長として読む(前の日付は延長に当たらない。突合 低-7)
+    const ext = (r.extension.match(DATE_RE) ?? []).filter((d) => d > deadline).sort();
     const effective = ext.length ? ext[ext.length - 1] : deadline;
     if (effective < today) {
       problems.push(

@@ -15,6 +15,7 @@ import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState,
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
 import { sraApprovalProblems } from './cl-judgment.mjs';
+import { g1PassState } from './records.mjs';
 
 const config = loadConfig();
 const G1 = path.join(ROOT, 'docs/project-brief.md');
@@ -101,7 +102,17 @@ const REQUIRED_ROWS = [
   // G-1 を通過済みの企画書に行が無い場合は、遡って失敗させず欠落として出す(突合 X-4)
   ['指標の閾値と予算区分', BRIEF_SCOPE_ROW],
 ];
-const scopeRowState = briefScopeRowState(text, readGateRecords());
+// G-1 を通過済みか。基底ブランチの docs/gates/ と、記録用ブランチ records の records/gates/(判定記録の正本)の両方を読む
+// (process-compass #359 の独立の突合 高-1)。記録用ブランチを読めず、基底ブランチにも通過の記録が無い間は、G-1 の前とも通過済みとも
+// 扱わない。G-1 の前なら失敗になる欠けは undecided へ集め、最後に「判定記録を読めない」という1つの失敗として理由を添えて出す
+const g1 = g1PassState({ cwd: ROOT, baseRecords: readGateRecords() });
+const gateRecs = g1.records;
+const undecided = [];
+const g1Dependent = (msg) => {
+  if (g1.passed === null) undecided.push(msg);
+  else problems.push(msg);
+};
+const scopeRowState = briefScopeRowState(text, gateRecs);
 for (const [section, key] of REQUIRED_ROWS) {
   const row = lines.find((l) => l.replace(/\*/g, '').startsWith(`| ${key} |`));
   if (!row && key === BRIEF_SCOPE_ROW && scopeRowState === 'gap') {
@@ -109,7 +120,9 @@ for (const [section, key] of REQUIRED_ROWS) {
     continue;
   }
   if (!row) {
-    problems.push(`「${section}」の欄「${key}」がありません(templates/06-project-brief.md の様式から写す)`);
+    const msg = `「${section}」の欄「${key}」がありません(templates/06-project-brief.md の様式から写す)`;
+    if (key === BRIEF_SCOPE_ROW) g1Dependent(msg);
+    else problems.push(msg);
     continue;
   }
   const value = row.replace(/\*/g, '').slice(`| ${key} |`.length).replace(/\|\s*$/, '').trim();
@@ -118,26 +131,26 @@ for (const [section, key] of REQUIRED_ROWS) {
 
 // 7.6 のエスカレーション閾値と 7.7.4 の自動的な上程の閾値(組織が定める値。標準 第1章 1.7.7、第7章 7.6・7.7.2。#419 / ADR-0097)。
 // 記録の無い企画書は G-1 の基準4 を満たさない。G-1 を通過済みの企画書は遡って失敗させず、欠落として出す
-for (const p of briefThresholdProblems(text, readGateRecords(), isFilledValue)) {
+for (const p of briefThresholdProblems(text, gateRecs, isFilledValue)) {
   if (p.state === 'gap') warn(briefThresholdMessage(p));
-  else problems.push(briefThresholdMessage(p));
+  else g1Dependent(briefThresholdMessage(p));
 }
 
 // 停止条件の値(標準 第3章 3.12.10 の要求事項4。process-compass #359 / IMPL-0280)。G-1 を通過済みの企画書は遡って失敗させず、欠落として出す。
 // 構成の自己修正の上限と異なる値は注意にする(効くのは構成の値)
-for (const m of briefStopConditionMessages(briefStopConditionState(text, readGateRecords(), isFilledValue, config.task ?? {}))) {
-  if (m.level === 'problem') problems.push(m.text);
+for (const m of briefStopConditionMessages(briefStopConditionState(text, gateRecs, isFilledValue, config.task ?? {}))) {
+  if (m.level === 'problem') g1Dependent(m.text);
   else warn(m.text);
 }
 
 // 観点3 の裏づけの出所の区分(標準 第6章 テンプレ6 観点3、ADR-0091。process-compass #411)。G-1 を通過済みの企画書は遡って失敗させず注意にする
 {
-  const g1Passed = readGateRecords().some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+  const g1Passed = g1.passed === true;
   const ev = briefEvidenceProblems(text);
   if (ev.missing) warn('観点3 の裏づけの表(裏づけ / 出所の区分 / 観測の記録への到達先)がありません(旧い様式)。templates/06-project-brief.md の観点3 から表を写してください(標準 第6章 テンプレ6 観点3)');
   for (const p of ev.problems) {
     if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません。次の改訂で直す)`);
-    else problems.push(`${p}(標準 第6章 テンプレ6 観点3、ADR-0091)`);
+    else g1Dependent(`${p}(標準 第6章 テンプレ6 観点3、ADR-0091)`);
   }
 }
 
@@ -158,19 +171,19 @@ else if (quality.cost.blank.length) problems.push(`「総費用の内訳」に�
 // 空欄は G-1 の前は失敗、G-1 を通過済みは欠落として出す。通過済みの企画書は、G-1 の判定記録の「参照した企画書の版」と比べ、
 // 列が書き換えられていれば失敗させる(当初の見積りを上書きしない)。版を読めなければ、確かめられないことを出す
 {
-  const g1Recs = readGateRecords().filter((r) => /^G-1(?!d)/.test(r.gate ?? '') && r.result === '通過');
+  const g1Recs = gateRecs.filter((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
   const blankG1 = g1EstimateBlank(text, isFilledValue);
   if (blankG1 === null && quality.cost.present) {
     const msg = '「総費用の内訳」に列「G-1 の時点の見積り」がありません(templates/06-project-brief.md の様式から写す。標準 第7章 7.7.9 の要求事項3)';
     if (g1Recs.length) warn(`${msg}。G-1 を通過済みのため遡って失敗させません。記載の欠落です`);
-    else problems.push(msg);
+    else g1Dependent(msg);
   } else if (blankG1 && blankG1.length) {
     const msg = `「総費用の内訳」の列「G-1 の時点の見積り」に空欄の区分があります(${blankG1.join(' / ')})。G-1 の時点では「値」と同じ値を書きます(標準 第7章 7.7.9 の要求事項3)`;
     if (g1Recs.length) warn(`${msg}。G-1 を通過済みのため遡って失敗させません。記載の欠落です`);
-    else problems.push(msg);
+    else g1Dependent(msg);
   }
   for (const r of g1Recs) {
-    const ver = briefVersionOf(fs.readFileSync(path.join(ROOT, r.file), 'utf8'));
+    const ver = briefVersionOf(r.text ?? fs.readFileSync(path.join(ROOT, r.file), 'utf8'));
     if (!ver) {
       warn(`${r.file}: 「参照した企画書の版」にコミットの識別子が無いため、G-1 の時点の見積りが書き換えられていないかを確かめられません(標準 第7章 7.7.9 の要求事項3)`);
       continue;
@@ -200,12 +213,19 @@ if (generalEmpty.length) {
 {
   const sra = path.join(ROOT, 'docs/safety-risk-assessment.md');
   if (fs.existsSync(sra)) {
-    const g1Passed = readGateRecords().some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+    const g1Passed = g1.passed === true;
     for (const p of sraApprovalProblems(config, fs.readFileSync(sra, 'utf8'))) {
       if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません)`);
-      else problems.push(`${p}(承認済みの安全リスクアセスメント表が G-1 の前提条件です。標準 第2章 2.8)`);
+      else g1Dependent(`${p}(承認済みの安全リスクアセスメント表が G-1 の前提条件です。標準 第2章 2.8)`);
     }
   }
+}
+
+if (undecided.length) {
+  problems.push(
+    `判定記録を読めない: ${g1.reason}。G-1 を通過済みかを判定記録で確かめられないため、次の欠けを「G-1 の前の失敗」とも「通過済みの欠落」とも決められません` +
+      `(遡って失敗させず、黙って通しません)。記録用ブランチ records を取得できる環境で実行し直します(記録用ブランチがまだ無い最初の判定の前の案件は、欄を埋めれば解けます): ${undecided.join(' / ')}`
+  );
 }
 
 for (const p of problems) fail(p);

@@ -493,3 +493,31 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url &
   }
   process.stdout.write(`${recordsSignatureRequired(config)}\n`);
 }
+
+/**
+ * G-1 を通過済みかを、基底ブランチの docs/gates/ と記録用ブランチの records/gates/ の両方から決める(process-compass #359 の
+ * 独立の突合 高-1)。判定記録の正本は記録用ブランチの様式で、基底ブランチへは出荷の PR が複製する。複製の前の案件を「G-1 の前」と
+ * 読み違えて、企画書の行の欠けを遡って失敗させないため。
+ * 戻り値: { passed: true|false|null, records, reason }。
+ *   passed=true  — どちらかに G-1 の通過の記録がある
+ *   passed=false — 両方を読み、通過の記録が無い
+ *   passed=null  — 基底ブランチに通過の記録が無く、記録用ブランチを読めない(reason に理由)。呼び出し側は G-1 の前とも
+ *                  通過済みとも扱わず、「判定記録を読めない」として出す
+ * records は両方の記録(記録用ブランチの記録は text を持つ)。branch を渡せばそれを使う(試験用)
+ */
+export function g1PassState({ cwd = process.cwd(), baseRecords = [], branch = undefined, fetch = true } = {}) {
+  const isG1Pass = (r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過';
+  let b = branch;
+  if (b === undefined) {
+    try {
+      b = readRecordsBranch({ cwd, fetch });
+    } catch (e) {
+      b = { available: false, reason: `記録用ブランチを読めない(${e?.message ?? e})`, gates: [] };
+    }
+  }
+  const fromBranch = b?.available ? (b.gates ?? []).map((g) => ({ ...recordFromForm(g.text, g.file, 'records-branch'), text: g.text })) : [];
+  const records = [...baseRecords, ...fromBranch];
+  if (records.some(isG1Pass)) return { passed: true, records, reason: null };
+  if (!b?.available) return { passed: null, records, reason: b?.reason ?? '記録用ブランチを読めない' };
+  return { passed: false, records, reason: null };
+}

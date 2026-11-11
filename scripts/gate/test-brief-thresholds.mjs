@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { g1PassState } from './records.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 let failed = 0;
@@ -101,6 +102,52 @@ function workspace() {
   r = W.g1();
   check('入口: G-1 を通過済みの企画書は、閾値の2行を欠落として出し、問題に数えない', r.out.includes('遡って失敗させません') && !r.out.includes('閾値は組織が定める値です'), r.out);
   fs.rmSync(W.dir, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------- G-1 の通過を記録用ブランチからも読む(process-compass #359 の独立の突合 高-1)
+// G-1 の様式の正本は記録用ブランチ records の records/gates/。基底ブランチへは出荷の PR が複製する。複製の前の案件を「G-1 の前」と
+// 読み違えて遡って失敗させないこと、記録用ブランチを読めないときは「判定記録を読めない」として出すことを確かめる
+const G1_FORM = ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 企画承認 |', '| 対象 | P-001 |', '| 判定者 | 判定 花子 |', '| 判定日時 | 2026-11-04 10:00 |', '| 結果 | 通過 |', '| 確定の形態 | 人確定 |', '| 参照した D-0 の版 | v1.0 |', ''].join('\n');
+check('g1PassState: 記録用ブランチの様式の G-1 の通過を通過済みと読む', g1PassState({ baseRecords: [], branch: { available: true, gates: [{ file: 'records/gates/g1.md', text: G1_FORM }] } }).passed === true);
+check('g1PassState: 両方を読めて通過が無ければ G-1 の前', g1PassState({ baseRecords: [], branch: { available: true, gates: [] } }).passed === false);
+check('g1PassState: 記録用ブランチを読めず基底にも無ければ、決めない(null と理由)', (() => { const r = g1PassState({ baseRecords: [], branch: { available: false, reason: 'テストの理由', gates: [] } }); return r.passed === null && r.reason === 'テストの理由'; })());
+check('g1PassState: 基底に通過があれば、記録用ブランチを読めなくても通過済み', g1PassState({ baseRecords: [{ gate: 'G-1 企画承認', result: '通過' }], branch: { available: false, reason: 'x', gates: [] } }).passed === true);
+{
+  const W = workspace();
+  const form = fs.readFileSync(path.join(ROOT, 'templates/06-project-brief.md'), 'utf8');
+  // 停止条件の値の行を消した企画書(#359 の前に G-1 を通過した企画書の形)
+  W.write('docs/project-brief.md', form.split(/\r?\n/).filter((l) => !l.startsWith('| 停止条件の値 |')).join('\n'));
+  const git = (...a) => execFileSync('git', a, { cwd: W.dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // 記録用ブランチを読めない(リポジトリでない置き場): 遡って失敗させず、黙って通さず、「判定記録を読めない」として出す
+  let r = W.g1();
+  check('入口: 記録用ブランチを読めず G-1 の通過を決められないとき、「判定記録を読めない」で失敗し、欠けた行を添える', !r.ok && r.out.includes('判定記録を読めない') && r.out.includes('「停止条件の値」がありません'), r.out);
+  check('入口: 決められないとき、欠けた行を「G-1 の前の失敗」として単独では出さない', !/^.*「停止条件の値」がありません.*標準 第3章 3.12.10 の要求事項4\)\s*$/m.test(r.out.split('\n').filter((l) => !l.includes('判定記録を読めない')).join('\n')), r.out);
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@example.com');
+  git('config', 'user.name', 'tester');
+  git('config', 'core.autocrlf', 'false');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture');
+  // 記録用ブランチがあり、G-1 の通過が無い: G-1 の前として失敗させる(判定記録を読めないとは出さない)
+  git('checkout', '-q', '--orphan', 'records');
+  git('rm', '-rf', '--quiet', '.');
+  fs.mkdirSync(path.join(W.dir, 'records/gates'), { recursive: true });
+  fs.writeFileSync(path.join(W.dir, 'records/gates/README.md'), '# 記録\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'records');
+  git('checkout', '-q', 'main');
+  r = W.g1();
+  check('入口: 記録用ブランチを読めて G-1 の通過が無ければ、欠けた行を G-1 の前の失敗にする', !r.ok && r.out.includes('「停止条件の値」がありません') && !r.out.includes('判定記録を読めない'), r.out);
+  // 記録用ブランチに G-1 の通過の様式がある(基底ブランチへはまだ複製していない): 遡って失敗させず、欠落として出す
+  git('checkout', '-q', 'records');
+  fs.writeFileSync(path.join(W.dir, 'records/gates/g1-p001-2026-11-04.md'), G1_FORM);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'G-1');
+  git('checkout', '-q', 'main');
+  r = W.g1();
+  check('入口: 記録用ブランチにだけ G-1 の通過がある企画書は、停止条件の値の欠けを遡って失敗させず欠落として出す', r.out.includes('「停止条件の値」がありません') && r.out.includes('遡って失敗させません') && !r.out.includes('判定記録を読めない') && !/停止条件の値は案件ごとに定め/.test(r.out), r.out);
+  check('入口: 同じ企画書で、閾値の行も記録用ブランチの通過で欠落として出す(#419 と同じ根)', /「エスカレーション閾値」が未記入です.*遡って失敗させません/.test(r.out), r.out);
+  fs.rmSync(W.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 console.log(`test-brief-thresholds: ${passed} passed, ${failed} failed`);

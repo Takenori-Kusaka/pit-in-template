@@ -4072,7 +4072,14 @@ if (isMain) {
       gaps.push(`${g.file}: ステージの途中の必達基準の判定記録に「到達の見込み」の節がありません。到達の見込みの記録が無い判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3。テンプレ4)`);
       continue;
     }
-    const blank = REACH_ROWS.filter((k) => !filled(rowValue(sec, k, false)));
+    // 区分が「算定できない」「対象外」のときは、見込みと残りの3行を「該当なし(理由)」と書いてよい(7.7.3 はこの2つを合格とも不合格とも書かない)
+    const undetermined = /算定できない|対象外/.test(String(rowValue(sec, '区分', false) ?? '').normalize('NFKC'));
+    const OPTIONAL_WHEN_UNDETERMINED = new Set(['期間の見込み', '費用の見込み', '比べる残り']);
+    const blank = REACH_ROWS.filter((k) => {
+      const v = rowValue(sec, k, false);
+      if (undetermined && OPTIONAL_WHEN_UNDETERMINED.has(k) && /該当なし/.test(String(v ?? ''))) return false;
+      return !filled(v);
+    });
     if (blank.length) gaps.push(`${g.file}: 「到達の見込み」に空欄の欄があります(${blank.join(' / ')})。到達の見込みの記録が欠けた判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3)`);
   }
 

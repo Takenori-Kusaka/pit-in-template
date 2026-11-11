@@ -102,6 +102,7 @@ const reachLines = (out) => out.split('\n').filter((l) => /到達の見込み/.t
     'docs/gates/mc-b-2026-10-08.md': header(MID, '2026-10-08') + reach({ ...withoutSigner, 確かめた者: '<価値責任者の記名>', 区分: '' }),
     'docs/gates/mc-c-2026-10-15.md': header(MID, '2026-10-15') + reach(FULL),
     'docs/gates/sg-2026-10-20.md': header('ステージ移行', '2026-10-20'),
+    'docs/gates/mc-d-2026-10-22.md': header(MID, '2026-10-22') + reach({ ...FULL, 区分: '算定できない(窓の単位期間が2つ)', 期間の見込み: '該当なし(算定できない)', 費用の見込み: '該当なし(算定できない)', 比べる残り: '該当なし(算定できない)' }),
   });
   const ls = reachLines(out);
   check('試験の前提: 集約が最後まで走る', /を出力しました/.test(out), out.slice(-1200));
@@ -110,6 +111,7 @@ const reachLines = (out) => out.split('\n').filter((l) => /到達の見込み/.t
   check('空欄と様式の説明のままの欄を、欄の名で欠落にする', ls.some((l) => /mc-b-2026-10-08\.md: 「到達の見込み」に空欄の欄があります\(区分 \/ 確かめた者\)/.test(l)), ls.join('\n'));
   // IMPL-0381:ok(違反と適合の対。標準の実装マーク)
   check('欄をすべて書いた途中の判定記録は通す', !ls.some((l) => /mc-c-2026-10-15\.md/.test(l)), ls.join('\n'));
+  check('区分が「算定できない」の記録は、見込みと残りを「該当なし(理由)」と書いても欠落にしない(7.7.3。突合 低-1)', !ls.some((l) => /mc-d-2026-10-22\.md/.test(l)), ls.join('\n'));
   check('ステージ移行ゲートの記録には、到達の見込みの検査を掛けない(#415 の M2-9)', !ls.some((l) => /sg-2026-10-20\.md/.test(l)), ls.join('\n'));
 }
 
