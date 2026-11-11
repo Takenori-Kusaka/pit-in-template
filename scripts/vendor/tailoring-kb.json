@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "9607d7988943f5dbb852384f490e68efbaea421d",
+    "commit": "e2abae4efc1be33814bd29199a15d130e3b5bbdc",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1585,7 +1585,7 @@
       ],
       "unit": null,
       "scope": "always",
-      "reason": "案件の都合で全社の統制を緩める経路ができる",
+      "reason": "案件の都合で全社の統制を緩める経路が生じる",
       "exception": "1〜2名体制で兼務禁止が成立しない場合に限り、逸脱として D-0 体制図へ記録し、表示し続ける。兼務を認める例外ではなく、3.5.2 の例外(代償措置つきの許容)は適用しない(第3章 3.5)",
       "gate": null,
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/"
