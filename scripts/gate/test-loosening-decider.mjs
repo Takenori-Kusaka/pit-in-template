@@ -539,6 +539,51 @@ try {
     fs.rmSync(wy.d, { recursive: true, force: true });
   }
 
+  // 1名の体制の自己の任命(第3章 3.13.3 の例外。process-compass #359 / IMPL-0342)。前任の決定者(1人目)が体制から外れ、後継(2人目)が
+  // 全席に就く。本人の上に任命の権限を持つ者がいない1名の体制(個人事業主・1名で代表権を持つ法人)に限り、新任の記名を自己の任命として受け付ける
+  const wz = workspace('pit-in-359z-');
+  try {
+    const d0p = path.join(wz.d, 'docs/D-0-governance.md');
+    const setSource = (v) => fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, `$1 ${v} |`));
+    const fill = wz.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+    const succession = { summary: '事業の承継', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '前任が退いたため承継する' };
+    // IMPL-0342:ng 「決裁の権限の出所」が個人事業主・1名で代表権を持つ法人のどちらも挙げていなければ、新任の自己の任命を受け付けない
+    setSource('代表の決裁による(試験)');
+    const before = wz.raw();
+    const noForm = wz.run(succession);
+    check(
+      'IMPL-0342:ng 「決裁の権限の出所」が法的な形態を挙げていなければ、新任の決定者の自己の任命を受け付けない',
+      fill.ok && !noForm.ok && /新任の決定者が、自分の任命を自分の記名で確定することはできません/.test(noForm.out) && /本人の上に任命の権限を持つ者がいない1名の体制だけ/.test(noForm.out) && wz.raw() === before,
+      `${fill.out}\n${noForm.out}`
+    );
+    // IMPL-0342:ng 名簿に組織上の任命権者がいれば、例外に当たらない(任命権者の記名による)
+    setSource('個人事業主本人(試験)');
+    const withOrg = wz.run({ ...succession, people: [P[1], ORG] });
+    check('IMPL-0342:ng 名簿に組織上の任命権者がいれば、新任の自己の任命を受け付けない', !withOrg.ok && wz.raw() === before, withOrg.out);
+    // IMPL-0342:ok 個人事業主を挙げた1名の体制の承継は、新任の記名を自己の任命として受け付け、変化点の記録に残す
+    const ok = wz.run(succession);
+    const e = wz.cfg().changeLog.at(-1);
+    check(
+      'IMPL-0342:ok 個人事業主を挙げた1名の体制の承継は、新任の決定者の記名を自己の任命として受け付け、selfAppointed を残す',
+      ok.ok && e.selfAppointed === true && e.decidedBy === P[1].name && e.selfAppointedNoExternalRef !== true,
+      `${ok.out}\n${JSON.stringify(e)}`
+    );
+  } finally {
+    fs.rmSync(wz.d, { recursive: true, force: true });
+  }
+  // 法人で外部の記録(登記・議事録)への言及が無ければ、受け付けたうえで記録に残す(保証の開示の項目7 に「外部の記録の所在なし」)
+  const wq = workspace('pit-in-359c-');
+  try {
+    const d0p = path.join(wq.d, 'docs/D-0-governance.md');
+    fs.writeFileSync(d0p, fs.readFileSync(d0p, 'utf8').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 1名で代表権を持つ法人(試験) |'));
+    wq.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+    const ok = wq.run({ summary: '代表の交代', people: [P[1]], seats: seatsBy([1, 1, 1, 1, 1, 1, 1, 1, 1]), decidedBy: P[1].name, reason: '前任の代表が退任した' });
+    const e = wq.cfg().changeLog.at(-1);
+    check('IMPL-0342:ok 1名で代表権を持つ法人で外部の記録への言及が無ければ、受け付けて selfAppointedNoExternalRef を残す', ok.ok && e.selfAppointed === true && e.selfAppointedNoExternalRef === true, `${ok.out}\n${JSON.stringify(e)}`);
+  } finally {
+    fs.rmSync(wq.d, { recursive: true, force: true });
+  }
+
 }
 
 if (failures) {

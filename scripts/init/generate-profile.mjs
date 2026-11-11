@@ -1354,6 +1354,21 @@ export function authoritySourceFilled(root = ROOT) {
   const v = m ? m[1].trim() : '';
   return Boolean(v) && !v.startsWith('<') && v !== '—' && v !== '-';
 }
+/**
+ * D-0 節11 の「決裁の権限の出所」が挙げる体制の法的な形態(process-compass #359 / IMPL-0342)。
+ * 自己の任命の例外(第3章 3.13.3)は、本人の上に任命の権限を持つ者がいない1名の体制(個人事業主、または1名で代表権を持つ法人)に限る。
+ * 機械が見るのは語の有無だけで、形態の真偽は確かめない(EV-0250。内部監査と外部の確認者が確かめる)。
+ * 戻り値: { filled, form: 'sole' | 'corp' | null, externalRef }。externalRef は法人の外部の記録(登記・議事録)への言及の有無
+ */
+export function authoritySourceForm(root = ROOT) {
+  const file = path.join(root, 'docs/D-0-governance.md');
+  const m = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').match(/^\| 決裁の権限の出所 \|([^\n]*)\|\s*$/m) : null;
+  const v = m ? m[1].trim() : '';
+  const filled = Boolean(v) && !v.startsWith('<') && v !== '—' && v !== '-';
+  const t = v.normalize('NFKC');
+  const form = !filled ? null : /個人事業主/.test(t) ? 'sole' : /代表権/.test(t) && /(1名|1人|一人|ひとり)/.test(t) ? 'corp' : null;
+  return { filled, form, externalRef: /登記|議事録/.test(t) };
+}
 /** 判定記録の判定日時の比べる形(分までの手元の時刻、時刻が無ければ日付) */
 const judgedKeyOf = (r) => {
   const j = String(r?.judgedAt ?? '').trim();
@@ -1541,6 +1556,8 @@ export function changeLogEntry(e) {
     ...(e.appointerSigned ? { appointerSigned: true } : {}),
     // 決定者が自分に関わる変更を、当事者以外で記名できる者がいない体制で自分の記名で決めた(自己の決定。第3章 3.13.3 / #432)
     ...(e.selfDecided ? { selfDecided: true } : {}),
+    // 1名の体制で、新任の決定者が自分の任命を自分の記名で確定した(自己の任命。第3章 3.13.3 の例外。#359 / IMPL-0342)
+    ...(e.selfAppointed ? { selfAppointed: true, ...(e.selfAppointedNoExternalRef ? { selfAppointedNoExternalRef: true } : {}) } : {}),
     // 人の名簿の表記の変更(同じ人の氏名またはアカウント)。旧い値と新しい値を残す(K67)
     ...(e.rosterEdits?.length ? { rosterEdits: e.rosterEdits } : {}),
     // アカウント名の機械検査を、人のアカウントとして確認した記録(本人以外の記名。decidedBy が記名。#296)
@@ -2734,6 +2751,26 @@ export function selfDecisionOf(config, report, decidedBy, before = null) {
   return ctx.rows.length > 0 && ctx.selfFor(personKey(config, decidedBy));
 }
 
+/**
+ * この記名が、1名の体制の自己の任命(第3章 3.13.3 の例外。process-compass #359 / IMPL-0342)に当たるか。
+ * 条件をすべて満たす場合に限る: 初回の記入でない / 前任の決定者がいて、体制から外れている / 記名者が変化点の後の決定者の席の責任者 /
+ * 変化点の後の体制の内がその1名だけ / 変化点の前と後の名簿に組織上の任命権者がいない / D-0 の「決裁の権限の出所」が個人事業主か
+ * 1名で代表権を持つ法人を挙げる / 変化点が任免・名簿への追加・離脱だけで、決定者が当事者になるほかの行を束ねていない(行ごとの判定。
+ * #432 再確認 Y-1 と同じ扱い)。新任の決定者が自分の任命を自分の記名で確定する唯一の例外であり、変化点の記録の selfAppointed に残す
+ */
+export function selfAppointmentOf(config, report, decidedBy, before = null, root = ROOT) {
+  if (report.allBlankBefore || report.priorDeciderPresent || !report.priorDecider) return false;
+  if ((report.loosenItems ?? []).length || (report.renameItems ?? []).length) return false;
+  if (!(report.appointItems ?? []).length) return false;
+  const key = personKey(config, decidedBy);
+  const deciderAfter = personKey(config, (config.seats ?? []).find((s) => s.role === structureDeciderSeat(config))?.accountable);
+  if (!key || key !== deciderAfter) return false;
+  const insidersAfter = (config.people ?? []).filter((p) => p && p.external !== true);
+  if (insidersAfter.length !== 1 || insidersAfter[0].id !== key) return false;
+  if ([config, before].filter(Boolean).some((c) => (c.people ?? []).some((p) => p?.external === true && p?.appointer === true))) return false;
+  return authoritySourceForm(root).form !== null;
+}
+
 /** 記名者1人に、変化点の行ごとの要件を照らす(向きの値を要件の根拠に使わない。ADR-0110 決定1・2) */
 function deciderRowProblems(config, report, decidedBy, before = null) {
   const out = nameProblems(config, decidedBy, { requireRoster: true }).map((p) => `決定した者の記名を受け付けられません: ${p}`);
@@ -2747,6 +2784,8 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
   const soloFirst = report.allBlankBefore && Boolean(firstDecider) && firstDecider === key;
   // 組織上の任命権者の記名は、前任の決定者が体制から外れている場合に限る。この変化点で名簿へ足した任命権者は記名できない
   const appointerSigned = !report.priorDeciderPresent && isAppointer(config, decidedBy) && before && isAppointer(before, decidedBy);
+  // 1名の体制の自己の任命(第3章 3.13.3 の例外。IMPL-0342)。任命権者の記名と同じ位置で受け付ける
+  const selfAppointed = selfAppointmentOf(config, report, decidedBy, before);
   // 決定者が当事者になる行(#432 論点2・#433 の重の部分)
   const self = selfDecisionContext(config, report, before);
   const selfMode = self.rows.length > 0;
@@ -2770,13 +2809,15 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
       continue;
     }
     if (soloFirst) continue;
-    if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned) continue;
+    if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned || selfAppointed) continue;
     const who = report.priorDeciderPresent
       ? '変更前の D-0 表1「体制と運用形態」の決定者'
       : '組織上の任命権者(前任の決定者が体制から外れている、または決定者の席が未記入のため。名簿に external: true と appointer: true で、この変化点より前に記載した人)';
     out.push(
       `「${item.line}」は席の責任者の任免(または決定者の変更)であり、決定できるのは${who}です("${decidedBy}" は該当しません)。` +
-        (item.decider && !report.allBlankBefore ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。' : '') +
+        (item.decider && !report.allBlankBefore
+          ? '新任の決定者が、自分の任命を自分の記名で確定することはできません(初回の記入を除く)。例外は、本人の上に任命の権限を持つ者がいない1名の体制だけです(変化点の後の体制の内が本人1名、名簿に組織上の任命権者がいない、前任の決定者が体制から外れている、D-0 節11 の「決裁の権限の出所」に個人事業主か1名で代表権を持つ法人を書いている、ほかの行を束ねていない。自己の任命として保証の開示の項目7 へ出す)。'
+          : '') +
         (report.allBlankBefore ? '全席が未記入の状態からの初回の記入は、この変化点で D-0 表1「体制と運用形態」の決定者の席に記入する人の記名と理由で受け付けます。' : '') +
         '離脱(席を空ける)だけの変化点は記名なしで反映できます。後任の任命は、別の変化点として決定者の記名と理由をつけて出します(標準 第3章 3.13.3)'
     );
@@ -2792,7 +2833,7 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
       continue;
     }
     if (soloFirst) continue;
-    if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned) continue;
+    if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned || selfAppointed) continue;
     out.push(
       `「${item.line}」は名簿の変更です。記名した場合に記名できるのは、${
         report.allBlankBefore
@@ -4175,7 +4216,8 @@ export function outsourcingPointer(config) {
   if (!OUTSOURCING_DEV_FORMS.includes(config?.answers?.['q-dev-form'])) return null;
   return (
     '**委託・受託の構成**: 判定の結果を受け取る者は、`docs/ai-sla.md` の「判定の置き先と結果の受け渡し」の節(現行の様式では第9節)にある(構成へ写さない)。' +
-    '相手の組織への判定の結果の引き渡しは、AI-SLA 合意確認書で合意した経路による。渡したら、判定記録の「結果の受け渡し」へ渡した先と日時を書く'
+    '相手の組織への判定の結果の引き渡しは、AI-SLA 合意確認書で合意した経路による。渡したら、判定記録の「結果の受け渡し」へ渡した先と日時を書く。' +
+    '価値責任者の席の責任者が発注側の人であること(標準 第8章 軸D)は、機械で確かめない。AI-SLA 合意確認書の締結の時点と G-2 の判定で、契約の体制の条項と照らす(process-compass #359 / IMPL-0462)'
   );
 }
 
@@ -6239,6 +6281,9 @@ if (isMain) {
     const appointerSigned = report.appointItems.length > 0 && !report.priorDeciderPresent && isAppointer(config, change.decidedBy);
     // 決定者が自分に関わる変更を、当事者以外で記名できる者がいない体制で自分の記名で決めた(自己の決定。第3章 3.13.3。保証の開示の項目7 へ出す。#432)
     const selfDecided = signedNow && selfDecisionOf(cfgB, { ...report, loosenItems: openItems }, change.decidedBy, prior);
+    // 1名の体制の自己の任命(第3章 3.13.3 の例外。process-compass #359 / IMPL-0342。保証の開示の項目7 へ出す)。法人で外部の記録への言及が無ければ、その旨も残す
+    const selfAppointed = signedNow && !appointerSigned && selfAppointmentOf(config, report, change.decidedBy, prior);
+    const selfAppointedNoExternalRef = selfAppointed && authoritySourceForm(ROOT).form === 'corp' && !authoritySourceForm(ROOT).externalRef;
     // 自己の決定の根拠は、自己の任命の例外と同じく D-0 節11 の「決裁の権限の出所」に書く。機械は記載の有無を確かめる(#432 突合 X-7)
     if (selfDecided && !authoritySourceFilled(ROOT)) {
       reject(
@@ -6273,6 +6318,7 @@ if (isMain) {
         intentApplied: intentApplied.map(({ seat, decidedBy, reason, at }) => ({ seat, decidedBy, reason, at })),
         ...(appointerSigned ? { appointerSigned: true } : {}),
         ...(selfDecided ? { selfDecided: true } : {}),
+        ...(selfAppointed ? { selfAppointed: true, ...(selfAppointedNoExternalRef ? { selfAppointedNoExternalRef: true } : {}) } : {}),
         rosterEdits: report.rosterEdits,
         accountConfirmations: (report.accountConfirmItems ?? []).map(({ id, account }) => ({ id, account })),
         // 評価(withThis)と同じ記録から書く(ADR-0111 決定2)
