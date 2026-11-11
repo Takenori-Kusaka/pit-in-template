@@ -7,6 +7,7 @@
 //   - テンプレートの実物(gate-g5.yml・gate-g5-push.yml ほか)が形の約束を満たす
 //   - 写しへ入れた変異を検出する(gate-g5.yml へ push を戻す・workflow_call を外す、gate-g5-push.yml を消す・絞りを外す・
 //     タグを足す・条件を ref_name にする・呼び先を変える・ジョブの名や ID を gate-g5 にする・名を式にする、
+//     呼び出し側のジョブへ secrets: inherit を足す・最上位へ concurrency を足す、
 //     ほかのワークフローへ名が gate-g5 のジョブを足す)
 //   - next.mjs の既定ブランチの読み方が、既定ブランチが trunk のリポジトリで trunk を返す
 // GitHub 上の振る舞い(skipped の呼び出し側のジョブの check run の名など)は確かめない(EV-0245。実機の観測は
@@ -59,6 +60,8 @@ const mutants = [
   ['呼び出し側のジョブの名を gate-g5 にする', { [PUSH_WORKFLOW_FILE]: sub(push, '    name: default-push', '    name: gate-g5') }, /必須チェックの名 gate-g5 を持つ/],
   ['呼び出し側のジョブの ID を gate-g5 にする', { [PUSH_WORKFLOW_FILE]: sub(push, '  default-push:', '  gate-g5:') }, /必須チェックの名 gate-g5 を持つ/],
   ['呼び出し側のジョブの名を式にする', { [PUSH_WORKFLOW_FILE]: sub(push, '    name: default-push', "    name: ${{ github.event_name == 'push' && 'default-push' || 'gate-g5' }}") }, /名が default-push でない|必須チェックの名 gate-g5/],
+  ['呼び出し側のジョブへ secrets: inherit を足す', { [PUSH_WORKFLOW_FILE]: sub(push, '    uses: ./.github/workflows/gate-g5.yml', '    uses: ./.github/workflows/gate-g5.yml\n    secrets: inherit') }, /ジョブ default-push に name・if・uses のほかの鍵がある\(secrets/],
+  ['最上位へ concurrency を足す', { [PUSH_WORKFLOW_FILE]: sub(push, '\npermissions:', '\nconcurrency:\n  group: gate-g5-push\n  cancel-in-progress: true\n\npermissions:') }, /最上位に name・on・permissions・jobs のほかの鍵がある\(concurrency/],
   ['ほかのワークフローへ名が gate-g5 のジョブを足す', { '.github/workflows/extra.yml': 'name: extra\non:\n  push:\njobs:\n  check:\n    name: gate-g5\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n' }, /extra\.yml のジョブ check/],
   ['gate-g5.yml の集約以外のジョブの名を gate-g5 にする', { [G5_WORKFLOW_FILE]: sub(g5, '    name: gate-contract', '    name: gate-g5') }, /gate-g5\.yml のジョブ contract/],
 ];

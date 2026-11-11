@@ -6,12 +6,18 @@
 //   - gate-g5-push.yml は push だけを契機に持ち、絞りはすべてのブランチ('**')。タグ・パスの絞りを持たない
 //   - gate-g5-push.yml のジョブは1つで、ID も名も gate-g5 でなく、式の名を使わない。条件は
 //     github.ref == format('refs/heads/{0}', github.event.repository.default_branch)。呼び先は ./.github/workflows/gate-g5.yml
+//   - gate-g5-push.yml のジョブの鍵は name・if・uses だけ、最上位の鍵は name・on・permissions・jobs だけ
+//     (secrets: inherit で呼ばれた側がリポジトリの秘密情報に届くこと、concurrency の cancel-in-progress で
+//     既定ブランチのコミットの実行が欠けることを防ぐ)
 //   - どのワークフローにも、gate-g5.yml の集約のほかに ID か名が gate-g5 のジョブが無い
 //
 // 名が gate-g5 の check run が PR の先頭のコミットに別の契機で付くと、必須チェック gate-g5 を満たしてしまう
 // (2026-11-11 の実機の確認。既定ブランチでないブランチへの push の skipped のジョブで、PR の検査が落ちる変更をマージできた)。
 // 確かめないこと: GitHub 上の振る舞い(呼び出し側のジョブが skipped のときの check run の名、呼ばれた側の github コンテキスト)。
-// それは実機の観測に依る(EV-0245)。YAML は、このテンプレートの書き方(2 字下げのキー)だけを読む。
+// それは実機の観測に依る(EV-0245)。YAML は、このテンプレートの書き方(jobs: の下の 2 字下げのジョブ、4 字下げのジョブの鍵)
+// だけを読む。読まない書き方: 4 字下げのジョブ、流れ形({ ... })のジョブ、matrix や format で組んだ名、引用符つきの事象のキー。
+// テンプレートのワークフローはすべて読む書き方で書く。採用者が足す別の書き方のワークフローは、統制の設定の変更のレビューで
+// 確かめる(process-compass #362 の独立の突合 X-6、裁定 R-7)。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +28,9 @@ export const PUSH_WORKFLOW_FILE = '.github/workflows/gate-g5-push.yml';
 export const PUSH_JOB = 'default-push';
 export const PUSH_CONDITION = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)";
 const REQUIRED = 'gate-g5';
+/** gate-g5-push.yml のジョブと最上位に置いてよい鍵 */
+export const PUSH_JOB_KEYS = ['name', 'if', 'uses'];
+export const PUSH_TOP_KEYS = ['name', 'on', 'permissions', 'jobs'];
 
 const lf = (t) => String(t ?? '').replace(/\r\n/g, '\n');
 /** 行の末尾のコメントを除く(引用符の外の「 #」から後) */
@@ -108,6 +117,9 @@ export function pushTriggerProblems(files) {
       const extra = [...body.matchAll(/^ {4}([a-z-]+):/gm)].map((m) => m[1]).filter((k) => k !== 'branches');
       if (extra.length) problems.push(`gate-g5-push.yml の push が branches のほかの絞りを持つ(${extra.join('・')})`);
     }
+    const top = lf(push).split('\n').map(stripComment).map((l) => l.match(/^(['"]?)([A-Za-z_][A-Za-z0-9_-]*)\1:/)).filter(Boolean).map((m) => m[2]);
+    const topExtra = top.filter((k) => !PUSH_TOP_KEYS.includes(k));
+    if (topExtra.length) problems.push(`gate-g5-push.yml の最上位に ${PUSH_TOP_KEYS.join('・')} のほかの鍵がある(${topExtra.join('・')}。concurrency の cancel-in-progress は既定ブランチのコミットの実行を欠く)`);
     const jobs = jobsOf(push);
     if (jobs.size !== 1) problems.push(`gate-g5-push.yml のジョブが1つでない(${jobs.size} 件)`);
     for (const [id, body] of jobs) {
@@ -116,6 +128,9 @@ export function pushTriggerProblems(files) {
       if (name === null || unquote(name) !== PUSH_JOB) problems.push(`gate-g5-push.yml のジョブの名が ${PUSH_JOB} でない(${name ?? '名なし'}。名を式にすると、skipped のときの check run の名が GitHub の表示の振る舞いに依る)`);
       const cond = keyOf(body, 'if');
       if (cond === null || norm(cond) !== PUSH_CONDITION) problems.push(`gate-g5-push.yml のジョブの条件が「${PUSH_CONDITION}」でない(${cond ?? '条件なし'}。github.ref_name はタグと区別しない)`);
+      const keys = lf(body).split('\n').map(stripComment).map((l) => l.match(/^ {4}([A-Za-z_][A-Za-z0-9_-]*):/)).filter(Boolean).map((m) => m[1]);
+      const jobExtra = keys.filter((k) => !PUSH_JOB_KEYS.includes(k));
+      if (jobExtra.length) problems.push(`gate-g5-push.yml のジョブ ${id} に ${PUSH_JOB_KEYS.join('・')} のほかの鍵がある(${jobExtra.join('・')}。secrets: inherit は呼ばれた側をリポジトリの秘密情報に届かせる)`);
       const uses = keyOf(body, 'uses');
       if (uses === null || unquote(uses) !== './.github/workflows/gate-g5.yml') problems.push(`gate-g5-push.yml のジョブが ./.github/workflows/gate-g5.yml を呼ばない(${uses ?? 'uses なし'})`);
     }

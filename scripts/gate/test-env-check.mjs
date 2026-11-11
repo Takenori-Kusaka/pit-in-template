@@ -88,7 +88,10 @@ function ghMap(over = {}) {
     [`api repos/${R}/rulesets/12`]: { stdout: { id: 12, bypass_actors: [] } },
     [`pr list --repo ${R} --state merged --limit 1 --json number`]: { stdout: [{ number: 5 }] },
     [`api repos/${R}/pulls/5/reviews`]: { stdout: [{ id: 99, user: { login: 'acc2' }, state: 'APPROVED', submitted_at: '2026-10-01T00:00:00Z' }] },
-    [`run list --repo ${R} --workflow gate-g5 --status success --limit 1 --json databaseId,url,createdAt`]: { stdout: [{ databaseId: 77, url: `https://github.com/${R}/actions/runs/77`, createdAt: '2026-10-01T00:00:00Z' }] },
+    // 既定ブランチへの push の実行は gate-g5-push.yml(process-compass #362 / ADR-0123)。主の経路で通ることを確かめるため、
+    // 成果物の模擬は push の実行(77)にだけ持たせ、後退の経路(gate-g5 の実行 88)には持たせない(#362 の独立の突合 X-2)
+    [`run list --repo ${R} --workflow gate-g5-push.yml --status success --limit 1 --json databaseId,url,createdAt`]: { stdout: [{ databaseId: 77, url: `https://github.com/${R}/actions/runs/77`, createdAt: '2026-10-01T00:00:00Z' }] },
+    [`run list --repo ${R} --workflow gate-g5 --status success --limit 1 --json databaseId,url,createdAt`]: { stdout: [{ databaseId: 88, url: `https://github.com/${R}/actions/runs/88`, createdAt: '2026-09-30T00:00:00Z' }] },
     [`api repos/${R}/actions/runs/77/artifacts`]: { stdout: { artifacts: [{ id: 1, name: 'license-scan' }, { id: 2, name: 'test-results' }] } },
     [`api repos/${R}/actions/permissions/workflow`]: { stdout: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false } },
     [P(`repos/${R}/environments`)]: { stdout: { total_count: 1, environments: [{ id: 501, name: 'delegated-merge', can_admins_bypass: false, deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } }] } },
