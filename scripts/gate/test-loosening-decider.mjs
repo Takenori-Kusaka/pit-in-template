@@ -9,6 +9,8 @@
 //   - 同じ変化点を、D-0 表1 の決定者(事業決裁者の席の責任者)の記名なら受け付ける(IMPL-0115:ok)
 //   - 任免と緩める向きの行を1つの変化点に含み、すべての行の要件を満たす1人がいなければ拒否し、変化点を分ける案内を出す。
 //     分ければ受け付ける(process-compass #376 / ADR-0110 決定2。IMPL-0444:ng/ok)
+//   - 決定者が当事者になる行は本人以外が記名する。名簿へ人を足す行の記名者。発生で入った兼務の決定待ちと期限。差し替えの禁止
+//     (process-compass #432・#433 / ADR-0122。IMPL-0480〜IMPL-0484)
 //   - 変化点の記録に差分の行ごとの種類(rowKinds)を残し、数の合わない記録を検査が問題にする(ADR-0110 決定3。IMPL-0445:ng/ok)
 // 関数の単位の試験(test-roster-rules.mjs)に加えて、入口を通して確かめる。一時の置き場で試し、GitHub へ問い合わせません。
 
@@ -300,7 +302,9 @@ try {
     // 分ける: (i) 決定者の交代だけ(前任の記名)→ (ii) 残りの任免と緩める向きの行(新しい決定者の記名)
     const s1 = wb.run({ summary: '決定者の交代', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '決定者を交代する' });
     const e1 = wb.cfg().changeLog.at(-1);
-    const s2 = wb.run({ summary: '確認者', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 1, 1]), decidedBy: P[1].name, reason: '確認者を置く' });
+    // 新しい決定者(2人目)が AI維持管理者 × AI運用担当者の両方に就くと、決定者が当事者になる兼務になり、本人の記名では決められない
+    // (標準 第3章 3.13.3「決定者が自分に関わる変更」。process-compass #432)。AI運用担当者は1人目に残す
+    const s2 = wb.run({ summary: '確認者', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 1, 0]), decidedBy: P[1].name, reason: '確認者を置く' });
     const c2 = wb.cfg();
     const e2 = c2.changeLog.at(-1);
     // IMPL-0444:ok 分ければ、各段をその段の要件を満たす者の記名で受け付ける
@@ -330,7 +334,7 @@ try {
     );
     check(
       '#376: D-0 の改訂履歴(節13)に「変更の行ごとの種類」の欄を出し、種類ごとの行の数を書く(第3章 3.13.4 記録7)',
-      /\| 通知先と通知日\(即時の通知を要する事象\) \| 変更の行ごとの種類 \|/.test(wb.d0()) && /\| 任免 3 \/ 緩める 1 \/ 厳しくする 3 \|/.test(wb.d0()),
+      /\| 通知先と通知日\(即時の通知を要する事象\) \| 変更の行ごとの種類 \|/.test(wb.d0()) && /\| 任免 2 \/ 緩める 1 \/ 厳しくする 4 \|/.test(wb.d0()),
       wb.d0().split('\n').filter((l) => /^\| 20/.test(l)).join('\n')
     );
     const clean = wb.contract();
@@ -356,7 +360,8 @@ try {
   // (a) 前任の決定者が離脱済みで、組織上の任命権者が決定者を任命する変化点に、代償措置の終了(緩める向きの行)が混ざる
   const wa = workspace('pit-in-376a-');
   try {
-    const fill = wa.run({ summary: '体制を記入', people: [P[0], P[1], ORG], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
+    // 2名の名簿で全席を1人目(決定者)に置く初回の記入は、決定者が当事者の兼務になり、1人目の記名では通らない(process-compass #432)
+    const fill = wa.run({ summary: '体制を記入', people: [P[0], ORG], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
     const leave = wa.run({ summary: '1人目が離脱', people: [P[1], ORG], seats: seatsBy(SEAT_IDS.map(() => null)) });
     check('#376 (a): 前提の記入と離脱を受け付ける', fill.ok && leave.ok, `${fill.out}\n${leave.out}`);
     const before = wa.raw();
@@ -385,7 +390,7 @@ try {
   // 前任の決定者が離脱し、組織上の任命権者が名簿にいない。任免の段を記名できる者がいないため、分けても通らない。案内しない(突合 F-5)
   const wc = workspace('pit-in-376c-');
   try {
-    const fill = wc.run({ summary: '体制を記入', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
+    const fill = wc.run({ summary: '体制を記入', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の体制を記入する' });
     const leave = wc.run({ summary: '1人目が離脱', people: [P[1]], seats: seatsBy(SEAT_IDS.map(() => null)) });
     const none = wc.run({ summary: '後任の任命と確認者', people: [P[1], P[2]], seats: seatsBy([1, 1, 1, 1, 2, 1, 1, 1, 2]), decidedBy: P[1].name, reason: '前任の離脱に伴う後任の任命' });
     check(
@@ -410,6 +415,69 @@ try {
     rowKindsProblems({ ...legacy, rowKinds: ['appoint', 'none'] }, 0).some((p) => /緩める行がありません/.test(p)) &&
     rowKindsProblems({ ...legacy, rowKinds: ['loosen'] }, 4).some((p) => /changeLog\[4\].*数が合いません/.test(p)) && rowKindsProblems({ ...legacy, rowKinds: ['appoint', 'widen'] }, 0).some((p) => /不明な種類/.test(p))
   );
+  // ---------------------------------------------------------------- 決定者が自分に関わる変更と、発生で入った兼務(process-compass #432・#433 / ADR-0122)
+  // 回帰の場面 self-decision(本体 scripts/regress/suite/self-decision.mjs)と同じ入力の一部を、入口を通して固定する
+  const SELF = '決定者は、自分に関わる変更を自分の記名で決められません';
+  const wd = workspace('pit-in-432-');
+  try {
+    // IMPL-0483:ng 決定者(2人目)が自分を出荷判定者へ置く(出荷判定者 × 事業決裁者の当事者になる)変化点を、本人の記名では受け付けない
+    const base = wd.run({ summary: '体制を記入', people: [P[0], P[1], ORG], seats: seatsBy([1, 0, 0, 0, 1, 0, 0, 0, 1]), decidedBy: P[1].name, reason: '初期の設定' });
+    const selfShip = wd.run({ summary: '出荷判定者', people: [P[0], P[1], ORG], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[1].name, reason: '試験' });
+    check('IMPL-0483:ng 決定者が当事者になる兼務を、決定者本人の記名では受け付けない', base.ok && !selfShip.ok && selfShip.out.includes(SELF), `${base.out}\n${selfShip.out}`);
+    // IMPL-0483:ok 同じ変化点を、本人以外の席の責任者(1人目)の記名なら受け付ける
+    const otherShip = wd.run({ summary: '出荷判定者', people: [P[0], P[1], ORG], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[0].name, reason: '試験' });
+    check('IMPL-0483:ok 同じ変化点を、本人以外の席の責任者の記名なら受け付ける', otherShip.ok && wd.cfg().changeLog.at(-1).selfDecided !== true, otherShip.out);
+    // IMPL-0480:ng 名簿へ人を足す行に、決定者でない名簿の人が記名した変化点を受け付けない
+    const addByOther = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] }], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[0].name, reason: '試験' });
+    check('IMPL-0480:ng 名簿へ人を足す行に、決定者でない名簿の人の記名を受け付けない', !addByOther.ok && /名簿の変更です/.test(addByOther.out), addByOther.out);
+    // IMPL-0480:ok 記名なしの追加は反映する(人を足す反映は止めない)
+    const addUnsigned = wd.run({ summary: '外部の確認者', people: [P[0], P[1], ORG, { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] }], seats: seatsBy([1, 0, 0, 0, 1, 1, 0, 0, 1]) });
+    check('IMPL-0480:ok 名簿へ人を足すだけの変化点は、記名なしで反映する', addUnsigned.ok, addUnsigned.out);
+  } finally {
+    fs.rmSync(wd.d, { recursive: true, force: true });
+  }
+  const we = workspace('pit-in-432e-');
+  try {
+    const one = we.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+    const add = we.run({ summary: '2人目', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]) });
+    const e = we.cfg().changeLog.at(-1);
+    // IMPL-0481:ok 1人体制で入った兼務は、2人目を足す変化点で決定待ちの行になり、記名を要しない。行は当事者の id を持つ
+    check(
+      'IMPL-0481:ok 2人目を足す変化点(記名なし)を反映し、続く兼務に当事者つきの「選択の余地が生じた(決定待ち)」の行を出す',
+      one.ok && add.ok && e.diff.filter((l) => /の兼務\(当事者の id p1。山田 太郎\): 選択の余地が生じた/.test(l)).length === 2,
+      `${one.out}\n${add.out}\n${JSON.stringify(e.diff)}`
+    );
+    // IMPL-0482:ok 決定待ちでも、判定記録が無ければ契約検査は決定待ちを問題にしない
+    check('IMPL-0482:ok 決定待ちでも、期限の前(判定記録なし)は契約検査が問題にしない', !/決定待ちです/.test(we.contract().out), we.contract().out);
+    // IMPL-0482:ng 決定待ちのまま記録したゲート判定を、契約検査が記載の欠落として扱う
+    fs.mkdirSync(path.join(we.d, 'docs/gates'), { recursive: true });
+    fs.writeFileSync(
+      path.join(we.d, 'docs/gates/g1-test.md'),
+      '# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-1 企画承認 |\n| 対象 | 企画書 |\n| 判定者 | 山田 太郎 |\n| 判定日時 | 2099-01-01 10:00 |\n| 結果 | 通過 |\n| 参照した D-0 の版 | 1.0 |\n'
+    );
+    const late = we.contract();
+    check('IMPL-0482:ng 決定待ちのまま記録したゲート判定を、契約検査が記載の欠落として落とす', !late.ok && /決定待ちです/.test(late.out) && /記載の欠落/.test(late.out), late.out);
+    // IMPL-0481:ng 決定待ちの兼務を、当事者(決定者)の記名で続ける決定は受け付けない
+    const keepSelf = we.run({ summary: '続ける', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), keepSeparations: ['sep-shipping-business', 'sep-maintainer-ops'], decidedBy: P[0].name, reason: '試験' });
+    check('IMPL-0481:ng 決定待ちの兼務を続ける決定を、当事者である決定者の記名では受け付けない', !keepSelf.ok && keepSelf.out.includes(SELF), keepSelf.out);
+    const keepOther = we.run({ summary: '続ける', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), keepSeparations: ['sep-shipping-business', 'sep-maintainer-ops'], decidedBy: P[1].name, reason: '試験' });
+    check('#432: 同じ決定を、もう1人の記名なら受け付け、契約検査の決定待ちが消える', keepOther.ok && !/決定待ちです/.test(we.contract().out), `${keepOther.out}\n${we.contract().out}`);
+  } finally {
+    fs.rmSync(we.d, { recursive: true, force: true });
+  }
+  const ws = workspace('pit-in-433s-');
+  try {
+    const fillS = ws.run({ summary: '体制', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 1, 1, 0, 0, 1]), decidedBy: P[0].name, reason: '初期の設定' });
+    // IMPL-0484:ng 既存の行の氏名とアカウントの両方を変える変更を、決定者の記名でも受け付けない
+    const swap = ws.run({ summary: '差し替え', people: [P[0], { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 3003 }] }], seats: Object.fromEntries(SEAT_IDS.map((s, i) => [s, { accountable: [0, 0, 0, 0, 1, 1, 0, 0, 1][i] === 0 ? P[0].name : '鈴木 一郎' }])), decidedBy: P[0].name, reason: '試験' });
+    check('IMPL-0484:ng 既存の行の氏名とアカウントの両方を変える変更を、決定者の記名でも受け付けない', fillS.ok && !swap.ok && /差し替えることはできません/.test(swap.out), `${fillS.out}\n${swap.out}`);
+    // IMPL-0484:ok 氏名だけの変更は、同じ人の表記の変更として決定者の記名で受け付ける
+    const nameOnly = ws.run({ summary: '氏名', people: [P[0], { ...P[1], name: '佐藤 花代' }], seats: Object.fromEntries(SEAT_IDS.map((s, i) => [s, { accountable: [0, 0, 0, 0, 1, 1, 0, 0, 1][i] === 0 ? P[0].name : '佐藤 花代' }])), decidedBy: P[0].name, reason: '改名' });
+    check('IMPL-0484:ok 氏名だけの変更は、同じ人の表記の変更として決定者の記名で受け付ける', nameOnly.ok, nameOnly.out);
+  } finally {
+    fs.rmSync(ws.d, { recursive: true, force: true });
+  }
+
 }
 
 if (failures) {

@@ -198,7 +198,15 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   check('名簿の変更(H-3): 変化点の記録に、本人の記名による識別子の追加を区別して残す', d.rosterEdits?.[0]?.selfIdAddition === true && /本人の記名による数値の識別子の追加/.test(JSON.stringify(d.renameItems)), JSON.stringify(d.rosterEdits));
   const renamed = { ...before, people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada2', id: 1001 }] }] };
   const d2 = diffConfig(before, renamed);
-  check('名簿の変更(H-3): ログイン名を変える変化点は、本人の記名では受け付けない(識別子の追加だけに限る)', deciderProblems(renamed, d2, '山田 太郎', before).length > 0);
+  // process-compass #432・#433(ADR-0122 決定1): 本人以外に決められる者がいない1名の体制(任命権者を置いていない)では、決定者本人の行の
+  // 表記の変更を、識別子の追加に限らず本人の記名で受け付ける(自己の決定として記録する)。任命権者を置いた1名の体制では、本人の記名を受け付けない
+  check('名簿の変更(H-3 を改めた): 任命権者のいない1名の体制では、ログイン名を変える変化点も本人の記名で受け付ける(自己の決定)', deciderProblems(renamed, d2, '山田 太郎', before).length === 0, JSON.stringify(deciderProblems(renamed, d2, '山田 太郎', before)));
+  const org = { id: 'org', name: '組織 任命者', external: true, appointer: true };
+  const beforeOrg = { ...before, people: [...before.people, org] };
+  const renamedOrg = { ...renamed, people: [...renamed.people, org] };
+  const d3 = diffConfig(beforeOrg, renamedOrg);
+  check('名簿の変更: 任命権者を置いた1名の体制では、ログイン名を変える変化点を本人の記名では受け付けない', deciderProblems(renamedOrg, d3, '山田 太郎', beforeOrg).length > 0);
+  check('名簿の変更: 任命権者を置いた1名の体制では、任命権者の記名で受け付ける', deciderProblems(renamedOrg, d3, '組織 任命者', beforeOrg).length === 0, JSON.stringify(deciderProblems(renamedOrg, d3, '組織 任命者', beforeOrg)));
   const two = { ...before, people: [...before.people, { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] }] };
   const twoAfter = { ...two, people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1001 }] }, two.people[1]] };
   check('名簿の変更(H-3): 2名以上の体制では、決定者本人の行の識別子の追加も本人の記名では受け付けない', deciderProblems(twoAfter, diffConfig(two, twoAfter), '山田 太郎', two).length > 0);

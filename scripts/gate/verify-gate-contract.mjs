@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   loadConfig,
+  readGateRecords,
   loadAdapter,
   assertProjectDirExists,
   ROOT,
@@ -83,7 +84,7 @@ import {
   performerAccountStates,
   PERFORMER_ACCOUNT_LABEL,
 } from './config.mjs';
-import { seatSeparationFindings, ruleStanding } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, ruleStanding, pendingSeparationProblems } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL } from './coverage-check.mjs';
@@ -394,6 +395,8 @@ if (
     'G-7 の判定者が価値責任者との兼務ですが、deviations[] に逸脱の記録がありません(第3章 3.5.2)'
   );
 }
+// 決定待ちの兼務のまま記録したゲート判定(判定記録の検査。標準 第3章 3.5・3.13.3。process-compass #432 1-D)
+problems.push(...pendingSeparationProblems(config, readGateRecords()));
 
 // ---------------------------------------------------------- 3. 不変条件
 
