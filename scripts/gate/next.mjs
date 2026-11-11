@@ -45,6 +45,7 @@ import { ROOT, resolveSigner, isGateActive, readGateRecords, personName, structu
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
+import { readTrialChecklist } from './trial-checklist.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
@@ -982,6 +983,20 @@ export function computeNext({ fetch = true, network = true } = {}) {
     const briefPath = path.join(ROOT, 'docs/project-brief.md');
     const briefText = fs.existsSync(briefPath) ? fs.readFileSync(briefPath, 'utf8') : null;
     if (briefScopeRowState(briefText, records) === 'gap') result.notes.push(BRIEF_SCOPE_GAP_TEXT);
+    // 試行前チェックリスト(T-1 開始条件。標準 第8章「社会実装の段階の調整」。process-compass #359 / IMPL-0465・IMPL-0466)。
+    // 置いた写しに形の問題があれば出す。写しが無いのは G-1 の通過の前だけ出す(T-1 は体制の人数によらず実施し、1〜2名では案件そのものが試行)
+    {
+      const tc = readTrialChecklist(ROOT);
+      const g1Passed = (records ?? []).some((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過');
+      if (tc.present && tc.problems.length) {
+        result.notes.push(
+          `試行前チェックリスト(docs/trial-checklist.md)に ${tc.problems.length} 件: ${tc.problems.slice(0, 2).join(' / ')}${tc.problems.length > 2 ? ' ほか' : ''}。` +
+            '未充足の項目がある状態で T-1 の限定試行を始めない。全件は `node scripts/gate/trial-checklist.mjs`(標準 第8章)'
+        );
+      } else if (!tc.present && !g1Passed) {
+        result.notes.push('試行前チェックリスト(docs/trial-checklist.md)がありません。T-1 の限定試行(1〜2名の体制では案件そのもの)を始める前に、templates/trial-checklist.md を写して全項目を確認する(標準 第8章。`/artifact trial-checklist`)');
+      }
+    }
     // 氏名の確認のうち、1名の体制の自己申告と未記録の確認(追加の裁定。2名以上の名簿の記録の無い確認は契約検査が落とす)
     for (const n of nameConfirmationNotices(config)) result.notes.push(n);
     // 未適用の厳格化(現行の規則で再導出すると厳しくなるゲート。#318 突合 X-4)。適用されるまで出し続ける。構成は書き換えない

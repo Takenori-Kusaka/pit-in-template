@@ -4062,6 +4062,20 @@ if (isMain) {
     gaps.push(...upliftProblems(g, rowValue(sec, '上積みとして示した品質の活動', false)));
   }
 
+  // ステージの途中の必達基準の判定記録の「到達の見込み」(第7章 7.7.3 必達基準2 / テンプレ4。process-compass #359 / IMPL-0381)。
+  // ゲート欄の値「必達基準の判定(ステージの途中)」で記録を見分け、節の欠落と空欄を「到達の見込みの記録が無い」(必達基準2 を満たさない)として
+  // 記載の欠落に数える。ステージ移行ゲートの記録には掛けない(#415 の裁定 M2-9)。ゲート欄にこの値を書かなかった途中の判定は見分けられない
+  const REACH_ROWS = ['判定の契機', '比べる対象', '実測スループットの端', '期間の見込み', '費用の見込み', '比べる残り', '区分', '端の取り方', '7.7.5 の回数', '確かめた者'];
+  for (const g of gateRecordList.filter((r) => /必達基準の判定/.test(String(r.gate ?? '').normalize('NFKC')) && (!recordsInRange || recordsInRange.has(r.file)))) {
+    const sec = mdSection(fs.readFileSync(path.join(ROOT, g.file), 'utf8'), '到達の見込み');
+    if (sec === null) {
+      gaps.push(`${g.file}: ステージの途中の必達基準の判定記録に「到達の見込み」の節がありません。到達の見込みの記録が無い判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3。テンプレ4)`);
+      continue;
+    }
+    const blank = REACH_ROWS.filter((k) => !filled(rowValue(sec, k, false)));
+    if (blank.length) gaps.push(`${g.file}: 「到達の見込み」に空欄の欄があります(${blank.join(' / ')})。到達の見込みの記録が欠けた判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3)`);
+  }
+
   // 測定の記録(docs/adoption-trial/seeded-errors.json、または evidence/seeded-errors.json)は、human / ai のキーを持てば層ごとに読む。
   // 持たない場合は、全体を人の層の記録として扱う
   const seededHumanRaw = seeded ? (seeded.human ?? (seeded.ai === undefined ? seeded : null)) : null;

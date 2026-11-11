@@ -30,6 +30,7 @@ description: 成果物(テンプレ00〜11)を作る・見直すときの入口�
 | `12` | プロダクトの原則(置くことは義務ではない) | `artifacts/12-product-principles.md` | `context/standards/principles.md` |
 | `defect` | 欠陥の台帳(G-7 基準2。様式番号なし) | `artifacts/defect-ledger.md` | `docs/defect-ledger.md` |
 | `adoption-trial` | 導入前の検証(合否の基準・欠陥注入・場面集・記録。附属書I I.11) | `artifacts/adoption-trial.md` | `docs/adoption-trial/` |
+| `trial-checklist` | 試行前チェックリスト(T-1 開始条件。第8章。様式番号なし) | `artifacts/trial-checklist.md` | `docs/trial-checklist.md` |
 | `incident` | 障害時に使う記録(D-0 表4・引き継ぎの復旧手順・ポストモーテム) | `artifacts/incident.md` | — |
 
 補助ファイルの所在は、このスキルのディレクトリ(`.claude/skills/artifact/`)からの相対です。

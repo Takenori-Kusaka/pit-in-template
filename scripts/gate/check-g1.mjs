@@ -11,7 +11,7 @@ import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
 import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
+import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
 import { sraApprovalProblems } from './cl-judgment.mjs';
@@ -121,6 +121,13 @@ for (const [section, key] of REQUIRED_ROWS) {
 for (const p of briefThresholdProblems(text, readGateRecords(), isFilledValue)) {
   if (p.state === 'gap') warn(briefThresholdMessage(p));
   else problems.push(briefThresholdMessage(p));
+}
+
+// 停止条件の値(標準 第3章 3.12.10 の要求事項4。process-compass #359 / IMPL-0280)。G-1 を通過済みの企画書は遡って失敗させず、欠落として出す。
+// 構成の自己修正の上限と異なる値は注意にする(効くのは構成の値)
+for (const m of briefStopConditionMessages(briefStopConditionState(text, readGateRecords(), isFilledValue, config.task ?? {}))) {
+  if (m.level === 'problem') problems.push(m.text);
+  else warn(m.text);
 }
 
 // 観点3 の裏づけの出所の区分(標準 第6章 テンプレ6 観点3、ADR-0091。process-compass #411)。G-1 を通過済みの企画書は遡って失敗させず注意にする

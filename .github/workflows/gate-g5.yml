@@ -130,6 +130,10 @@ jobs:
       - run: node scripts/gate/test-defect-stages.mjs
       # 上積みとして示した行を、技術負債台帳と履歴に突き合わせることを、一時の置き場で通しで試験する(process-compass #412)
       - run: node scripts/gate/test-uplift-evidence.mjs
+      # ステージの途中の必達基準の判定記録の「到達の見込み」の欠落を、出荷判定の証跡の集約が記載の欠落にすることを、一時の置き場で通しで試験する(process-compass #359)
+      - run: node scripts/gate/test-reach-forecast-record.mjs
+      # 試行前チェックリスト(T-1 開始条件)の形の検査と、/pit の注記(process-compass #359)
+      - run: node scripts/gate/test-trial-checklist.mjs
       # D-0 表1 の検証の行・決定と同意の列と、企画書の観点3 の出所の区分の検査(process-compass #411)
       - run: node scripts/gate/test-customer-voice.mjs
       # モデルの導入の記録・正解の目録・AI の採点者の較正の記録の検査(process-compass #426)

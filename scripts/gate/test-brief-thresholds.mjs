@@ -1,5 +1,5 @@
 // 企画書の閾値の行の検査(brief-thresholds.mjs)の試験。process-compass #419 / ADR-0097
-import { BRIEF_THRESHOLD_ROWS, briefThresholdProblems, briefThresholdMessage } from './brief-thresholds.mjs';
+import { BRIEF_THRESHOLD_ROWS, briefThresholdProblems, briefThresholdMessage, BRIEF_STOP_ROW, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { isFilledValue } from './config.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,10 +41,30 @@ check('値を書いた2行は、問題にしない', p.length === 0, JSON.string
 // 企画書が無い
 check('企画書が無いときは、何も出さない', briefThresholdProblems(null, [], isFilledValue).length === 0);
 
+// ---------------------------------------------------------------- 停止条件の値(標準 第3章 3.12.10 の要求事項4。process-compass #359 / IMPL-0280)
+const stopBrief = (v) => ['## 指標の閾値と予算区分(G-1 基準4)', '', '| 項目 | 記載 |', '| --- | --- |', v === null ? '' : `| ${BRIEF_STOP_ROW} | ${v} |`].join('\n');
+{
+  // IMPL-0280:ng(違反と適合の対。標準の実装マーク)
+  let s = briefStopConditionState(stopBrief(null), [], isFilledValue, {});
+  check('停止条件の値: 行が無い企画書は、G-1 の前は問題にする', s.problem === 'missing' && briefStopConditionMessages(s).some((m) => m.level === 'problem'), JSON.stringify(s));
+  s = briefStopConditionState(stopBrief('<標準 第3章 3.12.10 の停止条件の値>'), [], isFilledValue, {});
+  check('停止条件の値: 様式の説明のままは、G-1 の前は問題にする', s.problem === 'blank' && s.state === 'required', JSON.stringify(s));
+  s = briefStopConditionState(stopBrief(''), passedG1, isFilledValue, {});
+  const ms = briefStopConditionMessages(s);
+  check('停止条件の値: G-1 を通過済みは遡って失敗させず、欠落として注意にする', s.state === 'gap' && ms.length === 1 && ms[0].level === 'warn' && ms[0].text.includes('遡って失敗させません'), JSON.stringify(ms));
+  s = briefStopConditionState(stopBrief('連続失敗の上限 5 回 / 無進捗の上限 2 回 / 累積消費の上限 採用者の手段(基盤の上限の設定)'), [], isFilledValue, { selfHealMaxIterations: 3 });
+  const mm = briefStopConditionMessages(s);
+  check('停止条件の値: 構成と異なる連続失敗の上限は、構成の値が効くことを注意にする(問題にしない)', s.problem === null && mm.length === 1 && mm[0].level === 'warn' && mm[0].text.includes('task.selfHealMaxIterations'), JSON.stringify(mm));
+  // IMPL-0280:ok(違反と適合の対。標準の実装マーク)
+  s = briefStopConditionState(stopBrief('連続失敗の上限 3 回 / 無進捗の上限 2 回 / 累積消費の上限 採用者の手段(基盤の上限の設定)'), [], isFilledValue, {});
+  check('停止条件の値: 構成(既定 3・2)と揃った値は、何も出さない', s.problem === null && briefStopConditionMessages(s).length === 0, JSON.stringify(s));
+}
+
 // 様式(本体と3つのプロファイル)が2行を持ち、説明 <…> のままである(写した直後の企画書が G-1 の前に止まる)
 for (const f of ['templates/06-project-brief.md', 'profiles/internal/templates/06-project-brief.md', 'profiles/oss/templates/06-project-brief.md', 'profiles/revenue/templates/06-project-brief.md']) {
   const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
   const q = briefThresholdProblems(text, [], isFilledValue);
+  check(`${f} は停止条件の値の行を持ち、様式の説明のままである`, briefStopConditionState(text, [], isFilledValue, {}).problem === 'blank');
   check(`${f} は閾値の2行を持ち、様式の説明のままである`, BRIEF_THRESHOLD_ROWS.every((k) => q.some((x) => x.key === k && x.problem === 'blank')), JSON.stringify(q));
 }
 
@@ -69,6 +89,7 @@ function workspace() {
   W.write('docs/project-brief.md', form);
   // IMPL-0371:ng(G-1 の前の企画書は、閾値の2行の説明のままで失敗する)
   let r = W.g1();
+  check('入口: G-1 の前の企画書は、停止条件の値の説明のままで失敗する', !r.ok && r.out.includes('「停止条件の値」が未記入です'), r.out);
   check('入口: G-1 の前の企画書は、閾値の2行の説明のままで失敗し、2行を出す', !r.ok && r.out.includes('「エスカレーション閾値」が未記入です') && r.out.includes('「自動的な上程の閾値」が未記入です') && r.out.includes('閾値は組織が定める値です'), r.out);
   // IMPL-0371:ok(値を書いた企画書は、閾値の2行を指摘しない)
   W.write('docs/project-brief.md', form.replace(/^\| エスカレーション閾値 \| .*$/m, '| エスカレーション閾値 | 予算 10%・20%・30% の見込み |').replace(/^\| 自動的な上程の閾値 \| .*$/m, '| 自動的な上程の閾値 | 消化進捗比 1.3 超が2期連続 |'));
