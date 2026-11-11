@@ -1369,7 +1369,8 @@ export function authoritySourceForm(root = ROOT) {
   const fromForm = fs.existsSync(formFile) ? (fs.readFileSync(formFile, 'utf8').match(/^\| 決裁の権限の出所 \|([^\n]*)\|\s*$/m)?.[1] ?? '') : '';
   const norm = (x) => String(x ?? '').normalize('NFKC').trim().replace(/^<|>$/g, '').replace(/\s+/g, '').trim();
   const isFormText = Boolean(norm(fromForm)) && norm(v) === norm(fromForm);
-  const filled = Boolean(v) && !v.startsWith('<') && !/^[—\-–―]+$/.test(v) && !isFormText;
+  // 「未記入」「なし」「N/A」「TBD」などの記入でない値も未記入とする(config.mjs の isFilledValue と同じ判定)
+  const filled = isFilledValue(v) && !isFormText && !/^[－ー―]+$/.test(v.normalize('NFKC'));
   const t = filled ? v.normalize('NFKC') : '';
   // 法的な形態は、選択の欄「体制の法的な形態(自己の任命の例外)」の値の完全一致だけで読む(確認 第3巡への裁定 高-2)。
   // 自由な文(決裁の権限の出所)の中身では受け付けない。語の判定は、狭めれば緩み、広げれば正当な書き方を拒むため採らない
