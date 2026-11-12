@@ -156,7 +156,7 @@ function reviewerCheck(config, r, { author = null, head = null } = {}) {
   const person = who.person;
   if (author && sameAccount(author, { login: r.login, id: r.accountId })) return { why: `書き手 @${r.login} が PR の作成者である(作成者と記名者が同じアカウントでは、本人の操作か AI の操作かを区別できない)` };
   // 書き込みの権限を持つ者は、他人のコメントを編集できる(EV-0220)。書き手以外が編集した本文は、書き手の記録として数えない
-  if (r.editedBy === undefined) return { why: `レビュー ${r.id ?? '(id なし)'} の本文の編集の記録(editor)を読めない。写しの取得(record-copy.yml の GraphQL)が失敗した可能性があり、record-copy の再実行で直る。写しが無い PR(レビューが 100 件を超える・record-copy の導入より前にマージした)は、手で写しを作る(.github/rulesets/README.md「写しを手で作る」)` };
+  if (r.editedBy === undefined) return { why: `レビュー ${r.id ?? '(id なし)'} の本文の編集の記録(editor)を読めない。写しの取得(record-copy.yml の GraphQL)の失敗、またはレビューが 100 件を超える PR の 101 件目以降で、写しは作られたが edited_by を欠く。record-copy の再実行では直らない(既にある写しと一致とみなされる)。写しを edited_by つきで置き換える手順は .github/rulesets/README.md「写しを手で作る」` };
   if (r.editedBy && accountKey(r.editedBy) !== accountKey(r.login)) return { why: `レビューの本文を書き手以外(@${r.editedBy})が編集した` };
   if (!head) return { why: 'PR の先頭のコミットが分からず、レビューの対象を確かめられない' };
   if (!r.commitId) return { why: 'レビューの対象のコミットが読めない' };

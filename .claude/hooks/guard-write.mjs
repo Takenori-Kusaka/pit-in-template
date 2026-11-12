@@ -64,26 +64,30 @@ export function match(pattern, target) {
 }
 
 /**
- * 照合の前にパスを正規化する(process-compass #358 突合 X-1)。NTFS では別の綴りが同じファイルを指す。
- *  - 代替データストリームの記法(`settings.json::$DATA`・`settings.json:x`)は、ストリーム名を除いて本体のパスにする
- *  - Windows は末尾のドットと空白を落とす(`settings.json.`)
- *  - 存在するパスは realpath(fs.realpathSync.native)で長い名前へ解く(8.3 の短い名前 `SETTIN~1.JSO`・シンボリックリンク)。
+ * 照合の前にパスを正規化する(process-compass #358 突合 X-1・Y-5・Y-6)。NTFS では別の綴りが同じファイルを指す。
+ *  - 代替データストリームの記法(`settings.json::$DATA`・`settings.json:x`)は、ストリーム名を除いて本体のパスにする(Windows のときだけ。
+ *    POSIX では `:` は名前に使える文字である)
+ *  - Windows は末尾のドットと空白を落とす(`settings.json.`)。この環境の Node の fs は `settings.json.` を別のファイルとして作る
+ *    (本体は書き換わらない)。Win32 の API の正規化に頼る道具に備えた、安全側の拒否である
+ *  - 存在するパスは realpath(fs.realpathSync.native)で長い名前へ解く(8.3 の短い名前 `SETTIN~1.JSO`・シンボリックリンク・ジャンクション)。
  *    無いパスは、存在する最も深い親を解いて残りをつなぐ
- *  - 解けない成分に 8.3 の形(`~` の後に数字)や `:` が残るものは suspicious として返す(保護の下なら呼び出し側が拒否する)
- * 戻り値: { abs, suspicious }
+ *  - 解けない成分に 8.3 の形(`~` の後に数字)が残るものは suspicious として返す(保護の型に当たりうるときだけ、呼び出し側が拒否する)
+ * 戻り値: { abs: 解いた後のパス, lexical: 解く前(字面)のパス, suspicious }
  */
 export function normalizeTarget(filePath) {
   const win = process.platform === 'win32';
   let abs = path.resolve(filePath);
   const root = path.parse(abs).root;
-  let rest = abs.slice(root.length);
-  const parts = rest.split(/[\/]+/).filter((p) => p !== '');
+  const rest = abs.slice(root.length);
+  const parts = rest.split(/[\\/]+/).filter((p) => p !== '');
   const cleaned = parts.map((p) => {
+    if (!win) return p;
     let q = p.replace(/:.*$/, ''); // ストリームの指定
-    if (win && q !== '.' && q !== '..') q = q.replace(/[. ]+$/, '');
+    if (q !== '.' && q !== '..') q = q.replace(/[. ]+$/, '');
     return q === '' ? p : q;
   });
   abs = path.join(root, ...cleaned);
+  const lexical = abs;
   // 存在する最も深い親を解く
   let head = abs;
   const tail = [];
@@ -97,8 +101,38 @@ export function normalizeTarget(filePath) {
   } catch {
     /* 解けなければそのまま */
   }
-  const suspicious = tail.length > 0 && (tail.some((p) => /~[0-9]/.test(p)) || parts.some((p) => p.includes(':')));
-  return { abs: path.join(resolved, ...tail), suspicious };
+  const suspicious = tail.some((p) => /~[0-9]/.test(p));
+  return { abs: path.join(resolved, ...tail), lexical, suspicious };
+}
+
+// 8.3 の短い名前を持ちうる成分か(名前が 8.3 に収まらない、または glob を含む)
+function mayHaveShortAlias(seg) {
+  if (/[*?]/.test(seg)) return true;
+  const i = seg.lastIndexOf('.');
+  const base = i > 0 ? seg.slice(0, i) : seg;
+  const ext = i > 0 ? seg.slice(i + 1) : '';
+  return base.length > 8 || ext.length > 3 || /[^A-Za-z0-9_\-.~$]/.test(seg) || (i > 0 && seg.indexOf('.') !== i);
+}
+
+/**
+ * 解けなかった 8.3 の形の成分(sus)を、短い名前を持ちうる任意の1成分として、型に当たりうるかを調べる(Y-5)。
+ * 強制層の置き場の下でない `scripts/build~2.mjs`・`.claude/skills/v~2/SKILL.md` は当たらない
+ */
+export function couldMatchWithAlias(pattern, rel) {
+  const ps = pattern.split('/');
+  const rs = rel.split('/');
+  const go = (i, j) => {
+    if (i === ps.length) return j === rs.length;
+    if (ps[i] === '**') {
+      for (let k = j; k <= rs.length; k++) if (go(i + 1, k)) return true;
+      return false;
+    }
+    if (j >= rs.length) return false;
+    const seg = rs[j];
+    const ok = /~[0-9]/.test(seg) ? mayHaveShortAlias(ps[i]) || globToRegExp(ps[i]).test(seg) : globToRegExp(ps[i]).test(seg);
+    return ok && go(i + 1, j + 1);
+  };
+  return go(0, 0);
 }
 
 function readStdin() {
@@ -125,35 +159,45 @@ function main() {
   if (!filePath) process.exit(0);
 
   const target = normalizeTarget(filePath);
-  let realRoot = ROOT;
+  const roots = [ROOT];
   try {
-    realRoot = fs.realpathSync.native(ROOT);
+    const rr = fs.realpathSync.native(ROOT);
+    if (rr !== ROOT) roots.push(rr);
   } catch {
     /* ROOT が解けなければそのまま */
   }
-  const rel = path.relative(realRoot, target.abs).split(path.sep).join('/');
-  if (rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0); // リポジトリ外は対象にしない
+  // 照合するパスは、解決先と字面(解く前)の両方。どちらかが保護の下にあれば止める。解決先がリポジトリの外でも、字面が中なら字面で照合する
+  // (保護の型のディレクトリがジャンクション・リンクのとき、解決先は外へ出る。Y-1)
+  const rels = [];
+  for (const abs of [target.abs, target.lexical]) {
+    for (const r of roots) {
+      const x = path.relative(r, abs).split(path.sep).join('/');
+      if (!x.startsWith('..') && !path.isAbsolute(x) && !rels.includes(x)) rels.push(x);
+    }
+  }
+  if (rels.length === 0) process.exit(0); // リポジトリ外は対象にしない
+  const rel = rels[0];
 
-  const deny = (reason, rule) => {
-    const line = `${new Date().toISOString()}\t${rule}\t${rel}\n`;
+  const deny = (reason, rule, at = rel) => {
+    const line = `${new Date().toISOString()}	${rule}	${at}
+`;
     try {
       fs.appendFileSync(path.join(ROOT, guard.denyLog ?? '.claude/denied.log'), line);
     } catch {
       /* 記録に失敗しても遮断は続ける */
     }
-    console.error(`[強制層] ${rel} への書き込みを拒否しました。\n\n${reason}`);
+    console.error(`[強制層] ${at} への書き込みを拒否しました。
+
+${reason}`);
     process.exit(2);
   };
+  const patternOf = (item) => (typeof item === 'object' && item !== null && 'pattern' in item ? item.pattern : item);
 
-  // 0. 解けなかった成分に 8.3 の形や `:` を含むパスが、強制層の置き場の下にあれば拒否する(別の綴りで保護の型を通る経路を塞ぐ。X-1)
+  // 0. 解けなかった成分に 8.3 の形を含むパスが、保護・追記だけの型に当たりうるなら拒否する(別の綴りで型を通る経路を塞ぐ。X-1・Y-5)
   if (target.suspicious && guard.enabled !== false) {
-    const roots = new Set();
     for (const item of [...(guard.protectedPatterns ?? []), ...(guard.appendOnlyPatterns ?? [])]) {
-      const p = typeof item === 'object' && item !== null && 'pattern' in item ? item.pattern : item;
-      const seg = String(p).split('/')[0];
-      if (String(p).includes('/') && !/[*?]/.test(seg)) roots.add(seg.toLowerCase());
+      for (const r of rels) if (couldMatchWithAlias(String(patternOf(item)), r)) deny('別の綴り(8.3 の短い名前)で強制層の下を指すパスは書き込めません', 'protected-alias', r);
     }
-    if (roots.has(rel.split('/')[0].toLowerCase())) deny('別の綴り(8.3 の短い名前・`:` を含むストリームの指定)で強制層の下を指すパスは書き込めません', 'protected-alias');
   }
 
   // 1. 強制層そのもの。構成の guard の上書き(期限と理由つき)で一時緩和されている場合だけ適用しない(事業ステージでは外さない。#290)
@@ -162,7 +206,7 @@ function main() {
       const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
       const p = isObj ? item.pattern : item;
       const reason = isObj ? (item.reason ?? guard.protectedReason) : guard.protectedReason;
-      if (match(p, rel)) deny(reason, 'protected');
+      for (const r of rels) if (match(p, r)) deny(reason, 'protected', r);
     }
   }
 
@@ -174,7 +218,7 @@ function main() {
       const isObj = typeof item === 'object' && item !== null && 'pattern' in item;
       const p = isObj ? item.pattern : item;
       const reason = isObj ? (item.reason ?? guard.appendOnlyReason) : guard.appendOnlyReason;
-      if (match(p, rel) && fs.existsSync(path.join(ROOT, rel))) deny(reason ?? '成立した記録は書き換えません。訂正は元の記録を指す訂正の記録を人が足します', 'append-only');
+      for (const r of rels) if (match(p, r) && roots.some((b) => fs.existsSync(path.join(b, r)))) deny(reason ?? '成立した記録は書き換えません。訂正は元の記録を指す訂正の記録を人が足します', 'append-only', r);
     }
   }
 

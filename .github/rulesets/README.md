@@ -108,14 +108,19 @@ git commit -S -m "chore: 記録用ブランチを初期化する" && git push or
 
 初期化の後、失敗した `record-copy.yml` の実行を再実行すると、その PR の写しが置かれます。
 
-署名を必須にする構成では、`/process-init` が構成を書いた後に、`records` ブランチが無ければこの初期化を案内します(`scripts/gate/records.mjs` の `recordsBranchNotice`)。ブランチが無いまま最初のマージを通すと、写しが作られず、出荷の集約は承認のレビューの本文の編集の記録(`edited_by`。写しからだけ読む)を読めず、指示資産・統制の設定の変更の承認を数えられずに止まります。
+署名を必須にする構成では、`/process-init` が構成を書いた後に、`records` ブランチが無ければこの初期化を案内します(`scripts/gate/records.mjs` の `recordsBranchNotice`)。`records-signed.json` を適用した後に、ブランチが無いまま最初のマージを通すと、写しが作られず、出荷の集約は承認のレビューの本文の編集の記録(`edited_by`。写しからだけ読む)を読めず、指示資産・統制の設定の変更の承認を数えられずに止まります。止まった実行は、初期化の後に再実行すれば写しが置かれます。
 
 #### 写しを手で作る
 
-`record-copy.yml` が写しを作れなかった PR は、レビューが 100 件を超える、`record-copy.yml` の導入より前にマージした、またはワークフローが失敗したままの場合です。ワークフローの失敗は、まず実行を再実行します。再実行で直らない PR は、人が写しを作ります(未実証。EV-0252)。
+手で作る(または置き換える)のは、次の2つの場合です(未実証。EV-0252)。
+
+- 写しが無い: `record-copy.yml` の導入より前にマージした PR、またはワークフローが失敗したままの PR。人が写しを作る
+- 写しはあるが `edited_by` を欠く: 本文の編集者を引く GraphQL が失敗した PR、およびレビューが 100 件を超える PR の 101 件目以降のレビュー(GraphQL は先頭の 100 件だけを引く)。`record-copy.yml` の再実行では直らない(`edited_by` を比べずに「一致」とみなして書き換えない)。既存の写しを `edited_by` つきで置き換える
+
+`record-copy.yml` 自体の修正(GraphQL が失敗したら写しを書かずに失敗させること、全件を `after` でページ送りで取ること)は本件で行っておらず、残る作業です。
 
 1. `record-copy.yml` の「承認レビューの写しを取り出す」と同じ欄で `pr.json` を作る。レビューは `gh api --paginate repos/{owner}/{repo}/pulls/<番号>/reviews` で全件取り、`id・state・commit_id・submitted_at・author_association・user{id,login,type}・body` を選ぶ。本文の編集者は GraphQL の `reviews(first:100){nodes{databaseId editor{login}}}` で引き(100 件を超えるときは `after` でページを送る)、引けたレビューに `edited_by`(編集者なしは null)を足す
-2. 署名を必須にしない構成では、`records` ブランチへ `records/reviews/pr-<番号>.json` を追加するコミットを push する。署名を必須にする構成では署名コミットで追加する。**既にある写しは書き換えない**
+2. 署名を必須にしない構成では、`records` ブランチへ `records/reviews/pr-<番号>.json` を追加するコミットを push する。署名を必須にする構成では署名コミットで追加する。`edited_by` を欠く写しは、`edited_by` つきの写しで置き換える。それ以外の既にある写しは書き換えない。出荷の集約は書き換えを欠落に数えるため、置き換えた写しの扱いは実機で確かめていない
 3. 写しを置く時期はマージの後でよい。ただし、出荷の集約は、マージより前に置かれた写しと、既にある写しの書き換えを欠落に数える
 
 ## 出荷の PR(記録を基底ブランチへ入れる)

@@ -36,6 +36,7 @@ const TMP_DIRS = [];
 
 function sandbox(guard = GUARD) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-write-'));
+  TMP_DIRS.push(dir);
   fs.mkdirSync(path.join(dir, '.claude/hooks'), { recursive: true });
   fs.copyFileSync(HOOK, path.join(dir, '.claude/hooks/guard-write.mjs'));
   fs.writeFileSync(path.join(dir, '.claude/guard.json'), JSON.stringify(guard, null, 2));
@@ -74,18 +75,37 @@ const logOf = (dir) => {
   // 別の綴りで同じファイルを指す経路(NTFS の代替データストリーム・8.3 の短い名前・末尾のドット。突合 X-1)も遮断する
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.claude/settings.json'), '{}');
-  for (const rel of ['.claude/settings.json::$DATA', '.claude/settings.json:x', '.claude/SETTIN~1.JSO', '.claude/hooks/GUARD-~1.MJS', 'scripts/gate/CHECK-P~1.MJS', 'scripts/gate/new.mjs:evil']) {
+  // `:` の除去は Windows のときだけ(POSIX では `:` は名前に使える文字で、別のファイルである。Y-5)
+  const streams = process.platform === 'win32' ? ['.claude/settings.json::$DATA', '.claude/settings.json:x', 'scripts/gate/new.mjs:evil'] : [];
+  for (const rel of [...streams, '.claude/SETTIN~1.JSO', '.claude/hooks/GUARD-~1.MJS', 'scripts/gate/CHECK-P~1.MJS']) {
     const r = run(dir, rel, 'Write');
     check(`別の綴りでも遮断: ${rel}`, r.code === 2, `code=${r.code} ${r.err}`);
   }
-  if (process.platform === 'win32') check('末尾のドットでも遮断: .claude/settings.json.', run(dir, '.claude/settings.json.', 'Write').code === 2);
+  // 末尾のドットは、Windows の API の正規化に頼る道具に備えた安全側の拒否(この環境の Node の fs は別のファイルとして作る。Y-6)
+  if (process.platform === 'win32') check('末尾のドットも安全側で遮断: .claude/settings.json.', run(dir, '.claude/settings.json.', 'Write').code === 2);
+  // 保護の型のディレクトリがリンクのとき、解決先がリポジトリの外でも、字面のパスで遮断する(Y-1)
+  {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-write-out-'));
+    TMP_DIRS.push(out);
+    fs.mkdirSync(path.join(out, 'workflows'));
+    try {
+      fs.symlinkSync(out, path.join(dir, '.github'), 'junction');
+      for (const rel of ['.github/workflows/ci.yml', '.github/workflows/new.yml']) {
+        const r = run(dir, rel, 'Write');
+        check(`リンクの先がリポジトリの外でも字面で遮断: ${rel}`, r.code === 2, `code=${r.code} ${r.err}`);
+      }
+    } catch (e) {
+      console.log(`skip リンクの試験(作れない環境: ${e.code})`);
+    }
+  }
   // IMPL-0198:ok(強制層の外は遮断しない。記録も増やさない)
   const before = logOf(dir);
-  const allowed = ['src/app.js', 'docs/design.md', 'specs/F-001/spec.md', 'scripts/build.mjs', '.claude/skills/pit/SKILL.md', 'CLAUDE.md'];
+  const allowed = ['src/app.js', 'docs/design.md', 'specs/F-001/spec.md', 'scripts/build.mjs', '.claude/skills/pit/SKILL.md', 'CLAUDE.md', 'scripts/build~2.mjs', '.claude/skills/v~2/SKILL.md'];
   for (const rel of allowed) {
     const r = run(dir, rel);
     check(`強制層の外は通す: ${rel}`, r.code === 0, `code=${r.code} ${r.err}`);
   }
+  if (process.platform !== 'win32') check('POSIX では `:` を含む名前は別のファイルとして通す: scripts/build.mjs:x', run(dir, 'scripts/build.mjs:x').code === 0);
   check('通した操作は denied.log に残さない', logOf(dir) === before);
   check('リポジトリの外は対象にしない', run(dir, '../outside.txt').code === 0);
   // guard.enabled が偽(期限つきの一時緩和)では強制層の遮断を外す

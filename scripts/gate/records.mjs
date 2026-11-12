@@ -228,7 +228,7 @@ export function recordsBranchNotice(config, cwd = process.cwd()) {
   const has = ['refs/heads/records', 'refs/remotes/origin/records'].some((r) => resolveRef(cwd, r));
   if (has) return null;
   return '署名を必須にする構成(規制業か安全重要度 CL2 以上)ですが、記録用ブランチ records が見つかりません。' +
-    'GITHUB_TOKEN では作れないため、最初のマージの前に作らないと承認レビューの写しが作られず、出荷の集約が承認を数えられません。' +
+    'GITHUB_TOKEN では作れないため、records-signed.json を適用した後に、ブランチが無いまま最初のマージを通すと、承認レビューの写しが作られず、出荷の集約が承認を数えられません。止まった実行は、初期化の後に再実行すると写しが置かれます。' +
     '作り方: 記録用ブランチ `records` の作り方は `.github/rulesets/README.md`「記録用ブランチの初期化」(署名コミットで作る、または records-signed.json を適用する前に最初のマージを 1 回通す)';
 }
 
