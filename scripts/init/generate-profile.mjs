@@ -2841,6 +2841,10 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
       continue;
     }
     if (soloFirst) continue;
+    // 受託・委託の構成の席の任免は、その人が属する側の組織で任命の権限を持つ者が決定する(標準 第8章 軸D・ADR-0127 決定8)。
+    // 表1 の決定者(既定は発注側の事業決裁者)の記名を強制しない。機械が確かめるのは、記名が名簿の自然人で空でないことまで
+    // (nameProblems)。その人が属する側の組織で任命の権限を持つかは確かめない(manual。IMPL-0513)。決定者その人を替える行は対象外
+    if (OUTSOURCING_DEV_FORMS.includes(config.answers?.['q-dev-form']) && !item.decider) continue;
     if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned || selfAppointed) continue;
     const who = report.priorDeciderPresent
       ? '変更前の D-0 表1「体制と運用形態」の決定者'
@@ -5802,7 +5806,7 @@ if (isMain) {
     if (change.kind === 'accountable' && ['outsourcer', 'vendor'].includes(config.answers?.['q-dev-form'])) {
       report.remaining.push(
         '受託・委託の構成の任免(標準 第8章 軸D): 席の責任者の任免は、その人が属する側の組織で任命の権限を持つ者が決定する(発注側の人が受注側の要員を、受注側の人が発注側の人を任命しない)。' +
-          '相手の組織へ、氏名と交替の理由を通知し、docs/ai-sla.md の「任免の通知の記録の置き場」へ記録する。機械はどちらの側の任免かを確かめない'
+          '相手の組織へ、氏名と交替の理由を通知し、docs/ai-sla.md の「任免の通知の記録の置き場」へ記録する。決定した者の記名(decidedBy)は、D-0 表1 の決定者に限らず、その人が属する側の組織で任命の権限を持つ者を書く(決定者その人を替える行は除く)。機械が確かめるのは記名が名簿の自然人で空でないことまでで、どちらの側の任免か、記名した者が任命の権限を持つかは確かめない'
       );
     }
 

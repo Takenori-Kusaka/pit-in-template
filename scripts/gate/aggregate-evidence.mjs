@@ -2577,6 +2577,8 @@ if (isMain) {
   const auditFormat = g6Applied && config.review?.recordFormat === 'audit';
   const safetyAssessmentRequired = g6Applied && config.gates?.g6?.params?.independentSafetyAssessment === true;
   const auditRecordGaps = [];
+  // 段の比較を通った記録の件数(通ったことを「確かめ済み」と読ませないため、保証の開示に件数と範囲の限定を出す。#357 / ADR-0127 決定6)
+  const stepChecked = { safety: 0, strongest: 0 };
   if (auditFormat || safetyAssessmentRequired) {
     const devKey = whoKey('dev-verifier');
     // 求める段(第8章 軸E): CL3 は段3、それ以外(CL2)は段2
@@ -2592,6 +2594,7 @@ if (isMain) {
       if (effective < stepRequired) {
         return `記録した段 段${recorded}${effective !== recorded ? `(段${effective} として数えた。${cap.reasons.join('。')})` : ''} が、求める段 段${stepRequired} に届かない`;
       }
+      stepChecked[row.startsWith('安全性') ? 'safety' : 'strongest'] += 1;
       return null;
     };
     const unitList = [
@@ -3585,6 +3588,9 @@ if (isMain) {
     // 本人以外の確認で記名者を照合した既存の記録(process-compass #434 / ADR-0120 決定2)。作られた時点の照合と区別して開示する
     laterSignerChecks: laterSignerChecks(config),
     // 承認権限の一時制限(第7章 7.9。#357 / ADR-0127 決定5)
+    // 段の比較を通った記録の件数と、価値責任者の照合の結果(通ったときも範囲の限定を出すため。#357 / ADR-0127 決定6・7)
+    stepChecked,
+    valueOwnerState: valueOwner.applies ? valueOwner.state : null,
     restrictions: (() => {
       const st = restrictionState(config);
       return { active: st.active, legacy: st.legacy, notCounted: count(changeUnits, (c) => (c.independent.restrictedBy?.length ?? 0) > 0) };
@@ -5508,8 +5514,19 @@ if (isMain) {
     const rs = A.independence.restrictions;
     if (rs && (rs.active.length || rs.legacy || rs.notCounted)) {
       R.push(
-        `| 承認権限の一時制限(第7章 7.9.2) | 解除されていない制限 ${rs.active.length} 件${rs.active.length ? `(${rs.active.map((r) => `${r.id}: ${r.paths.join(', ')}`).join(' / ')})` : ''}。範囲に触れ、独立レビュア2名に満たず数えなかった変更 ${rs.notCounted} 件${rs.legacy ? `。範囲を記録していない旧い発動の記録 ${rs.legacy} 件(範囲を判定できない。/process-change の種別 notice で範囲を書いて記録し直すか、解除を記録する)` : ''} | — |`
+        `| 承認権限の一時制限(第7章 7.9.2) | 解除されていない制限 ${rs.active.length} 件${rs.active.length ? `(${rs.active.map((r) => `${r.id}: ${r.paths.join(', ')}`).join(' / ')})` : ''}。範囲に触れ、独立レビュア2名に満たず数えなかった変更 ${rs.notCounted} 件${rs.legacy ? `。範囲を記録していない旧い発動の記録 ${rs.legacy} 件(範囲を判定できない。/process-change の種別 notice で範囲を書いた発動を記録し直す。旧い発動の記録は解除できず、この件数は残り続ける)` : ''} | — |`
       );
+    }
+    // 段と価値責任者の照合を通ったときも、機械が確かめた範囲を出す(通ったことを確かめ済みと読ませない。#357 / ADR-0127 決定6・7)
+    const sc = A.independence.stepChecked;
+    if (sc && (sc.safety || sc.strongest)) {
+      R.push(`| 組織上の距離の段の比較(第8章 軸E) | 記録の段が求める段に届いた記録: 安全性の評価者 ${sc.safety} 件・最強の検証の担当者 ${sc.strongest} 件。段2 以上の距離(指揮系統・資源・リリースの権限の事実)は機械では確かめていない。確かめるのは出荷判定者と内部監査 | — |`);
+    }
+    if (['blank', 'no-sla'].includes(A.independence.valueOwnerState)) {
+      R.push('| 価値責任者の所属(第8章 軸D) | 様式 08 の価値責任者の行が空欄、または docs/ai-sla.md が無いため、照合していない。次の締結・改訂で記入する | — |');
+    }
+    if (A.independence.valueOwnerState === 'match') {
+      R.push('| 価値責任者の所属(第8章 軸D) | 様式 08 の価値責任者と構成の席の責任者の氏名が一致した。発注側の人であることは機械では確かめていない。確かめるのは締結者と G-2 の判定者 | — |');
     }
     if (ch.overriddenApprovals) {
       R.push(`| アカウント名の機械検査(AI を示す語)を、名簿の確認(本人以外の記名)で上書きして数えた承認 | ${ch.overriddenApprovals} 件 | ${prev((p) => p.independence.changes.overriddenApprovals ?? '値なし')} |`);

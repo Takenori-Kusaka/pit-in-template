@@ -239,8 +239,8 @@ try {
   /** 席の並び(SEAT_IDS)ごとの人の添字。null は空ける */
   const seatsBy = (arr) => Object.fromEntries(SEAT_IDS.map((s, i) => [s, { accountable: arr[i] === null ? null : P[arr[i]].name }]));
   const DAY = '2026-10-01';
-  const workspace = (prefix) => {
-    const blank = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
+  const workspace = (prefix, ans = answers) => {
+    const blank = quiet(() => buildConfig(ans, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
     const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
       if (SKIP.has(e.name)) continue;
@@ -656,6 +656,23 @@ try {
     check('IMPL-0342:ok 1名で代表権を持つ法人で外部の記録への言及が無ければ、受け付けて selfAppointedNoExternalRef を残す', ok.ok && e.selfAppointed === true && e.selfAppointedNoExternalRef === true, `${ok.out}\n${JSON.stringify(e)}`);
   } finally {
     fs.rmSync(wq.d, { recursive: true, force: true });
+  }
+
+  // IMPL-0513:ok 受託・委託の構成の席の任免は、表1 の決定者に限らず、名簿の自然人の記名を受け付ける(誰が任命の権限を持つかは確かめない)。
+  // 決定者その人を替える行は、従来どおり前任の決定者の記名を要する
+  for (const [form, expectOk] of [['inhouse', false], ['vendor', true]]) {
+    const wo = workspace('pit-in-357-', { ...answers, 'q-dev-form': form });
+    try {
+      wo.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+      const f0 = wo.run({ summary: '2人目を置く', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 1]), decidedBy: P[0].name, reason: '2人目を置く' });
+      check(`IMPL-0513: ${form} の前提の記入を受け付ける`, f0.ok, f0.out);
+      const r = wo.run({ summary: '技術判断者の任命', people: [P[0], P[1]], seats: seatsBy([0, 0, 1, 0, 0, 0, 0, 0, 1]), decidedBy: P[1].name, reason: '受注側の任命の権限を持つ者が決定した' });
+      check(`IMPL-0513:${expectOk ? 'ok' : 'ng'} ${form} の構成で、表1 の決定者以外の名簿の人の記名による席の任免を${expectOk ? '受け付ける' : '拒否する'}`, r.ok === expectOk, r.out);
+      const dr = wo.run({ summary: '決定者の交代', people: [P[0], P[1]], seats: seatsBy([1, 0, 0, 0, 0, 0, 0, 0, 1]), decidedBy: P[1].name, reason: '決定者を交代する' });
+      check(`IMPL-0513:ng ${form} の構成でも、決定者その人を替える行は新任の記名では受け付けない`, !dr.ok, dr.out);
+    } finally {
+      fs.rmSync(wo.d, { recursive: true, force: true });
+    }
   }
 
 }

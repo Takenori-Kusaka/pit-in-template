@@ -278,5 +278,19 @@ function workspace(config, extraFiles = {}) {
   w.done();
 }
 
+
+// IMPL-0117:ok 力量を確認した者が、その変更の作成を指示した者(コミットの作成者 = 開発者の席の責任者)である確認を、件数 1 で固定する
+{
+  const C2 = { ...C, reviewCompetence: { ...COMP, confirmedBy: B.name } };
+  const w2 = workspace(cfg(ANS(), [A, B, C2], BASE3));
+  try {
+    w2.commitWithG6('src/e.js', C2.name);
+    const agg2 = w2.aggregate();
+    const line = agg2.report.split('\n').find((l) => l.includes('依頼した本人による確認')) ?? '';
+    check('IMPL-0117:ok 力量を確認した者が作成を指示した者である確認を、依頼した本人による確認 1 件と数える', /\| 1 件 \|/.test(line), `${line}\n${agg2.out.slice(-400)}`);
+  } finally {
+    w2.done();
+  }
+}
 console.log(`\n外部の確認者と制限と段の反証の試験: ${failures ? `${failures} 件の失敗(${checks} 件中)` : `${checks} 件が期待と一致しました`}`);
 process.exit(failures ? 1 : 0);
