@@ -92,9 +92,12 @@ const BASE3 = { 'value-owner': 'a', 'tech-lead': 'c', 'dev-verifier': 'b', 'inde
   const ok = cfg(ANS(), [A, B, C, { ...X, reviewCompetence: COMP }], { ...BASE3, 'independent-reviewer': 'x' }, { 'independent-reviewer': { agreement: AGR } });
   check('(イ): 両方の記録があれば受け付ける(中身は確かめない)', !externalSeatProblems(ok).length, externalSeatProblems(ok).join('\n'));
   check('(イ): 席の agreement は構成へ残る(所在だけ)', ok.seats.find((s) => s.role === 'independent-reviewer')?.agreement?.record === AGR.record, JSON.stringify(ok.seats.find((s) => s.role === 'independent-reviewer')));
+  // IMPL-0117:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   const self = { ...X, reviewCompetence: { ...COMP, confirmedBy: '高橋 次郎' } };
   check('確認者の力量: 本人が確認した記録は受け付けない', reviewCompetenceProblems({ people: [A, self] }, self).some((x) => /本人/.test(x)));
   const ai = { ...X, reviewCompetence: { ...COMP, confirmedBy: 'Claude' } };
+  // IMPL-0117:ok(違反と適合の対。標準の実装マーク。process-compass #314)
+  check('確認者の力量: 力量の記録を持つ確認者は受け付ける', !reviewCompetenceProblems({ people: [A, { ...X, reviewCompetence: COMP }] }, { ...X, reviewCompetence: COMP }).length);
   check('確認者の力量: AI の名義の確認した者は受け付けない', reviewCompetenceProblems({ people: [A, ai] }, ai).some((x) => /AI の名義/.test(x)));
 }
 
@@ -251,7 +254,8 @@ function workspace(config, extraFiles = {}) {
   const ngC = w.commitWithG6('src/a.js', C.name, rows(A.name, '段2'));
   // IMPL-0344:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   const okC = w.commitWithG6('src/b.js', C.name, rows(D.name, '段2'));
-  // IMPL-0184:ng / ok(違反と適合の対。標準の実装マーク。process-compass #314)段階「最強」の検証の担当者の段
+  // IMPL-0184:ng(違反と適合の対。標準の実装マーク。process-compass #314)段階「最強」の検証の担当者の段
+  // IMPL-0184:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   const sv = (who) => `| 最強の検証の担当者 | ${who} |\n| 最強の検証の担当者の段と根拠 | 段2。直属の上長が異なり、対象のリリースの権限を持たない |\n`;
   const ngS = w.commitWithG6('src/c.js', C.name, rows(D.name, '段2') + sv(A.name));
   const okS = w.commitWithG6('src/d.js', C.name, rows(D.name, '段2') + sv(D.name));
