@@ -660,7 +660,7 @@ try {
 
   // IMPL-0513:ok 受託・委託の構成の席の任免は、表1 の決定者に限らず、名簿の自然人の記名を受け付ける(誰が任命の権限を持つかは確かめない)。
   // 決定者その人を替える行は、従来どおり前任の決定者の記名を要する
-  for (const [form, expectOk] of [['inhouse', false], ['vendor', true]]) {
+  for (const [form, expectOk] of [['inhouse', false], ['vendor', true], ['outsourcer', true]]) {
     const wo = workspace('pit-in-357-', { ...answers, 'q-dev-form': form });
     try {
       wo.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
@@ -675,6 +675,32 @@ try {
     }
   }
 
+  // IMPL-0513:ng(第2巡 中①)内製の構成から受託へ切り替える答えと席の任命を同じ変化点で出しても、表1 の決定者以外の記名では受け付けない
+  {
+    const ws = workspace('pit-in-357s-', { ...answers, 'q-dev-form': 'inhouse' });
+    try {
+      ws.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+      ws.run({ summary: '2人目を置く', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 1]), decidedBy: P[0].name, reason: '2人目を置く' });
+      const sw = ws.run({ summary: '受託へ切り替えと任命', answers: { 'q-dev-form': 'vendor' }, people: [P[0], P[1]], seats: seatsBy([0, 0, 1, 0, 0, 0, 0, 0, 1]), decidedBy: P[1].name, reason: '切り替えと任命を束ねた' });
+      check('IMPL-0513:ng 内製から受託への切り替えと任命を束ねた変化点を、表1 の決定者以外の記名では受け付けない', !sw.ok, sw.out);
+    } finally {
+      fs.rmSync(ws.d, { recursive: true, force: true });
+    }
+  }
+  // IMPL-0513:ng(第2巡 中②)受託・委託の構成でも、任命権者でない外部の確認者の記名では席の任免を受け付けない
+  {
+    const XE = { id: 'x', name: '高橋 次郎', external: true, accounts: [{ login: 'takahashi', id: 3009 }] };
+    const we = workspace('pit-in-357e-', { ...answers, 'q-dev-form': 'vendor' });
+    try {
+      we.run({ summary: '1人目', people: [P[0]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), decidedBy: P[0].name, reason: '初期の設定' });
+      we.run({ summary: '2人目を置く', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 1]), decidedBy: P[0].name, reason: '2人目を置く' });
+      we.run({ summary: '外部の確認者を足す', people: [P[0], P[1], XE], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 1]), decidedBy: P[0].name, reason: '外部の確認者を足す' });
+      const er = we.run({ summary: '技術判断者の任命', people: [P[0], P[1], XE], seats: seatsBy([0, 0, 1, 0, 0, 0, 0, 0, 1]), decidedBy: XE.name, reason: '外部の確認者が決定した' });
+      check('IMPL-0513:ng 任命権者でない外部の確認者の記名による席の任免を、受託の構成でも拒否する', !er.ok, er.out);
+    } finally {
+      fs.rmSync(we.d, { recursive: true, force: true });
+    }
+  }
 }
 
 if (failures) {

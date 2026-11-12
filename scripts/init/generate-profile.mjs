@@ -2844,7 +2844,12 @@ function deciderRowProblems(config, report, decidedBy, before = null) {
     // 受託・委託の構成の席の任免は、その人が属する側の組織で任命の権限を持つ者が決定する(標準 第8章 軸D・ADR-0127 決定8)。
     // 表1 の決定者(既定は発注側の事業決裁者)の記名を強制しない。機械が確かめるのは、記名が名簿の自然人で空でないことまで
     // (nameProblems)。その人が属する側の組織で任命の権限を持つかは確かめない(manual。IMPL-0513)。決定者その人を替える行は対象外
-    if (OUTSOURCING_DEV_FORMS.includes(config.answers?.['q-dev-form']) && !item.decider) continue;
+    // 変化点の前の構成と後の構成のどちらかが受託・委託でなければ緩和の対象にしない(切り替えと任命を同じ変化点で出して、
+    // 表1 の決定者の記名を回避させない。#357 第2巡 中①)。記名者が任命権者でない外部の確認者のときも対象にしない(中②)
+    const outsourcingBoth = [config, before].filter(Boolean).every((c) => OUTSOURCING_DEV_FORMS.includes(c.answers?.['q-dev-form']));
+    const signer = (config.people ?? []).find((p) => p && p.id === key);
+    const signerIsExternalNonAppointer = signer?.external === true && signer?.appointer !== true;
+    if (outsourcingBoth && !signerIsExternalNonAppointer && !item.decider) continue;
     if (report.priorDeciderPresent ? report.priorDecider === key : appointerSigned || selfAppointed) continue;
     const who = report.priorDeciderPresent
       ? '変更前の D-0 表1「体制と運用形態」の決定者'
@@ -2979,7 +2984,7 @@ export function renderChangeReport(report, clamps = [], config = null) {
       (i) =>
         `${i.line} — 決定できる者: ${
           report.priorDeciderPresent ? '変更前の D-0 表1「体制と運用形態」の決定者' : '組織上の任命権者(前任の決定者が体制から外れている、または未記入)'
-        }${report.allBlankBefore ? '。全席が未記入の状態からの初回の記入は、この変化点で決定者の席に記入する人の記名で受け付ける' : ''}`
+        }${OUTSOURCING_DEV_FORMS.includes(config.answers?.['q-dev-form']) ? '。受託・委託の構成では、変化点の前後がともに受託・委託のとき、決定者その人を替える行以外は、その人が属する側の組織で任命の権限を持つ者の記名でも受け付ける' : ''}${report.allBlankBefore ? '。全席が未記入の状態からの初回の記入は、この変化点で決定者の席に記入する人の記名で受け付ける' : ''}`
     ),
     'なし'
   );
@@ -5806,7 +5811,7 @@ if (isMain) {
     if (change.kind === 'accountable' && ['outsourcer', 'vendor'].includes(config.answers?.['q-dev-form'])) {
       report.remaining.push(
         '受託・委託の構成の任免(標準 第8章 軸D): 席の責任者の任免は、その人が属する側の組織で任命の権限を持つ者が決定する(発注側の人が受注側の要員を、受注側の人が発注側の人を任命しない)。' +
-          '相手の組織へ、氏名と交替の理由を通知し、docs/ai-sla.md の「任免の通知の記録の置き場」へ記録する。決定した者の記名(decidedBy)は、D-0 表1 の決定者に限らず、その人が属する側の組織で任命の権限を持つ者を書く(決定者その人を替える行は除く)。機械が確かめるのは記名が名簿の自然人で空でないことまでで、どちらの側の任免か、記名した者が任命の権限を持つかは確かめない'
+          '相手の組織へ、氏名と交替の理由を通知し、docs/ai-sla.md の「任免の通知の記録の置き場」へ記録する。決定した者の記名(decidedBy)は、D-0 表1 の決定者に限らず、その人が属する側の組織で任命の権限を持つ者を書く(決定者その人を替える行は除く)。名簿へ人を足す行は、今も D-0 表1 の決定者の記名を要する(追加と任命は別の変化点でも、追加の段で決定者の記名が要る)。切り替えと同じ変化点の任免と、任命権者でない外部の確認者の記名は、この扱いにならない。機械が確かめるのは記名が名簿の自然人で空でないことまでで、どちらの側の任免か、記名した者が任命の権限を持つかは確かめない'
       );
     }
 
@@ -6220,7 +6225,7 @@ if (isMain) {
       const msg =
         '席の責任者の任免(または D-0 表1 の決定者の変更)を含みます。統制の向きにかかわらず決定であり、決定した者の記名(decidedBy)と理由(reason)が要ります。' +
         (report.priorDeciderPresent
-          ? '決定できるのは、変更前の D-0 表1「体制と運用形態」の決定者です。'
+          ? '決定できるのは、変更前の D-0 表1「体制と運用形態」の決定者です(受託・委託の構成で、変化点の前後がともに受託・委託のときは、決定者その人を替える行以外は、その人が属する側の組織で任命の権限を持つ者の記名も受け付けます)。'
           : '前任の決定者が体制から外れている、または未記入のため、決定できるのは組織上の任命権者(名簿に external: true と appointer: true で記載した人)です。') +
         (report.allBlankBefore ? '全席が未記入の状態からの初回の記入は、この変化点で D-0 表1「体制と運用形態」の決定者の席に記入する人の記名と理由で受け付けます。' : '') +
         '離脱(席を空ける)だけなら、記名なしで反映できます。AI が決めてはなりません(標準 第3章 3.13.3)';

@@ -225,7 +225,7 @@ function workspace(config, extraFiles = {}) {
   const lineOf = (h) => agg.report.split('\n').filter((l) => l.startsWith(`| ${h} |`)).join('\n');
   check(
     '集約: 制限の範囲に触れ、独立レビュア1名の変更は、独立した人の確認に数えない(7.9.2・ADR-0067 決定2)',
-    /要求 2 名.*承認権限の一時制限\(第7章 7\.9\.2\)の範囲に触れる: pay-1/.test(lineOf(inRange)) && !/review\.reviewerCount/.test(lineOf(inRange)) && /範囲に触れ、独立レビュア2名に満たず数えなかった変更 1 件/.test(agg.report),
+    /要求 2 名.*承認権限の一時制限\(第7章 7\.9\.2\)の範囲に触れる: pay-1/.test(lineOf(inRange)) && !/review\.reviewerCount/.test(lineOf(inRange)) && /範囲に触れた変更 1 件\(うち、独立レビュア2名に満たず数えなかった変更 1 件\)/.test(agg.report),
     `${lineOf(inRange)}\n${agg.report.split('\n').filter((l) => /一時制限/.test(l)).join('\n')}`
   );
   check('集約: 範囲の外の変更は、1名の独立レビュアで数える', !/一時制限/.test(lineOf(outRange)), lineOf(outRange));
@@ -268,6 +268,9 @@ function workspace(config, extraFiles = {}) {
   check('集約: 反証の無い最強の検証の担当者の段2 は、CL2 の求める段に届く', !s(okS), s(okS));
   check('集約: 安全性の評価者の段を読み、リリースの権限を持つ席の責任者の段2 を段1 として数え、届かなければ記録の欠落にする', /段2.*段1 として数えた.*リリースの権限.*求める段 段2 に届かない/.test(g(ngC)), g(ngC) || agg.out.slice(-800));
   check('集約: 反証の無い評価者の段2 は、CL2 の求める段に届く(距離そのものは確かめない)', !/段/.test(g(okC)), g(okC));
+  // 通ったときも、機械が確かめた範囲を保証の開示へ出す(出力を固定する。IMPL-0344)
+  const stepRow = agg.report.split('\n').find((l) => l.includes('組織上の距離の段の比較')) ?? '';
+  check('集約: 保証の開示に、段の比較を通った記録の件数と、段2 以上の距離は機械では確かめていないことを出す', /安全性の評価者 [1-9]\d* 件・最強の検証の担当者 [1-9]\d* 件.*段2 以上の距離.*機械では確かめていない/.test(stepRow), stepRow || agg.report.slice(0, 600));
   w.done();
 }
 {
@@ -276,6 +279,41 @@ function workspace(config, extraFiles = {}) {
   const agg = w.aggregate();
   check('集約: 受託で、様式 08 の価値責任者と席の責任者が食い違えば記録の欠落にする(IMPL-0462)', /価値責任者の所属: .*一致しない/.test(agg.out), agg.out.split('\n').filter((l) => /価値責任者/.test(l)).join('\n') || agg.out.slice(-600));
   w.done();
+}
+{
+  // 保証の開示の価値責任者の行を出力で固定する(照合した範囲を、通ったときも空欄・無いときも出す)
+  const vend = cfg(ANS({ 'q-dev-form': 'vendor' }), [A, B, C], BASE3);
+  const sla = (cell) => `## 9. 判定の置き先と結果の受け渡し\n\n| 項目 | 合意 |\n| --- | --- |\n| 価値責任者(発注側が選任した者) | ${cell} |\n`;
+  const rowOf = (w) => w.aggregate().report.split('\n').filter((l) => l.includes('価値責任者の所属(第8章 軸D)')).join('\n');
+  const wm = workspace(vend, { 'docs/ai-sla.md': sla('山田 太郎') });
+  const matchRow = rowOf(wm);
+  wm.done();
+  check('集約: 様式 08 の価値責任者が一致したとき、発注側の人であることは機械では確かめていないと保証の開示に出す', /氏名が一致した.*発注側の人であることは機械では確かめていない.*締結者と G-2 の判定者/.test(matchRow), matchRow);
+  const wb = workspace(vend, { 'docs/ai-sla.md': sla('<発注側の氏名>') });
+  const blankRow = rowOf(wb);
+  wb.done();
+  check('集約: 様式 08 の価値責任者の行が空欄のとき、照合していないと保証の開示に出す', /空欄.*照合していない/.test(blankRow), blankRow);
+  const wn = workspace(vend);
+  const noSlaRow = rowOf(wn);
+  wn.done();
+  check('集約: docs/ai-sla.md が無いとき、照合していないと保証の開示に出す', /ai-sla\.md が無い.*照合していない/.test(noSlaRow), noSlaRow);
+}
+{
+  // 範囲に触れた変更の件数は G-6 の適用に依らず数える。G-6 を適用しない体制では「0 件」と出さず、数えなかった件数を出さないと表示する(IMPL-0118・ADR-0127 決定5)
+  const base = cfg(ANS(), [A, B, C], BASE3);
+  const R = { id: 'pay-1', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
+  const log = { kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: R, notice: { reasons: ['承認権限の一時制限(標準 第7章 7.9)の発動'] } };
+  const noG6 = { ...base, gates: { ...base.gates, g6: { ...base.gates.g6, state: 'omitted' } }, changeLog: [...base.changeLog, log] };
+  const w = workspace(noG6);
+  w.commitWithG6('src/payments/pay.js', C.name);
+  const agg = w.aggregate();
+  const row = agg.report.split('\n').filter((l) => l.includes('承認権限の一時制限(第7章 7.9.2)')).join('\n');
+  w.done();
+  check(
+    '集約: G-6 を適用しない体制で制限の範囲に触れた変更は、触れた件数を出し、数えなかった件数は出さないと表示する(0 件と出さない)',
+    /範囲に触れた変更 1 件\(この体制は G-6 を適用していない/.test(row) && !/数えなかった変更 0 件/.test(row),
+    row || agg.out.slice(-600)
+  );
 }
 
 
