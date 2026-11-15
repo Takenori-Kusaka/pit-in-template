@@ -54,6 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord, lastCommitOf, parseCopy, headOfCopy, targetOfForm, judgeOfForm, scanRecordsHistory, classifyRecordsHistory, isAncestorCommit, recordsSignatureRequired } from './records.mjs';
 // 写し・様式の読み方の正本は records.mjs。試験(test-aggregate-records.mjs)が従来の名前で引けるよう、ここからも出す
 export { parseCopy, targetOfForm, judgeOfForm };
+import { SPEC_FILE } from './spec-sections.mjs';
 import { specRecheck, specRecheckGapText, specRecheckSummary, targetVersionOfForm } from './spec-recheck.mjs';
 import {
   loadConfig,
@@ -2195,6 +2196,8 @@ if (isMain) {
       mergedAt: rest?.mergedAt ?? null,
       // 変更したファイルが指す仕様(specs/F-NNN/)。トレーラ Spec と合わせて、判定者本人のレビューによる G-4 の対応づけに使う
       specsTouched: [...new Set(prFiles.map((x) => x.match(/^specs\/(F-\d+)\//)?.[1]).filter(Boolean))],
+      // 確定した版の再確認の対象は spec.md の変更に限る(plan.md などだけの変更は対象にしない。直接コミットと同じ。SPEC_FILE。#355 R1-03)
+      specFilesTouched: [...new Set(prFiles.filter((x) => SPEC_FILE.test(x)).map((x) => x.match(/^specs\/(F-\d+)\//)?.[1]).filter(Boolean))],
       mergeCommit: hash.slice(0, 8),
       mergeCommitFull: hash,
       // マージの方式。squash / merge-commit / rebase(構成要素の数え方だけが変わる)
@@ -3064,12 +3067,21 @@ if (isMain) {
   ];
   // 判定者本人のレビュー(宣言行 G-4: 通過)で記録した仕様の PR。commit_id がマージ時の head と一致し、判定する席の責任者でない
   // 者の宣言行でないものに限る。仕様の対応づけは、その PR のトレーラ Spec と、変更したファイル(specs/F-NNN/)による
-  const g4ByReview = (spec) => reviewJudgements.some((j) => j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(spec) && !reviewSupersededByLater(j, reviewJudgements, spec));
   const specRe = (spec) => new RegExp(`(?<![A-Za-z0-9])${spec}(?!\\d)`);
-  const g4Approved = (spec) =>
-    // 対応は判定記録の「対象」欄が仕様の ID を指していることで確かめる。ファイル名だけでは対応づけない。
-    // 通過の後に同じ仕様の差し戻しの記録があれば、その通過は効いていない(process-compass #368 の突合 X-2)
-    gateDetails.some((g) => /G-4/.test(g.gate ?? '') && passed(g) && specRe(spec).test(String(g.target ?? '')) && !supersededByLater(g, gateDetails, (o) => specRe(spec).test(String(o.target ?? '')))) || g4ByReview(spec);
+  // 仕様の G-4 の通過の記録の一覧。効いているか(後の差し戻しに打ち消されていないか)の印を付けて返す。
+  // 基準5 の g4Approved と確定した版の再確認(下の specRecheckItems)は、この一覧を使う(「効いている」の定義を二重に持たない。IMPL-0241 / #355)
+  //   様式: 結果が通過で、対応は判定記録の「対象」欄が仕様の ID を指していることで確かめる(ファイル名だけでは対応づけない)。
+  //         通過の後に同じ仕様の差し戻しの記録があれば、その通過は効いていない(process-compass #368 の突合 X-2)
+  //   写し: 通過・headMatch・判定する席の責任者でない者の宣言行でないもの(judgeOk が偽のもの・headMatch が偽のものは通過の記録に数えない)
+  const g4Passes = (spec) => [
+    ...gateDetails
+      .filter((g) => /G-4/.test(g.gate ?? '') && passed(g) && specRe(spec).test(String(g.target ?? '')))
+      .map((g) => ({ kind: 'form', g, effective: !supersededByLater(g, gateDetails, (o) => specRe(spec).test(String(o.target ?? ''))) })),
+    ...reviewJudgements
+      .filter((j) => j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(spec))
+      .map((j) => ({ kind: 'review', j, effective: !reviewSupersededByLater(j, reviewJudgements, spec) })),
+  ];
+  const g4Approved = (spec) => g4Passes(spec).some((p) => p.effective);
   const specsWithoutG4 = isActive('g4') ? [...new Set(specChanges.flatMap((c) => c.specs))].filter((s) => !g4Approved(s)) : [];
   for (const s of specsWithoutG4) {
     gaps.push(
@@ -3082,30 +3094,31 @@ if (isMain) {
   // 対象とする版と範囲の先端とで、3節の本文の文字列が一致するかを比べる。不一致は記載の欠落。版に届かない場合は未確認(欠落にしない)
   const specRecheckItems = (() => {
     if (!isActive('g4')) return [];
-    const ids = [...new Set([...prs.flatMap((p) => p.specsTouched ?? []), ...directProduct.flatMap((d) => d.specFilesTouched ?? [])])].sort();
+    const ids = [...new Set([...prs.flatMap((p) => p.specFilesTouched ?? []), ...directProduct.flatMap((d) => d.specFilesTouched ?? [])])].sort();
     const readSpec = (ref, id) => (ref ? gitText(['show', `${ref}:specs/${id}/spec.md`]) : null);
     const features = ids.map((id) => ({ id, tipText: readSpec(to, id) })).filter((f) => f.tipText !== null);
     const passes = [];
     for (const f of features) {
-      for (const g of gateDetails) {
-        if (!(/G-4/.test(g.gate ?? '') && passed(g) && specRe(f.id).test(String(g.target ?? '')) && !supersededByLater(g, gateDetails, (o) => specRe(f.id).test(String(o.target ?? ''))))) continue;
-        const v = targetVersionOfForm(g.target);
-        let ref = null;
-        let why = null;
-        if (v.kind === 'commit') ref = v.commit;
-        else if (v.kind === 'pr') {
-          const head = headOfCopy(recordSources.copies.get(v.pr)?.copy);
-          if (head) ref = head;
-          else why = `PR #${v.pr} の写しが無く、判定の版を特定できない`;
-        } else why = '様式の「対象」に版が無い';
-        const text = ref ? readSpec(ref, f.id) : null;
-        if (ref && text === null) why = `判定の版 ${String(ref).slice(0, 7)} のオブジェクトを取得できない`;
-        passes.push({ feature: f.id, source: g.file, ref, text, unresolved: text === null ? why : null });
-      }
-      for (const j of reviewJudgements) {
-        if (!(j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(f.id) && !reviewSupersededByLater(j, reviewJudgements, f.id))) continue;
-        const text = j.commitId ? readSpec(j.commitId, f.id) : null;
-        passes.push({ feature: f.id, source: `PR #${j.pr} のレビュー ${j.reviewId ?? ''}`.trim(), ref: j.commitId ?? null, text, unresolved: text === null ? (j.commitId ? `判定の版 ${String(j.commitId).slice(0, 7)} のオブジェクトを取得できない` : '写しに commit_id が無い') : null });
+      for (const p of g4Passes(f.id)) {
+        if (p.kind === 'form') {
+          const g = p.g;
+          const v = targetVersionOfForm(g.target);
+          let ref = null;
+          let why = null;
+          if (v.kind === 'commit') ref = v.commit;
+          else if (v.kind === 'pr') {
+            const head = headOfCopy(recordSources.copies.get(v.pr)?.copy);
+            if (head) ref = head;
+            else why = `PR #${v.pr} の写しが無く、判定の版を特定できない`;
+          } else why = '様式の「対象」に版が無い';
+          const text = ref ? readSpec(ref, f.id) : null;
+          if (ref && text === null) why = `判定の版 ${String(ref).slice(0, 7)} のオブジェクトを取得できない`;
+          passes.push({ feature: f.id, source: g.file, ref, text, unresolved: text === null ? why : null, effective: p.effective });
+        } else {
+          const j = p.j;
+          const text = j.commitId ? readSpec(j.commitId, f.id) : null;
+          passes.push({ feature: f.id, source: `PR #${j.pr} のレビュー ${j.reviewId ?? ''}`.trim(), ref: j.commitId ?? null, text, unresolved: text === null ? (j.commitId ? `判定の版 ${String(j.commitId).slice(0, 7)} のオブジェクトを取得できない` : '写しに commit_id が無い') : null, effective: p.effective });
+        }
       }
     }
     return specRecheck({ features, passes });
@@ -6183,6 +6196,20 @@ if (isMain) {
       if (external) R.push(`- ${A.drift.length} 件(内容は組織の内側の開示にある)`);
       else for (const d of A.drift) R.push(`- ${d}`);
       R.push('');
+    }
+    // 確定した版の再確認(IMPL-0241 / #355 R1-06)。未確認は欠落に数えないため、機能・記録の所在・理由を人の読む開示に出す
+    // (出荷判定者が判定記録の版と突合する)。組織の外へ渡す形では件数だけを出す
+    if (specRecheckInfo.items.length) {
+      R.push(`**確定した版の再確認**(出荷の範囲で spec.md が変わった機能仕様): 一致 ${specRecheckInfo.match} / 不一致 ${specRecheckInfo.mismatch} / 未確認 ${specRecheckInfo.unconfirmed}`);
+      R.push('');
+      if (!external) {
+        for (const it of specRecheckInfo.items.filter((i) => i.result === 'unconfirmed')) R.push(`- 未確認 ${it.id}(判定記録: ${it.record ?? 'なし'}): ${it.reason}`);
+        if (specRecheckInfo.unconfirmed) {
+          R.push('');
+          R.push('未確認は欠落に数えません。出荷判定者が、機能ごとに判定記録の版と範囲の先端の版を突合します(補助ファイル .claude/skills/gate/gates/G-7.md)。');
+        }
+        R.push('');
+      }
     }
     R.push(...renderSizeObservation(sizeObservation));
     // 組織の外へ渡す形では、人の氏名とアカウントを出さない(席の名前と件数で示す)。構成から導いた値に
