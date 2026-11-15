@@ -18,7 +18,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, sealChangeLog, directionLabel, rowKindsProblems } from './config.mjs';
+import { ROOT, sealChangeLog, directionLabel, rowKindsProblems, localDay, observationWindowAt, reworkBaselineInfo } from './config.mjs';
 import { buildConfig, authoritySourceForm } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
@@ -217,6 +217,37 @@ ${JSON.stringify(c4.observationWindow)}`
   const bOff = settings({ summary: '基準値を外す', settings: { reworkBaseline: { percent: null } }, decidedBy: A.name, reason: '算出を見直すため' });
   const cbOff = JSON.parse(cfgText());
   check('手戻り率の基準値: 外す(null)は緩める向きとして記名と理由を要し、履歴に残る', bOff.ok && cbOff.reworkBaseline?.percent === null && cbOff.reworkBaseline.history.at(-1).percent === null && /緩め|loosen/.test(JSON.stringify(cbOff.changeLog.at(-1))), bOff.out);
+  // 発効日(date)を過去へ置いても、窓と基準値の「記録した日」は入口を実行した日になる(過去の評価の日へ遡って当てない)
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rework off');
+  {
+    const cb = JSON.parse(cfgText());
+    cb.changeLog.at(-1).date = '2026-06-01'; // 最後の記録だけ過去にして封をし直す(連鎖を壊さない)
+    fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(cb), null, 2) + '\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: backdate log');
+    const todayStr = localDay();
+    const pastW = settings({ summary: '窓を過去の発効日で長くする', date: '2026-06-02', settings: { observationWindow: { months: 6 } }, decidedBy: A.name, reason: '試験' });
+    const cw = JSON.parse(cfgText());
+    // IMPL-0516:ng/ok(違反の入力: 過去の発効日。記録した日は実行日で、過去の評価の日には前の値が効く)
+    check(
+      '観測の窓: 発効日を過去(2026-06-02)に置いても、記録した日は入口を実行した日で、過去の評価の日(2026-07-01・実行日)には前の値(2)が効く',
+      pastW.ok && cw.observationWindow?.months === 6 && cw.observationWindow.history.at(-1).recordedAt === todayStr && observationWindowAt(cw, '2026-07-01') === 2 && observationWindowAt(cw, todayStr) === 2,
+      `${pastW.out}
+${JSON.stringify(cw.observationWindow)}`
+    );
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: window 6');
+    const pastB = settings({ summary: '基準値を過去の発効日で置く', date: '2026-06-03', settings: { reworkBaseline: { percent: 25 } }, decidedBy: A.name, reason: '試験' });
+    const cbp = JSON.parse(cfgText());
+    // IMPL-0517:ng/ok(違反の入力: 過去の発効日。記録した日は実行日で、過去の評価の日には前の値が効く)
+    check(
+      '手戻り率の基準値: 発効日を過去(2026-06-03)に置いても、記録した日は入口を実行した日で、過去の評価の日(2026-07-01・実行日)には前の値(未設定)が効く',
+      pastB.ok && cbp.reworkBaseline?.percent === 25 && cbp.reworkBaseline.history.at(-1).recordedAt === todayStr && reworkBaselineInfo(cbp, '2026-07-01').percent === null && reworkBaselineInfo(cbp, todayStr).percent === null,
+      `${pastB.out}
+${JSON.stringify(cbp.reworkBaseline)}`
+    );
+  }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

@@ -3123,12 +3123,20 @@ const cell = (v) => String(v ?? '').replace(/\|/g, '/').replace(/\r?\n/g, ' ');
  */
 /** 構成の観測の窓(月)。欄が無ければ既定(2)。表示に使う */
 const windowMonthsOf = (config) => (Number.isInteger(config?.observationWindow?.months) ? config.observationWindow.months : WINDOW_MONTHS);
-/** 既定より長いときだけ、決定した者と日付を併記する(観測の窓の常時の開示。IMPL-0516) */
+/** 構成の最新の値が効く最初の評価の日(記録した日の翌月1日)。評価の日ごとに、記録した日より後の評価から当てる */
+function windowEffectiveFrom(recordedAt) {
+  const m = /^(d{4})-(d{2})-d{2}$/.exec(String(recordedAt ?? ''));
+  return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]), 1)).toISOString().slice(0, 10) : null;
+}
+/** 窓の言い方。既定のままなら「直近N か月の窓」。長くしてあるときは、日付に依らない形で書く(生成区間を日付で変えない) */
+const windowPhrase = (config) => (windowMonthsOf(config) <= WINDOW_MONTHS ? `直近${WINDOW_MONTHS}か月の窓` : '直近、評価の日に効く観測の窓');
+/** 既定より長いときだけ、効いている値とまだ効いていない新しい値を書き分ける(観測の窓の常時の開示。IMPL-0516) */
 function windowDeciderText(config) {
   const months = windowMonthsOf(config);
   if (months <= WINDOW_MONTHS) return '';
   const last = (config.observationWindow?.history ?? []).at(-1);
-  return `(既定 ${WINDOW_MONTHS}か月より長い。決定: ${last?.decidedBy ?? '記録なし'}、記録した日 ${last?.recordedAt ?? '記録なし'})`;
+  const from = windowEffectiveFrom(last?.recordedAt);
+  return `(既定 ${WINDOW_MONTHS}か月。構成の最新の値は ${months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値で数える。決定: ${last?.decidedBy ?? '記録なし'}、記録した日 ${last?.recordedAt ?? '記録なし'})`;
 }
 
 export function renderAutonomyTable(config, blank = false) {
@@ -3157,12 +3165,12 @@ export function renderAutonomyTable(config, blank = false) {
           ? 'L1(手戻り率が未計測)'
           : 'L3(停止中は L1)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
-    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、直近${windowMonthsOf(config)}か月の窓、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
+    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
       ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
     L.push(
-      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${windowMonthsOf(config)}か月の窓${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
     );
   }
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
@@ -4016,7 +4024,7 @@ export function renderProfileMd(config, result) {
     L.push('');
     L.push(
       `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
-        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の' + windowMonthsOf(config) + 'か月継続(観測の窓)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
+        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の観測の窓の長さの継続(既定' + WINDOW_MONTHS + 'か月)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
         '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りないときは発火せず、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
     );
     L.push('');
@@ -5626,14 +5634,14 @@ if (isMain) {
     if (now != null) config[key] = now;
     else delete config[key];
   }
-  // 観測の窓。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。再生成では保つ。既定のままなら欄を持たない
+  // 観測の窓。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。記録した日は入口を実行した日(today)で、変化点の発効日(date)ではない(過去の評価の日へ遡って当てない)。再生成では保つ。既定のままなら欄を持たない
   {
     const priorW = prior?.observationWindow ?? null;
     const cur = priorW?.months ?? WINDOW_MONTHS;
     if (S.observationWindow && S.observationWindow.months !== cur) {
       config.observationWindow = {
         months: S.observationWindow.months,
-        history: [...(priorW?.history ?? []), { months: S.observationWindow.months, recordedAt: day, decidedBy: change.decidedBy, reason: change.reason }],
+        history: [...(priorW?.history ?? []), { months: S.observationWindow.months, recordedAt: today, decidedBy: change.decidedBy, reason: change.reason }],
       };
     } else if (priorW) config.observationWindow = priorW;
     else delete config.observationWindow;
@@ -5645,7 +5653,7 @@ if (isMain) {
     if (S.reworkBaseline && S.reworkBaseline.percent !== cur) {
       config.reworkBaseline = {
         percent: S.reworkBaseline.percent,
-        history: [...(priorB?.history ?? []), { percent: S.reworkBaseline.percent, recordedAt: day, decidedBy: change.decidedBy, reason: change.reason }],
+        history: [...(priorB?.history ?? []), { percent: S.reworkBaseline.percent, recordedAt: today, decidedBy: change.decidedBy, reason: change.reason }],
       };
     } else if (priorB) config.reworkBaseline = priorB;
     else delete config.reworkBaseline;

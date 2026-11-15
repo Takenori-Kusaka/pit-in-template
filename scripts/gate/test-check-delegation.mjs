@@ -388,7 +388,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     withWindow(zy.config, h4('2026-09-01'));
     const zys = autonomyState(zy.config, zy.records);
     check('観測の窓: 長くした日より後の評価の日(2026-10-01)には 4 か月が効く(停止の理由と表示に出る)', zys.types[0].stops.some((x) => x.kind === 'downgrade' && /4か月継続/.test(x.reason)) && zys.types[0].rejection.months === 4 && zys.window.months === 4, JSON.stringify(zys.types[0].stops));
-    // 判定不能の停止は、新しい窓で判定可能になった時点で解ける(現在の状態は判定の日に効く窓で数える)
+    // 判定不能の停止は、新しい窓が当たる最初の評価の日から解ける(現在の状態は直近の評価の日に効く窓で数える)
     const jf = base();
     jf.config.delegation.changeTypes[0].registeredAt = '2026-08-20';
     jf.records.asOf = '2026-09-20';
@@ -399,13 +399,24 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       ...Array.from({ length: 16 }, (_, k) => ({ ref: `00000000000000000000000000000000000002${String(k).padStart(2, '0')}`, date: `2026-06-${String(k + 1).padStart(2, '0')}`, pr: String(300 + k), files: ['src/i18n/ja.json'] })),
       ...jf.records.history.changes,
     ];
+    // 記録した日(09-01)から次の評価の日(10-01)までは、前の値(2)で数える。判定の日が 09-20 でも判定不能の停止は残る
+    const same4 = autonomyState(jf.config, jf.records).types[0];
+    check('観測の窓: 記録した日から次の評価の日までは前の値で数え、判定不能の停止が残る(判定の日 09-20・記録 09-01)', before4.rejection.state === '判定不能' && same4.rejection.state === '判定不能' && same4.rejection.months === 2 && same4.level === 'L1' && /次の評価の日\(2026-10-01\)から 4か月/.test(same4.rejection.windowText), `${same4.rejection.n} ${same4.rejection.state} ${same4.rejection.windowText}`);
+    // 次の評価の日(10-01 以降)には新しい窓(4 か月)が当たり、判定不能の停止が解ける
+    jf.records.asOf = '2026-10-05';
     const after4 = autonomyState(jf.config, jf.records).types[0];
-    check('観測の窓: 判定不能の停止が、新しい窓(4 か月)で判定可能になると解ける', before4.rejection.state === '判定不能' && after4.rejection.state !== '判定不能' && after4.rejection.n >= 30, `${before4.rejection.n} -> ${after4.rejection.n} ${after4.rejection.state}`);
+    check('観測の窓: 判定不能の停止が、次の評価の日(2026-10-01)から新しい窓(4 か月)で判定可能になると解ける', before4.rejection.state === '判定不能' && after4.rejection.state !== '判定不能' && after4.rejection.n >= 30 && after4.rejection.months === 4 && !/次の評価の日/.test(after4.rejection.windowText), `${before4.rejection.n} -> ${after4.rejection.n} ${after4.rejection.state}`);
     // 表示: 窓の長さを常に出し、既定より長いときは決定した者と日付を併記する
     const textDef = rejectionText(autonomyState(base().config, base().records).types[0]);
     const textLong = rejectionText(zys.types[0]);
     check('観測の窓: 長さを常に出し、既定より長いときは決定した者と日付を併記する', /観測の窓 2か月\(既定\)/.test(textDef) && /観測の窓 4か月\(既定 2か月より長い。決定: 山田 太郎、記録した日 2026-09-01\)/.test(textLong), `${textDef} | ${textLong}`);
     check('観測の窓: 次の一手の注記にも窓の長さを出す', autonomyNoteLines(zys).join('\n').includes('観測の窓 4か月'));
+    // 履歴を読めないときも、窓の長さと決定した者を出す
+    const noh = base();
+    withWindow(noh.config, h4('2026-09-01'));
+    noh.records.history = { available: false, reason: '試験' };
+    const nohT = rejectionText(autonomyState(noh.config, noh.records).types[0]);
+    check('観測の窓: 履歴を読めないときも、窓の長さと決定した者を出す', /判定できない\(履歴を読めない\)/.test(nohT) && /観測の窓 4か月\(既定 2か月より長い。決定: 山田 太郎/.test(nohT), nohT);
   }
   // 宣言行の無い CHANGES_REQUESTED(process-compass #350)。判定記録ではないため分子に数えず、件数だけを表示する
   {
@@ -423,11 +434,11 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     // IMPL-0285:ng(違反の入力: 宣言行の無い差し戻しの要求。分子に入れず、0% の判定を変えない)
     check('宣言行の無い差し戻し: 分子に入らない(差し戻し 0 件のまま 0% と判定し、停止の理由に件数を出す)', t1.rejection.rejected === 0 && t1.rejection.state === '0%' && t1.stops.some((x) => x.kind === 'downgrade' && /数えていない差し戻しの要求 1 件/.test(x.reason)), JSON.stringify(t1.stops));
     check('宣言行の無い差し戻し: 窓ごとの件数を、種別の範囲に入る変更の PR に限って数える(対応づかない PR は入れない)', t1.rejection.undeclared === 1, String(t1.rejection.undeclared));
-    check('宣言行の無い差し戻し: 開示の行と次の一手に件数を出す', /数えていない差し戻しの要求 1 件\(宣言行が無く判定記録ではない\)/.test(rejectionText(t1)) && autonomyNoteLines(autonomyState(u1.config, u1.records)).join('\n').includes('数えていない差し戻しの要求 1 件'));
+    check('宣言行の無い差し戻し: 開示の行と次の一手に件数を出す', /数えていない差し戻しの要求 1 件\(宣言行が無く判定記録ではない。書き手の名義・席を問わない\)/.test(rejectionText(t1)) && autonomyNoteLines(autonomyState(u1.config, u1.records)).join('\n').includes('数えていない差し戻しの要求 1 件'));
     const u2 = base();
     u2.records.undeclared = { available: false, items: [] };
     const t2 = autonomyState(u2.config, u2.records).types[0];
-    check('宣言行の無い差し戻し: 記録用ブランチを読めないときは「読めない」と出し、0 件と出さない', t2.rejection.undeclared === null && /読めない/.test(rejectionText(t2)) && !/要求 0 件/.test(rejectionText(t2)) && undeclaredText(0) === '数えていない差し戻しの要求 0 件(宣言行が無く判定記録ではない)');
+    check('宣言行の無い差し戻し: 記録用ブランチを読めないときは「読めない」と出し、0 件と出さない', t2.rejection.undeclared === null && /読めない/.test(rejectionText(t2)) && !/要求 0 件/.test(rejectionText(t2)) && undeclaredText(0) === '数えていない差し戻しの要求 0 件(宣言行が無く判定記録ではない。書き手の名義・席を問わない)');
   }
   // 上限の理由(突合 X-16)
   const capNoQ = autonomyCap({ configured: true, answers: {} });

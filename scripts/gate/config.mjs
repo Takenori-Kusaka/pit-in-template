@@ -2761,11 +2761,32 @@ export function observationWindowInfo(config, day) {
   return { months, longer: months > OBSERVATION_WINDOW_DEFAULT, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
 }
 
-/** 観測の窓の長さの文。常に出す。既定より長いときは、決定した者と日付を併記する */
-export function windowLengthText(info) {
-  return info.longer
+/**
+ * 評価の日 day にまだ効いていない、新しい観測の窓の値(記録した日が day 以後のもの。最後の1件)。無ければ null。
+ * 効くのは、記録した日より後の最初の評価の日(翌月1日)から。表示に使う
+ */
+export function observationWindowPending(config, day) {
+  const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
+  let entry = null;
+  for (const e of h) {
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) >= String(day)) entry = e;
+  }
+  if (!entry) return null;
+  const [y, mo] = String(entry.recordedAt).split('-').map(Number);
+  return { months: entry.months, decidedBy: entry.decidedBy ?? null, recordedAt: entry.recordedAt, from: new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 10) };
+}
+
+/**
+ * 観測の窓の長さの文。常に出す。既定より長いときは、決定した者と日付を併記する。
+ * pending(observationWindowPending の値)があるときは、まだ効いていない新しい値を「次の評価の日から」で併記する
+ */
+export function windowLengthText(info, pending = null) {
+  const now = info.longer
     ? `観測の窓 ${info.months}か月(既定 ${OBSERVATION_WINDOW_DEFAULT}か月より長い。決定: ${info.decidedBy ?? '記録なし'}、記録した日 ${info.recordedAt ?? '記録なし'})`
     : `観測の窓 ${info.months}か月(既定)`;
+  return pending
+    ? `${now}。次の評価の日(${pending.from})から ${pending.months}か月(決定: ${pending.decidedBy ?? '記録なし'}、記録した日 ${pending.recordedAt})`
+    : now;
 }
 
 /**

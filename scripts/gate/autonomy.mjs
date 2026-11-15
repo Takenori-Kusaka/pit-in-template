@@ -39,7 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { reworkBaselineAt, reworkBaselineInfo } from './config.mjs';
 import { lastParagraph } from './check-pr.mjs';
-import { ROOT, observationWindowAt,observationWindowInfo, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
+import { ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
@@ -58,7 +58,8 @@ export const MIN_SAMPLE = 30;
  */
 export const REWORK_UNCOUNTED =
   '数えていない残り: 計画表に「やり直し」と書かれず、トレーラの取り込みも1回だけの、不採用(マージされずに閉じた PR)の後の再作成。' +
-  '採用者が登録の根拠 basis.detection.reworkRate に書いた手段で補い、内部監査で確かめる';
+  '採用者が登録の根拠 basis.detection.reworkRate に書いた手段で補い、内部監査で確かめる。' +
+  'トレーラは、第1親のコミットの本文の末尾の段落のものだけを読む(トレーラの後に段落が続くもの、マージコミットで取り込んだ第2親の側のトレーラは数えない)';
 
 export const DEFECT_FILE = 'docs/defect-ledger.md';
 export const HANDOVER_FILE = 'docs/handover.md';
@@ -192,7 +193,7 @@ export function autonomyState(config, records) {
   const out = {
     asOf,
     cap,
-    window: { ...(asOf ? observationWindowInfo(config, asOf) : { months: WINDOW_MONTHS, longer: false }), minSample: MIN_SAMPLE },
+    window: { ...(asOf ? observationWindowInfo(config, monthStart(asOf)) : { months: WINDOW_MONTHS, longer: false }), pending: asOf ? observationWindowPending(config, monthStart(asOf)) : null, minSample: MIN_SAMPLE },
     reworkUncounted: REWORK_UNCOUNTED,
     otherLevel: 'L1',
     types: [],
@@ -295,9 +296,10 @@ export function autonomyState(config, records) {
         const inW = (d) => d >= w.from && d <= w.to;
         return { ...w, n: own.filter((c) => inW(c.date)).length, rejected: ownRejections.filter((r) => inW(r.date)).length, undeclared: ownUndeclared === null ? null : ownUndeclared.filter((r) => inW(r.date)).length };
       };
-      // 現在の状態は、判定の日(asOf)に効く窓で数える(窓を長くした後に、判定不能の停止が新しい窓で解ける)
-      const latest = count(monthStart(asOf), observationWindowAt(config, asOf));
-      latest.windowText = windowLengthText(observationWindowInfo(config, asOf));
+      // 現在の状態は、直近の評価の日(monthStart(asOf))に効く窓で数える。窓を長くした日から次の評価の日までは前の値で数え、
+      // 判定不能の停止も残る(記録した日より後の評価の日から当てる。窓の効く日を差し戻し率と手戻り率で揃える)
+      const latest = count(monthStart(asOf), observationWindowAt(config, monthStart(asOf)));
+      latest.windowText = windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf)));
       latest.state = latest.n < MIN_SAMPLE ? '判定不能' : latest.rejected === 0 ? '0%' : '判定可能';
       rejection = latest;
       // 登録より後の評価の日ごとに、0% の窓を探す
@@ -339,7 +341,9 @@ export function autonomyState(config, records) {
         }
       }
     }
-    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework });
+    // 窓の長さは、履歴を読めないときも出す(rejection が null でも)
+    const windowText = asOf ? windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf))) : windowLengthText({ months: WINDOW_MONTHS, longer: false });
+    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText });
   }
   return out;
 }
@@ -353,7 +357,7 @@ export function stopsText(type) {
 /** 差し戻し率の窓を1行の文にする。判定不能を「異常なし」と書かない */
 export function rejectionText(type) {
   const r = type.rejection;
-  if (!r) return '判定できない(履歴を読めない)';
+  if (!r) return `判定できない(履歴を読めない)(${type.windowText})`;
   const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件(${r.windowText ?? `観測の窓 ${r.months ?? WINDOW_MONTHS}か月`})`;
   const und = `。${undeclaredText(r.undeclared)}`;
   return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
@@ -597,7 +601,7 @@ export function undeclaredChangeRequests(copies) {
 export function undeclaredText(n) {
   return n === null || n === undefined
     ? '数えていない差し戻しの要求は読めない(記録用ブランチを読めない)'
-    : `数えていない差し戻しの要求 ${n} 件(宣言行が無く判定記録ではない)`;
+    : `数えていない差し戻しの要求 ${n} 件(宣言行が無く判定記録ではない。書き手の名義・席を問わない)`;
 }
 
 /** 手元の作業木のリポジトリ(owner/name)。GITHUB_REPOSITORY、無ければ git remote の GitHub の URL。特定できなければ null */
