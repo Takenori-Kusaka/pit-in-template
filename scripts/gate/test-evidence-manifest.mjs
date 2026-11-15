@@ -41,6 +41,7 @@ function freshBundle() {
 {
   const text = fs.readFileSync(path.join(here, '..', '..', '.github', 'workflows', 'ship-evidence.yml'), 'utf8');
   const ps = workflowProblems(text);
+  // IMPL-0246:ok(適合側。今の ship-evidence.yml は coverage-result を取り込み、headSha を照合する)
   check(`IMPL-0521:ok 今の ship-evidence.yml で workflowProblems が空${ps.length ? `(${ps.join(' / ')})` : ''}`, ps.length === 0);
 }
 
@@ -71,6 +72,7 @@ function freshBundle() {
   check('IMPL-0521:ng retention-days を抜くと workflowProblems が出す', workflowProblems(drop(/retention-days:/)).some((p) => /retention-days/.test(p)));
   check('IMPL-0521:ng 写しの手順を抜くと workflowProblems が出す', workflowProblems(drop(/evidence-manifest\.mjs write/)).some((p) => /写す手順/.test(p)));
   check('IMPL-0521:ng verify の呼び出しを抜くと workflowProblems が出す', workflowProblems(drop(/evidence-manifest\.mjs verify/)).some((p) => /verify/.test(p)));
+  // IMPL-0246:ng(違反側。coverage-result の取り込みと headSha の照合を抜いた ship-evidence.yml)
   check('IMPL-0521:ng coverage-result の取り込みを抜くと workflowProblems が出す', workflowProblems(drop(/--name coverage-result/)).some((p) => /coverage-result/.test(p)));
   check('IMPL-0521:ng headSha の照合を抜くと workflowProblems が出す', workflowProblems(drop(/--json headSha/)).some((p) => /headSha/.test(p)));
   check('IMPL-0521:ng 前回の証跡の写しからの読み先を抜くと workflowProblems が出す', workflowProblems(drop(/docs\/evidence\/\*\/manifest\.json/)).some((p) => /前回/.test(p)));
