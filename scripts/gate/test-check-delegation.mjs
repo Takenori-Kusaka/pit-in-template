@@ -368,6 +368,20 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     const h4 = (recordedAt) => [{ months: 4, recordedAt, decidedBy: '山田 太郎', reason: '件数が少ない種別のため' }];
     const c0 = base().config;
     check('観測の窓: 欄の無い構成は既定の 2 か月', observationWindowAt(c0, '2026-10-01') === 2 && observationWindowAt({}, '2026-10-01') === 2);
+    // D-0 の生成区間(renderAutonomyTable は日付を取らない。履歴の固定の値だけで決まる)。process-compass #349 突合2巡目 高-1・中-1・低-3。
+    // 「効く評価の日」の表示は正規表現の \d 落ちで常に「記録なし」と出ていた。停止の残りは本ファイルの IMPL-0516:ng の場面が覆う
+    {
+      const entry = (months, recordedAt) => ({ months, recordedAt, decidedBy: '山田 太郎', reason: 'x' });
+      const tbl = (history) => renderAutonomyTable(withWindow(base().config, history)).join('\n');
+      const tLong = tbl([entry(4, '2026-10-10')]);
+      check('D-0 の窓(長くした): 最新の値 4か月・2026-11-01 の評価から・前の値 2か月・記録した日を出す', /最新の値は 4か月で、2026-11-01 の評価から効く/.test(tLong) && /前の値\(2か月\)で数える/.test(tLong) && /記録した日 2026-10-10/.test(tLong) && !/記録なし/.test(tLong));
+      const tShort = tbl([entry(4, '2026-09-01'), entry(2, '2026-10-10')]);
+      check('D-0 の窓(短くした): 効いている長い値(4か月)と、次に効く短い値(2か月)・効く評価の日(2026-11-01)を出す', /最新の値は 2か月で、2026-11-01 の評価から効く/.test(tShort) && /前の値\(4か月\)で数える/.test(tShort) && /直近、評価の日に効く観測の窓/.test(tShort) && !/毎月、直近2か月の窓/.test(tShort));
+      check('D-0 の窓(年をまたぐ): 12 月に記録した値は翌年 1 月 1 日の評価から効く', /2027-01-01 の評価から効く/.test(tbl([entry(3, '2026-12-20')])));
+      const tDef = renderAutonomyTable(base().config).join('\n');
+      check('D-0 の窓(既定): 窓の変更の開示は出さず、「直近2か月の窓」と書く', /毎月、直近2か月の窓\(/.test(tDef) && !/評価から効く/.test(tDef));
+      check('D-0 の手戻り率の欄: 差し戻し率と共通の観測の窓であることを書く', /毎月、[^|]*\(差し戻し率と共通の観測の窓/.test(tLong.split('\n').find((l) => l.includes('表示文言')).split('|')[5] ?? ''));
+    }
     const c4 = withWindow(base().config, h4('2026-10-10'));
     check(
       '観測の窓: 記録した日より後の評価の日から当てる(同じ日は前の値。前の評価の日へ遡らない)',

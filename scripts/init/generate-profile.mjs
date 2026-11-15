@@ -3121,22 +3121,32 @@ const cell = (v) => String(v ?? '').replace(/\|/g, '/').replace(/\r?\n/g, ' ');
  * AI自律レベルの適用の表(標準 第6章 テンプレ0 表7 の下、第5章 5.4.4・5.4.6)。レベルは委任の登録から導く。
  * 停止は判定のたびに記録から導くため、この生成区間には書かず、所在を書く(区間を構成だけから決めるため)
  */
-/** 構成の観測の窓(月)。欄が無ければ既定(2)。表示に使う */
-const windowMonthsOf = (config) => (Number.isInteger(config?.observationWindow?.months) ? config.observationWindow.months : WINDOW_MONTHS);
 /** 構成の最新の値が効く最初の評価の日(記録した日の翌月1日)。評価の日ごとに、記録した日より後の評価から当てる */
 function windowEffectiveFrom(recordedAt) {
-  const m = /^(d{4})-(d{2})-d{2}$/.exec(String(recordedAt ?? ''));
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(recordedAt ?? ''));
   return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]), 1)).toISOString().slice(0, 10) : null;
 }
 /** 窓の言い方。既定のままなら「直近N か月の窓」。長くしてあるときは、日付に依らない形で書く(生成区間を日付で変えない) */
-const windowPhrase = (config) => (windowMonthsOf(config) <= WINDOW_MONTHS ? `直近${WINDOW_MONTHS}か月の窓` : '直近、評価の日に効く観測の窓');
-/** 既定より長いときだけ、効いている値とまだ効いていない新しい値を書き分ける(観測の窓の常時の開示。IMPL-0516) */
+const windowPhrase = (config) => (windowChange(config) === null ? `直近${WINDOW_MONTHS}か月の窓` : '直近、評価の日に効く観測の窓');
+/**
+ * 構成の最新の値(履歴の最後)と、その1つ前の値(前の記録が無ければ既定)。どちらかが既定より長いときだけ返す。
+ * 最新の値は記録した日の翌月1日の評価から効き、それより前の評価は前の値で数える。長くする向きでも短くする向きでも同じ形(日付に依らない)
+ */
+function windowChange(config) {
+  const h = (config?.observationWindow?.history ?? []).filter((e) => Number.isInteger(e?.months));
+  const last = h.at(-1);
+  if (!last) return null;
+  const prev = h.length > 1 ? h.at(-2).months : WINDOW_MONTHS;
+  if (last.months <= WINDOW_MONTHS && prev <= WINDOW_MONTHS) return null;
+  return { last, prev };
+}
+/** 窓の値を変えた構成だけ、最新の値・効く評価の日・前の値を書き分ける(観測の窓の常時の開示。IMPL-0516) */
 function windowDeciderText(config) {
-  const months = windowMonthsOf(config);
-  if (months <= WINDOW_MONTHS) return '';
-  const last = (config.observationWindow?.history ?? []).at(-1);
-  const from = windowEffectiveFrom(last?.recordedAt);
-  return `(既定 ${WINDOW_MONTHS}か月。構成の最新の値は ${months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値で数える。決定: ${last?.decidedBy ?? '記録なし'}、記録した日 ${last?.recordedAt ?? '記録なし'})`;
+  const ch = windowChange(config);
+  if (ch === null) return '';
+  const { last, prev } = ch;
+  const from = windowEffectiveFrom(last.recordedAt);
+  return `(既定 ${WINDOW_MONTHS}か月。構成の最新の値は ${last.months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値(${prev}か月)で数える。決定: ${last.decidedBy ?? '記録なし'}、記録した日 ${last.recordedAt ?? '記録なし'})`;
 }
 
 export function renderAutonomyTable(config, blank = false) {
@@ -3165,7 +3175,7 @@ export function renderAutonomyTable(config, blank = false) {
           ? 'L1(手戻り率が未計測)'
           : 'L3(停止中は L1)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
-    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
+    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
       ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
