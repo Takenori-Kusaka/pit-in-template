@@ -332,6 +332,21 @@ export function prRecordFromCopy(copy) {
 }
 
 /**
+ * カバレッジの結果の範囲・分母・測っていない製品のファイルの数(標準 第4章 G-5 基準3。#296)。全体で判定した結果には、
+ * 変更の未被覆が全体の被覆で薄まる旨を付ける。範囲を持たない旧い結果は、範囲を記録していないと出す。
+ * 範囲が変更のときは、起点と、取り込んだ値が1回の実行の差分の値で出荷の範囲の全体の被覆ではない旨を同じ行に出す
+ * (既定ブランチへの push の gate-g5 は、起点を push の直前のコミットにする。process-compass #333 / ADR-0135)
+ */
+export function coverageScopeText(c) {
+  if (!c?.scope) return '。測った範囲と分母の記録なし';
+  const parts = [`範囲 ${c.scope === 'changed' ? '変更で加えた・変えたコード' : 'コードの全体'}${c.scopeDefaulted ? '(構成に範囲が無く、既定から補った。#296 より前の構成)' : ''}`, `分母 ${c.denominator ?? '—'} 行`];
+  if (c.unmeasuredProductFiles !== undefined) parts.push(`測っていない製品のファイル ${c.unmeasuredProductFiles ?? '数えていない'} 件`);
+  if (c.scope === 'whole') parts.push('**変更の未被覆は全体の被覆で薄まる**');
+  if (c.scope === 'changed') parts.push(`起点 ${c.base ?? '記録なし'}`, '**取り込んだ1回の実行が測った差分の値で、出荷の範囲の全体の被覆ではない**');
+  return `。${parts.join('、')}`;
+}
+
+/**
  * ホスティングから gate-g5 の結果を読めない PR の欠落の文。PR の記録は読めたが head の check-runs に gate-g5 が無い場合は、
  * マージの時点の写し(record-copy が足す checks.gate_g5)で、保持切れの可能性と、必須チェックを経ていない可能性を書き分ける
  * (process-compass #333 / ADR-0135 / IMPL-0244)。どの場合も欠落に数え、写しの値で G-5 の充足に数えない
@@ -1127,17 +1142,6 @@ if (isMain) {
   const debtFile = 'docs/debt-ledger.md';
   const handoverFile = 'docs/handover.md';
 
-  /**
-   * カバレッジの結果の範囲・分母・測っていない製品のファイルの数(標準 第4章 G-5 基準3。#296)。全体で判定した結果には、
-   * 変更の未被覆が全体の被覆で薄まる旨を付ける。範囲を持たない旧い結果は、範囲を記録していないと出す
-   */
-  function coverageScopeText(c) {
-    if (!c?.scope) return '。測った範囲と分母の記録なし';
-    const parts = [`範囲 ${c.scope === 'changed' ? '変更で加えた・変えたコード' : 'コードの全体'}${c.scopeDefaulted ? '(構成に範囲が無く、既定から補った。#296 より前の構成)' : ''}`, `分母 ${c.denominator ?? '—'} 行`];
-    if (c.unmeasuredProductFiles !== undefined) parts.push(`測っていない製品のファイル ${c.unmeasuredProductFiles ?? '数えていない'} 件`);
-    if (c.scope === 'whole') parts.push('**変更の未被覆は全体の被覆で薄まる**');
-    return `。${parts.join('、')}`;
-  }
   const coverage = exists('evidence/coverage-result.json')
     ? JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/coverage-result.json'), 'utf8'))
     : { measured: false, reason: '集計ファイルがありません' };
@@ -3898,7 +3902,7 @@ if (isMain) {
       ? `${UNMEASURED}(${coverage.reason})`
       : g5Aggregate?.effective.has('test')
         ? `実施(${coverage.pct ?? '—'}% / 下限 ${coverage.threshold}%${coverageScopeText(coverage)})`
-        : `未実施(測定 ${coverage.pct}% はあるが、ジョブ test を集約 gate-g5 が合否に使っていない)`,
+        : `未実施(測定 ${coverage.pct}% はあるが、ジョブ test を集約 gate-g5 が合否に使っていない${coverageScopeText(coverage)})`,
     staticAnalysis: phase('lint', 'static-analysis'),
     dependencyAudit: phase('audit', 'static-analysis'),
     licenses: !licenseScan.scanRun

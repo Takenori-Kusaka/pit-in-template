@@ -411,6 +411,17 @@ const mkRepo = (prefix) => {
   fs.rmSync(G.d, { recursive: true, force: true });
 }
 
+// 出荷の証跡の開示の文(process-compass #333 / ADR-0135)。範囲が変更のときは起点と「出荷の範囲の全体の被覆ではない」を同じ行に出す
+{
+  const { coverageScopeText } = await import('./aggregate-evidence.mjs');
+  const withBase = coverageScopeText({ scope: 'changed', denominator: 20, unmeasuredProductFiles: 0, base: 'origin/main' });
+  check('開示の文: 変更の範囲は起点と限定を同じ行に出す', /起点 origin\/main/.test(withBase) && /出荷の範囲の全体の被覆ではない/.test(withBase), withBase);
+  const noBase = coverageScopeText({ scope: 'changed', denominator: 20, unmeasuredProductFiles: 0 });
+  check('開示の文: 起点が無ければ「記録なし」と出し、限定は外さない', /起点 記録なし/.test(noBase) && /出荷の範囲の全体の被覆ではない/.test(noBase), noBase);
+  const whole = coverageScopeText({ scope: 'whole', denominator: 100 });
+  check('開示の文: 全体の範囲は従来どおり(薄まる旨。起点の文を足さない)', /薄まる/.test(whole) && !/起点/.test(whole), whole);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log('');
 if (failures) {

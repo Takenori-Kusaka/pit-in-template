@@ -93,7 +93,8 @@ export function verifyManifest(dir) {
  * ship-evidence.yml の本文を読み、写しの経路の欠けを返す(空なら適合)。
  * (a) 成果物 ship-evidence に retention-days がある (b) 一式を docs/evidence/ へ写す手順がある
  * (c) verify ジョブが verify を呼ぶ
- * (d) 前回の証跡を、成果物を取れないときは基底ブランチの写しから読む
+ * (d) coverage-result を取り込み、実行の headSha と対象のコミットを照らす
+ * (e) 前回の証跡を、成果物を取れないときは基底ブランチの写しから読む
  */
 export function workflowProblems(text) {
   const problems = [];
@@ -105,6 +106,8 @@ export function workflowProblems(text) {
   if (!/evidence-manifest\.mjs write/.test(t)) problems.push('一式を docs/evidence/ へ写す手順(evidence-manifest.mjs write)がありません');
   const verifyIdx = t.search(/^ {2}verify:\s*$/m);
   if (verifyIdx < 0 || !/evidence-manifest\.mjs verify/.test(t.slice(verifyIdx))) problems.push('verify ジョブが evidence-manifest.mjs verify を呼んでいません');
+  if (!/--name coverage-result/.test(t)) problems.push('coverage-result の取り込みがありません');
+  if (!/--json headSha/.test(t)) problems.push('取り込む実行の headSha と対象のコミットを照らす手順がありません');
   if (!/docs\/evidence\/\*\/manifest\.json/.test(t)) problems.push('前回の証跡を基底ブランチの写し(docs/evidence/*/manifest.json)から読む手順がありません');
   return problems;
 }

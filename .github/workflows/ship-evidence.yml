@@ -129,13 +129,27 @@ jobs:
             run=$(gh run list --repo "${{ github.repository }}" --workflow "$wf" --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
             [ -n "$run" ] && break
           done
-          if [ -n "$run" ]; then
+          # 取り込む実行の headSha が対象のコミットと一致することを確かめる(値の一致。ADR-0135)。一致しなければ何も取り込まない
+          run_sha=''
+          if [ -n "$run" ]; then run_sha=$(gh run view "$run" --repo "${{ github.repository }}" --json headSha --jq .headSha 2>/dev/null || true); fi
+          if [ -n "$run" ] && [ "$run_sha" != "$target" ]; then
+            echo "::warning::gate-g5 の実行 $run の headSha(${run_sha:-不明})が対象 $target と一致しません。何も取り込みません"
+          elif [ -n "$run" ]; then
             gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
             echo "::notice::gate-g5 の実行 $run から license-scan を取り込みました(対象 $target)"
             # G-7 基準1 の入力(テストの実行の記録。#288)。取得できなければ、集約が「実行の記録なし」と出す
             gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence \
               && echo "::notice::gate-g5 の実行 $run から test-results を取り込みました" \
               || echo "::warning::gate-g5 の実行 $run に test-results がありません。G-7 基準1 の消化数は数えません"
+            # カバレッジの結果と依存の差分(同じ実行・同じコミット)。取得できなければ、集約が「集計ファイルがありません」と出す(隠さない)
+            gh run download "$run" --repo "${{ github.repository }}" --name coverage-result --dir evidence \
+              && echo "::notice::gate-g5 の実行 $run から coverage-result を取り込みました" \
+              || echo "::warning::gate-g5 の実行 $run に coverage-result がありません"
+            gh run download "$run" --repo "${{ github.repository }}" --name dependency-diff --dir evidence \
+              && echo "::notice::gate-g5 の実行 $run から dependency-diff を取り込みました" \
+              || echo "::warning::gate-g5 の実行 $run に dependency-diff がありません"
+            # 取り込み元(実行の識別と headSha)。証跡の一式の写しの digest の一覧(inputs)に入る
+            jq -n --arg run "$run" --arg sha "$run_sha" '{gateG5Run: $run, headSha: $sha}' > evidence/inputs.json
           else
             echo "::warning::$target に対する gate-g5 の成功した実行がありません。知財潔白性の検査記録とテストの実行の記録は取り込みません"
           fi
@@ -385,9 +399,15 @@ jobs:
             run=$(gh run list --repo "${{ github.repository }}" --workflow "$wf" --commit "$target" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
             [ -n "$run" ] && break
           done
-          if [ -n "$run" ]; then
+          run_sha=''
+          if [ -n "$run" ]; then run_sha=$(gh run view "$run" --repo "${{ github.repository }}" --json headSha --jq .headSha 2>/dev/null || true); fi
+          if [ -n "$run" ] && [ "$run_sha" != "$target" ]; then
+            echo "::warning::gate-g5 の実行 $run の headSha(${run_sha:-不明})が対象 $target と一致しません。何も取り込みません"
+          elif [ -n "$run" ]; then
             gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
             gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence || echo "::warning::gate-g5 の実行 $run に test-results がありません"
+            gh run download "$run" --repo "${{ github.repository }}" --name coverage-result --dir evidence || echo "::warning::gate-g5 の実行 $run に coverage-result がありません"
+            gh run download "$run" --repo "${{ github.repository }}" --name dependency-diff --dir evidence || echo "::warning::gate-g5 の実行 $run に dependency-diff がありません"
           else
             echo "::warning::$target に対する gate-g5 の成功した実行がありません"
           fi

@@ -71,6 +71,8 @@ function freshBundle() {
   check('IMPL-0521:ng retention-days を抜くと workflowProblems が出す', workflowProblems(drop(/retention-days:/)).some((p) => /retention-days/.test(p)));
   check('IMPL-0521:ng 写しの手順を抜くと workflowProblems が出す', workflowProblems(drop(/evidence-manifest\.mjs write/)).some((p) => /写す手順/.test(p)));
   check('IMPL-0521:ng verify の呼び出しを抜くと workflowProblems が出す', workflowProblems(drop(/evidence-manifest\.mjs verify/)).some((p) => /verify/.test(p)));
+  check('IMPL-0521:ng coverage-result の取り込みを抜くと workflowProblems が出す', workflowProblems(drop(/--name coverage-result/)).some((p) => /coverage-result/.test(p)));
+  check('IMPL-0521:ng headSha の照合を抜くと workflowProblems が出す', workflowProblems(drop(/--json headSha/)).some((p) => /headSha/.test(p)));
   check('IMPL-0521:ng 前回の証跡の写しからの読み先を抜くと workflowProblems が出す', workflowProblems(drop(/docs\/evidence\/\*\/manifest\.json/)).some((p) => /前回/.test(p)));
 }
 
