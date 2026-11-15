@@ -11,6 +11,8 @@
 //   #5 ワークフロー(強制層)だけ・人の承認が 3 分後。文書だけに数えず、算定行数 0 として比を持たない側へ
 //   #6 文書(docs/)と製品のコード 450 行を両方変える・人の承認が 60 分後と 900 分後(最後の人の承認は 900 分)・その後に AI 名義の承認
 //   #7 PR の記録(gh)が壊れた応答を返す。観測の母数から黙って消さず、番号で開示する
+//   #8 記録の置き場(docs/debt-ledger.md)だけの PR。記録だけの PR は観測に入らず、「読めなかった」にも出さない
+//   #9 前の出荷の PR(gh は記録を返すが、マージコミットは範囲に無い)を取り消す直接のコミット `Revert "... (#9)"`。「読めなかった」に出さない
 // 固定する決定:
 //   - 人の承認だけを数える(#3 は値を持たず unmeasured、#4 は 600 分)。AI 名義の承認を時間に数えない
 //   - 比は規模の区間ごとに 100 行あたりの分で出す。文書だけの変更は比を持たず、件数と時間の区間だけ出す
@@ -48,6 +50,7 @@ const PRS = [
   { n: 5, files: { '.github/workflows/zz.yml': 'name: zz\non: workflow_dispatch\njobs: {}\n' }, reviews: [{ login: 'alice', bot: false, min: 3 }] },
   { n: 6, files: { 'docs/mixed.md': '# 混在\n\n本文です。\n', 'src/d.js': lines(450) }, reviews: [{ login: 'alice', bot: false, min: 60 }, { login: 'bob', bot: false, min: 900 }, { login: 'review-bot[bot]', bot: true, min: 5000 }] },
   { n: 7, files: { 'src/e.js': lines(10) }, reviews: [{ login: 'alice', bot: false, min: 10 }], broken: true },
+  { n: 8, files: { 'docs/debt-ledger.md': '# 台帳\n\n記録です。\n' }, reviews: [{ login: 'alice', bot: false, min: 5 }] },
 ];
 
 function runAggregate() {
@@ -87,6 +90,11 @@ function runAggregate() {
     git('merge', '-q', '--no-ff', '-m', `Merge pull request #${p.n} from o/feat${p.n}`, `feat${p.n}`);
     state.prs[p.n] = { F, MC: git('rev-parse', 'HEAD'), reviews: p.reviews, broken: p.broken === true };
   }
+  // #9: 前の出荷の PR。gh は記録を返すが、マージコミットは範囲(v0..main)に無い。その PR を取り消す直接のコミットを入れる
+  state.prs[9] = { F: git('rev-parse', 'v0'), MC: git('rev-parse', 'v0'), reviews: [], broken: false };
+  fs.writeFileSync(path.join(work, 'src/revert-marker.js'), 'export const r = 1;\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'Revert "feat: earlier (#9)"');
   const statePath = path.join(tmp, 'state.json');
   fs.writeFileSync(statePath, JSON.stringify(state));
   const binDir = path.join(tmp, 'bin');
@@ -151,9 +159,13 @@ check('IMPL-0159:ok 人の承認が2件の #6 は最後の承認(900 分)で数�
 check('IMPL-0136:ng 文書と製品のコードが混ざった #6 は docOnly に入らず、比に出る(docOnly は #2 の 1 件のまま)', so?.docOnly?.count === 1 && pace?.points?.some((p) => p.number === 6 && p.lines === 450 && p.minutes === 900), JSON.stringify({ doc: so?.docOnly, points: pace?.points }));
 // 強制層・構成だけの変更(#5)は、文書だけに数えない。算定行数 0 として比を持たない側に出る
 check('IMPL-0136:ng ワークフローだけの #5 は docOnly に入らず、算定行数 0 の側(noDenominator)に数える', so?.docOnly?.count === 1 && pace?.noDenominator === 1 && !pace?.points?.some((p) => p.number === 5), JSON.stringify({ doc: so?.docOnly, pace }));
-check('IMPL-0136:ng 品質レポートの文書だけの行に、強制層・構成を含まない旨と件数 1 を出す', /散文の文書だけの変更\(文書の置き場と直下の \*\.md。強制層・構成は含まない\) 1 件/.test(r.report), r.report.slice(0, 300));
+check('IMPL-0136:ng 品質レポートの文書だけの行に、強制層のファイルを含まない旨・指示の文書を文書に数える旨と件数 1 を出す', /算定から除いた文書だけの変更\(文書の置き場の文書・データの拡張子のファイルと直下の \*\.md。担い手への指示の文書[^)]*強制層のスクリプト・ワークフロー・設定ファイル・ロックファイルは含まない[^)]*\) 1 件/.test(r.report), r.report.slice(0, 300));
 // PR の記録を読めなかった #7 は、母数から黙って消さず、番号で開示する
-check('IMPL-0159:ng PR の記録を読めなかった #7 は、観測に入らなかったものとして番号で開示する(evidence.json と品質レポート)', JSON.stringify(so?.notObserved) === '[7]' && /観測に入らなかったもの 1 件\(#7\)/.test(r.report), JSON.stringify({ n: so?.notObserved, log: r.log.slice(-200) }));
+check('IMPL-0159:ng PR の記録を読めなかった #7 は、観測に入らなかったものとして番号で開示する(evidence.json と品質レポート)', JSON.stringify(so?.notObserved) === '[7]' && /取得できず、観測に入らなかったもの 1 件\(#7。/.test(r.report), JSON.stringify({ n: so?.notObserved, log: r.log.slice(-200) }));
+
+// 読めた番号は「読めなかった」に出さない(R2-01)。#8(記録だけの PR)と #9(gh で読めたが範囲に無い PR の Revert)
+const lostLine = r.report.split('\n').filter((l) => /取得できず/.test(l)).join('');
+check('IMPL-0159:ng 記録だけの #8 と、gh で読めた #9 の Revert は、「読めなかった」に出ない(evidence.json・品質レポート・外へ渡す開示)', lostLine.length > 0 && !so?.notObserved?.includes(8) && !so?.notObserved?.includes(9) && !/#8\b|#9\b/.test(lostLine) && !/取得できず[^\n]*#(8|9)\b/.test(r.external), JSON.stringify(so?.notObserved));
 
 // IMPL-0136:ok(観測の場面。文書だけの変更は件数と時間の区間だけ。比を持たない)
 check('IMPL-0136:ok 文書だけの #2(50 時間)は docOnly に 1 件、96 時間以内の区間。approvalPace に入らない(noDenominator の 1 件は #5 のワークフローだけの変更)', so?.docOnly?.count === 1 && so?.docOnly?.hours?.join() === '0,0,1,0' && pace?.noDenominator === 1, JSON.stringify(so?.docOnly));

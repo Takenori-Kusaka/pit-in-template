@@ -1182,6 +1182,7 @@ ${instr}
   // 散文の文書だけの判定(承認までの時間の観測 IMPL-0136。強制層・構成は文書だけに数えない)
   u('isProseDocument: 文書の置き場の md と直下の *.md は真', isProseDocument('docs/guide.md') && isProseDocument('README.md') && isProseDocument('specs/F-001/spec.md') && isProseDocument('docs/data.yaml'));
   u('isProseDocument: 強制層・構成(ワークフロー・scripts/gate・process.config.json・.claude)は偽', !isProseDocument('.github/workflows/zz.yml') && !isProseDocument('scripts/gate/zz-extra.mjs') && !isProseDocument('process.config.json') && !isProseDocument('.claude/settings.json'));
+  u('isProseDocument: 強制層の置き場の *.md は偽(.github の様式・スキル・scripts/gate の README)', !isProseDocument('.github/PULL_REQUEST_TEMPLATE.md') && !isProseDocument('.claude/skills/pit/SKILL.md') && !isProseDocument('scripts/gate/README.md'));
   u('isProseDocument: 製品のコード・ロックファイル・置き場の外の md・文書の置き場のコードは偽', !isProseDocument('src/a.js') && !isProseDocument('package-lock.json') && !isProseDocument('yarn.lock') && !isProseDocument('src/notes.md') && !isProseDocument('docs/tool.js'));
 }
 

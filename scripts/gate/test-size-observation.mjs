@@ -71,7 +71,7 @@ check('表: 前回との比較を出さない', !/前回/.test(text.replace(/前
   check('文書だけ: 3 件、50 時間は 96 時間以内、100 時間は 96 時間超、取れなかった 1 件', s.docOnly.count === 3 && s.docOnly.hours.join() === '0,0,1,1' && s.docOnly.unmeasured === 1, JSON.stringify(s.docOnly));
   // PR の記録を読めず観測に入らなかったものは、母数から黙って消さず、番号で開示する
   const lost = summarizeSizeObservation(set, { notObserved: [12, 11] });
-  check('観測に入らなかったもの: 番号を昇順で持ち、表に件数と番号を出す', JSON.stringify(lost.notObserved) === '[11,12]' && /観測に入らなかったもの 2 件\(#11, #12\)/.test(renderSizeObservation(lost).join('\n')), JSON.stringify(lost.notObserved));
+  check('観測に入らなかったもの: 番号を昇順で持ち、表に件数と番号を出す', JSON.stringify(lost.notObserved) === '[11,12]' && /取得できず、観測に入らなかったもの 2 件\(#11, #12。/.test(renderSizeObservation(lost).join('\n')), JSON.stringify(lost.notObserved));
   check('観測に入らなかったものが無ければ、その行を出さない', !/観測に入らなかったもの/.test(renderSizeObservation(s).join('\n')));
   // IMPL-0159:ng(承認者を特定する値を出さない。入力に login があっても、出力に持ち越さない)
   const leak = summarizeSizeObservation([pr(1, sz(50), { reviewMinutes: 100, approvers: ['alice'], g6: { approver: 'alice' } })]);

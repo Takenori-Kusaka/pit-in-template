@@ -2383,9 +2383,10 @@ if (isMain) {
   // 規模の基準値の超過は、失敗でなく規模の確認と区分の下限 R2 で扱う。その根拠(基準値が妥当か)は、超過の分布と、
   // 超過した変更の確認の実態でしか較正できない。ここでは出荷の範囲の PR について、規模の分布・size:over の件数・
   // 「読み切れたか」の内訳・超過 PR の判定完了時間を、生の値で出す。基準値は各 PR の変更の起点の構成で判定している
-  // 件名に PR の番号を持つが、PR の記録を読めず(gh の失敗・壊れた応答)観測に入らなかったもの。母数から黙って消さず、番号で出す(IMPL-0159)
-  const seenPrNumbers = new Set([...prs, ...recordPrs].map((p) => p.number));
-  const sizeObservation = summarizeSizeObservation(prs, { notObserved: [...candidateNumbers].filter((n) => !seenPrNumbers.has(n)) });
+  // 件名の番号で PR の記録を取得できず(gh の失敗・壊れた応答)観測に入らなかったもの。母数から黙って消さず、番号で出す(IMPL-0159)。
+  // gh で記録を読めた番号(前の出荷の PR の Revert など、マージコミットが範囲に無いもの)は含めない。
+  // Issue の番号は gh の失敗と区別できないので含みうる。件名に番号の無い PR は拾えない(PR を経ていないコミットの節に出る)
+  const sizeObservation = summarizeSizeObservation(prs, { notObserved: [...candidateNumbers].filter((n) => prFetchError.has(n)) });
 
   // --- PR を経ていないコミット(標準 第3章 3.8.1) --------------------------------
   //
