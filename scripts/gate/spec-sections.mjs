@@ -8,9 +8,20 @@
 export const SPEC_FILE = /^specs\/F-\d+\/spec\.md$/;
 export const CONFIRMED_SECTIONS = ['受入基準', '前提', 'スコープ外'];
 
-const HEADING = /^##\s+(受入基準|前提|スコープ外)\s*$/;
+/** 受入基準の節の見出し。spec-lint.mjs と同じ定義(階層は問わず、語は前方一致)。定義を2か所に持たない */
+export const AC_HEADING = /^(#{1,6})\s*受入基準/;
+/** 前提・スコープ外の見出し(階層は問わず、語は完全一致) */
+const OTHER_HEADING = /^(#{1,6})\s*(前提|スコープ外)\s*$/;
+const ANY_HEADING = /^(#{1,6})\s+\S/;
 const FENCE = /^(```|~~~)/;
-const ANY_H12 = /^#{1,2}\s/;
+
+function headingOf(line) {
+  const ac = AC_HEADING.exec(line);
+  if (ac) return { name: '受入基準', level: ac[1].length };
+  const o = OTHER_HEADING.exec(line);
+  if (o) return { name: o[2], level: o[1].length };
+  return null;
+}
 
 /** 3節の本文を返す。見出しが無い節は null。text が null なら3節とも null */
 export function specSections(text) {
@@ -20,6 +31,7 @@ export function specSections(text) {
   const bodies = Object.fromEntries(CONFIRMED_SECTIONS.map((s) => [s, []]));
   let inFence = false;
   let current = null;
+  let level = 0;
   for (const line of lines) {
     if (FENCE.test(line)) {
       inFence = !inFence;
@@ -27,14 +39,21 @@ export function specSections(text) {
       continue;
     }
     if (!inFence) {
-      const m = HEADING.exec(line);
+      const m = headingOf(line);
+      const any = ANY_HEADING.exec(line);
+      // 節の中の、より深い階層の見出しは本文である。同じ階層以上の見出しで節が終わる
+      if (current && any && any[1].length > level) {
+        bodies[current].push(line.replace(/\s+$/, ''));
+        continue;
+      }
       if (m) {
-        current = m[1];
+        current = m.name;
+        level = m.level;
         if (out[current] === null) out[current] = '';
         // 同じ見出しが複数あれば、出現順に本文を改行でつなぐ
         continue;
       }
-      if (ANY_H12.test(line)) {
+      if (any) {
         current = null;
         continue;
       }

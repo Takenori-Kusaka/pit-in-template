@@ -1104,6 +1104,21 @@ ${instr}
   scenario('機能仕様の表示: 背景のコードフェンスの中へ受入基準の見出しを足しても出ない', {}, () => {
     edit((t) => t.replace('招待する。', '招待する。\n\n```md\n## 受入基準\n\n- 例\n```'));
   }, passes(specCount(0)));
+  // 基底の仕様の見出しの表記を替えて(基底へコミットし)、本文を変える。spec-lint が受入基準の節と認める表記で、表示が出る
+  for (const [label, head] of [['## 受入基準(EARS)', '## 受入基準(EARS)'], ['### 受入基準(階層3)', '### 受入基準']]) {
+    const orig = read(SPEC);
+    git('switch', '-q', 'main');
+    write(SPEC, orig.replace('## 受入基準', head));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading variant');
+    scenario(`機能仕様の表示: 見出しが「${label}」でも、本文を変えると出る(spec-lint と同じ定義)`, {}, () => {
+      edit((t) => t.replace('| 1 | 常時 | x |', '| 1 | 常時 | y |'));
+    }, passes(specCount(1, ['受入基準']), shown(/F-001\/spec\.md`: 受入基準/)));
+    git('switch', '-q', 'main');
+    write(SPEC, orig);
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading restore');
+  }
   scenario('機能仕様の表示: 実装計画(plan.md)だけの変更は出ない', {}, () => {
     write('specs/F-001/plan.md', read('specs/F-001/plan.md') + '| Task-3 | 追加 |\n');
   }, passes(specCount(0)));

@@ -2012,7 +2012,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     if (baseText === null) continue;
     const headText = atHead(e.path);
     const sections = changedSpecSections(baseText, headText);
-    if (sections.length) result.specChanges.push({ file: from, to: e.from ? e.path : null, deleted: headText === null, sections });
+    if (sections.length) result.specChanges.push({ file: from, to: e.from ? e.path : null, deleted: headText === null, sections, base: String(mergeBase).slice(0, 7) });
   }
 
   // --- 4b. 検証を弱める変更の検出・期待値の改めの根拠・落ちることを期待する印(process-compass #360。合否に使わない。IMPL-0489 だけは失敗) ---
@@ -2516,7 +2516,7 @@ export function renderSpecChanges(changes) {
   const L = ['### 基底にある機能仕様の受入基準・前提・スコープ外の変更(G-4 の材料。合否には使わない)', ''];
   for (const c of changes) {
     const tail = c.deleted ? '機能仕様の削除' : c.to ? `(→ ${esc(c.to)})` : '';
-    L.push(`- \`${esc(c.file)}\`: ${c.sections.join('・')}${tail ? ` ${tail}` : ''} — この PR の基底からの差分`);
+    L.push(`- \`${esc(c.file)}\`: ${c.sections.join('・')}${tail ? ` ${tail}` : ''} — この PR の基底${c.base ? `(${c.base})` : ''}からの差分`);
   }
   L.push('- 基底の版が G-2 または G-4 を通過した版なら、変更後の版で G-4 の判定を受ける(標準 第4章「確定した版を変える場合」)');
   L.push('- 基底の版が判定を通過した版か、変更が意味を変えるかは、この検査では確かめていない。判定記録の有無も読んでいない(出荷判定者が判定記録の版と突合する)', '');

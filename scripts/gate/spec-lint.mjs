@@ -36,6 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, fail, notice } from './config.mjs';
 import { readClarifications, unmappedCriteria } from './verification-trace.mjs';
+import { AC_HEADING } from './spec-sections.mjs';
 
 /** 標準 第4章 G-2 の検出語(知識ベースへ複製したもの)。減らさない */
 const KB_FILE = path.join(ROOT, 'scripts/vendor/tailoring-kb.json');
@@ -72,8 +73,8 @@ const DEFAULT_ROOT = 'specs';
 const FEATURE_DIR = /^specs\/F-\d+\//;
 const targets = explicit.length ? explicit : [DEFAULT_ROOT];
 
-/** 受入基準の節の見出し(様式 templates/01-feature-spec.md の「## 受入基準」。見出しの階層は問わない) */
-const AC_HEADING = /^(#{1,6})\s*受入基準/;
+// 受入基準の節の見出し(様式 templates/01-feature-spec.md の「## 受入基準」。見出しの階層は問わない)の定義は
+// spec-sections.mjs の AC_HEADING。PR の時点の表示(check-pr.mjs)と同じ定義を使う(定義を2か所に持たない)
 const ANY_HEADING = /^(#{1,6})\s+\S/;
 /** 除外の印。理由(コロンの後ろ)が空の印は無効 */
 const EXEMPT = /<!--\s*spec-lint-ok\s*(?:[::]\s*(.*?))?\s*-->/;
