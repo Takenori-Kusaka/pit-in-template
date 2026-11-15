@@ -159,7 +159,7 @@ import {
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween, isExcludedFromSize } from './check-pr.mjs';
 import { baseJudgeLayers } from './base-judge.mjs';
 import {
   exceptionReviewBacking,
@@ -2074,10 +2074,18 @@ if (isMain) {
     }
     return measureCommitSize({ git: gitRaw, parent, commit: hash, config: baseConfig, risk });
   }
-  /** 作成から最後の承認まで(分)。レビューの開始日時は記録に無いため、判定完了時間の上側の近似である。取れなければ null */
-  function approvalMinutes(d) {
+  /**
+   * 作成から最後の人の承認まで(分)。レビューの開始日時は記録に無いため、判定完了時間の上側の近似である(承認者が掛けた時間の上限)。
+   * 数える承認は、人の承認者(humanApprovers。isAiLogin で AI 名義を除いた G-6 と同じ集合)のものだけ。AI 名義の承認は判定でない。
+   * 人の承認が無い、または記録が無ければ null(#355 束4 / IMPL-0159)。承認者の名は返さない
+   */
+  function approvalMinutes(d, humanLogins) {
     const t0 = Date.parse(d?.createdAt ?? '');
-    const ts = (Array.isArray(d?.reviews) ? d.reviews : []).filter((r) => String(r?.state).toUpperCase() === 'APPROVED').map((r) => Date.parse(r?.submittedAt ?? '')).filter(Number.isFinite);
+    const humans = new Set((humanLogins ?? []).map((l) => accountKey(l ?? '')));
+    const ts = (Array.isArray(d?.reviews) ? d.reviews : [])
+      .filter((r) => String(r?.state).toUpperCase() === 'APPROVED' && humans.has(accountKey(r?.author?.login ?? '')))
+      .map((r) => Date.parse(r?.submittedAt ?? ''))
+      .filter(Number.isFinite);
     if (!Number.isFinite(t0) || !ts.length) return null;
     return Math.max(0, Math.round((Math.max(...ts) - t0) / 60000));
   }
@@ -2158,7 +2166,9 @@ if (isMain) {
     (recordOnly ? recordPrs : prs).push({
       size: sizeMeasured,
       sizeAttestation: sizeAtt.present ? { readAll: sizeAtt.readAll, performerPresent: filled(sizeAtt.performer), reasonPresent: filled(sizeAtt.reason), assurancePresent: filled(sizeAtt.assurance) } : null,
-      reviewMinutes: approvalMinutes(api),
+      reviewMinutes: approvalMinutes(api, humanApprovers),
+      // 変更の全パスが算定から除く文書に当たる変更(生成物・ロックファイルだけは当たらない)。承認までの時間の観測で、比を持たない側に分ける
+      docOnly: prFiles.length > 0 && prFiles.every((f) => isExcludedFromSize(f)),
       number: n,
       title: d?.title ?? null,
       // PR の記録を gh で取得できたか。取得できない PR は、写しの本文(マージ時)で本文の欄を読む(bodySource='copy')。G-5 の結果は読めない

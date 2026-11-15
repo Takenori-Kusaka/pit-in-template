@@ -137,6 +137,8 @@ jobs:
       - run: node scripts/gate/test-discouraged-evidence.mjs
       # PR を経ないコミットに区分の下限の規則と判断記録の要否の規則を当てることを、一時の置き場で通しで試験する(process-compass #423)
       - run: node scripts/gate/test-direct-commit-rules.mjs
+      # 委任の期間ごとの保証の開示(期間の G-8 の記録の対応づけ・period-needed・assurance-period.yml の結線)を、一時の置き場で通しで試験する(process-compass #355 束4 / IMPL-0048)
+      - run: node scripts/gate/test-assurance-period.mjs
       # 確定した欠陥の検出工程を、出荷の証跡の集約が欠陥の台帳から数えることを、一時の置き場で通しで試験する(process-compass #413)
       - run: node scripts/gate/test-defect-stages.mjs
       # 上積みとして示した行を、技術負債台帳と履歴に突き合わせることを、一時の置き場で通しで試験する(process-compass #412)
@@ -190,6 +192,8 @@ jobs:
       - run: node scripts/gate/test-self-heal.mjs
       # 規模の観測の決定性と、超過の理由の内訳・別集計の倍率の分布(標準 第4章「基準値を超えた変更の扱い」。process-compass #296)
       - run: node scripts/gate/test-size-observation.mjs
+      # 承認までの時間と規模の比・文書だけの変更の承認までの時間を、偽の gh の通しで試験する(Linux だけ。process-compass #355 束4 / IMPL-0159・IMPL-0136)
+      - run: node scripts/gate/test-approval-pace.mjs
       # 文脈ファイルの参照切れの検査(G-5 基準6。相対リンク・取り込み @path・逆引用符の中の .claude/ と scripts/ のパス。process-compass #314 / ADR-0084)
       - run: node scripts/gate/test-context-refs.mjs
       # 常駐の規則の照合: 規則ごとの核の文言の照合と、試験の中の固定の写しへの変異(行の削除・節の置き換え・否定の除去・

@@ -21,7 +21,58 @@ const bucket = (v, edges) => {
   return edges.length;
 };
 
-/** prs は aggregate-evidence の PR の記録(size・sizeAttestation・reviewMinutes・number・riskClass)。純関数 */
+const round1 = (v) => Math.round(v * 10) / 10;
+/** 昇順の配列の分位点(下側の順位。中央値の求め方 floor((n-1)/2) と同じ流儀)。q は 0〜1 */
+const quantile = (sorted, q) => sorted[Math.floor((sorted.length - 1) * q)];
+
+/**
+ * 承認までの時間と規模の比(IMPL-0159。標準 運用メトリクス「レビュー所要時間の分布」)と、文書だけの変更の承認までの時間(IMPL-0136 の観測)。
+ * 承認の時間 reviewMinutes は、作成から最後の人の承認までの時計時間(承認者が掛けた時間の上限)。AI 名義の承認は数えない(集約が除く)。
+ * 比は規模の区間(LINE_LABELS)ごとに、100 行あたりの分の最小・下位四分位・中央値と件数で出す。閾値とは比べない。前回との比較は出さない。
+ * 承認者を特定する値は持たない(points は PR の番号・算定行数・分だけ)。文書だけの変更は算定行数が無く、比を持たない(ADR-0072)
+ */
+function summarizeApprovalPace(sorted) {
+  const per = LINE_LABELS.map(() => []);
+  const points = [];
+  let unmeasured = 0;
+  let noDenominator = 0;
+  const doc = { count: 0, hours: [0, 0, 0, 0], unmeasured: 0 };
+  for (const p of sorted) {
+    const m = Number.isFinite(p.reviewMinutes) ? p.reviewMinutes : null;
+    if (p.docOnly === true) {
+      doc.count++;
+      if (m === null) doc.unmeasured++;
+      else doc.hours[bucket(m / 60, [24, 48, 96])]++;
+      continue;
+    }
+    if (m === null || !p.size) {
+      unmeasured++;
+      continue;
+    }
+    if (!(p.size.lines > 0)) {
+      noDenominator++;
+      continue;
+    }
+    per[bucket(p.size.lines, LINE_EDGES)].push((m / p.size.lines) * 100);
+    points.push({ number: p.number, lines: p.size.lines, minutes: m });
+  }
+  return {
+    approvalPace: {
+      byLines: LINE_LABELS.map((range, i) => {
+        const v = [...per[i]].sort((a, b) => a - b);
+        return v.length
+          ? { range, count: v.length, minPer100: round1(v[0]), q1Per100: round1(quantile(v, 0.25)), medianPer100: round1(quantile(v, 0.5)) }
+          : { range, count: 0, minPer100: null, q1Per100: null, medianPer100: null };
+      }),
+      unmeasured,
+      noDenominator,
+      points,
+    },
+    docOnly: doc,
+  };
+}
+
+/** prs は aggregate-evidence の PR の記録(size・sizeAttestation・reviewMinutes・docOnly・number・riskClass)。純関数 */
 export function summarizeSizeObservation(prs) {
   const lineDist = [0, 0, 0, 0];
   const fileDist = [0, 0, 0, 0];
@@ -65,6 +116,7 @@ export function summarizeSizeObservation(prs) {
     else if (p.sizeAttestation.readAll === 'no') att.no++;
     else att.unanswered++;
   }
+  const pace = summarizeApprovalPace(sorted);
   const minutes = overPrs.map((p) => p.reviewMinutes).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   const median = minutes.length ? minutes[Math.floor((minutes.length - 1) / 2)] : null;
   return {
@@ -90,6 +142,8 @@ export function summarizeSizeObservation(prs) {
     })),
     attestation: att,
     reviewMinutes: { n: minutes.length, median, max: minutes.length ? minutes.at(-1) : null },
+    approvalPace: pace.approvalPace,
+    docOnly: pace.docOnly,
     testLines: sorted.reduce((n, p) => n + (p.size?.testLines ?? 0), 0),
   };
 }
@@ -131,6 +185,29 @@ export function renderSizeObservation(o) {
   R.push(
     `- 超過 PR の判定完了時間(作成から最後の承認まで。上側の近似): ${o.reviewMinutes.n ? `${o.reviewMinutes.n} 件で中央値 ${o.reviewMinutes.median} 分、最大 ${o.reviewMinutes.max} 分` : '取れなかった(PR の作成日時または承認の日時が記録に無い)'}`
   );
+  if (o.approvalPace) {
+    const ap = o.approvalPace;
+    R.push('');
+    R.push('#### 承認までの時間と規模の比(観測。作成から最後の人の承認までの時計時間で、承認者が掛けた時間の上限。合否にも警戒の条件にも使わない)');
+    R.push('');
+    R.push('| 区間(算定行数) | 件数 | 100 行あたりの分(最小) | 同(下位四分位) | 同(中央値) |');
+    R.push('| --- | --- | --- | --- | --- |');
+    for (const b of ap.byLines) R.push(`| ${b.range} | ${b.count} | ${b.minPer100 ?? '-'} | ${b.q1Per100 ?? '-'} | ${b.medianPer100 ?? '-'} |`);
+    R.push('');
+    R.push(
+      `- 比を持たないもの: 人の承認または規模を取れなかった ${ap.unmeasured} 件 / 算定行数が 0 ${ap.noDenominator} 件。短い値は「短かった」と確かめられるが、長い値は何も言えない。AI 名義の承認は数えない。承認者別の内訳は出さない`
+    );
+  }
+  if (o.docOnly) {
+    const d = o.docOnly;
+    R.push('');
+    R.push('#### 文書だけの変更の承認までの時間(観測。SLA の判定ではない。48 時間以内は 2 営業日以内。それを超える値から超過は読めない)');
+    R.push('');
+    R.push(
+      `- 算定から除いた文書だけの変更 ${d.count} 件。作成から最後の人の承認まで: 24 時間以内 ${d.hours[0]} / 48 時間以内 ${d.hours[1]} / 96 時間以内 ${d.hours[2]} / 96 時間超 ${d.hours[3]} / 取れなかった ${d.unmeasured}。算定行数が無く、規模との比は持たない`
+    );
+  }
+  R.push('');
   if (o.overPrs.length) {
     R.push(
       `- 超過 PR: ${o.overPrs

@@ -14,6 +14,10 @@
 #
 # 2026-10-01 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
 # 確かめたのは、手元での集約(--period-from / --period-to)に留まります。
+# scripts/gate/test-assurance-period.mjs が確かめるのは、集約の論理(期間の開示に対応する G-8 の記録の有無・差し戻し・別の期間)、
+# period-needed.mjs の判定、この手順の結線(期間を決める run の動作・if・|| true の不在・schedule・権限)までです。
+# 定期の起動(cron)と手動の起動が実際の GitHub 上で動くこと、GITHUB_TOKEN の権限は、引き続き確かめていません。
+# 期間が過ぎたのに開示が出ていないことは、この仕組みでは検出しません(期間の開示を突合する出荷判定者が確かめます)。
 
 name: assurance-period
 
