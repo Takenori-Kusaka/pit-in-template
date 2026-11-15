@@ -1073,7 +1073,7 @@ ${instr}
   const shown = (re) => (r) => (re.test(renderG6Material(r)) ? [] : [`表示に ${re} が出ていない`]);
   const noShown = () => (r) => (/基底にある機能仕様の受入基準/.test(renderG6Material(r)) ? ['表示が出てはならない'] : []);
   const edit = (f) => write(SPEC, f(read(SPEC)));
-  // IMPL-0520:ok(違反と適合の対。標準の実装マーク。process-compass #334)
+  // IMPL-0520:ng(違反と適合の対。標準の実装マーク。process-compass #334)
   scenario('機能仕様の表示: 基底にある仕様の受入基準を書き換えると表示が出る(合否は変えない)', {}, () => {
     edit((t) => t.replace('| 1 | 常時 | x |', '| 1 | 常時 | y |'));
   }, passes(specCount(1, ['受入基準']), shown(/F-001\/spec\.md`: 受入基準/), shown(/G-4 の判定を受ける/), shown(/判定記録の有無も読んでいない/)));
@@ -1091,6 +1091,7 @@ ${instr}
     git('mv', SPEC, 'specs/F-002/spec.md');
     write('specs/F-002/spec.md', read('specs/F-002/spec.md').replace('| 1 | 常時 | x |', '| 1 | 常時 | z |'));
   }, passes((r) => (r.specChanges.length === 1 && r.specChanges[0].file === SPEC && r.specChanges[0].to === 'specs/F-002/spec.md' ? [] : [`移動の検出: ${JSON.stringify(r.specChanges)}`])));
+  // IMPL-0520:ok(違反と適合の対。標準の実装マーク。process-compass #334)
   scenario('機能仕様の表示: 基底に無い新しい仕様を足しても出ない', {}, () => {
     write('specs/F-099/spec.md', SPEC_BASE);
   }, passes(specCount(0), noShown()));
