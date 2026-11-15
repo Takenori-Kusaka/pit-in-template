@@ -130,7 +130,7 @@ git commit -S -m "chore: 記録用ブランチを初期化する" && git push or
 | 項目 | 内容 |
 | --- | --- |
 | ブランチ | `ship/<日付>`(同じ日に 2 回目があれば `ship/<日付>-<実行番号>`) |
-| 中身 | `records/reviews/*.json` → `docs/records/reviews/`、`records/gates/*.md` → `docs/gates/`(追加だけ。基底ブランチに既にあるファイルは上書きしない)。品質レポート(保証の開示を含む)→ `docs/evidence/<日付>-<範囲>.md` |
+| 中身 | `records/reviews/*.json` → `docs/records/reviews/`、`records/gates/*.md` → `docs/gates/`(追加だけ。基底ブランチに既にあるファイルは上書きしない)。品質レポート(保証の開示を含む)→ `docs/evidence/<日付>-<範囲>.md`。証跡の一式と digest の一覧(`manifest.json`)→ `docs/evidence/<日付>-<範囲>/`(写しは保管期間の充足を示さない。期間とリポジトリの外の保管は採用者が確かめる) |
 | 承認者 | PR を開いた人以外の人(GitHub では PR の作成者は自分の PR を承認できない)。この承認は**転記の確認**であり、判定ではない。承認者は verify の結果を確かめる。G-7 の判定は `records/gates/` の様式で成立している。`safety.json`・`regulated.json` はコード所有者の承認を課すため、`docs/gates/` の所有者(既定は出荷判定者の席)が承認できるよう、出荷判定者以外の人が PR を開く |
 | 検査 | PR の上で `ship-evidence` の verify ジョブが同じ集約を再実行し、複製が `records` ブランチと一致することを検査する。JSON は `pr`・`merge_commit_sha`・`head_sha` と `reviews[]` の `id`・`commit_id`・`submitted_at`・`user.id`・`body`、md は内容。不一致は失敗。記録の置き場の既存のファイルの変更・削除も失敗 |
 | 起動 | **PR は出荷判定者が開きます**(実行の要約・成果物 `ship-pr` の URL から)。人が開いた PR では gate-g5 と verify が自動で起動します。`GITHUB_TOKEN` は既定の設定で PR を作れず(「GitHub Actions is not permitted to create or approve pull requests」)、作れる設定でも `GITHUB_TOKEN` で開いた PR は gate-g5 も verify も起動しません(GitHub の仕様)。再検査だけなら `ship-evidence` の手動実行(入力 `verify_pr` に PR の番号)で、結果は PR のコメントに出ます(ステータスチェックには付きません) |

@@ -151,6 +151,20 @@ jobs:
           if [ -n "$prev" ]; then
             gh run download "$prev" --repo "${{ github.repository }}" --name ship-evidence --dir evidence/previous
           fi
+          # 成果物を取れなかった(保持の日数の経過など)ときは、基底ブランチの写し(docs/evidence/*/manifest.json)のうち
+          # recordedAt が最も新しい置き場の evidence.json を読む(ADR-0135)。成果物だけを見ると、保持を過ぎた後は「前回なし」になる
+          if [ ! -e evidence/previous/evidence.json ]; then
+            best=''; best_at=''
+            for m in docs/evidence/*/manifest.json; do
+              [ -e "$m" ] || continue
+              at=$(jq -r '.recordedAt // empty' "$m" 2>/dev/null || true)
+              if [ -n "$at" ] && [ -e "$(dirname "$m")/evidence.json" ] && { [ -z "$best_at" ] || [[ "$at" > "$best_at" ]]; }; then best="$(dirname "$m")"; best_at="$at"; fi
+            done
+            if [ -n "$best" ]; then
+              mkdir -p evidence/previous && cp "$best/evidence.json" evidence/previous/evidence.json
+              echo "::notice::前回の証跡を、成果物ではなくリポジトリの写し($best)から読みました"
+            fi
+          fi
 
       - name: 証跡を集約する
         env:
@@ -172,6 +186,10 @@ jobs:
             evidence/quality-report.md
             evidence/assurance-disclosure.external.md
           if-no-files-found: error
+          # 一時置き。保管ではない(IMPL-0243。保管期間の値と充足は採用者が定める)。保持の日数を明示する(ADR-0135)。
+          # リポジトリ・組織の設定の上限を超える値は効かない(上限の扱いは実機で未確認)。証跡の一式は、下の手順で
+          # 出荷の PR により基底ブランチ(docs/evidence/<日付>-<範囲>/)へ写す
+          retention-days: 90
 
       # (b) 出荷のブランチを push し、PR を開く URL を出す。基底ブランチ(既定ブランチ)から ship/<日付> を切り、records の写しと様式を複製し、
       # 品質レポートと記録用ブランチの先頭を置く。既存のファイルは上書きしない(基底にあるファイルと中身が違えば、集約が基底ブランチの
@@ -221,6 +239,18 @@ jobs:
           [ -e "$out" ] && out="docs/evidence/$day-$safe-$RUN_NUMBER.md"
           mkdir -p docs/evidence && cp evidence/quality-report.md "$out" && git add -f "$out"
           added=$((added+1))
+          # 証跡の一式(evidence.json・外へ渡す開示・取り込んだ入力の JSON)と digest の一覧を docs/evidence/<日付>-<範囲>/ へ写す(ADR-0135)。
+          # 写しは保管期間の充足を示さない(IMPL-0243)。evidence/previous/ と ship-pr-url.txt は写さない。追加だけ(既にあれば -<RUN_NUMBER>)
+          bundle="docs/evidence/$day-$safe"
+          [ -e "$bundle" ] && bundle="docs/evidence/$day-$safe-$RUN_NUMBER"
+          mkdir -p "$bundle"
+          for f in evidence.json assurance-disclosure.external.md license-scan.json test-results.json coverage-result.json dependency-diff.json inputs.json; do
+            if [ -e "evidence/$f" ]; then cp "evidence/$f" "$bundle/$f"; fi
+          done
+          target_sha=$(git rev-parse "${to:-HEAD}^{commit}" 2>/dev/null || true)
+          node scripts/gate/evidence-manifest.mjs write --dir "$bundle" --run "${{ github.run_id }}" --target "$target_sha" --range "$range"
+          git add -f "$bundle"
+          added=$((added+$(find "$bundle" -type f | wc -l)))
           # 集約が読んだ記録用ブランチの先頭(完全な識別子)を、出荷の証跡として基底ブランチへ残す。次の集約は、これが今の先頭の
           # 祖先であることを確かめる(置き場の規則を外していた間の履歴の書き換えを検出する。process-compass #379 / ADR-0109 決定1)
           if [ -e evidence/records-head.json ]; then
@@ -260,7 +290,8 @@ jobs:
           {
             printf '## 変更の概要\n\n'
             printf '出荷の範囲 `%s` の判定記録(様式)と承認レビューの写しを記録用ブランチ `%s` から複製し、保証の開示を置く(ship-evidence の実行 %s が push したブランチ `%s`)。追加だけで、既存のファイルは上書きしていない。\n\n' "$range" "$RECORDS_BRANCH" "${{ github.run_id }}" "$branch"
-            printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件)\n\n' "$out" "$added" "$skipped"
+            printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件)\n' "$out" "$added" "$skipped"
+            printf -- '- 証跡の一式の写し: `%s/`(digest の一覧 manifest.json。組織の保管へ引き渡すときはこの一覧を使う。写しは保管期間の充足を示さない)\n\n' "$bundle"
             printf '承認するのは、この PR を開いた人以外の人。承認は転記の確認であり判定ではない。承認者は verify の結果(複製が記録用ブランチと一致すること)を確かめる(標準 第4章「判定記録を基底ブランチへ入れる操作」)。この PR を開いた人の操作で gate-g5 と ship-evidence の verify が起動する。\n\n'
             printf '## 検証方法と結果\n\n- verify ジョブが同じ集約を再実行し、複製が `%s` と一致することを検査する(人は結果を読む)\n\n' "$RECORDS_BRANCH"
             printf '## AI 関与範囲\n\n- 生成: なし(ワークフローの機械の複製)\n- 人の確認: 出荷判定者\n\n'
@@ -415,6 +446,18 @@ jobs:
                   fail "$p: 記録用ブランチに無い判定記録を出荷の PR で足している"
                 else
                   note "$p: 記録用ブランチに無い判定記録(停止の解除・例外承認・SG のように基底ブランチへ先に入れる記録。記名者本人の操作で帰属を裏づける)"
+                fi ;;
+              docs/evidence/*/*)
+                # 証跡の一式と digest の一覧。運ぶのは出荷の PR だけ。置き場ごとに digest の一覧との一致を検査する(ADR-0135)。
+                # スクリプトは基底ブランチのもの。PR の側の置き場(/tmp/pr/...)を引数で渡す
+                if [ "$SHIP" != "true" ]; then fail "$p: 証跡の一式を運ぶのは出荷の PR(ship/<日付>)だけ"
+                else
+                  d=$(dirname "$p")
+                  case " ${checked_dirs:-} " in *" $d "*) ;; *)
+                    checked_dirs="${checked_dirs:-} $d"
+                    if node scripts/gate/evidence-manifest.mjs verify --dir "/tmp/pr/$d" > /tmp/manifest-verify.txt 2>&1; then note "$d: digest の一覧と一致"
+                    else fail "$d: digest の一覧と一致しない($(tr '\n' ' ' < /tmp/manifest-verify.txt))"; fi ;;
+                  esac
                 fi ;;
               docs/evidence/*.md)
                 # 集約の出力は実行の時刻を含むため、内容の一致は検査しない。出荷の PR では上の再実行が通ることを検査している
