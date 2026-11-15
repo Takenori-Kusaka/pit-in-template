@@ -11,7 +11,7 @@ export const CONFIRMED_SECTIONS = ['受入基準', '前提', 'スコープ外'];
 /** 受入基準の節の見出し。spec-lint.mjs と同じ定義(階層は問わず、語は前方一致)。定義を2か所に持たない */
 export const AC_HEADING = /^(#{1,6})\s*受入基準/;
 /** 前提・スコープ外の見出し(階層は問わず、語は完全一致) */
-const OTHER_HEADING = /^(#{1,6})\s*(前提|スコープ外)\s*$/;
+const OTHER_HEADING = /^(#{1,6})\s+(前提|スコープ外)\s*$/;
 const ANY_HEADING = /^(#{1,6})\s+\S/;
 const FENCE = /^(```|~~~)/;
 

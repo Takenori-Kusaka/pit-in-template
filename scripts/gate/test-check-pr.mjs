@@ -1119,6 +1119,21 @@ ${instr}
     git('add', '-A');
     git('commit', '-q', '-m', 'spec heading restore');
   }
+  // 前提・スコープ外も階層を問わない(語は完全一致)。基底の見出しを「### 前提」に替えて、本文を変えると出る
+  {
+    const orig = read(SPEC);
+    git('switch', '-q', 'main');
+    write(SPEC, orig.replace('## 前提', '### 前提'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading variant (premise)');
+    scenario('機能仕様の表示: 見出しが「### 前提」でも、本文を変えると前提の節として出る', {}, () => {
+      edit((t) => t.replace('登録済み', '未登録'));
+    }, passes((r) => (r.specChanges.length === 1 && r.specChanges[0].sections.includes('前提') ? [] : [`前提の検出: ${JSON.stringify(r.specChanges)}`])));
+    git('switch', '-q', 'main');
+    write(SPEC, orig);
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading restore (premise)');
+  }
   scenario('機能仕様の表示: 実装計画(plan.md)だけの変更は出ない', {}, () => {
     write('specs/F-001/plan.md', read('specs/F-001/plan.md') + '| Task-3 | 追加 |\n');
   }, passes(specCount(0)));
