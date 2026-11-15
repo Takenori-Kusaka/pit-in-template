@@ -381,7 +381,8 @@ export function g5MissingText({ number, recordFound, fetchError = null, mergedAt
   const days = Number.isFinite(t0) && Number.isFinite(t1) ? Math.max(0, Math.floor((t1 - t0) / 86400000)) : null;
   const since = days === null ? '' : `マージから ${days} 日`;
   if (copyG5?.found === true) {
-    return `PR #${number}: gate-g5 の結果をホスティングから読めません。マージの時点の写しは、gate-g5 の結論を ${copyG5.conclusion ?? '不明'}(check run ${copyG5.id ?? '?'}、完了 ${copyG5.completed_at ?? '不明'})と記録しています。基盤の保持期間を過ぎて消えた可能性があります${since ? `(${since})` : ''}。写しの値はホスティングと照合できないため、G-5 の充足には数えません`;
+    const concl = copyG5.conclusion ?? `不明(状態 ${copyG5.status ?? '不明'}。マージの時点で完了していなかった可能性)`;
+    return `PR #${number}: gate-g5 の結果をホスティングから読めません。マージの時点の写しは、gate-g5 の結論を ${concl}(check run ${copyG5.id ?? '?'}、完了 ${copyG5.completed_at ?? '不明'})と記録しています。基盤の保持期間を過ぎて消えた可能性があります${since ? `(${since})` : ''}。写しの値はホスティングと照合できないため、G-5 の充足には数えません`;
   }
   if (copyG5?.found === false) {
     return `PR #${number}: gate-g5 の結果の記録がありません。マージの時点の写しにも gate-g5 の check run がありません(必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる)`;
@@ -1037,7 +1038,9 @@ if (isMain) {
   let lastGhError = null;
   function gh(args) {
     try {
-      const text = execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      // 試験の継ぎ目: AGGREGATE_GH_FAKE に偽の gh(node のスクリプト)の場所を渡すと、gh の代わりにそれを動かす(test-g5-missing.mjs)。未設定なら gh
+      const fake = process.env.AGGREGATE_GH_FAKE;
+      const text = execFileSync(fake ? process.execPath : 'gh', fake ? [fake, ...args] : args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       // --paginate の頁ごとの配列の連結にも耐える(#430 突合 C-3)
       return args.includes('--paginate') ? parsePagedJson(text) : JSON.parse(text);
     } catch (e) {
@@ -3379,7 +3382,23 @@ if (isMain) {
   }
   const previous = loadPrevious();
   const prevA = previous?.assurance ?? null;
-  const prevLabel = previous ? `前回 ${previous.range?.to ?? '(終点の記録なし)'}` : NO_PREVIOUS;
+  // 前回の証跡をどこから読んだか(ship-evidence ワークフローの「前回の出荷の証跡を取り込む」が evidence/previous-source.json に書く)。
+  // 読めなかったときは、見た場所と読まなかった理由を「前回なし」に添える(黙って「前回なし」にしない)
+  const previousSource = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/previous-source.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+  })();
+  const previousSourceText = (() => {
+    if (!previousSource || previous) return '';
+    const c = previousSource.copies ?? {};
+    const a = previousSource.artifact ?? {};
+    const bad = (c.looked ?? []).filter((l) => !l.ok);
+    return `(成果物: ${a.status === 'failed' ? `実行 ${a.run} から取得できず` : '前回の実行なし'}。基底ブランチの写し ${c.root ?? 'docs/evidence'}: 置き場 ${(c.looked ?? []).length} 件を見て読めるものなし${bad.length ? `。読まなかった理由: ${bad.map((l) => `${l.dir} ${(l.problems ?? []).join(' ')}`).join(' / ')}` : ''})`;
+  })();
+  const prevLabel = previous ? `前回 ${previous.range?.to ?? '(終点の記録なし)'}` : `${NO_PREVIOUS}${previousSourceText}`;
   /** 前回の値を取り出して文字列にする。前回の出力が無い、または当該の値を持たない場合は「前回なし」 */
   const prev = (pick) => {
     if (!prevA) return NO_PREVIOUS;
@@ -5179,6 +5198,8 @@ if (isMain) {
 
   const evidence = {
     range: { from: from || null, to, toCommit },
+    // 前回の証跡の読み先(成果物 / 基底ブランチの写し / なし)と、見た場所。無ければ null(ワークフロー以外の実行)
+    previousSource: previousSource ?? null,
     // 期間を指定した開示の起点と終点。出荷の範囲の出力では null
     period: period ? { ...period, cut: PERIOD_CUT } : null,
     // 構成の初期化より前の履歴(対象外)の件数と、初期化のコミット

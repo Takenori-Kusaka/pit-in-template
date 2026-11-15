@@ -50,6 +50,8 @@
 #
 # **このワークフローは、2026-10-23 時点で、実際の GitHub 上で通しで実行して確かめていません**。確かめたのは、構文と、
 # gh を模擬した呼び出しの形までです。初回の出荷では、Actions の実行の記録で、取り込みの行と出荷の PR の差分を確かめてください。
+# 2026-11-15 に足した手順(証跡の一式の写し、前回の証跡の写しからの読み、実行の headSha の照合、verify の一式の検査)も、実機では確かめていません。
+# 手順の本文は、偽の gh で test-ship-evidence-steps.mjs が動かして確かめています(実機の GitHub の挙動は含みません)。
 
 name: ship-evidence
 
@@ -135,50 +137,49 @@ jobs:
           if [ -n "$run" ] && [ "$run_sha" != "$target" ]; then
             echo "::warning::gate-g5 の実行 $run の headSha(${run_sha:-不明})が対象 $target と一致しません。何も取り込みません"
           elif [ -n "$run" ]; then
-            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
-            echo "::notice::gate-g5 の実行 $run から license-scan を取り込みました(対象 $target)"
+            # license-scan の取得の成否に依らず、後の取り込みへ進む(失敗を明示して受ける。集約が「知財潔白性の検査記録がありません」を欠落として出す)
+            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence \
+              && echo "::notice::gate-g5 の実行 $run から license-scan を取り込みました(対象 $target)" \
+              || echo "::warning::gate-g5 の実行 $run に license-scan がありません"
             # G-7 基準1 の入力(テストの実行の記録。#288)。取得できなければ、集約が「実行の記録なし」と出す
             gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence \
               && echo "::notice::gate-g5 の実行 $run から test-results を取り込みました" \
               || echo "::warning::gate-g5 の実行 $run に test-results がありません。G-7 基準1 の消化数は数えません"
-            # カバレッジの結果と依存の差分(同じ実行・同じコミット)。取得できなければ、集約が「集計ファイルがありません」と出す(隠さない)
+            # カバレッジの結果(同じ実行・同じコミット)。取得できなければ、集約が「集計ファイルがありません」と出す(隠さない)。
+            # 依存の差分(dependency-diff)は取り込まない: 成果物を作るジョブが pull_request でだけ動くため、既定ブランチへの push の実行には無い
             gh run download "$run" --repo "${{ github.repository }}" --name coverage-result --dir evidence \
               && echo "::notice::gate-g5 の実行 $run から coverage-result を取り込みました" \
               || echo "::warning::gate-g5 の実行 $run に coverage-result がありません"
-            gh run download "$run" --repo "${{ github.repository }}" --name dependency-diff --dir evidence \
-              && echo "::notice::gate-g5 の実行 $run から dependency-diff を取り込みました" \
-              || echo "::warning::gate-g5 の実行 $run に dependency-diff がありません"
             # 取り込み元(実行の識別と headSha)。証跡の一式の写しの digest の一覧(inputs)に入る
-            jq -n --arg run "$run" --arg sha "$run_sha" '{gateG5Run: $run, headSha: $sha}' > evidence/inputs.json
+            mkdir -p evidence
+            printf '{"gateG5Run":"%s","headSha":"%s"}\n' "$run" "$run_sha" > evidence/inputs.json
           else
             echo "::warning::$target に対する gate-g5 の成功した実行がありません。知財潔白性の検査記録とテストの実行の記録は取り込みません"
           fi
 
       # 保証の開示の項目1・3・6 へ、前回の出荷の値を併記するための入力。
       # 取得できない場合(初回、成果物の保存期間の経過)は「前回なし」と出力される
+      # 成果物の取得の失敗(成果物が無い実行を選んだ・保持の経過など)で手順を終えない(bash -e が既定のため、失敗は if で明示して受ける。
+      # GitHub の文書: shell を指定しない run は Linux で `bash -e {0}`。ADR-0135)。取れないときは、基底ブランチの写しを digest の一覧と
+      # 照合して読む(evidence-manifest.mjs previous)。写しも読めないときは、見た場所と読まなかった理由を警告と evidence/previous-source.json
+      # に出し、集約が evidence.json の previousSource とレポートの「前回なし」に出す(黙って「前回なし」にしない)
       - name: 前回の出荷の証跡を取り込む
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev=$(gh run list --repo "${{ github.repository }}" --workflow ship-evidence --status completed --limit 20 --json databaseId --jq "map(select(.databaseId != ${{ github.run_id }})) | .[0].databaseId // empty")
+          prev=$(gh run list --repo "${{ github.repository }}" --workflow ship-evidence --status completed --limit 20 --json databaseId --jq "map(select(.databaseId != ${{ github.run_id }})) | .[0].databaseId // empty" || true)
+          artifact=none
           if [ -n "$prev" ]; then
-            gh run download "$prev" --repo "${{ github.repository }}" --name ship-evidence --dir evidence/previous
-          fi
-          # 成果物を取れなかった(保持の日数の経過など)ときは、基底ブランチの写し(docs/evidence/*/manifest.json)のうち
-          # recordedAt が最も新しい置き場の evidence.json を読む(ADR-0135)。成果物だけを見ると、保持を過ぎた後は「前回なし」になる
-          if [ ! -e evidence/previous/evidence.json ]; then
-            best=''; best_at=''
-            for m in docs/evidence/*/manifest.json; do
-              [ -e "$m" ] || continue
-              at=$(jq -r '.recordedAt // empty' "$m" 2>/dev/null || true)
-              if [ -n "$at" ] && [ -e "$(dirname "$m")/evidence.json" ] && { [ -z "$best_at" ] || [[ "$at" > "$best_at" ]]; }; then best="$(dirname "$m")"; best_at="$at"; fi
-            done
-            if [ -n "$best" ]; then
-              mkdir -p evidence/previous && cp "$best/evidence.json" evidence/previous/evidence.json
-              echo "::notice::前回の証跡を、成果物ではなくリポジトリの写し($best)から読みました"
+            if gh run download "$prev" --repo "${{ github.repository }}" --name ship-evidence --dir evidence/previous && [ -e evidence/previous/evidence.json ]; then
+              artifact=ok
+            else
+              artifact=failed
+              echo "::warning::前回の実行 $prev の成果物 ship-evidence を取得できません(成果物を持たない実行、または保持の経過)。基底ブランチの写しから読みます"
             fi
           fi
+          mkdir -p evidence
+          node scripts/gate/evidence-manifest.mjs previous --root docs/evidence --out evidence/previous --artifact "$artifact" --run "$prev" --source-file evidence/previous-source.json
 
       - name: 証跡を集約する
         env:
@@ -200,10 +201,10 @@ jobs:
             evidence/quality-report.md
             evidence/assurance-disclosure.external.md
           if-no-files-found: error
-          # 一時置き。保管ではない(IMPL-0243。保管期間の値と充足は採用者が定める)。保持の日数を明示する(ADR-0135)。
-          # リポジトリ・組織の設定の上限を超える値は効かない(上限の扱いは実機で未確認)。証跡の一式は、下の手順で
-          # 出荷の PR により基底ブランチ(docs/evidence/<日付>-<範囲>/)へ写す
-          retention-days: 90
+          # 一時置き。保管ではない(IMPL-0243。保管期間の値と充足は採用者が定める)。retention-days は明示しない(ADR-0135):
+          # 明示すると、保持を既定(90 日)より長くしているリポジトリで保持が短くなる。成果物の保持はリポジトリの設定に従う。
+          # 証跡の一式は、下の手順で出荷の PR により基底ブランチ(docs/evidence/<日付>-<範囲>/)へ写す
+
 
       # (b) 出荷のブランチを push し、PR を開く URL を出す。基底ブランチ(既定ブランチ)から ship/<日付> を切り、records の写しと様式を複製し、
       # 品質レポートと記録用ブランチの先頭を置く。既存のファイルは上書きしない(基底にあるファイルと中身が違えば、集約が基底ブランチの
@@ -258,13 +259,13 @@ jobs:
           bundle="docs/evidence/$day-$safe"
           [ -e "$bundle" ] && bundle="docs/evidence/$day-$safe-$RUN_NUMBER"
           mkdir -p "$bundle"
-          for f in evidence.json assurance-disclosure.external.md license-scan.json test-results.json coverage-result.json dependency-diff.json inputs.json; do
+          for f in evidence.json assurance-disclosure.external.md license-scan.json test-results.json coverage-result.json inputs.json; do
             if [ -e "evidence/$f" ]; then cp "evidence/$f" "$bundle/$f"; fi
           done
-          target_sha=$(git rev-parse "${to:-HEAD}^{commit}" 2>/dev/null || true)
-          node scripts/gate/evidence-manifest.mjs write --dir "$bundle" --run "${{ github.run_id }}" --target "$target_sha" --range "$range"
+          # 一覧の range・target は、置き場の evidence.json(集約の出力)が持つ実際の範囲と終点から取る。読めなければ null(ここで推定しない)
+          node scripts/gate/evidence-manifest.mjs write --dir "$bundle" --run "${{ github.run_id }}"
           git add -f "$bundle"
-          added=$((added+$(find "$bundle" -type f | wc -l)))
+          bundle_files=$(find "$bundle" -type f | wc -l)
           # 集約が読んだ記録用ブランチの先頭(完全な識別子)を、出荷の証跡として基底ブランチへ残す。次の集約は、これが今の先頭の
           # 祖先であることを確かめる(置き場の規則を外していた間の履歴の書き換えを検出する。process-compass #379 / ADR-0109 決定1)
           if [ -e evidence/records-head.json ]; then
@@ -304,8 +305,8 @@ jobs:
           {
             printf '## 変更の概要\n\n'
             printf '出荷の範囲 `%s` の判定記録(様式)と承認レビューの写しを記録用ブランチ `%s` から複製し、保証の開示を置く(ship-evidence の実行 %s が push したブランチ `%s`)。追加だけで、既存のファイルは上書きしていない。\n\n' "$range" "$RECORDS_BRANCH" "${{ github.run_id }}" "$branch"
-            printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件)\n' "$out" "$added" "$skipped"
-            printf -- '- 証跡の一式の写し: `%s/`(digest の一覧 manifest.json。組織の保管へ引き渡すときはこの一覧を使う。写しは保管期間の充足を示さない)\n\n' "$bundle"
+            printf -- '- 保証の開示: `%s`\n- 複製 %s 件(上書きしなかったもの %s 件。記録の写しと様式、品質レポート、記録用ブランチの先頭の記録。証跡の一式は含まない)\n' "$out" "$added" "$skipped"
+            printf -- '- 証跡の一式の写し: `%s/`(%s ファイル。digest の一覧 manifest.json は置き場の中の自己整合を示すだけで、ワークフローが出した一式であることは示さない。リポジトリの外へ引き渡すときは、この一覧を照合に使える。写しは保管期間の充足を示さない)\n\n' "$bundle" "$bundle_files"
             printf '承認するのは、この PR を開いた人以外の人。承認は転記の確認であり判定ではない。承認者は verify の結果(複製が記録用ブランチと一致すること)を確かめる(標準 第4章「判定記録を基底ブランチへ入れる操作」)。この PR を開いた人の操作で gate-g5 と ship-evidence の verify が起動する。\n\n'
             printf '## 検証方法と結果\n\n- verify ジョブが同じ集約を再実行し、複製が `%s` と一致することを検査する(人は結果を読む)\n\n' "$RECORDS_BRANCH"
             printf '## AI 関与範囲\n\n- 生成: なし(ワークフローの機械の複製)\n- 人の確認: 出荷判定者\n\n'
@@ -404,10 +405,9 @@ jobs:
           if [ -n "$run" ] && [ "$run_sha" != "$target" ]; then
             echo "::warning::gate-g5 の実行 $run の headSha(${run_sha:-不明})が対象 $target と一致しません。何も取り込みません"
           elif [ -n "$run" ]; then
-            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence
+            gh run download "$run" --repo "${{ github.repository }}" --name license-scan --dir evidence || echo "::warning::gate-g5 の実行 $run に license-scan がありません"
             gh run download "$run" --repo "${{ github.repository }}" --name test-results --dir evidence || echo "::warning::gate-g5 の実行 $run に test-results がありません"
             gh run download "$run" --repo "${{ github.repository }}" --name coverage-result --dir evidence || echo "::warning::gate-g5 の実行 $run に coverage-result がありません"
-            gh run download "$run" --repo "${{ github.repository }}" --name dependency-diff --dir evidence || echo "::warning::gate-g5 の実行 $run に dependency-diff がありません"
           else
             echo "::warning::$target に対する gate-g5 の成功した実行がありません"
           fi
@@ -437,6 +437,8 @@ jobs:
           # 記録の置き場は追記だけ。既存のファイルの変更・削除・改名は、成立済みの記録の書き換えとして失敗
           while IFS=$'\t' read -r st p rest; do
             [ -n "$st" ] || continue
+            # docs/evidence/ の下は、追加以外・出荷の PR 以外・一式の欠け・digest の不一致を、下の evidence-manifest.mjs changes がまとめて検査する
+            case "$p" in docs/evidence/*) continue ;; esac
             [ "$st" = "A" ] || fail "$p: 追加以外の変更($st)。記録の置き場のファイルは書き換えない"
           done < /tmp/changes.txt
           have_records=false
@@ -468,17 +470,8 @@ jobs:
                   note "$p: 記録用ブランチに無い判定記録(停止の解除・例外承認・SG のように基底ブランチへ先に入れる記録。記名者本人の操作で帰属を裏づける)"
                 fi ;;
               docs/evidence/*/*)
-                # 証跡の一式と digest の一覧。運ぶのは出荷の PR だけ。置き場ごとに digest の一覧との一致を検査する(ADR-0135)。
-                # スクリプトは基底ブランチのもの。PR の側の置き場(/tmp/pr/...)を引数で渡す
-                if [ "$SHIP" != "true" ]; then fail "$p: 証跡の一式を運ぶのは出荷の PR(ship/<日付>)だけ"
-                else
-                  d=$(dirname "$p")
-                  case " ${checked_dirs:-} " in *" $d "*) ;; *)
-                    checked_dirs="${checked_dirs:-} $d"
-                    if node scripts/gate/evidence-manifest.mjs verify --dir "/tmp/pr/$d" > /tmp/manifest-verify.txt 2>&1; then note "$d: digest の一覧と一致"
-                    else fail "$d: digest の一覧と一致しない($(tr '\n' ' ' < /tmp/manifest-verify.txt))"; fi ;;
-                  esac
-                fi ;;
+                # 証跡の一式と digest の一覧。ループの後の evidence-manifest.mjs changes が検査する(ADR-0135)
+                : ;;
               docs/evidence/*.md)
                 # 集約の出力は実行の時刻を含むため、内容の一致は検査しない。出荷の PR では上の再実行が通ることを検査している
                 note "$p: 保証の開示(内容の一致は検査しない。再実行の成否で確かめる)" ;;
@@ -491,6 +484,13 @@ jobs:
               *) note "$p: 検査の対象外" ;;
             esac
           done < /tmp/changes.txt
+          # 証跡の一式(docs/evidence/)の検査。追加だけ・運ぶのは出荷の PR だけ・出荷の PR には一式がある(evidence.json と manifest.json)・
+          # digest の一覧との一致。スクリプトは基底ブランチのもの。PR の側の置き場(/tmp/pr/...)を渡す。一覧は置き場の自己整合しか示さない(ADR-0135)
+          ev_out=$(node scripts/gate/evidence-manifest.mjs changes --changes /tmp/changes.txt --pr-root /tmp/pr --ship "$SHIP") && ev_rc=0 || ev_rc=$?
+          if [ "$ev_rc" -gt 1 ]; then fail "証跡の一式の検査を実行できません(終了コード $ev_rc)"; fi
+          while IFS= read -r line; do
+            [ -z "$line" ] || fail "$line"
+          done <<< "$ev_out"
           printf '%s\n' "${notes[@]:-}" > /tmp/compare.md
           echo "fails=$fails" >> "$GITHUB_OUTPUT"
           [ "$fails" -eq 0 ] || { echo "::error::複製の検査に $fails 件の不一致があります"; exit 1; }

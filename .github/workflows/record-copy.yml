@@ -123,7 +123,7 @@ jobs:
           # 出荷の集約が「読めない理由」を書き分けられるようにする。読めなくても写しの手順を失敗させない(found: null と理由を写す)。
           # この欄はホスティングと照合できなくなる(基盤の保持期間の後)。充足の根拠に数えない(ADR-0109 決定2 と同じ向き。ADR-0135)
           if g5raw=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=gate-g5&per_page=20" 2>/tmp/record-copy/g5.err) \
-            && g5=$(printf '%s' "$g5raw" | jq -c '(.check_runs // []) | if length == 0 then {found: false} else (sort_by(.completed_at // .started_at // "") | last | {found: true, id, status, conclusion, completed_at, head_sha}) end' 2>/dev/null); then
+            && g5=$(printf '%s' "$g5raw" | jq -c '(.check_runs // []) | (map(select(.status == "completed")) as $done | if ($done | length) > 0 then $done else . end) | if length == 0 then {found: false} else (sort_by(.completed_at // .started_at // "") | last | {found: true, id, status, conclusion, completed_at, head_sha}) end' 2>/dev/null); then
             :
           else
             g5=$(jq -nc --arg e "$(head -c 200 /tmp/record-copy/g5.err 2>/dev/null | tr '\n' ' ')" '{found: null, read_error: (if $e == "" then "unknown" else $e end)}')
