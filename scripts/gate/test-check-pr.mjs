@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { specSections, changedSpecSections } from './spec-sections.mjs';
+import { isProseDocument } from './check-pr.mjs';
 import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
@@ -1178,6 +1179,10 @@ ${instr}
   u('specSections: 同じ見出しが複数あれば出現順につなぐ', dup.includes('a') && dup.includes('c') && !dup.includes('b'));
   u('changedSpecSections: 見出しの語は前方一致(「前提条件」「スコープ外(やらないこと)」の変更を数える。#355)', changedSpecSections('## 前提条件\n\na\n', '## 前提条件\n\nb\n').join() === '前提' && changedSpecSections('## スコープ外(やらないこと)\n\na\n', '## スコープ外(やらないこと)\n\nb\n').join() === 'スコープ外');
   u('changedSpecSections: 空白なしの「##前提」は見出しに数えない', changedSpecSections('##前提\n\na\n', '##前提\n\nb\n').length === 0);
+  // 散文の文書だけの判定(承認までの時間の観測 IMPL-0136。強制層・構成は文書だけに数えない)
+  u('isProseDocument: 文書の置き場の md と直下の *.md は真', isProseDocument('docs/guide.md') && isProseDocument('README.md') && isProseDocument('specs/F-001/spec.md') && isProseDocument('docs/data.yaml'));
+  u('isProseDocument: 強制層・構成(ワークフロー・scripts/gate・process.config.json・.claude)は偽', !isProseDocument('.github/workflows/zz.yml') && !isProseDocument('scripts/gate/zz-extra.mjs') && !isProseDocument('process.config.json') && !isProseDocument('.claude/settings.json'));
+  u('isProseDocument: 製品のコード・ロックファイル・置き場の外の md・文書の置き場のコードは偽', !isProseDocument('src/a.js') && !isProseDocument('package-lock.json') && !isProseDocument('yarn.lock') && !isProseDocument('src/notes.md') && !isProseDocument('docs/tool.js'));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

@@ -159,7 +159,7 @@ import {
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween, isExcludedFromSize } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween, isProseDocument } from './check-pr.mjs';
 import { baseJudgeLayers } from './base-judge.mjs';
 import {
   exceptionReviewBacking,
@@ -2167,8 +2167,8 @@ if (isMain) {
       size: sizeMeasured,
       sizeAttestation: sizeAtt.present ? { readAll: sizeAtt.readAll, performerPresent: filled(sizeAtt.performer), reasonPresent: filled(sizeAtt.reason), assurancePresent: filled(sizeAtt.assurance) } : null,
       reviewMinutes: approvalMinutes(api, humanApprovers),
-      // 変更の全パスが算定から除く文書に当たる変更(生成物・ロックファイルだけは当たらない)。承認までの時間の観測で、比を持たない側に分ける
-      docOnly: prFiles.length > 0 && prFiles.every((f) => isExcludedFromSize(f)),
+      // 変更の全パスが散文の文書(文書の置き場・直下の *.md)に当たる変更。強制層・構成・ロックファイル・生成物は当たらない(isProseDocument)。承認までの時間の観測で、比を持たない側に分ける
+      docOnly: prFiles.length > 0 && prFiles.every((f) => isProseDocument(f)),
       number: n,
       title: d?.title ?? null,
       // PR の記録を gh で取得できたか。取得できない PR は、写しの本文(マージ時)で本文の欄を読む(bodySource='copy')。G-5 の結果は読めない
@@ -2383,7 +2383,9 @@ if (isMain) {
   // 規模の基準値の超過は、失敗でなく規模の確認と区分の下限 R2 で扱う。その根拠(基準値が妥当か)は、超過の分布と、
   // 超過した変更の確認の実態でしか較正できない。ここでは出荷の範囲の PR について、規模の分布・size:over の件数・
   // 「読み切れたか」の内訳・超過 PR の判定完了時間を、生の値で出す。基準値は各 PR の変更の起点の構成で判定している
-  const sizeObservation = summarizeSizeObservation(prs);
+  // 件名に PR の番号を持つが、PR の記録を読めず(gh の失敗・壊れた応答)観測に入らなかったもの。母数から黙って消さず、番号で出す(IMPL-0159)
+  const seenPrNumbers = new Set([...prs, ...recordPrs].map((p) => p.number));
+  const sizeObservation = summarizeSizeObservation(prs, { notObserved: [...candidateNumbers].filter((n) => !seenPrNumbers.has(n)) });
 
   // --- PR を経ていないコミット(標準 第3章 3.8.1) --------------------------------
   //

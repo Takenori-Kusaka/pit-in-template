@@ -353,6 +353,17 @@ export const isExcludedFromSize = (f, head = null) => {
   return NON_PRODUCT.some((g) => g !== '*.md' && matchGlob(g, f));
 };
 /**
+ * 散文の文書だけか(標準 第4章「文書だけの変更」: 文書の置き場にある散文のファイル。承認までの時間の観測 IMPL-0136 の識別)。
+ * 判定の根拠: 算定から除く(isExcludedFromSize)うち、文書の置き場(DOC_ONLY_DIRS)のファイルと、リポジトリの直下の *.md だけを真にする。
+ * 強制層・構成(.github・.claude・scripts/gate・adapters・process.config.json ほか)と、ロックファイル・生成物は偽。
+ * 偽のものだけの変更は「文書だけ」に数えない(比を持たないものとして別に数える)
+ */
+export const isProseDocument = (f, head = null) => {
+  if (!isExcludedFromSize(f, head)) return false;
+  if (DOC_ONLY_DIRS.some((g) => matchGlob(g, f))) return true;
+  return /\.md$/i.test(f) && !f.includes('/');
+};
+/**
  * 統制の設定のファイル(標準 第4章 G-5「統制の設定の陰性の確認」。ADR-0073)。閾値・除外設定(thresholdGlobs と構成の ci・task・guard)に加え、
  * ルールセット・フック・権限・ワークフロー・コード所有者の設定。これを変える PR は、本文に陰性の確認の記録を要する
  */

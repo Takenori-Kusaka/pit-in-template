@@ -131,7 +131,7 @@ const periodLines = (gaps) => gaps.filter((g) => /期間の開示|期間の G-8/
   const v0 = w.aggregate();
   check('IMPL-0048:ng 記録なし: 出力に「記録がありません」の欠落が出る', PERIOD_GAP_RE.test(v0.out), v0.out.slice(-600));
   check('IMPL-0048:ng 記録なし: evidence.json の欠落に同じ文が出る', v0.gaps.some((g) => PERIOD_GAP_RE.test(g)), JSON.stringify(v0.gaps.slice(0, 3)));
-  check('IMPL-0048:ng 記録なし: 終了コードは 0 でない', v0.status !== 0 && v0.status !== null, String(v0.status));
+  check('IMPL-0048:ng 記録なし: 終了コードは 0 でない(足場の欠落を含む。期間の欠落だけが終了コードを変えることは、この場面では固定しない)', v0.status !== 0 && v0.status !== null, String(v0.status));
   const n0 = v0.gaps.length;
 
   // 差し戻し
@@ -154,11 +154,20 @@ const periodLines = (gaps) => gaps.filter((g) => /期間の開示|期間の G-8/
   const v4 = w.aggregate();
   check('IMPL-0048:ng 判定者が名簿の人でない通過の記録: 判定者を受け付けられない欠落が出る', v4.gaps.some((g) => /期間の G-8 の記録の判定者を受け付けられません/.test(g)), JSON.stringify(periodLines(v4.gaps)));
 
+  // 結果の欄が空欄の記録・判定の値でない記録(保留)は、受容として扱わない
+  for (const [label, result] of [['結果が空欄', ''], ['結果が保留', '保留']]) {
+    w.write('docs/gates/g8-period.md', record({ target: `委任の期間 ${FROM}〜${TO}`, result }));
+    const vr = w.aggregate();
+    check(`IMPL-0048:ng ${label}の記録: 「結果が未記入、または判定の値(通過 / 差し戻し)でありません」の欠落が出る`, vr.gaps.some((g) => /期間の G-8 の記録の結果が未記入、または判定の値/.test(g)), JSON.stringify(periodLines(vr.gaps)));
+  }
+
   // IMPL-0048:ok(適合側。対象が同じ期間で結果が通過、判定者が名簿の人)
   w.write('docs/gates/g8-period.md', record({ target: `委任の期間 ${FROM}〜${TO}` }));
   const ok = w.aggregate();
   check('IMPL-0048:ok 通過の記録: 期間の欠落の行が 0 件', periodLines(ok.gaps).length === 0, JSON.stringify(periodLines(ok.gaps)));
   check('IMPL-0048:ok 通過の記録: 欠落の件数は違反側(記録なし)よりちょうど 1 少ない', ok.gaps.length === n0 - 1, `${ok.gaps.length} / ${n0}`);
+  const expectedGaps = v0.gaps.filter((g) => !PERIOD_GAP_RE.test(g)).sort();
+  check('IMPL-0048:ok 通過の記録: 欠落の集合は「違反側の集合 − 期間の欠落の1文」と一致する(対は期間の欠落だけで分かれる)', JSON.stringify([...ok.gaps].sort()) === JSON.stringify(expectedGaps), JSON.stringify(ok.gaps.filter((g) => !expectedGaps.includes(g))));
   check('IMPL-0048:ok 期間の開示の 3 ファイルが出る', ['evidence.json', 'quality-report.md', 'assurance-disclosure.external.md'].every((f) => w.exists(`evidence/period-${FROM}_${TO}/${f}`)));
   w.done();
 }
@@ -217,6 +226,9 @@ const periodLines = (gaps) => gaps.filter((g) => /期間の開示|期間の G-8/
   check('workflow: 集約の手順は steps.needed.outputs.needed == \'true\' のときだけ動く', /^ {8}if: steps\.needed\.outputs\.needed == 'true'$/m.test(agg), agg);
   check('workflow: 集約の手順は --period-from / --period-to を渡す', /aggregate-evidence\.mjs --period-from "\$PERIOD_FROM" --period-to "\$PERIOD_TO"/.test(agg));
   check('workflow: period-needed の手順は id: needed で、期間を渡す', /id: needed/.test(needed) && /period-needed\.mjs --period-from "\$PERIOD_FROM" --period-to "\$PERIOD_TO"/.test(needed));
+  const runLines = (b) => b.split('\n').filter((l) => /^ {8}run:/.test(l));
+  check('workflow: 集約の run は node scripts/gate/aggregate-evidence.mjs --period-from/--period-to の形と完全一致する(||・;・&& を足して失敗を握りつぶさない)', runLines(agg).length === 1 && /^ {8}run: node scripts\/gate\/aggregate-evidence\.mjs --period-from "\$PERIOD_FROM" --period-to "\$PERIOD_TO"$/.test(runLines(agg)[0]), JSON.stringify(runLines(agg)));
+  check('workflow: period-needed の run も完全一致する', runLines(needed).length === 1 && /^ {8}run: node scripts\/gate\/period-needed\.mjs --period-from "\$PERIOD_FROM" --period-to "\$PERIOD_TO"$/.test(runLines(needed)[0]), JSON.stringify(runLines(needed)));
   check('workflow: `|| true` が無い(集約と period-needed の失敗を握りつぶさない)', !/\|\|\s*true/.test(agg) && !/\|\|\s*true/.test(needed) && !/\|\|\s*true/.test(WF.replace(/^\s*#.*$/gm, '')));
   check('workflow: continue-on-error が無い', !/continue-on-error/.test(WF.replace(/^\s*#.*$/gm, '')));
   check('workflow: on.schedule に cron がある', /^on:\n {2}schedule:\n {4}- cron: '[^']+'/m.test(WF));
