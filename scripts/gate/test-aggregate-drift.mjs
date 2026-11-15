@@ -108,7 +108,8 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
   t('通し: 集約が最後まで走る', /を出力しました/.test(ng.out) && /を出力しました/.test(okRun.out), ng.out.slice(-300));
   // IMPL-0023:ng(違反と適合の対。標準の実装マーク。process-compass #355)
   t('通し N(違反): 宣言にない共著者のコミットは、警告「宣言と実態のずれ: 担い手の識別」を出す', lines(ng).some((l) => /宣言と実態のずれ: 担い手の識別/.test(l) && !/::error::/.test(l)), ng.out.slice(-400));
-  t('通し N: ずれは記載の欠落に数えない(::error:: にずれの行が無い。品質レポートの「欠落」の節にも出ない)', !lines(ng).some((l) => /::error::.*宣言と実態のずれ/.test(l)) && !/## 欠落[\s\S]*宣言と実態のずれ/.test(ng.report));
+  const errCount = (r) => lines(r).filter((l) => /::error::/.test(l)).length;
+  t('通し N: ずれは記載の欠落に数えない(::error:: にずれの本文が無い。品質レポートの「欠落」の節にも出ない。::error:: の件数は適合の実行と等しい)', !lines(ng).some((l) => /::error::/.test(l) && /担い手の識別: 宣言にない/.test(l)) && !/## 欠落[\s\S]*担い手の識別: 宣言にない/.test(ng.report) && errCount(ng) === errCount(okRun), `ng=${errCount(ng)} ok=${errCount(okRun)}`);
   t('通し N: 品質レポートに見出し(機械は起票しません)と種別 performer・補助ファイルの所在を出す', /機械は起票しません。起票されたかは出荷判定者が確かめます/.test(ng.report) && /種別 performer/.test(ng.report) && /kinds\/performer\.md/.test(ng.report));
   t('通し N: 外部向けの開示はずれの件数だけ(ずれの文・種別を出さない)', /1 件\(内容は組織の内側の開示にある\)/.test(ng.external) && !/担い手の識別: 宣言にない/.test(ng.external) && !/種別 performer/.test(ng.external), ng.external.split('\n').filter((l) => /件\(内容/.test(l)).join('\n'));
   // IMPL-0023:ok(違反と適合の対。標準の実装マーク。process-compass #355)

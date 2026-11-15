@@ -52,8 +52,10 @@ function judgePass(pass, tipText) {
  *
  * 式(#355 束3 議長の裁定 R1-01):
  *   1. 効いている通過のうち版を読めたものの1件でも先端と一致 → 一致
- *   2. 一致する通過が無く(打ち消された通過も含めて)、版を読めた通過の記録が1件でも在り、不一致が確定している → 不一致
- *      (確定した版が在り、先端はそこから変わり、変更後の版を対象とする効いている通過が無い)
+ *   2. 一致する通過が無く(打ち消された通過も含めて)、版を読めた通過の記録が1件でも在り、読めた通過の全件が先端と一致しない → 不一致
+ *      (確定した版が在り、先端はそこから変わり、変更後の版を対象とすると確かめられる効いている通過が無い)。
+ *      版を読めない効いている通過が在っても、不一致にする(版を書かない通過の記録で欠落を消させないため)。その通過が先端の版を対象とするなら、
+ *      判定者が判定記録の対象へ版を書くと一致になる
  *   3. 打ち消された通過の版が先端と一致し、効いている通過に一致が無い → 未確認(先端の版の通過が差し戻しで打ち消されている)
  *   4. 通過の記録が1件も無い → 未確認(機械は欠落にしない。トレーラ Spec が指す場合に限り G-7 基準5 が欠落に数える)
  */
@@ -73,16 +75,20 @@ export function specRecheck({ features, passes }) {
     if (cancelledMatch) {
       return { id: f.id, result: 'unconfirmed', sections: [], record: cancelledMatch.p.source, reason: CANCELLED_REASON, cancelled: true };
     }
-    // 効いている通過のうち版を読めないものが在るとき、打ち消された通過の不一致だけで不一致にしない(読めない版が先端と一致するかもしれない)
-    const effectiveUnseen = judged.some((x) => x.effective && (x.j.verdict === 'unreachable' || x.j.verdict === 'unreadable'));
+    // 版を読めない通過(効いているか否かを問わない)は、一致の根拠にも、不一致を妨げる根拠にも数えない
+    // (版を書かない通過の記録で欠落を消させないため。議長の裁定 R2-01)
     const bad = judged
-      .filter((x) => x.j.verdict === 'mismatch' && (x.effective || !effectiveUnseen))
+      .filter((x) => x.j.verdict === 'mismatch')
       .sort((a, b) => Number(b.effective) - Number(a.effective) || a.j.differing.length - b.j.differing.length);
     if (bad.length) {
-      return { id: f.id, result: 'mismatch', sections: bad[0].j.differing, record: bad[0].p.source, reason: null, cancelled: !bad[0].effective };
+      const unseen = judged.filter((x) => x.effective && (x.j.verdict === 'unreachable' || x.j.verdict === 'unreadable')).map((x) => x.p.source);
+      return { id: f.id, result: 'mismatch', sections: bad[0].j.differing, record: bad[0].p.source, reason: null, cancelled: !bad[0].effective, unseen };
     }
-    const why = [...new Set(judged.map((x) => x.j.reason))].join(' / ');
-    return { id: f.id, result: 'unconfirmed', sections: [], record: judged[0].p.source, reason: why };
+    // 理由は、理由のある判定だけから作る。記録の所在は、未確認の理由になった記録(効いているものを先に)を指す
+    const withReason = judged.filter((x) => x.j.reason);
+    const why = [...new Set(withReason.map((x) => x.j.reason))].join(' / ');
+    const src = (withReason.find((x) => x.effective) ?? withReason[0] ?? judged[0]).p.source;
+    return { id: f.id, result: 'unconfirmed', sections: [], record: src, reason: why };
   });
 }
 
@@ -93,7 +99,8 @@ export const CANCELLED_REASON = '先端の版の通過が、後の差し戻し�
 /** 不一致を記載の欠落にする文。機能・節の名・判定記録の所在・直し方を出す */
 export function specRecheckGapText(item) {
   return (
-    `仕様 ${item.id}: 確定した版から ${item.sections.join('・')} の本文が変わっています(判定記録 ${item.record ?? '(所在不明)'}${item.cancelled ? '(後の差し戻しで打ち消されている)' : ''} が対象とする版と、出荷の範囲の先端が一致せず、変更後の版を対象とする効いている通過もありません)。` +
+    `仕様 ${item.id}: 確定した版から ${item.sections.join('・')} の本文が変わっています(判定記録 ${item.record ?? '(所在不明)'}${item.cancelled ? '(後の差し戻しで打ち消されている)' : ''} が対象とする版と、出荷の範囲の先端が一致せず、変更後の版を対象とすると確かめられる効いている通過もありません)。` +
+    (item.unseen?.length ? `版を読めない効いている通過があります(判定記録 ${item.unseen.join('、')})。その通過が先端の版を対象とするなら、判定記録の「対象」へ版を書くと比べられます。` : '') +
     '直し方: G-4 の判定者が、変更後の版を対象とする判定記録を書きます(元の記録は残す)。整形だけの変更でも、戻り幅は判定者が決めるため記録が要ります(第4章「確定した版を変える場合」)'
   );
 }

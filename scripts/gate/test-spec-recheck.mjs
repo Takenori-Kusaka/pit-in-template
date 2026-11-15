@@ -152,7 +152,11 @@ t('不一致(厳しい側): 節の途中の空行の追加', run(base, SPEC({ pr
   const r4 = run([cancelledV1, pass(v2)], v2);
   t('打ち消し: 効いている通過が先端と一致するなら、打ち消された古い通過があっても一致', r4.result === 'match', JSON.stringify(r4));
   const r5 = run([cancelledV1, pass(null, { unresolved: '判定の版 1a2b3c4 のオブジェクトを取得できない' })], v2);
-  t('打ち消し: 効いている通過の版を読めないときは、打ち消された通過の不一致だけで不一致にしない', r5.result === 'unconfirmed', JSON.stringify(r5));
+  t('打ち消し(R2-01): 効いている通過の版を読めなくても、読めた通過(打ち消された v1)が先端と一致しなければ不一致(版を書かない通過で欠落を消させない)', r5.result === 'mismatch' && r5.cancelled === true && r5.unseen.length === 1, JSON.stringify(r5));
+  const r5b = run([pass(base, { effective: true }), pass(null, { unresolved: '様式の「対象」に版が無い', source: 'docs/gates/nover.md' })], v2);
+  t('不一致(R2-04): 効いている通過 v1 が先端と一致せず、版を読めない効いている通過が在っても不一致。欠落の文は所在と「版を書けば比べられる」を併記', r5b.result === 'mismatch' && /docs\/gates\/nover\.md/.test(specRecheckGapText({ ...r5b, id: 'F-001' })) && /版を書くと比べられます/.test(specRecheckGapText({ ...r5b, id: 'F-001' })) && /確かめられる効いている通過もありません/.test(specRecheckGapText({ ...r5b, id: 'F-001' })), JSON.stringify(r5b));
+  const r5c = run([pass(null, { unresolved: '理由A', source: 'docs/gates/a.md', effective: false }), pass(null, { unresolved: '理由B', source: 'docs/gates/b.md' })], v2);
+  t('未確認(R2-05): 理由は理由のある判定から作り、記録の所在は効いている未確認の通過を指す', r5c.result === 'unconfirmed' && r5c.record === 'docs/gates/b.md' && !/^ \/|\/ $/.test(r5c.reason) && r5c.reason === '理由A / 理由B', JSON.stringify(r5c));
   const r6 = run([], v2);
   t('記録なし(C): 通過の記録が1件も無い → 未確認。理由は実態の文(トレーラ Spec が指す場合に限り基準5 が欠落に数える。指さない場合は欠落にしない)', r6.result === 'unconfirmed' && /トレーラ Spec がこの機能を指す場合に限り/.test(r6.reason) && /指さない場合、機械は欠落にしない/.test(r6.reason) && !/がそのまま当たる/.test(r6.reason), JSON.stringify(r6));
   const gap = specRecheckGapText({ ...r1, id: 'F-001' });
@@ -380,6 +384,40 @@ t('不一致(厳しい側): 節の途中の空行の追加', run(base, SPEC({ pr
     t('通し M: 判定日時が空の通過は前後が決まらず打ち消し扱い → 未確認。欠落 0', r.sr.unconfirmed === 1 && r.sr.mismatch === 0 && recGap(r, 'F-001').length === 0, JSON.stringify(r.sr));
   });
 
+  // D3 / D4(議長の裁定 R2-01・R2-04): 版を書かない通過の記録を足しても、欠落は未確認に変わらない
+  scene('D3', (w) => {
+    const c1 = w.commit('docs: spec v1', { 'specs/F-001/spec.md': S3() });
+    w.commit('docs: g4 pass', G4(w, 'F-001', c1));
+    const c2 = w.commit('docs: spec v2', { 'specs/F-001/spec.md': S3({ ac: 'y' }) });
+    w.commit('docs: g4 reject', G4(w, 'F-001', c2, '差し戻し', '2026-11-02 10:00'));
+    w.commit('docs: g4 pass no version', { 'docs/gates/g4-F-001-nover.md': w.form('F-001', '通過', '2026-11-03 10:00') });
+    const r = w.run();
+    ran('D3', r);
+    // IMPL-0241:ng(違反と適合の対。標準の実装マーク。process-compass #355)
+    t('通し D3(違反・R2-01): 通過 v1 → 変更 v2 → 差し戻し v2 → 版の無い通過。先端 v2 でも不一致・欠落 1(版の無い通過で欠落を消させない)', r.sr.mismatch === 1 && r.sr.unconfirmed === 0 && recGap(r, 'F-001').length === 1 && /版を書くと比べられます/.test(recGap(r, 'F-001')[0]), JSON.stringify(r.sr));
+  });
+  scene('D4', (w) => {
+    const c1 = w.commit('docs: spec v1', { 'specs/F-001/spec.md': S3() });
+    w.commit('docs: g4 pass', G4(w, 'F-001', c1));
+    w.commit('docs: spec v2', { 'specs/F-001/spec.md': S3({ ac: 'y' }) });
+    w.commit('docs: g4 pass no version', { 'docs/gates/g4-F-001-nover.md': w.form('F-001', '通過', '2026-11-03 10:00') });
+    const r = w.run();
+    ran('D4', r);
+    // IMPL-0241:ng(違反と適合の対。標準の実装マーク。process-compass #355)
+    t('通し D4(違反・R2-04): 通過 v1 → 変更 v2 → 版の無い通過 → 不一致・欠落 1', r.sr.mismatch === 1 && r.sr.unconfirmed === 0 && recGap(r, 'F-001').length === 1, JSON.stringify(r.sr));
+  });
+  // D5(R2-05): 版を読めない通過が2件(どちらも効いている) → 未確認。記録の所在は先頭の通過、理由に空の要素が出ない
+  scene('D5', (w) => {
+    w.commit('docs: spec v1', { 'specs/F-001/spec.md': S3() });
+    w.commit('docs: g4 a', { 'docs/gates/g4-F-001-a.md': w.form('F-001', '通過', '2026-11-01 10:00') });
+    w.commit('docs: g4 b', { 'docs/gates/g4-F-001-b.md': w.form('F-001', '通過', '2026-11-02 10:00') });
+    w.commit('docs: spec v2', { 'specs/F-001/spec.md': S3({ ac: 'y' }) });
+    const r = w.run();
+    ran('D5', r);
+    const line = r.report.split('\n').find((l) => /- 未確認 F-001/.test(l)) ?? '';
+    t('通し D5(R2-05): 版を読めない通過だけ → 未確認。記録の所在は通過の記録を指し、理由の先頭に空の要素が出ない', r.sr.unconfirmed === 1 && r.sr.mismatch === 0 && /判定記録: docs\/gates\/g4-F-001-[ab]\.md\): 様式/.test(line), line);
+  });
+
   // E: 版の無い対象(F-001 だけ) → 未確認で欠落 0。R1-06: 品質レポートに機能・記録の所在・理由を出し、外部向けは件数だけ
   scene('E', (w) => {
     w.commit('docs: spec v1', { 'specs/F-001/spec.md': S3() });
@@ -407,8 +445,8 @@ t('不一致(厳しい側): 節の途中の空行の追加', run(base, SPEC({ pr
     w.commit('docs: spec v2', { 'specs/F-001/spec.md': S3({ ac: 'y' }) }, 'Risk: R3\nSpec: F-001');
     const r = w.run();
     ran('C2', r);
-    // IMPL-0241:ng(違反と適合の対。標準の実装マーク。process-compass #355)
-    t('通し C2(違反): トレーラ Spec が指す機能に記録が無ければ、G-7 基準5 の欠落が当たる(再確認は未確認のまま)', base5Gap(r, 'F-001').length === 1 && r.sr.unconfirmed === 1 && r.sr.mismatch === 0, JSON.stringify(r.sr) + r.out.slice(-200));
+    // 既存の G-7 基準5 との分担の固定(再確認の違反の場面ではない)
+    t('通し C2(分担の固定): トレーラ Spec が指す機能に記録が無ければ、G-7 基準5 の欠落が当たる(再確認は未確認のまま)', base5Gap(r, 'F-001').length === 1 && r.sr.unconfirmed === 1 && r.sr.mismatch === 0, JSON.stringify(r.sr) + r.out.slice(-200));
   });
 
   // H: スコープ外の節だけが無い仕様で、背景(3節の外)だけ変更 → 未確認(一致にならない。R1-05: 両側で取り出せない節が在れば、全文が違う限り未確認)
@@ -487,7 +525,7 @@ t('不一致(厳しい側): 節の途中の空行の追加', run(base, SPEC({ pr
     w.commit('docs: copy', { 'docs/records/reviews/pr-2.json': copyOf(2, mc, h, review(h, 2, 11)) });
     const r = w.run();
     ran('Q2b', r);
-    t('通し Q2b: 判定する席の責任者でない者の通過は通過の記録に数えない → 未確認(不一致にも一致にもならない)', r.sr.match === 0 && r.sr.mismatch === 0 && r.sr.unconfirmed === 1, JSON.stringify(r.sr));
+    t('通し Q2b: 判定する席の責任者でない者の通過は通過の記録に数えない → 未確認(不一致にも一致にもならない)', r.sr.match === 0 && r.sr.mismatch === 0 && r.sr.unconfirmed === 1 && recGap(r, 'F-001').length === 0, JSON.stringify(r.sr));
   });
 
   // Q2c / Q2d: headMatch が偽の写し(commit_id がマージ時の head でない)・結果が通過でない宣言行は、通過の記録に数えない
