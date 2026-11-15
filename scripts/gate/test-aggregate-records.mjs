@@ -40,6 +40,8 @@ import {
   judgeOfForm,
   supersededByLater,
   reviewSupersededByLater,
+  verificationSectionDiffers,
+  verificationDiffText,
 } from './aggregate-evidence.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -454,6 +456,23 @@ const config = {
   check('検出と未確認が並べば「検出あり」とし、未確認の写しも併記する', both.status === 'detected' && both.unconfirmed.length === 1 && /確かめられない写し 1 件/.test(offDefaultMergesText(both)));
   const range = offDefaultMerges({ copies: new Map([cp(22, 'feature/a'), cp(30, 'feature/b')]), inRange: (n) => n === 30, skipped: [{ file: 'records/reviews/pr-22.json', reason: 'x' }], defaultBranch: MAIN });
   check('出荷の範囲の外の写し・読めないファイルは数えない', same(range.detected.map((d) => d.pr), [30]) && range.unconfirmed.length === 0 && range.checked === 1, JSON.stringify(range));
+}
+
+// 「検証方法と結果」の節の、写し(マージの時点)と今の本文の比較(process-compass #333 / ADR-0135 決定5。所見であり欠落にしない。実装マークは付けない)
+{
+  const body = (v) => `## 変更の概要\n\nx\n\n## 検証方法と結果\n\n${v}\n\n## リスク区分\n\nR3\n`;
+  const d1 = verificationSectionDiffers(body('単体テストを実行した'), body('単体テストを実行した。全件成功'));
+  check('検証の節の比較: 節が食い違えば不一致(compared)', d1.compared && d1.differs, JSON.stringify(d1));
+  const d2 = verificationSectionDiffers(body('単体テストを実行した  '), body('単体テストを実行した').replace(/\n/g, '\r\n'));
+  check('検証の節の比較: 行末の空白と改行の違いは一致とする', d2.compared && !d2.differs, JSON.stringify(d2));
+  const d3 = verificationSectionDiffers(body('a'), body('a').replace('リスク区分\n\nR3', 'リスク区分\n\nR2'));
+  check('検証の節の比較: 別の節の編集は不一致にしない', d3.compared && !d3.differs, JSON.stringify(d3));
+  const d4 = verificationSectionDiffers(null, body('a'));
+  check('検証の節の比較: 写しの本文が無ければ比べない', !d4.compared && !d4.differs, JSON.stringify(d4));
+  const d5 = verificationSectionDiffers(body('a'), undefined);
+  check('検証の節の比較: ホスティングの本文を読めなければ比べない', !d5.compared && !d5.differs, JSON.stringify(d5));
+  const txt = verificationDiffText(12);
+  check('検証の節の所見の文: 限定を同じ文に書く(マージより前の編集・書き換え・妥当性は見ない。欠落にしない)', /マージより前の編集/.test(txt) && /写しの書き換え/.test(txt) && /内容の妥当性も見ない/.test(txt) && /欠落にしない/.test(txt), txt);
 }
 
 console.log('');

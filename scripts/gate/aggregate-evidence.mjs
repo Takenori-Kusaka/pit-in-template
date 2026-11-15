@@ -332,6 +332,25 @@ export function prRecordFromCopy(copy) {
 }
 
 /**
+ * PR の本文の「検証方法と結果」の節を、マージの時点の写しと今のホスティングの本文で比べる(process-compass #333 / ADR-0135 決定5)。
+ * 一致は値の一致(行末の空白と改行を正規化する)。どちらかの本文が文字列でなければ比べない(compared: false)。
+ * 結果は所見であり、欠落にも判定の条件にもしない(誤字の訂正でも不一致になる)。節の有無の判定は変えない。
+ * マージより前の編集と、規則のバイパスによる写しの書き換えは見ない。内容の妥当性も見ない
+ */
+export function verificationSectionDiffers(copyBody, apiBody) {
+  if (typeof copyBody !== 'string' || typeof apiBody !== 'string') return { compared: false, differs: false };
+  const sec = (body) => {
+    const rest = body.replace(/<!--[\s\S]*?-->/g, '').split(/^##\s*検証方法と結果.*$/m)[1];
+    return rest === undefined ? null : normText(rest.split(/^(?:##\s|---\s*$)/m)[0]);
+  };
+  return { compared: true, differs: sec(copyBody) !== sec(apiBody) };
+}
+
+export function verificationDiffText(number) {
+  return `PR #${number}: 『検証方法と結果』の節が、マージの時点の写しと今の本文で食い違います(マージの後の編集。マージより前の編集と、規則のバイパスによる写しの書き換えは、この比較では見ない。内容の妥当性も見ない。所見であり欠落にしない)`;
+}
+
+/**
  * カバレッジの結果の範囲・分母・測っていない製品のファイルの数(標準 第4章 G-5 基準3。#296)。全体で判定した結果には、
  * 変更の未被覆が全体の被覆で薄まる旨を付ける。範囲を持たない旧い結果は、範囲を記録していないと出す。
  * 範囲が変更のときは、起点と、取り込んだ値が1回の実行の差分の値で出荷の範囲の全体の被覆ではない旨を同じ行に出す
@@ -2063,7 +2082,10 @@ if (isMain) {
         ? fromCopy.reviews.filter((r) => !copyRec.unverifiableIds.has(String(r.id)))
         : []
       : apiReviews.map((r) => (String(r?.state ?? '').toUpperCase() === 'APPROVED' && hasWriteAssociation(r) === false ? { ...r, state: 'UNTRUSTED' } : r));
-    const copyFindings = copyRec?.findings ?? [];
+    const copyFindings = [...(copyRec?.findings ?? [])];
+    // 「検証方法と結果」の節の、写し(マージの時点)と今の本文の食い違い。所見(欠落にしない)。写しとホスティングの本文の両方を読めた PR だけ比べる
+    const verifDiff = copyEntry && api ? verificationSectionDiffers(copyEntry.copy?.body, api.body) : { compared: false, differs: false };
+    if (verifDiff.differs) copyFindings.push(verificationDiffText(n));
     // 変更したファイル(コア機能の判定と、記録だけの PR の識別に使う。第1の親との差分。マージコミットの方式でも読める)と、
     // 承認の時点の名簿(マージの前の構成。#288 第8巡 Z7・Y8)
     const prFiles = git(['diff', '--name-only', `${hash}^1`, hash]).split('\n').filter(Boolean);
@@ -2125,6 +2147,7 @@ if (isMain) {
             head: fromCopy.head,
             stale: fromCopy.stale,
             findings: copyFindings,
+            verificationSectionDiffers: verifDiff.differs,
             // ホスティングとの突合(process-compass #379): 読めたか、欠落、照合できなかったもの。counted は G-6 をこの写しで数えたか
             reconciled: copyRec.readable,
             defects: copyRec.defects,
@@ -4609,6 +4632,8 @@ if (isMain) {
     offDefaultMerges: offDefault,
     mismatches: recordSources.mismatches.map((m) => m.text),
     copyFindings: [...prs, ...recordPrs].flatMap((p) => p.copy?.findings ?? []),
+    // 「検証方法と結果」の節が、写しと今の本文で食い違う PR(所見の件数。合否に使わない。#333)
+    verificationSectionDiffs: [...prs, ...recordPrs].filter((p) => p.copy?.verificationSectionDiffers).map((p) => p.number),
     staleApprovals: [...prs, ...recordPrs].filter((p) => (p.copy?.stale ?? []).length).map((p) => `#${p.number}(${p.copy.stale.map((s) => `@${s.login ?? '?'}`).join('・')})`),
     judgements: reviewJudgements,
     g24: {
