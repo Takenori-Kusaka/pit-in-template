@@ -1974,6 +1974,7 @@ export function configIntegrityProblems(config) {
   for (const p of changeTypeProblems(config, { checkRegistrant: false })) out.push(`標準変更カタログ: ${p}`);
   out.push(...protectedPathsProblems(config));
   for (const p of observationWindowProblems(config)) out.push(`観測の窓: ${p}`);
+  for (const p of reworkBaselineProblems(config)) out.push(`手戻り率の基準値: ${p}`);
   (Array.isArray(config.changeLog) ? config.changeLog : []).forEach((e, i) => {
     if (SIGNED_DIRECTIONS.includes(e?.direction) && !(e.decidedBy && e.reason)) {
       out.push(`changeLog[${i}]: ${DIRECTION_LABEL[e.direction]}向きの変更に、決定した者の記名または理由がありません(第3章 3.13.3)`);
@@ -2795,6 +2796,59 @@ export function observationWindowProblems(config) {
   });
   const last = h.length ? h[h.length - 1]?.months : OBSERVATION_WINDOW_DEFAULT;
   if (okMonths(w.months) && w.months !== last) out.push(`months(${w.months})が履歴の最後の値(${last ?? '無し'})と一致しない。値は履歴を経ずに変えられない`);
+  return out;
+}
+
+// ---------------------------------------------------------------- 手戻り率の基準値(第5章 5.4.6。process-compass #348)
+
+/**
+ * 構成の手戻り率の基準値(百分率)の形: reworkBaseline = { percent: 0〜100 の数値 | null, history: [{ percent, recordedAt, decidedBy, reason }] }。
+ * 既定値を置かない(根拠が無い)。欄が無い構成・外した構成(percent が null)は「基準値が未設定」であり、発火しない。
+ * 効力日は観測の窓と同じ: 記録した日(recordedAt)が評価の日より前の最後の値。同じ日に記録した値は、その日の評価には効かない(遡らない)
+ */
+const validBaselinePercent = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
+
+/** 評価の日 day に効く手戻り率の基準値(百分率)。未設定なら null */
+export function reworkBaselineAt(config, day) {
+  return reworkBaselineInfo(config, day).percent;
+}
+
+/** 評価の日 day に効く基準値と、その値を記録した者・日・理由。未設定なら percent が null */
+export function reworkBaselineInfo(config, day) {
+  const h = Array.isArray(config?.reworkBaseline?.history) ? config.reworkBaseline.history : [];
+  let entry = null;
+  for (const e of h) {
+    if ((e?.percent === null || validBaselinePercent(e?.percent)) && isRealDay(e?.recordedAt) && String(e.recordedAt) < String(day)) entry = e;
+  }
+  const percent = validBaselinePercent(entry?.percent) ? entry.percent : null;
+  return { percent, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
+}
+
+/** 手戻り率の基準値の欄の検査。範囲(0〜100)・記名と理由・日付の順・最後の値と percent の一致。欄が無い構成は問題なし(未設定) */
+export function reworkBaselineProblems(config) {
+  const w = config?.reworkBaseline;
+  if (w === undefined || w === null) return [];
+  const out = [];
+  if (typeof w !== 'object' || Array.isArray(w)) return ['reworkBaseline はオブジェクトで書く'];
+  const ok = (v) => v === null || validBaselinePercent(v);
+  if (!ok(w.percent)) out.push('percent は 0〜100 の数値(外した状態は null)で書く');
+  const h = w.history;
+  if (!Array.isArray(h)) {
+    out.push('history(値・記録した日・決定した者・理由の履歴)を配列で書く');
+    return out;
+  }
+  let prev = null;
+  h.forEach((e, i) => {
+    if (!ok(e?.percent) || e?.percent === undefined) out.push(`history[${i}].percent は 0〜100 の数値(外した記録は null)で書く`);
+    if (!isRealDay(e?.recordedAt)) out.push(`history[${i}].recordedAt は実在する日付(YYYY-MM-DD)で書く`);
+    else if (prev !== null && String(e.recordedAt) < prev) out.push(`history[${i}].recordedAt が前の記録より前の日付である(日付の順に並べる)`);
+    if (isRealDay(e?.recordedAt)) prev = String(e.recordedAt);
+    if (typeof e?.decidedBy !== 'string' || !e.decidedBy.trim()) out.push(`history[${i}].decidedBy(決定した者の記名)が無い`);
+    else if (aiNameReason(e.decidedBy, { account: true })) out.push(`history[${i}].decidedBy "${e.decidedBy}" は ${aiNameReason(e.decidedBy, { account: true })}。手戻り率の基準値の決定は人が記名する`);
+    if (typeof e?.reason !== 'string' || !e.reason.trim()) out.push(`history[${i}].reason(理由)が無い`);
+  });
+  const last = h.length ? h[h.length - 1]?.percent : null;
+  if (ok(w.percent) && w.percent !== (last ?? null)) out.push(`percent(${w.percent})が履歴の最後の値(${last ?? '無し'})と一致しない。値は履歴を経ずに変えられない`);
   return out;
 }
 

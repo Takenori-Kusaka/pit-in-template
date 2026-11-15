@@ -131,7 +131,7 @@ import {
   enforcedApprovalFindings,
 } from './config.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
 import { discouragedText, deviationTagHits } from './org-assurance.mjs';
 import {
@@ -5791,7 +5791,7 @@ if (isMain) {
         const why = external ? t.stops.map((x) => x.category).join('・') : stopsText(t);
         R.push(`  - ${t.id}: ${t.level}${t.stops.length ? `(**委任を止めている**。${why})` : '(停止なし)'}。差し戻し率: ${rejectionText(t)}`);
       }
-      if (au.types.length) R.push(`  - ${au.rework}`);
+      for (const t of au.types) R.push(`  - ${t.id}: ${reworkText(t)}`);
       for (const n of au.notes ?? []) R.push(`  - 評価の時点: ${n}`);
       if (au.cap?.reason) R.push(`  - 上限の理由: ${au.cap.reason}`);
     }

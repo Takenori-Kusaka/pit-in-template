@@ -2511,6 +2511,13 @@ export function diffConfig(before, after, opts = {}) {
         const wa = after.observationWindow?.months ?? WINDOW_MONTHS;
         if (wb !== wa) push(`観測の窓(差し戻し率・手戻り率の評価の期間): ${wb}か月 → ${wa}か月`, -wb, -wa, M);
       }
+      // 手戻り率の基準値(第5章 5.4.6)。上げる・外すのは緩める向き(発火しにくくなる)、下げる・新しく置くのは強める向き。未設定は最も緩い
+      {
+        const bb = before.reworkBaseline?.percent ?? null;
+        const ba = after.reworkBaseline?.percent ?? null;
+        const rank = (p) => (p === null ? -Infinity : -p);
+        if (bb !== ba) push(`手戻り率の基準値: ${bb === null ? '未設定' : `${bb}%`} → ${ba === null ? '未設定(外す)' : `${ba}%`}`, rank(bb), rank(ba), M);
+      }
       if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
         diff.push(`依存先の欄(通知の期間・データ): ${(before.dependencies ?? []).length} 件 → ${(after.dependencies ?? []).length} 件`);
         remaining.push('依存先の欄は、提供者との契約・規約で確かめた通知の期間と、渡すデータの種別と保持の条件を書く(第3章 3.12.11)。空欄の欄は単一障害点の候補として出る');
@@ -3149,9 +3156,11 @@ export function renderAutonomyTable(config, blank = false) {
         : !reworkMeasured
           ? 'L1(手戻り率が未計測)'
           : 'L3(停止中は L1)';
+    const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
+    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、直近${windowMonthsOf(config)}か月の窓、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
-      ? `準拠テンプレートの外(登録の根拠: ${cell(rework)})。発火は機械で確かめない(標準の IMPL-0291 は降りていない)`
-      : '未計測(登録の根拠の reworkRate が未記入)';
+      ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)})`
+      : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
     L.push(
       `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${windowMonthsOf(config)}か月の窓${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
     );
@@ -4008,7 +4017,7 @@ export function renderProfileMd(config, result) {
     L.push(
       `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
         '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の' + windowMonthsOf(config) + 'か月継続(観測の窓)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
-        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は集計しません(降りていない)。'
+        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りないときは発火せず、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
     );
     L.push('');
     L.push(`**${MERGE_PATH_NOTE_POLITE}`);
@@ -5168,7 +5177,7 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow', 'reworkBaseline'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
@@ -5233,6 +5242,25 @@ if (isMain) {
             bad.push('観測の窓の値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(長くする・短くする)を問わず要ります');
           } else if (aiNameReason(change.decidedBy, { account: true })) {
             bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。観測の窓の決定は人が記名します`);
+          }
+        }
+      }
+    }
+    // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。{ "percent": <0〜100 の数値> }、外すときは { "percent": null }。既定値を置かない。
+    // 値を変える(新しく置く・上げる・下げる・外す)ときは、向きを問わず決定した者の記名(AI の名義でない)と理由を要する。上げる・外すのは緩める向き
+    if (S.reworkBaseline !== undefined) {
+      const B = S.reworkBaseline;
+      if (!isObject(B)) bad.push('settings.reworkBaseline は { "percent": <0〜100 の数値。外すときは null> } で書きます');
+      else {
+        const extra = Object.keys(B).filter((k) => k !== 'percent');
+        if (extra.length) bad.push(`settings.reworkBaseline に書けない欄があります(${extra.join(', ')})。書けるのは percent だけです`);
+        const pctOk = B.percent === null || (typeof B.percent === 'number' && Number.isFinite(B.percent) && B.percent >= 0 && B.percent <= 100);
+        if (!pctOk) bad.push('settings.reworkBaseline.percent は 0〜100 の数値(基準値を外すときは null)で書きます。既定値はありません');
+        else if (B.percent !== (prior?.reworkBaseline?.percent ?? null)) {
+          if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) {
+            bad.push('手戻り率の基準値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(上げる・下げる・外す)を問わず要ります');
+          } else if (aiNameReason(change.decidedBy, { account: true })) {
+            bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。手戻り率の基準値の決定は人が記名します`);
           }
         }
       }
@@ -5609,6 +5637,18 @@ if (isMain) {
       };
     } else if (priorW) config.observationWindow = priorW;
     else delete config.observationWindow;
+  }
+  // 手戻り率の基準値。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。再生成では保つ。未設定のままなら欄を持たない
+  {
+    const priorB = prior?.reworkBaseline ?? null;
+    const cur = priorB?.percent ?? null;
+    if (S.reworkBaseline && S.reworkBaseline.percent !== cur) {
+      config.reworkBaseline = {
+        percent: S.reworkBaseline.percent,
+        history: [...(priorB?.history ?? []), { percent: S.reworkBaseline.percent, recordedAt: day, decidedBy: change.decidedBy, reason: change.reason }],
+      };
+    } else if (priorB) config.reworkBaseline = priorB;
+    else delete config.reworkBaseline;
   }
   // 構成へ記録を足したか。足した場合に限り、最後の記録へ要約値を書く
   let appended = !prior;

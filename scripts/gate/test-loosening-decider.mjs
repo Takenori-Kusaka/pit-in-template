@@ -174,6 +174,49 @@ ${JSON.stringify(c4.observationWindow)}`
   const wShort = settings({ summary: '窓を短くする', settings: { observationWindow: { months: 2 } }, decidedBy: A.name, reason: '件数が増えたため' });
   const c2 = JSON.parse(cfgText());
   check('観測の窓: 短くする向きは、記名と理由があれば受け付け、履歴に足す(拒否しない)', wShort.ok && c2.observationWindow?.months === 2 && c2.observationWindow.history.length === 2, wShort.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: window 2');
+
+  // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。種別 settings の reworkBaseline。0〜100・既定値なし。
+  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。上げる・外すのは緩める向き
+  const b0 = cfgText();
+  const b150 = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 150 } }, decidedBy: A.name, reason: '試験' });
+  check('手戻り率の基準値: 0〜100 の範囲外(150)を拒否し、構成を書き換えない', !b150.ok && /reworkBaseline.percent/.test(b150.out) && cfgText() === b0, b150.out);
+  const bExtra = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20, minSample: 10 } }, decidedBy: A.name, reason: '試験' });
+  check('手戻り率の基準値: percent 以外の欄を拒否する', !bExtra.ok && /minSample/.test(bExtra.out) && cfgText() === b0, bExtra.out);
+  const bNoName = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20 } } });
+  // IMPL-0517:ng(違反の入力: 記名と理由の無い基準値の設定)
+  check('手戻り率の基準値: 決定した者の記名と理由の無い設定を拒否し、構成を書き換えない', !bNoName.ok && /決定した者/.test(bNoName.out) && cfgText() === b0, bNoName.out);
+  const bAi = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20 } }, decidedBy: 'Claude', reason: '試験' });
+  check('手戻り率の基準値: AI の名義の記名を拒否する', !bAi.ok && cfgText() === b0, bAi.out);
+  const b20 = settings({ summary: '基準値を置く', settings: { reworkBaseline: { percent: 20 } }, decidedBy: A.name, reason: '直近の実績から置く' });
+  const cb20 = JSON.parse(cfgText());
+  // IMPL-0517:ok(適合の入力: 記名と理由のある基準値の設定。値・記録した日・決定した者・理由が構成に残る)
+  check(
+    '手戻り率の基準値: 記名と理由のある設定を受け付け、値・記録した日・決定した者・理由を構成に残す',
+    b20.ok && cb20.reworkBaseline?.percent === 20 && cb20.reworkBaseline.history.length === 1 && cb20.reworkBaseline.history[0].decidedBy === A.name && cb20.reworkBaseline.history[0].reason === '直近の実績から置く' && /^\d{4}-\d{2}-\d{2}$/.test(cb20.reworkBaseline.history[0].recordedAt),
+    `${b20.out}\n${JSON.stringify(cb20.reworkBaseline)}`
+  );
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rework 20');
+  const bKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 280 } } });
+  check('手戻り率の基準値: ほかの設定の変化点で基準値と履歴を失わない', bKeep.ok && JSON.parse(cfgText()).reworkBaseline?.percent === 20 && JSON.parse(cfgText()).reworkBaseline.history.length === 1, bKeep.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: task 280');
+  const bUpNo = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30 } } });
+  check('手戻り率の基準値: 上げる向き(緩める)も、記名と理由が無ければ拒否する', !bUpNo.ok && /決定した者/.test(bUpNo.out), bUpNo.out);
+  const bUp = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30 } }, decidedBy: A.name, reason: '標本が小さいため' });
+  const cb30 = JSON.parse(cfgText());
+  check('手戻り率の基準値: 上げる向きは緩める向きとして変化点に残り、履歴に足す', bUp.ok && cb30.reworkBaseline?.percent === 30 && cb30.reworkBaseline.history.length === 2 && /緩め|loosen/.test(JSON.stringify(cb30.changeLog.at(-1))), JSON.stringify(cb30.changeLog.at(-1)));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rework 30');
+  const bDown = settings({ summary: '基準値を下げる', settings: { reworkBaseline: { percent: 10 } }, decidedBy: A.name, reason: '厳しくする' });
+  check('手戻り率の基準値: 下げる向き(強める)も、記名と理由があれば受け付け、履歴に足す', bDown.ok && JSON.parse(cfgText()).reworkBaseline?.percent === 10 && JSON.parse(cfgText()).reworkBaseline.history.length === 3, bDown.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rework 10');
+  const bOff = settings({ summary: '基準値を外す', settings: { reworkBaseline: { percent: null } }, decidedBy: A.name, reason: '算出を見直すため' });
+  const cbOff = JSON.parse(cfgText());
+  check('手戻り率の基準値: 外す(null)は緩める向きとして記名と理由を要し、履歴に残る', bOff.ok && cbOff.reworkBaseline?.percent === null && cbOff.reworkBaseline.history.at(-1).percent === null && /緩め|loosen/.test(JSON.stringify(cbOff.changeLog.at(-1))), bOff.out);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

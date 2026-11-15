@@ -22,7 +22,12 @@
 //       最小標本数(30件)以上で0件の評価は、
 //       評価の日より後の登録日まで種別を止める。最新の窓が最小標本数に満たない場合は判定不能とし、
 //       判定可能な窓が得られるまで止める(適用の条件の欠落。判定を待たずに戻る)
-//     - 手戻り率: 集計しない(降りていない)。表示し続ける
+//     - 手戻り率: 毎月、差し戻し率と同じ評価の日・同じ窓で評価する。母数は窓の中に、登録した種別の範囲に入る取り込みの変更を持つタスク
+//       (トレーラ Spec: F-NNN / Task-N)。分子はそのうち、(1) 既定ブランチの第1親の履歴に同じタスクを指すトレーラの取り込みが2つ以上ある、
+//       (2) 実装計画(specs/*/plan.md)の履歴のいずれかの版で状態が「やり直し」だった、のどちらかに当たるもの(和。重複は1つに数える)。
+//       基準値は構成の reworkBaseline(既定値なし。効力日は観測の窓と同じ)。評価の日 m では prevDay(m) 以前の記録だけで数える。
+//       最小標本数(30件)以上で比が基準値を超えた評価は、評価の日より後の登録日まで種別を止める。基準値が未設定・標本が足りないときは
+//       発火せず、その旨を表示する(止めない)。計画表に書かれない不採用の後の再作成は数えていない旨を、常に表示する
 //   登録日(registeredAt)の無い種別は、判定できないものとして止める。上限が L3 未満の構成では、すべての種別を止める
 //
 // 純粋な関数(autonomyState)と、記録を読む関数(readAutonomyRecords)を分ける。委任の判定(delegation.mjs)は
@@ -32,7 +37,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, observationWindowAt, observationWindowInfo, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
+import { reworkBaselineAt, reworkBaselineInfo } from './config.mjs';
+import { lastParagraph } from './check-pr.mjs';
+import { ROOT, observationWindowAt,observationWindowInfo, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
@@ -45,9 +52,13 @@ export const levelRank = (l) => LEVELS.indexOf(l);
 export const WINDOW_MONTHS = OBSERVATION_WINDOW_DEFAULT;
 /** 窓の中の最小標本数(変更の件数)。第4章「閾値の設定と較正」の要求事項3 の既定値 */
 export const MIN_SAMPLE = 30;
-/** 手戻り率は集計しない。表示し続ける(標準の実装マーク IMPL-0291 は降りていない) */
-export const REWORK_UNDELIVERED =
-  '手戻り率は集計していない(降りていない)。採用者が登録の根拠 basis.detection.reworkRate に書いた手段で集計し、発火の有無は内部監査で確かめる';
+/**
+ * 手戻り率の算出が数えていない残り。常に表示する(標準の実装マーク IMPL-0517 が降ろしたのは算出と停止。計画表に書かれない
+ * 不採用の後の再作成は、機械で閉じない。IMPL-0518 は採用者の手段)。表示と実態を食い違わせないため、省かない
+ */
+export const REWORK_UNCOUNTED =
+  '数えていない残り: 計画表に「やり直し」と書かれず、トレーラの取り込みも1回だけの、不採用(マージされずに閉じた PR)の後の再作成。' +
+  '採用者が登録の根拠 basis.detection.reworkRate に書いた手段で補い、内部監査で確かめる';
 
 export const DEFECT_FILE = 'docs/defect-ledger.md';
 export const HANDOVER_FILE = 'docs/handover.md';
@@ -182,7 +193,7 @@ export function autonomyState(config, records) {
     asOf,
     cap,
     window: { ...(asOf ? observationWindowInfo(config, asOf) : { months: WINDOW_MONTHS, longer: false }), minSample: MIN_SAMPLE },
-    rework: REWORK_UNDELIVERED,
+    reworkUncounted: REWORK_UNCOUNTED,
     otherLevel: 'L1',
     types: [],
     unattributedRejections: [],
@@ -211,7 +222,7 @@ export function autonomyState(config, records) {
     if (!registeredAt) stop('記録', 'unmeasurable', '登録日(registeredAt)が無く、登録の判定と事象・窓の前後を確かめられない。登録が完了していないものとして止める');
     if (!records || !asOf) {
       stop('記録', 'unmeasurable', '検知の記録を読んでいない(判定の日が無い)。判定できないものとして止める');
-      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null });
+      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null });
       continue;
     }
     const applies = (list) => list === null || list === undefined || list.includes(id);
@@ -303,7 +314,32 @@ export function autonomyState(config, records) {
         stop('第2区分', 'unmeasurable', `差し戻し率の窓(${latest.from}〜${latest.to})の変更が ${latest.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。発火しない)`);
       }
     }
-    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection });
+    // 第2区分: 手戻り率(差し戻し率と同じ評価の日・同じ窓。記録は評価の日の前日以前だけで数える)
+    let rework = null;
+    const rr = records.rework;
+    if (!records.history?.available) {
+      rework = { state: '読めない', reason: `既定ブランチの履歴を読めない(${records.history?.reason ?? '理由の記録なし'})` };
+    } else if (!rr || !rr.available) {
+      rework = { state: '読めない', reason: rr?.reason ?? '手戻り率の記録(トレーラと実装計画の履歴)を渡していない' };
+    } else {
+      const reworkAt = (m) => {
+        const c = reworkCount(config, id, rr, m, observationWindowAt(config, m));
+        const b = reworkBaselineInfo(config, m);
+        const state = c.n < MIN_SAMPLE ? '判定不能' : b.percent === null ? '基準値未設定' : c.numerator * 100 > b.percent * c.n ? '基準値超過' : '基準値以内';
+        return { ...c, baseline: b.percent, baselineBy: b.decidedBy, baselineAt: b.recordedAt, state };
+      };
+      rework = reworkAt(monthStart(asOf));
+      if (registeredAt) {
+        for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
+          const w = reworkAt(m);
+          if (w.state === '基準値超過') {
+            stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、母数 ${w.n} 件のうち手戻り ${w.numerator} 件 = ${ratioText(w)})で、手戻り率が基準値 ${w.baseline}% を超えた。評価の日より後の登録の判定まで止める`);
+            break;
+          }
+        }
+      }
+    }
+    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework });
   }
   return out;
 }
@@ -323,9 +359,107 @@ export function rejectionText(type) {
   return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
 }
 
+// ---------------------------------------------------------------- 手戻り率(第5章 5.4.6。process-compass #348)
+
+/** 本文の末尾の段落のトレーラ `Spec: F-NNN / Task-N` を、`F-NNN/Task-N` の形で重複なく取り出す(check-pr.mjs の lastParagraph と同じ読み方) */
+export function specTrailersOf(body) {
+  const out = new Set();
+  for (const line of lastParagraph(body).split('\n')) {
+    const m = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/.exec(line.trim());
+    if (m) out.add(`${m[1]}/${m[2]}`);
+  }
+  return [...out];
+}
+
+/**
+ * 1つのコミットの差分(git の -p の出力)から、実装計画(specs/<機能>/plan.md)の追加された行のうち、状態が「やり直し」のタスクを
+ * `F-NNN/Task-N` の形で取り出す。履歴の各版を読むため、のちに「着手」「完了」へ進んだ行や、行ごと消された版の後でも、
+ * 「やり直し」だった事実は消えない
+ */
+export function planReworkTasks(patch) {
+  const out = new Set();
+  let feature = null;
+  for (const raw of String(patch ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.startsWith('+++ ')) {
+      feature = /^\+\+\+ b\/specs\/(F-\d+)[^/]*\/plan\.md$/.exec(line)?.[1] ?? null;
+      continue;
+    }
+    if (!feature || !line.startsWith('+|')) continue;
+    const cells = line.slice(1).trim().replace(/^\||\|$/g, '').split('|').map((c) => clean(c));
+    if (cells.length < 2 || !/^Task-\d+$/.test(cells[0])) continue;
+    if (nfkc(cells[cells.length - 1]) === 'やり直し') out.add(`${feature}/${cells[0]}`);
+  }
+  return [...out];
+}
+
+/** 比の文。母数が 0 のときは出さない */
+function ratioText(c) {
+  return c.n > 0 ? `${((c.numerator * 100) / c.n).toFixed(1)}%` : '—';
+}
+
+/**
+ * 評価の日 m の窓(months か月)の手戻りの数。records.rework は readReworkRecords と同じ形:
+ *   trailers [{ ref, date, tasks: ['F-001/Task-1'], files: [..] }]  既定ブランチの第1親の履歴の、トレーラ Spec を持つ取り込み
+ *   plan     [{ date, task }]                                       実装計画の履歴の版のうち、状態が「やり直し」だったタスク
+ * 母数: 窓の中に、登録した種別の範囲に入る取り込みの変更を持つタスク。分子: そのうち (1) 評価の日の前日以前に、同じタスクを指す
+ * トレーラの取り込みが2つ以上ある、(2) 評価の日の前日以前の計画表の版のいずれかで「やり直し」だった、のどちらか(和。重複は1つ)
+ */
+function reworkCount(config, typeId, rr, m, months) {
+  const w = windowOf(m, months);
+  const inW = (d) => d >= w.from && d <= w.to;
+  const upto = (d) => isRealDay(d) && d <= w.to;
+  const byTask = new Map();
+  for (const c of rr.trailers ?? []) {
+    if (!upto(c.date)) continue;
+    for (const task of c.tasks ?? []) {
+      const e = byTask.get(task) ?? { commits: 0, own: false };
+      e.commits += 1;
+      if (inW(c.date) && changeInType(config, typeId, c.files)) e.own = true;
+      byTask.set(task, e);
+    }
+  }
+  const planTasks = new Set((rr.plan ?? []).filter((p) => upto(p.date)).map((p) => p.task));
+  let n = 0;
+  let trailer = 0;
+  let plan = 0;
+  let both = 0;
+  for (const [task, e] of byTask) {
+    if (!e.own) continue;
+    n += 1;
+    const t = e.commits >= 2;
+    const p = planTasks.has(task);
+    if (t && p) both += 1;
+    else if (t) trailer += 1;
+    else if (p) plan += 1;
+  }
+  return { ...w, n, numerator: trailer + plan + both, trailer, plan, both };
+}
+
+/**
+ * 手戻り率を1行の文にする(/pit の注記と保証の開示の項目3)。算出した値・母数・分子の内訳・基準値・判定の状態を出し、
+ * 判定不能と基準値の未設定を「異常なし」と書かない。数えていない残りは、読めないときも含めて常に出す
+ */
+export function reworkText(type) {
+  const r = type.rework;
+  if (!r) return `手戻り率: 判定できない(検知の記録を読んでいない)。${REWORK_UNCOUNTED}`;
+  if (r.state === '読めない') return `手戻り率: 読めない(${r.reason})。${REWORK_UNCOUNTED}`;
+  const head = `手戻り率: 窓 ${r.from}〜${r.to}: 母数 ${r.n} 件(タスク)のうち手戻り ${r.numerator} 件 = ${ratioText(r)}(内訳: トレーラの取り込みが2回以上のみ ${r.trailer} 件 / 計画表の「やり直し」のみ ${r.plan} 件 / 両方 ${r.both} 件)`;
+  const baseline = r.baseline === null ? '基準値が未設定(発火しない)' : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'})`;
+  const state =
+    r.state === '判定不能'
+      ? `判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)。${baseline}`
+      : r.state === '基準値未設定'
+        ? baseline
+        : r.state === '基準値超過'
+          ? `${baseline}を超えている(止める)`
+          : `${baseline}以内`;
+  return `${head}。${state}。${REWORK_UNCOUNTED}`;
+}
+
 // ---------------------------------------------------------------- 記録を読む
 
-const clean = (v) => String(v ?? '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+const clean =(v) => String(v ?? '').replace(/\*\*/g, '').replace(/`/g, '').trim();
 const nfkc = (v) => clean(v).normalize('NFKC');
 
 function readText(rel, root) {
@@ -714,7 +848,41 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
     undeclared = rr.undeclared;
     notes.push(...rr.notes);
   }
-  return { asOf, defects, core, history, rejections, undeclared, notes };
+  const rework = types.length ? readReworkRecords({ root, until: asOf }) : { available: true, trailers: [], plan: [] };
+  return { asOf, defects, core, history, rejections, undeclared, rework, notes };
+}
+
+/**
+ * 手戻り率の記録を読む。既定ブランチの第1親の履歴の全体(until まで。同じタスクを指すトレーラの取り込みが2つ以上かを数えるため、
+ * 窓の始まりで切らない)から、トレーラ Spec を持つ取り込みと、実装計画(specs/<機能>/plan.md)の各版で「やり直し」だったタスクを読む。
+ * 浅い取得・git でない場合は読めないものとする
+ */
+export function readReworkRecords({ root = ROOT, until = null } = {}) {
+  try {
+    if (git(['rev-parse', '--is-shallow-repository'], root).trim() === 'true') {
+      return { available: false, reason: '浅い取得(shallow)で、履歴の全体を読めない', trailers: [], plan: [] };
+    }
+    const untilArgs = until ? [`--until=${until}T23:59:59`] : [];
+    const out = git(['log', '--first-parent', '--no-renames', '--format=%x1e%H%x09%cs%n%B%x1f', '--name-only', ...untilArgs, 'HEAD'], root);
+    const trailers = [];
+    for (const block of out.split('\x1e').filter((b) => b.trim())) {
+      const nl = block.indexOf('\n');
+      const [ref, date] = block.slice(0, nl).split('\t');
+      const [body, files = ''] = block.slice(nl + 1).split('\x1f');
+      const tasks = specTrailersOf(body);
+      if (tasks.length) trailers.push({ ref, date, tasks, files: files.split('\n').map((x) => x.trim()).filter(Boolean) });
+    }
+    const patches = git(['log', '--first-parent', '-m', '--no-renames', '--unified=0', '--format=%x1e%H%x09%cs', '-p', ...untilArgs, 'HEAD', '--', 'specs/*/plan.md'], root);
+    const plan = [];
+    for (const block of patches.split('\x1e').filter((b) => b.trim())) {
+      const nl = block.indexOf('\n');
+      const [, date] = block.slice(0, nl).split('\t');
+      for (const task of planReworkTasks(block.slice(nl + 1))) plan.push({ date, task });
+    }
+    return { available: true, trailers, plan };
+  } catch (e) {
+    return { available: false, reason: `git の履歴を読めない(${String(e.message).split('\n')[0]})`, trailers: [], plan: [] };
+  }
 }
 
 /** 運用引き継ぎ文書の版を、古い順に読む(コミットの日付と本文)。浅い取得・git でない場合は読めないものとする */
@@ -750,7 +918,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   for (const t of state.types) {
     const head = `AI自律レベル: 登録した変更種別「${t.id}」は ${t.level}`;
     if (!t.stops.length) {
-      out.push(`${head}(停止なし)。差し戻し率: ${rejectionText(t)}。${state.rework}`);
+      out.push(`${head}(停止なし)。差し戻し率: ${rejectionText(t)}。${reworkText(t)}`);
       continue;
     }
     const kinds = [...new Set(t.stops.map((x) => STOP_KIND[x.kind] ?? x.kind))].join('・');
@@ -758,7 +926,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
     const back = t.stops.some((x) => x.kind === 'downgrade')
       ? '引き下げは、事象・評価・回復の日より後の変更種別の登録の判定(/process-change)で戻る'
       : '適用の条件が戻れば(記録が揃う・判定可能な窓が得られる・原因を特定する)、判定を待たずに戻る';
-    out.push(`${head}(委任を止めている。この種別の変更は協働で扱う。${kinds})。原因: ${why}。差し戻し率: ${rejectionText(t)}。${back}。${state.rework}`);
+    out.push(`${head}(委任を止めている。この種別の変更は協働で扱う。${kinds})。原因: ${why}。差し戻し率: ${rejectionText(t)}。${back}。${reworkText(t)}`);
   }
   if (state.unattributedRejections?.length) {
     out.push(`AI自律レベル: 判定基準の番号を引いた G-6 の差し戻しのうち ${state.unattributedRejections.length} 件は、対象(PR・コミット)を既定ブランチの履歴へ対応づけられず、どの変更種別の差し戻し率にも数えていない`);
