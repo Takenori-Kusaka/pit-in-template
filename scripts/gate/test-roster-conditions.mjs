@@ -28,6 +28,7 @@ import {
   stepCeiling,
   valueOwnerAgreementState,
   sealChangeLog,
+  localDay,
 } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
@@ -205,6 +206,11 @@ function workspace(config, extraFiles = {}) {
   return { change, aggregate, cfgNow, commitWithG6, done };
 }
 
+// 入口(generate-profile.mjs --change)は、変化点の日付を実行日(localDay)で刻み、
+// それより前の notice.at を拒む。notice.at を固定の日付で書くと、その日より後の実行で落ちる。
+// 入口と同じ時計で実行日を取り、試験の結果が実行日に依らないようにする(規則の側は変えない)。
+const NOTICE_DAY = localDay();
+
 {
   const w = workspace(cfg(ANS(), [A, B, C], BASE3));
   const unknown = w.change({ kind: 'accountable', summary: '名簿', people: [{ ...A, manager: '部長' }, B, C], decidedBy: C.name, reason: '試験' });
@@ -213,10 +219,10 @@ function workspace(config, extraFiles = {}) {
   check('入口: 書面の合意の所在(agreement)は独立レビュアの席にだけ書ける', !agrOther.ok && /seats\.value-owner に書けない欄があります\(agreement\)/.test(agrOther.out), agrOther.out);
   const toExt = w.change({ kind: 'accountable', summary: '外部の確認者を価値責任者へ', people: [A, B, C, X], seats: { 'value-owner': { accountable: 'x' } }, decidedBy: C.name, reason: '試験' });
   check('入口: 外部の確認者を価値責任者に置く任免を拒む(IMPL-0463)', !toExt.ok && /独立レビュアの席に限る/.test(toExt.out), toExt.out);
-  const noScope = w.change({ kind: 'notice', summary: '制限', event: 'restriction', notice: { to: A.name, at: '2026-11-12' } });
+  const noScope = w.change({ kind: 'notice', summary: '制限', event: 'restriction', notice: { to: A.name, at: NOTICE_DAY } });
   check('入口: 範囲・対象の人の無い制限の発動を拒む', !noScope.ok && /restriction を/.test(noScope.out), noScope.out);
   const R = { id: 'pay-1', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
-  const fire = w.change({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: A.name, at: '2026-11-12' } });
+  const fire = w.change({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: A.name, at: NOTICE_DAY } });
   const rec = w.cfgNow().changeLog.at(-1);
   check('入口: 制限の発動の範囲・対象の人・根拠・記録した者を記録に残す(7.9.6)', fire.ok && rec.event === 'restriction' && rec.restriction?.paths?.[0] === 'src/payments/**' && rec.restriction?.recordedBy === B.name, `${fire.out}\n${JSON.stringify(rec)}`);
   const inRange = w.commitWithG6('src/payments/pay.js', C.name);
@@ -231,7 +237,7 @@ function workspace(config, extraFiles = {}) {
   check('集約: 範囲の外の変更は、1名の独立レビュアで数える', !/一時制限/.test(lineOf(outRange)), lineOf(outRange));
   check('集約: 保証の開示に、解除されていない制限の行を出す', /承認権限の一時制限\(第7章 7\.9\.2\) \| 解除されていない制限 1 件\(pay-1: src\/payments\/\*\*\)/.test(agg.report), agg.report.split('\n').filter((l) => /一時制限/.test(l)).join('\n') || agg.out.slice(-600));
   check('集約: 保証の開示に、力量の確認の記録が無い確認者・依頼した本人による確認の件数の行を出す(3.4.1)', /力量の確認の記録が無い確認者による確認/.test(agg.report) && /依頼した本人による確認/.test(agg.report), agg.report.slice(0, 600));
-  const rel = w.change({ kind: 'notice', summary: '制限の解除', event: 'restriction-release', restriction: { id: 'pay-1', basis: '注入した欠陥を連続2回検出', recordedBy: B.name }, notice: { to: A.name, at: '2026-11-12' } });
+  const rel = w.change({ kind: 'notice', summary: '制限の解除', event: 'restriction-release', restriction: { id: 'pay-1', basis: '注入した欠陥を連続2回検出', recordedBy: B.name }, notice: { to: A.name, at: NOTICE_DAY } });
   check('入口: 解除を記録できる(期間の経過では解除しない)', rel.ok && w.cfgNow().changeLog.at(-1).event === 'restriction-release', rel.out);
   w.done();
 }
