@@ -360,7 +360,7 @@ for (const [key, g] of Object.entries(config.gates ?? {})) {
 
 // -------------------------------------------------- 2.5 代償措置つきの逸脱
 
-// 逸脱はゲートを実施したうえで属性を欠く状態のため、state は required か simplified になる。
+// 逸脱(第1章 1.10.2 の閉じた列挙。いまは D-1 の G-7 の兼務だけ。ADR-0083)は、判定を実施したうえで代償措置つきで属性を欠く状態のため、state は required か simplified になる。
 // 「逸脱の記録を消して普通の required に見せる」書き換えを検出する(第3章 3.5.2 / ADR-0029)
 const isActive = (s) => s === 'required' || s === 'simplified';
 // 項目ごとの区分(process-compass #316 / ADR-0086)。区分の正本は閉じた列挙(第1章 1.10.2)
