@@ -109,9 +109,9 @@ jobs:
       - run: node scripts/gate/test-records.mjs
       - run: node scripts/gate/test-next-records.mjs
       - run: node scripts/gate/test-aggregate-records.mjs
-      # 出荷の証跡の一式の写しと digest の一覧(process-compass #333 / ADR-0135。IMPL-0521)
+      # 出荷の証跡の一式の写しと digest の一覧(process-compass #333 / ADR-0135。IMPL-0522)
       - run: node scripts/gate/test-evidence-manifest.mjs
-      # ship-evidence.yml の手順の本文(前回の証跡・取り込み・verify の一式の検査)を、偽の gh で動かす(IMPL-0521・IMPL-0246)
+      # ship-evidence.yml の手順の本文(前回の証跡・取り込み・verify の一式の検査)を、偽の gh で動かす(IMPL-0522・IMPL-0246)
       - run: node scripts/gate/test-ship-evidence-steps.mjs
       # ホスティングから gate-g5 の結果を読めない PR の欠落の文の書き分け(process-compass #333 / ADR-0135。IMPL-0244)
       - run: node scripts/gate/test-g5-missing.mjs

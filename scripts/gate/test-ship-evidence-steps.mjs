@@ -1,4 +1,4 @@
-// ship-evidence.yml の手順の本文を取り出し、偽の gh で実際に動かす試験(process-compass #333 / ADR-0135。IMPL-0246・IMPL-0521)
+// ship-evidence.yml の手順の本文を取り出し、偽の gh で実際に動かす試験(process-compass #333 / ADR-0135。IMPL-0246・IMPL-0522)
 //
 //   node scripts/gate/test-ship-evidence-steps.mjs
 //
@@ -8,10 +8,10 @@
 //
 // 固定する決定:
 //   - 前回の証跡: 前回の実行の成果物を取れなくても手順は終わらず、基底ブランチの写しを digest の一覧と照合して読む。
-//     一覧と一致しない写しは読まず理由を出す。読めるものが無いときは、見た場所と理由を出し、previous-source.json に残す(IMPL-0521)
+//     一覧と一致しない写しは読まず理由を出す。読めるものが無いときは、見た場所と理由を出し、previous-source.json に残す(IMPL-0522)
 //   - 取り込み: 実行の headSha が対象のコミットと一致するときだけ coverage-result を取り込む。license-scan が無くても
 //     coverage-result の取り込みへ進む。dependency-diff は取り込まない(IMPL-0246)
-//   - verify の検査: 追加だけ・出荷の PR だけが運ぶ・出荷の PR には一式がある・digest の一覧との一致(IMPL-0521)
+//   - verify の検査: 追加だけ・出荷の PR だけが運ぶ・出荷の PR には一式がある・digest の一覧との一致(IMPL-0522)
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -129,16 +129,16 @@ const readPrev = (cwd) => {
 };
 const readSource = (cwd) => JSON.parse(fs.readFileSync(path.join(cwd, 'evidence', 'previous-source.json'), 'utf8'));
 
-// --- 前回の証跡(IMPL-0521:ng / IMPL-0521:ok) ---
+// --- 前回の証跡(IMPL-0522:ng / IMPL-0522:ok) ---
 const prevBody = stepBody('前回の出荷の証跡を取り込む');
 {
   const d = mkRepo();
   bundle(d, 'b1', '2026-08-01T00:00:00.000Z', { from: 'copy-old' });
   bundle(d, 'b2', '2026-09-01T00:00:00.000Z', { from: 'copy-new' });
   const r = runStep(d, prevBody, { FAKE_RUN: '123', FAKE_ARTIFACTS: '' });
-  // IMPL-0521:ng(違反側。前回の実行の成果物を取れないと手順が終わり、写しを読まない形)
-  check('IMPL-0521:ng 前回の実行の成果物を取れなくても手順は終わらず、新しい側の写しを読む', r.status === 0 && readPrev(d)?.from === 'copy-new' && /リポジトリの写し\(docs\/evidence\/b2\)/.test(r.out), r.out);
-  check('IMPL-0521:ng 成果物を取れなかった旨を警告に出す', /実行 123 の成果物 ship-evidence を取得できません/.test(r.out) && readSource(d).source === 'copy', r.out);
+  // IMPL-0522:ng(違反側。前回の実行の成果物を取れないと手順が終わり、写しを読まない形)
+  check('IMPL-0522:ng 前回の実行の成果物を取れなくても手順は終わらず、新しい側の写しを読む', r.status === 0 && readPrev(d)?.from === 'copy-new' && /リポジトリの写し\(docs\/evidence\/b2\)/.test(r.out), r.out);
+  check('IMPL-0522:ng 成果物を取れなかった旨を警告に出す', /実行 123 の成果物 ship-evidence を取得できません/.test(r.out) && readSource(d).source === 'copy', r.out);
 }
 {
   const d = mkRepo();
@@ -146,7 +146,7 @@ const prevBody = stepBody('前回の出荷の証跡を取り込む');
   bundle(d, 'b2', '2026-09-01T00:00:00.000Z', { from: 'copy-new' });
   fs.writeFileSync(path.join(d, 'docs', 'evidence', 'b2', 'manifest.json'), '{broken');
   const r = runStep(d, prevBody, { FAKE_RUN: '' });
-  check('IMPL-0521:ng 新しい側の一覧が壊れていれば、黙って古い側へ進まず、読まなかった理由を警告に出す', r.status === 0 && readPrev(d)?.from === 'copy-old' && /b2 は読みませんでした/.test(r.out), r.out);
+  check('IMPL-0522:ng 新しい側の一覧が壊れていれば、黙って古い側へ進まず、読まなかった理由を警告に出す', r.status === 0 && readPrev(d)?.from === 'copy-old' && /b2 は読みませんでした/.test(r.out), r.out);
 }
 {
   const d = mkRepo();
@@ -154,18 +154,18 @@ const prevBody = stepBody('前回の出荷の証跡を取り込む');
   fs.writeFileSync(path.join(d, 'docs', 'evidence', 'b2', 'evidence.json'), '{"from":"TAMPERED"}\n');
   const r = runStep(d, prevBody, { FAKE_RUN: '' });
   const s = readSource(d);
-  check('IMPL-0521:ng 一覧と一致しない写しは読まず、見た場所と理由を出す', r.status === 0 && readPrev(d) === null && s.source === 'none' && /b2/.test(r.out) && /sha256/.test(r.out) && s.copies.looked.length === 1, r.out);
+  check('IMPL-0522:ng 一覧と一致しない写しは読まず、見た場所と理由を出す', r.status === 0 && readPrev(d) === null && s.source === 'none' && /b2/.test(r.out) && /sha256/.test(r.out) && s.copies.looked.length === 1, r.out);
 }
 {
   const d = mkRepo();
   const r = runStep(d, prevBody, { FAKE_RUN: '' });
-  check('IMPL-0521:ng 写しも無いときは、見た場所(置き場 0 件)を警告に出す', r.status === 0 && readPrev(d) === null && /置き場 0 件を見て、読めるものがありません/.test(r.out) && readSource(d).source === 'none', r.out);
+  check('IMPL-0522:ng 写しも無いときは、見た場所(置き場 0 件)を警告に出す', r.status === 0 && readPrev(d) === null && /置き場 0 件を見て、読めるものがありません/.test(r.out) && readSource(d).source === 'none', r.out);
 }
 {
   const d = mkRepo();
   bundle(d, 'b2', '2026-09-01T00:00:00.000Z', { from: 'copy-new' });
   const r = runStep(d, prevBody, { FAKE_RUN: '123', FAKE_ARTIFACTS: 'ship-evidence' });
-  check('IMPL-0521:ok 前回の実行の成果物を取れたら成果物を読む(写しは読まない)', r.status === 0 && readPrev(d)?.from === 'artifact' && readSource(d).source === 'artifact', r.out);
+  check('IMPL-0522:ok 前回の実行の成果物を取れたら成果物を読む(写しは読まない)', r.status === 0 && readPrev(d)?.from === 'artifact' && readSource(d).source === 'artifact', r.out);
 }
 
 // --- 取り込み(IMPL-0246:ng / IMPL-0246:ok) ---
@@ -204,7 +204,7 @@ for (const [label, body] of [['evidence ジョブ', intakeBody], ['verify ジョ
   check('IMPL-0246:ok 取り込み元(実行の識別と headSha)を inputs.json に残す', inputs.gateG5Run === '55' && inputs.headSha === sha);
 }
 
-// --- verify の一式の検査(IMPL-0521:ng / IMPL-0521:ok)。手順の本文を、基底ブランチ(origin/main)と PR の head(pr-head)の間で動かす ---
+// --- verify の一式の検査(IMPL-0522:ng / IMPL-0522:ok)。手順の本文を、基底ブランチ(origin/main)と PR の head(pr-head)の間で動かす ---
 const compareBody = stepBody('複製が記録用ブランチと一致することを検査する');
 function shipScenario({ ship, prepare }) {
   const d = mkRepo();
@@ -226,7 +226,7 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
 };
 {
   const r = shipScenario({ ship: true, prepare: (d) => addShipFiles(d) });
-  check('IMPL-0521:ok 出荷の PR が一式と一致する digest の一覧を追加すると通る', r.status === 0, r.out);
+  check('IMPL-0522:ok 出荷の PR が一式と一致する digest の一覧を追加すると通る', r.status === 0, r.out);
 }
 {
   const r = shipScenario({
@@ -236,11 +236,11 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
       fs.appendFileSync(path.join(d, 'docs', 'evidence', '2026-11-15-start..v1', 'evidence.json'), ' ');
     },
   });
-  check('IMPL-0521:ng 一式の中身を一覧と食い違わせると失敗する', r.status !== 0 && /digest の一覧と一致しない/.test(r.out), r.out);
+  check('IMPL-0522:ng 一式の中身を一覧と食い違わせると失敗する', r.status !== 0 && /digest の一覧と一致しない/.test(r.out), r.out);
 }
 {
   const r = shipScenario({ ship: true, prepare: (d) => addShipFiles(d, 'x', { mdOnly: true }) });
-  check('IMPL-0521:ng 出荷の PR に一式の置き場が無いと失敗する(写しの存在)', r.status !== 0 && /一式の欠け/.test(r.out), r.out);
+  check('IMPL-0522:ng 出荷の PR に一式の置き場が無いと失敗する(写しの存在)', r.status !== 0 && /一式の欠け/.test(r.out), r.out);
 }
 {
   const r = shipScenario({
@@ -251,11 +251,11 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
       spawnSync(process.execPath, [MANIFEST_SCRIPT, 'write', '--dir', path.join(d, 'docs', 'evidence', '2026-11-15-start..v1'), '--run', '1']);
     },
   });
-  check('IMPL-0521:ng 一覧を作り直しても evidence.json が無い一式は失敗する(一式の欠け)', r.status !== 0 && /evidence\.json がありません/.test(r.out), r.out);
+  check('IMPL-0522:ng 一覧を作り直しても evidence.json が無い一式は失敗する(一式の欠け)', r.status !== 0 && /evidence\.json がありません/.test(r.out), r.out);
 }
 {
   const r = shipScenario({ ship: false, prepare: (d) => addShipFiles(d) });
-  check('IMPL-0521:ng 出荷の PR 以外が一式を足すと失敗する', r.status !== 0 && /運ぶのは出荷の PR/.test(r.out), r.out);
+  check('IMPL-0522:ng 出荷の PR 以外が一式を足すと失敗する', r.status !== 0 && /運ぶのは出荷の PR/.test(r.out), r.out);
 }
 {
   const d0 = mkRepo();
@@ -271,7 +271,7 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
   const out = path.join(d0, 'gh-output.txt');
   fs.writeFileSync(out, '');
   const r = runStep(d0, compareBody, { BASE: 'main', SHIP: 'true', GITHUB_OUTPUT: out.replace(/\\/g, '/'), RECORDS_BRANCH: 'records' });
-  check('IMPL-0521:ng 基底ブランチにある一式の変更(追加以外)は失敗する', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
+  check('IMPL-0522:ng 基底ブランチにある一式の変更(追加以外)は失敗する', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
 }
 
 {
@@ -283,7 +283,7 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
       fs.writeFileSync(path.join(d, 'docs', 'evidence', '2026-11-15-start..v1', 'manifest.json'), '{"files":[null]}');
     },
   });
-  check('IMPL-0521:ng 一覧が {"files":[null]} の一式の追加は失敗する(黙って通らない)', r.status !== 0 && /fails=|不一致|一致しない/.test(r.out) , r.out);
+  check('IMPL-0522:ng 一覧が {"files":[null]} の一式の追加は失敗する(黙って通らない)', r.status !== 0 && /fails=|不一致|一致しない/.test(r.out) , r.out);
 }
 {
   // 基底の一式の変更(M)+ 壊れた一覧の置き場の追加(P2)。追加以外の変更の検出が、壊れた一覧で失われない
@@ -302,7 +302,7 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
   const out = path.join(d0, 'gh-output.txt');
   fs.writeFileSync(out, '');
   const r = runStep(d0, compareBody, { BASE: 'main', SHIP: 'true', GITHUB_OUTPUT: out.replace(/\\/g, '/'), RECORDS_BRANCH: 'records' });
-  check('IMPL-0521:ng 基底の一式の変更と壊れた一覧の追加を併せても、追加以外の変更を失敗にする', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
+  check('IMPL-0522:ng 基底の一式の変更と壊れた一覧の追加を併せても、追加以外の変更を失敗にする', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
 }
 for (const [label, stub] of [
   ['例外で終了コード 1・出力なし', 'process.exit(1);'],
@@ -320,7 +320,7 @@ for (const [label, stub] of [
   const out = path.join(d, 'gh-output.txt');
   fs.writeFileSync(out, '');
   const r = runStep(d, compareBody, { BASE: 'main', SHIP: 'true', GITHUB_OUTPUT: out.replace(/\\/g, '/'), RECORDS_BRANCH: 'records' });
-  check(`IMPL-0521:ng 一式の検査が${label}でも、手順は成功にしない`, r.status !== 0 && /証跡の一式の検査/.test(r.out), r.out);
+  check(`IMPL-0522:ng 一式の検査が${label}でも、手順は成功にしない`, r.status !== 0 && /証跡の一式の検査/.test(r.out), r.out);
 }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });
