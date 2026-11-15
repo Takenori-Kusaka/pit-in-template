@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords } from './autonomy.mjs';
+import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -358,6 +358,28 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const rej0 = `${rejectionText(sOk.types[0])} / ${stopsText(sOk.types[0])}`;
   // IMPL-0288:ok(適合の入力: 判定可能で停止の無い種別。判定不能と出さない)
   check('開示の行: 判定可能で停止の無い種別は、判定不能と出さず停止なしと出す', !/判定不能/.test(rej0) && !/異常なし/.test(rej0) && /なし$/.test(rej0), rej0);
+  // 宣言行の無い CHANGES_REQUESTED(process-compass #350)。判定記録ではないため分子に数えず、件数だけを表示する
+  {
+    const rv = (id, state, body) => ({ id, user: { login: 'reviewer-a', id: 9 }, body, state, commit_id: 'a'.repeat(40), submitted_at: '2026-08-10T01:00:00Z' });
+    const ux = undeclaredChangeRequests([
+      { file: 'records/reviews/pr-40.json', copy: { pr: 40, reviews: [rv(1, 'CHANGES_REQUESTED', '直してください'), rv(2, 'CHANGES_REQUESTED', 'G-6: 差し戻し / 基準 1'), rv(3, 'APPROVED', 'よい')] } },
+      { file: 'records/reviews/pr-41.json', copy: { pr: 41, reviews: [rv(4, 'CHANGES_REQUESTED', '')] } },
+    ]);
+    // IMPL-0285:ok(適合の入力: 宣言行の有る差し戻しと承認は、宣言行の無い差し戻しの要求に入れない)
+    check('宣言行の無い差し戻し: 宣言行の有る CHANGES_REQUESTED と APPROVED を除き、無いものだけを取り出す', ux.length === 2 && ux.map((x) => x.target).join() === 'PR #40,PR #41', JSON.stringify(ux));
+    const u1 = base();
+    u1.records.rejections = [];
+    u1.records.undeclared = { available: true, items: [{ file: 'records/reviews/pr-40.json', date: '2026-08-10', target: 'PR #40', reviewId: 1 }, { file: 'records/reviews/pr-9999.json', date: '2026-08-10', target: 'PR #9999', reviewId: 2 }] };
+    const t1 = autonomyState(u1.config, u1.records).types[0];
+    // IMPL-0285:ng(違反の入力: 宣言行の無い差し戻しの要求。分子に入れず、0% の判定を変えない)
+    check('宣言行の無い差し戻し: 分子に入らない(差し戻し 0 件のまま 0% と判定し、停止の理由に件数を出す)', t1.rejection.rejected === 0 && t1.rejection.state === '0%' && t1.stops.some((x) => x.kind === 'downgrade' && /数えていない差し戻しの要求 1 件/.test(x.reason)), JSON.stringify(t1.stops));
+    check('宣言行の無い差し戻し: 窓ごとの件数を、種別の範囲に入る変更の PR に限って数える(対応づかない PR は入れない)', t1.rejection.undeclared === 1, String(t1.rejection.undeclared));
+    check('宣言行の無い差し戻し: 開示の行と次の一手に件数を出す', /数えていない差し戻しの要求 1 件\(宣言行が無く判定記録ではない\)/.test(rejectionText(t1)) && autonomyNoteLines(autonomyState(u1.config, u1.records)).join('\n').includes('数えていない差し戻しの要求 1 件'));
+    const u2 = base();
+    u2.records.undeclared = { available: false, items: [] };
+    const t2 = autonomyState(u2.config, u2.records).types[0];
+    check('宣言行の無い差し戻し: 記録用ブランチを読めないときは「読めない」と出し、0 件と出さない', t2.rejection.undeclared === null && /読めない/.test(rejectionText(t2)) && !/要求 0 件/.test(rejectionText(t2)) && undeclaredText(0) === '数えていない差し戻しの要求 0 件(宣言行が無く判定記録ではない)');
+  }
   // 上限の理由(突合 X-16)
   const capNoQ = autonomyCap({ configured: true, answers: {} });
   check('上限: 回答に安全重要度の無い構成は L1 とし、理由を出す', capNoQ.level === 'L1' && /q-criticality/.test(capNoQ.reason));

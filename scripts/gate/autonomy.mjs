@@ -17,6 +17,8 @@
 //     - 差し戻し率: 毎月、直近2か月の窓で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
 //       分子は判定基準の番号を引いた G-6 の差し戻しの判定記録。判定記録は様式(docs/gates/・記録用ブランチの records/gates/)と、
 //       レビューを媒体とした判定(記録用ブランチの records/reviews/ と基底ブランチの docs/records/reviews/ の写しの宣言行)の両方を読む。
+//       宣言行(G-6: 差し戻し / 基準 N)の無い承認レビューは判定記録ではなく、分子に数えない(CHANGES_REQUESTED だけのものを含む)。
+//       数えていない件数(宣言行の無い CHANGES_REQUESTED)は、窓ごと・種別ごとに表示する。記録用ブランチを読めないときは「読めない」と出す
 //       最小標本数(30件)以上で0件の評価は、
 //       評価の日より後の登録日まで種別を止める。最新の窓が最小標本数に満たない場合は判定不能とし、
 //       判定可能な窓が得られるまで止める(適用の条件の欠落。判定を待たずに戻る)
@@ -195,6 +197,8 @@ export function autonomyState(config, records) {
     const c = changeOfTarget(changes, r.target);
     if (!c) out.unattributedRejections.push(r);
   }
+  // 宣言行の無い CHANGES_REQUESTED(分子に入れない。件数の表示だけ)。記録を渡していない・読めないときは null(0 件と出さない)
+  const undeclaredAll = records?.undeclared?.available ? (records.undeclared.items ?? []).filter((r) => isRealDay(r.date) && notAfter(r.date)) : null;
 
   for (const t of types) {
     const id = String(t?.id ?? '').trim();
@@ -269,10 +273,15 @@ export function autonomyState(config, records) {
         const c = changeOfTarget(changes, r.target);
         return c && ownRefs.has(c.ref);
       });
+      // 種別の範囲に入る変更の PR に対する、宣言行の無い CHANGES_REQUESTED
+      const ownUndeclared = undeclaredAll === null ? null : undeclaredAll.filter((r) => {
+        const c = changeOfTarget(changes, r.target);
+        return c && ownRefs.has(c.ref);
+      });
       const count = (m) => {
         const w = windowOf(m);
         const inW = (d) => d >= w.from && d <= w.to;
-        return { ...w, n: own.filter((c) => inW(c.date)).length, rejected: ownRejections.filter((r) => inW(r.date)).length };
+        return { ...w, n: own.filter((c) => inW(c.date)).length, rejected: ownRejections.filter((r) => inW(r.date)).length, undeclared: ownUndeclared === null ? null : ownUndeclared.filter((r) => inW(r.date)).length };
       };
       const latest = count(monthStart(asOf));
       latest.state = latest.n < MIN_SAMPLE ? '判定不能' : latest.rejected === 0 ? '0%' : '判定可能';
@@ -282,7 +291,7 @@ export function autonomyState(config, records) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
           const w = count(m);
           if (w.n >= MIN_SAMPLE && w.rejected === 0) {
-            stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、変更 ${w.n} 件)で、判定基準の番号を引いた差し戻しが0件だった(差し戻し率0%の2か月継続)`);
+            stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、変更 ${w.n} 件)で、判定基準の番号を引いた差し戻しが0件だった(差し戻し率0%の2か月継続。${undeclaredText(w.undeclared)})`);
             break;
           }
         }
@@ -307,7 +316,8 @@ export function rejectionText(type) {
   const r = type.rejection;
   if (!r) return '判定できない(履歴を読めない)';
   const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件`;
-  return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)` : `${head}(${r.state})`;
+  const und = `。${undeclaredText(r.undeclared)}`;
+  return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
 }
 
 // ---------------------------------------------------------------- 記録を読む
@@ -425,6 +435,32 @@ export function rejectionsFromReviewCopies(copies) {
     }
   }
   return out;
+}
+
+/**
+ * 承認レビューの写しから、宣言行の無い CHANGES_REQUESTED のレビューを取り出す(process-compass #350)。宣言行の読み方は
+ * records.mjs の parseDeclaration だけを使い、読み方を増やさない。宣言行の無いレビューは判定記録ではないため、差し戻し率の分子に
+ * 数えない。ここで取り出すのは数えていない件数の表示のためで、分子には入れない
+ */
+export function undeclaredChangeRequests(copies) {
+  const out = [];
+  for (const { file, copy } of copies ?? []) {
+    const pr = copy?.pr ?? String(file ?? '').match(/pr-(\d+)\.json$/)?.[1] ?? null;
+    for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
+      if (String(r?.state ?? '').toUpperCase() !== 'CHANGES_REQUESTED') continue;
+      if (parseDeclaration(r?.body)) continue;
+      const t = Date.parse(r?.submitted_at ?? '');
+      out.push({ file, date: Number.isNaN(t) ? null : localDay(new Date(t)), target: pr !== null ? `PR #${pr}` : '', reviewId: r?.id ?? null });
+    }
+  }
+  return out;
+}
+
+/** 数えていない差し戻しの要求の件数の文。n が null のときは読めないと出し、0 件と出さない */
+export function undeclaredText(n) {
+  return n === null || n === undefined
+    ? '数えていない差し戻しの要求は読めない(記録用ブランチを読めない)'
+    : `数えていない差し戻しの要求 ${n} 件(宣言行が無く判定記録ではない)`;
 }
 
 /** 手元の作業木のリポジトリ(owner/name)。GITHUB_REPOSITORY、無ければ git remote の GitHub の URL。特定できなければ null */
@@ -549,7 +585,9 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null,
     if (r) found.push({ rej: { ...r, source: 'form' }, form: f });
   }
   for (const r of rejectionsFromReviewCopies([...copies.values()])) found.push({ rej: r, form: null });
-  if (!config) return { rejections: found.map((x) => x.rej), unattributed, notes };
+  // 宣言行の無い CHANGES_REQUESTED(数えない。件数の表示だけに使う)。記録用ブランチを読めないときは読めないものとする
+  const undeclared = { available: Boolean(rb?.available), items: rb?.available ? undeclaredChangeRequests([...copies.values()]) : [] };
+  if (!config) return { rejections: found.map((x) => x.rej), unattributed, undeclared, notes };
   const host = hosting === undefined ? (() => { const repo = repoOf(root); return repo ? ghHosting(repo) : null; })() : hosting;
   const gitRun = (args) => {
     try {
@@ -569,7 +607,7 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null,
         '数えないことは差し戻し率を下げ、引き下げの側へ倒れる(第4章「判定記録を基底ブランチへ入れる操作」の効力を持つ記録)'
     );
   }
-  return { rejections, unattributed, notes };
+  return { rejections, unattributed, undeclared, notes };
 }
 
 function git(args, root) {
@@ -664,12 +702,14 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
 
   // G-6 の差し戻しの判定記録(様式と、レビューを媒体とした判定の写し)。登録した種別が無ければ読まない
   let rejections = [];
+  let undeclared = { available: false, items: [] };
   if (types.length) {
     const rr = readRejectionRecords({ root, fetch, config });
     rejections = rr.rejections;
+    undeclared = rr.undeclared;
     notes.push(...rr.notes);
   }
-  return { asOf, defects, core, history, rejections, notes };
+  return { asOf, defects, core, history, rejections, undeclared, notes };
 }
 
 /** 運用引き継ぎ文書の版を、古い順に読む(コミットの日付と本文)。浅い取得・git でない場合は読めないものとする */
