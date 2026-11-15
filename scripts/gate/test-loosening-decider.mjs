@@ -134,6 +134,46 @@ try {
   const dropOk = settings({ summary: '規則を消す', settings: { decisionRules: null }, decidedBy: A.name, reason: '試験' });
   // IMPL-0390:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('判断記録の要否の規則: 同じ変化点を、D-0 表1 の決定者の記名なら受け付ける', dropOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).decisionRules === undefined, dropOk.out);
+
+  // 観測の窓(標準 第5章 5.4.6。process-compass #349)。種別 settings の observationWindow。整数・下限 2・最小標本数の欄は持たない。
+  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。長くするのは緩める向き
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: rules dropped');
+  const cfgText = () => fs.readFileSync(cfgPath, 'utf8');
+  const w0 = cfgText();
+  const w1 = settings({ summary: '窓', settings: { observationWindow: { months: 1 } }, decidedBy: A.name, reason: '試験' });
+  check('観測の窓: 下限 2 を下回る値(1)を拒否し、構成を書き換えない', !w1.ok && /observationWindow.months/.test(w1.out) && cfgText() === w0, w1.out);
+  const w25 = settings({ summary: '窓', settings: { observationWindow: { months: 2.5 } }, decidedBy: A.name, reason: '試験' });
+  check('観測の窓: 整数でない値(2.5)を拒否する', !w25.ok && /observationWindow.months/.test(w25.out) && cfgText() === w0, w25.out);
+  const wMin = settings({ summary: '窓', settings: { observationWindow: { months: 4, minSample: 10 } }, decidedBy: A.name, reason: '試験' });
+  check('観測の窓: 最小標本数の欄(minSample)を拒否する(欄を持たず、下げられない)', !wMin.ok && /minSample/.test(wMin.out) && cfgText() === w0, wMin.out);
+  const wNoName = settings({ summary: '窓', settings: { observationWindow: { months: 4 } } });
+  // IMPL-0516:ng(違反の入力: 記名と理由の無い窓の変更)
+  check('観測の窓: 決定した者の記名と理由の無い変更を拒否し、構成を書き換えない', !wNoName.ok && /決定した者/.test(wNoName.out) && cfgText() === w0, wNoName.out);
+  const wAi = settings({ summary: '窓', settings: { observationWindow: { months: 4 } }, decidedBy: 'Claude', reason: '試験' });
+  check('観測の窓: AI の名義の記名を拒否する', !wAi.ok && cfgText() === w0, wAi.out);
+  const w4 = settings({ summary: '窓を長くする', settings: { observationWindow: { months: 4 } }, decidedBy: A.name, reason: '件数が少ない種別のため' });
+  const c4 = JSON.parse(cfgText());
+  // IMPL-0516:ok(適合の入力: 記名と理由のある窓の変更。値・記録した日・決定した者・理由が構成に残る)
+  check(
+    '観測の窓: 記名と理由のある変更を受け付け、値・記録した日・決定した者・理由を構成に残す',
+    w4.ok && c4.observationWindow?.months === 4 && c4.observationWindow.history.length === 1 && c4.observationWindow.history[0].months === 4 && c4.observationWindow.history[0].decidedBy === A.name && c4.observationWindow.history[0].reason === '件数が少ない種別のため' && /^\d{4}-\d{2}-\d{2}$/.test(c4.observationWindow.history[0].recordedAt),
+    `${w4.out}
+${JSON.stringify(c4.observationWindow)}`
+  );
+  check('観測の窓: 長くする変更は緩める向きとして変化点に残る', JSON.stringify(c4.changeLog.at(-1)).includes('"loosen"') || /緩め/.test(JSON.stringify(c4.changeLog.at(-1))), JSON.stringify(c4.changeLog.at(-1)));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: window 4');
+  const wKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 290 } } });
+  check('観測の窓: ほかの設定の変化点で窓と履歴を失わない', wKeep.ok && JSON.parse(cfgText()).observationWindow?.months === 4 && JSON.parse(cfgText()).observationWindow.history.length === 1, wKeep.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: task 290');
+  const w4b = cfgText();
+  const wShortNo = settings({ summary: '窓を短くする', settings: { observationWindow: { months: 2 } } });
+  check('観測の窓: 短くする向きも、記名と理由が無ければ拒否する', !wShortNo.ok && /決定した者/.test(wShortNo.out) && cfgText() === w4b, wShortNo.out);
+  const wShort = settings({ summary: '窓を短くする', settings: { observationWindow: { months: 2 } }, decidedBy: A.name, reason: '件数が増えたため' });
+  const c2 = JSON.parse(cfgText());
+  check('観測の窓: 短くする向きは、記名と理由があれば受け付け、履歴に足す(拒否しない)', wShort.ok && c2.observationWindow?.months === 2 && c2.observationWindow.history.length === 2, wShort.out);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

@@ -14,7 +14,7 @@
 //     - コア機能の理解保持者数が1名以下(運用引き継ぎ文書の節2)。運用引き継ぎ文書の履歴から1名以下だった時点を導き、
 //       2名以上へ回復した日より後の登録日で戻る。履歴を読めない(浅い取得等)場合は、判定できないものとして止める
 //   第2区分(期間ごとに集計する)
-//     - 差し戻し率: 毎月、直近2か月の窓で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
+//     - 差し戻し率: 毎月、直近の観測の窓(構成の observationWindow。既定2か月・下限2。評価の日に効く値を当て、遡らない)で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
 //       分子は判定基準の番号を引いた G-6 の差し戻しの判定記録。判定記録は様式(docs/gates/・記録用ブランチの records/gates/)と、
 //       レビューを媒体とした判定(記録用ブランチの records/reviews/ と基底ブランチの docs/records/reviews/ の写しの宣言行)の両方を読む。
 //       宣言行(G-6: 差し戻し / 基準 N)の無い承認レビューは判定記録ではなく、分子に数えない(CHANGES_REQUESTED だけのものを含む)。
@@ -32,7 +32,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
+import { ROOT, observationWindowAt, observationWindowInfo, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
@@ -41,8 +41,8 @@ import { ghHosting, introducedBacking, lastCommitOfFile, signerSharing } from '.
 /** 準拠テンプレートが支えるレベル。L2 は上限の値としてだけ現れる */
 export const LEVELS = ['L1', 'L2', 'L3'];
 export const levelRank = (l) => LEVELS.indexOf(l);
-/** 差し戻し率の観測の窓(月)。第5章 5.4.6 の「2か月継続」(EV-0146)。組織の値を構成に持たない */
-export const WINDOW_MONTHS = 2;
+/** 観測の窓(月)の既定。第5章 5.4.6 の「2か月継続」(EV-0146)。組織の値は構成の observationWindow(config.mjs の observationWindowAt)が持つ */
+export const WINDOW_MONTHS = OBSERVATION_WINDOW_DEFAULT;
 /** 窓の中の最小標本数(変更の件数)。第4章「閾値の設定と較正」の要求事項3 の既定値 */
 export const MIN_SAMPLE = 30;
 /** 手戻り率は集計しない。表示し続ける(標準の実装マーク IMPL-0291 は降りていない) */
@@ -127,9 +127,9 @@ function addMonths(first, n) {
 }
 const prevDay = (day) => new Date(Date.parse(`${day}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
 
-/** 評価の日 m(月初)の窓。[from, m) */
-export function windowOf(m) {
-  return { from: addMonths(m, -WINDOW_MONTHS), to: prevDay(m), evaluatedAt: m };
+/** 評価の日 m(月初)の窓。[from, m)。months は、その評価の日に効く観測の窓(observationWindowAt)を渡す。省くと既定 */
+export function windowOf(m, months = WINDOW_MONTHS) {
+  return { from: addMonths(m, -months), to: prevDay(m), evaluatedAt: m, months };
 }
 
 // ---------------------------------------------------------------- 種別への帰属
@@ -181,7 +181,7 @@ export function autonomyState(config, records) {
   const out = {
     asOf,
     cap,
-    window: { months: WINDOW_MONTHS, minSample: MIN_SAMPLE },
+    window: { ...(asOf ? observationWindowInfo(config, asOf) : { months: WINDOW_MONTHS, longer: false }), minSample: MIN_SAMPLE },
     rework: REWORK_UNDELIVERED,
     otherLevel: 'L1',
     types: [],
@@ -278,20 +278,23 @@ export function autonomyState(config, records) {
         const c = changeOfTarget(changes, r.target);
         return c && ownRefs.has(c.ref);
       });
-      const count = (m) => {
-        const w = windowOf(m);
+      // 評価の日ごとに、その日に効く窓を当てる(記録した日 < 評価の日。前の評価の日へ遡って当てない)
+      const count = (m, months) => {
+        const w = windowOf(m, months);
         const inW = (d) => d >= w.from && d <= w.to;
         return { ...w, n: own.filter((c) => inW(c.date)).length, rejected: ownRejections.filter((r) => inW(r.date)).length, undeclared: ownUndeclared === null ? null : ownUndeclared.filter((r) => inW(r.date)).length };
       };
-      const latest = count(monthStart(asOf));
+      // 現在の状態は、判定の日(asOf)に効く窓で数える(窓を長くした後に、判定不能の停止が新しい窓で解ける)
+      const latest = count(monthStart(asOf), observationWindowAt(config, asOf));
+      latest.windowText = windowLengthText(observationWindowInfo(config, asOf));
       latest.state = latest.n < MIN_SAMPLE ? '判定不能' : latest.rejected === 0 ? '0%' : '判定可能';
       rejection = latest;
       // 登録より後の評価の日ごとに、0% の窓を探す
       if (registeredAt) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
-          const w = count(m);
+          const w = count(m, observationWindowAt(config, m));
           if (w.n >= MIN_SAMPLE && w.rejected === 0) {
-            stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、変更 ${w.n} 件)で、判定基準の番号を引いた差し戻しが0件だった(差し戻し率0%の2か月継続。${undeclaredText(w.undeclared)})`);
+            stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、変更 ${w.n} 件)で、判定基準の番号を引いた差し戻しが0件だった(差し戻し率0%の${w.months}か月継続。観測の窓 ${w.months}か月。${undeclaredText(w.undeclared)})`);
             break;
           }
         }
@@ -315,7 +318,7 @@ export function stopsText(type) {
 export function rejectionText(type) {
   const r = type.rejection;
   if (!r) return '判定できない(履歴を読めない)';
-  const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件`;
+  const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件(${r.windowText ?? `観測の窓 ${r.months ?? WINDOW_MONTHS}か月`})`;
   const und = `。${undeclaredText(r.undeclared)}`;
   return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
 }
@@ -696,8 +699,10 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
     .map((t) => (isRealDay(t.registeredAt) ? t.registeredAt : null))
     .filter(Boolean)
     .sort()[0];
-  const latestFrom = addMonths(monthStart(asOf), -WINDOW_MONTHS);
-  const firstFrom = earliest ? addMonths(monthStart(earliest), 1 - WINDOW_MONTHS) : latestFrom;
+  // 履歴の読み出しの起点は、記録した最長の窓から導く(窓を長くしても、窓の始まりまで履歴を読む)
+  const maxMonths = Math.max(WINDOW_MONTHS, observationWindowAt(config, asOf), ...(Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history.map((e) => (Number.isInteger(e?.months) ? e.months : 0)) : []));
+  const latestFrom = addMonths(monthStart(asOf), -maxMonths);
+  const firstFrom = earliest ? addMonths(monthStart(earliest), 1 - maxMonths) : latestFrom;
   const history = types.length ? readHistory({ root, since: firstFrom < latestFrom ? firstFrom : latestFrom, until: asOf }) : { available: true, changes: [] };
 
   // G-6 の差し戻しの判定記録(様式と、レビューを媒体とした判定の写し)。登録した種別が無ければ読まない

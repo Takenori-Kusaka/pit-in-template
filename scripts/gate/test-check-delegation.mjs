@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT } from './config.mjs';
+import { ROOT, observationWindowAt, observationWindowProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
@@ -358,6 +358,55 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const rej0 = `${rejectionText(sOk.types[0])} / ${stopsText(sOk.types[0])}`;
   // IMPL-0288:ok(適合の入力: 判定可能で停止の無い種別。判定不能と出さない)
   check('開示の行: 判定可能で停止の無い種別は、判定不能と出さず停止なしと出す', !/判定不能/.test(rej0) && !/異常なし/.test(rej0) && /なし$/.test(rej0), rej0);
+  // 観測の窓(process-compass #349。IMPL-0516)。構成の欄 observationWindow = { months, history: [{ months, recordedAt, decidedBy, reason }] }。
+  // 評価の日ごとに、記録した日 < 評価の日の最後の値を当てる。遡って当てない。欄の無い構成は既定の 2
+  {
+    const withWindow = (cfg, history) => {
+      cfg.observationWindow = { months: history.at(-1).months, history };
+      return cfg;
+    };
+    const h4 = (recordedAt) => [{ months: 4, recordedAt, decidedBy: '山田 太郎', reason: '件数が少ない種別のため' }];
+    const c0 = base().config;
+    check('観測の窓: 欄の無い構成は既定の 2 か月', observationWindowAt(c0, '2026-10-01') === 2 && observationWindowAt({}, '2026-10-01') === 2);
+    const c4 = withWindow(base().config, h4('2026-10-10'));
+    check(
+      '観測の窓: 記録した日より後の評価の日から当てる(同じ日は前の値。前の評価の日へ遡らない)',
+      observationWindowAt(c4, '2026-10-10') === 2 && observationWindowAt(c4, '2026-10-11') === 4 && observationWindowAt(c4, '2026-10-01') === 2
+    );
+    check('観測の窓: 下限・記名・理由・日付の順・最後の値の一致を検査する', observationWindowProblems(c4).length === 0 && observationWindowProblems({ observationWindow: { months: 1, history: [] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', reason: 'x' }] } }).some((p) => /decidedBy/.test(p)) && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', decidedBy: 'Claude', reason: 'x' }] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 5, history: h4('2026-10-10') } }).some((p) => /一致しない/.test(p)) && observationWindowProblems({ observationWindow: { months: 3, history: [...h4('2026-10-10'), { months: 3, recordedAt: '2026-09-01', decidedBy: '山田 太郎', reason: 'x' }] } }).some((p) => /日付の順/.test(p)));
+    // IMPL-0516:ng(違反の入力: 窓を長くした日より前の評価の日。前の値(2)が効き、過去の 0% の停止が残る)
+    const zz = base();
+    zz.records.rejections = [];
+    zz.config.delegation.changeTypes[0].registeredAt = '2026-08-20';
+    withWindow(zz.config, h4('2026-10-10'));
+    const zzs = autonomyState(zz.config, zz.records).types[0];
+    check('観測の窓: 長くした日(2026-10-10)より前の評価の日(2026-10-01)には 2 か月が効き、過去の 0% の停止が残る', zzs.level === 'L1' && zzs.stops.some((x) => x.kind === 'downgrade' && /2026-10-01/.test(x.reason) && /2か月継続/.test(x.reason)), JSON.stringify(zzs.stops));
+    // IMPL-0516:ok(適合の入力: 窓を長くした日より後の評価の日には長い窓が効く)
+    const zy = base();
+    zy.records.rejections = [];
+    zy.config.delegation.changeTypes[0].registeredAt = '2026-08-20';
+    withWindow(zy.config, h4('2026-09-01'));
+    const zys = autonomyState(zy.config, zy.records);
+    check('観測の窓: 長くした日より後の評価の日(2026-10-01)には 4 か月が効く(停止の理由と表示に出る)', zys.types[0].stops.some((x) => x.kind === 'downgrade' && /4か月継続/.test(x.reason)) && zys.types[0].rejection.months === 4 && zys.window.months === 4, JSON.stringify(zys.types[0].stops));
+    // 判定不能の停止は、新しい窓で判定可能になった時点で解ける(現在の状態は判定の日に効く窓で数える)
+    const jf = base();
+    jf.config.delegation.changeTypes[0].registeredAt = '2026-08-20';
+    jf.records.asOf = '2026-09-20';
+    jf.records.history.changes = jf.records.history.changes.filter((c) => c.date >= '2026-08-01');
+    const before4 = autonomyState(jf.config, jf.records).types[0];
+    withWindow(jf.config, h4('2026-09-01'));
+    jf.records.history.changes = [
+      ...Array.from({ length: 16 }, (_, k) => ({ ref: `00000000000000000000000000000000000002${String(k).padStart(2, '0')}`, date: `2026-06-${String(k + 1).padStart(2, '0')}`, pr: String(300 + k), files: ['src/i18n/ja.json'] })),
+      ...jf.records.history.changes,
+    ];
+    const after4 = autonomyState(jf.config, jf.records).types[0];
+    check('観測の窓: 判定不能の停止が、新しい窓(4 か月)で判定可能になると解ける', before4.rejection.state === '判定不能' && after4.rejection.state !== '判定不能' && after4.rejection.n >= 30, `${before4.rejection.n} -> ${after4.rejection.n} ${after4.rejection.state}`);
+    // 表示: 窓の長さを常に出し、既定より長いときは決定した者と日付を併記する
+    const textDef = rejectionText(autonomyState(base().config, base().records).types[0]);
+    const textLong = rejectionText(zys.types[0]);
+    check('観測の窓: 長さを常に出し、既定より長いときは決定した者と日付を併記する', /観測の窓 2か月\(既定\)/.test(textDef) && /観測の窓 4か月\(既定 2か月より長い。決定: 山田 太郎、記録した日 2026-09-01\)/.test(textLong), `${textDef} | ${textLong}`);
+    check('観測の窓: 次の一手の注記にも窓の長さを出す', autonomyNoteLines(zys).join('\n').includes('観測の窓 4か月'));
+  }
   // 宣言行の無い CHANGES_REQUESTED(process-compass #350)。判定記録ではないため分子に数えず、件数だけを表示する
   {
     const rv = (id, state, body) => ({ id, user: { login: 'reviewer-a', id: 9 }, body, state, commit_id: 'a'.repeat(40), submitted_at: '2026-08-10T01:00:00Z' });

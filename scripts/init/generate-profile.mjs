@@ -2505,6 +2505,12 @@ export function diffConfig(before, after, opts = {}) {
         }
       }
       for (const [id, r] of a) if (!b.has(id)) push(`判断記録の要否の規則 ${id}: 追加(${(r.paths ?? []).join(', ')})`, 0, 1, null);
+      // 観測の窓(第5章 5.4.6)。長くするのは緩める向き(検知が遅れ、0% の継続が起こりにくくなる)。短くするのは強める向き(記録だけを課し、拒否しない)
+      {
+        const wb = before.observationWindow?.months ?? WINDOW_MONTHS;
+        const wa = after.observationWindow?.months ?? WINDOW_MONTHS;
+        if (wb !== wa) push(`観測の窓(差し戻し率・手戻り率の評価の期間): ${wb}か月 → ${wa}か月`, -wb, -wa, M);
+      }
       if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
         diff.push(`依存先の欄(通知の期間・データ): ${(before.dependencies ?? []).length} 件 → ${(after.dependencies ?? []).length} 件`);
         remaining.push('依存先の欄は、提供者との契約・規約で確かめた通知の期間と、渡すデータの種別と保持の条件を書く(第3章 3.12.11)。空欄の欄は単一障害点の候補として出る');
@@ -3108,6 +3114,16 @@ const cell = (v) => String(v ?? '').replace(/\|/g, '/').replace(/\r?\n/g, ' ');
  * AI自律レベルの適用の表(標準 第6章 テンプレ0 表7 の下、第5章 5.4.4・5.4.6)。レベルは委任の登録から導く。
  * 停止は判定のたびに記録から導くため、この生成区間には書かず、所在を書く(区間を構成だけから決めるため)
  */
+/** 構成の観測の窓(月)。欄が無ければ既定(2)。表示に使う */
+const windowMonthsOf = (config) => (Number.isInteger(config?.observationWindow?.months) ? config.observationWindow.months : WINDOW_MONTHS);
+/** 既定より長いときだけ、決定した者と日付を併記する(観測の窓の常時の開示。IMPL-0516) */
+function windowDeciderText(config) {
+  const months = windowMonthsOf(config);
+  if (months <= WINDOW_MONTHS) return '';
+  const last = (config.observationWindow?.history ?? []).at(-1);
+  return `(既定 ${WINDOW_MONTHS}か月より長い。決定: ${last?.decidedBy ?? '記録なし'}、記録した日 ${last?.recordedAt ?? '記録なし'})`;
+}
+
 export function renderAutonomyTable(config, blank = false) {
   const L = [];
   L.push('AI自律レベルの適用(標準 第5章 5.4.4・5.4.6。レベルは委任の登録から導く。準拠テンプレートは L2 を支えない):');
@@ -3137,7 +3153,7 @@ export function renderAutonomyTable(config, blank = false) {
       ? `準拠テンプレートの外(登録の根拠: ${cell(rework)})。発火は機械で確かめない(標準の IMPL-0291 は降りていない)`
       : '未計測(登録の根拠の reworkRate が未記入)';
     L.push(
-      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${WINDOW_MONTHS}か月の窓、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、直近${windowMonthsOf(config)}か月の窓${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
     );
   }
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
@@ -3991,7 +4007,7 @@ export function renderProfileMd(config, result) {
     L.push('');
     L.push(
       `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
-        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の2か月継続、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
+        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の' + windowMonthsOf(config) + 'か月継続(観測の窓)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
         '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は集計しません(降りていない)。'
     );
     L.push('');
@@ -5152,7 +5168,7 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
@@ -5200,6 +5216,24 @@ if (isMain) {
           if (!isObject(d) || typeof d.provider !== 'string' || !d.provider.trim()) bad.push(`settings.dependencies[${i}].provider を書きます`);
           if (d?.models !== undefined && !strList(d.models)) bad.push(`settings.dependencies[${i}].models は文字列の配列で書きます`);
           for (const k of ['noticePeriod', 'data']) if (d?.[k] !== undefined && typeof d[k] !== 'string') bad.push(`settings.dependencies[${i}].${k} は文字列で書きます(空欄の欄は単一障害点の候補として出る)`);
+        }
+      }
+    }
+    // 観測の窓(標準 第5章 5.4.6。process-compass #349)。{ "months": <整数。下限 2> }。最小標本数の欄は持たない(下げられない・上げる必要の実証が無い)。
+    // 値を変えるときは、向きを問わず決定した者の記名(AI の名義でない)と理由(変化点の decidedBy・reason)を要する。長くするのは緩める向き
+    if (S.observationWindow !== undefined) {
+      const W = S.observationWindow;
+      if (!isObject(W)) bad.push('settings.observationWindow は { "months": <整数。2 以上> } で書きます');
+      else {
+        const extra = Object.keys(W).filter((k) => k !== 'months');
+        if (extra.length) bad.push(`settings.observationWindow に書けない欄があります(${extra.join(', ')})。書けるのは months だけです。最小標本数(30 件)は欄を持たず、下げられません`);
+        if (!Number.isInteger(W.months) || W.months < WINDOW_MONTHS) bad.push(`settings.observationWindow.months は ${WINDOW_MONTHS} 以上の整数で書きます(下限は第5章 5.4.6 の既定の ${WINDOW_MONTHS}か月。許されるのは長くすることだけです)`);
+        else if (W.months !== (prior?.observationWindow?.months ?? WINDOW_MONTHS)) {
+          if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) {
+            bad.push('観測の窓の値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(長くする・短くする)を問わず要ります');
+          } else if (aiNameReason(change.decidedBy, { account: true })) {
+            bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。観測の窓の決定は人が記名します`);
+          }
         }
       }
     }
@@ -5563,6 +5597,18 @@ if (isMain) {
     const now = S[key] !== undefined ? S[key] : prior?.[key];
     if (now != null) config[key] = now;
     else delete config[key];
+  }
+  // 観測の窓。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。再生成では保つ。既定のままなら欄を持たない
+  {
+    const priorW = prior?.observationWindow ?? null;
+    const cur = priorW?.months ?? WINDOW_MONTHS;
+    if (S.observationWindow && S.observationWindow.months !== cur) {
+      config.observationWindow = {
+        months: S.observationWindow.months,
+        history: [...(priorW?.history ?? []), { months: S.observationWindow.months, recordedAt: day, decidedBy: change.decidedBy, reason: change.reason }],
+      };
+    } else if (priorW) config.observationWindow = priorW;
+    else delete config.observationWindow;
   }
   // 構成へ記録を足したか。足した場合に限り、最後の記録へ要約値を書く
   let appended = !prior;

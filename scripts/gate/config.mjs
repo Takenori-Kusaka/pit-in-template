@@ -1973,6 +1973,7 @@ export function configIntegrityProblems(config) {
   }
   for (const p of changeTypeProblems(config, { checkRegistrant: false })) out.push(`標準変更カタログ: ${p}`);
   out.push(...protectedPathsProblems(config));
+  for (const p of observationWindowProblems(config)) out.push(`観測の窓: ${p}`);
   (Array.isArray(config.changeLog) ? config.changeLog : []).forEach((e, i) => {
     if (SIGNED_DIRECTIONS.includes(e?.direction) && !(e.decidedBy && e.reason)) {
       out.push(`changeLog[${i}]: ${DIRECTION_LABEL[e.direction]}向きの変更に、決定した者の記名または理由がありません(第3章 3.13.3)`);
@@ -2727,6 +2728,74 @@ export function isRealDay(v) {
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const t = new Date(Date.UTC(y, mo - 1, d));
   return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d;
+}
+
+// ---------------------------------------------------------------- 観測の窓(第5章 5.4.6。process-compass #349)
+
+/** 観測の窓(月)の既定。第5章 5.4.6 の「2か月継続」(EV-0146)。構成に欄が無いときの値であり、下限でもある */
+export const OBSERVATION_WINDOW_DEFAULT = 2;
+
+/**
+ * 評価の日 day に効く観測の窓(月)。構成の observationWindow.history のうち、記録した日(recordedAt)が評価の日より前の
+ * 最後の値。同じ日に記録した値は、その日の評価には効かない(前の値)。遡って当てない。履歴が無ければ既定(2)。
+ * 構成の形: observationWindow = { months, history: [{ months, recordedAt, decidedBy, reason }] }。最小標本数の欄は持たない
+ */
+export function observationWindowAt(config, day) {
+  const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
+  let months = OBSERVATION_WINDOW_DEFAULT;
+  for (const e of h) {
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) months = e.months;
+  }
+  return months;
+}
+
+/** 評価の日 day に効く観測の窓の値と、その値を記録した者・日(既定のままなら null)。表示に使う */
+export function observationWindowInfo(config, day) {
+  const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
+  let entry = null;
+  for (const e of h) {
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) entry = e;
+  }
+  const months = entry ? entry.months : OBSERVATION_WINDOW_DEFAULT;
+  return { months, longer: months > OBSERVATION_WINDOW_DEFAULT, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
+}
+
+/** 観測の窓の長さの文。常に出す。既定より長いときは、決定した者と日付を併記する */
+export function windowLengthText(info) {
+  return info.longer
+    ? `観測の窓 ${info.months}か月(既定 ${OBSERVATION_WINDOW_DEFAULT}か月より長い。決定: ${info.decidedBy ?? '記録なし'}、記録した日 ${info.recordedAt ?? '記録なし'})`
+    : `観測の窓 ${info.months}か月(既定)`;
+}
+
+/**
+ * 観測の窓の欄の検査。整数・下限 2・記名と理由・日付の順・最後の値と months の一致。
+ * 欄が無い構成は問題なし(既定の 2)。AI を示す語を含む名義の記名は受け付けない
+ */
+export function observationWindowProblems(config) {
+  const w = config?.observationWindow;
+  if (w === undefined || w === null) return [];
+  const out = [];
+  if (typeof w !== 'object' || Array.isArray(w)) return ['observationWindow はオブジェクトで書く'];
+  const okMonths = (v) => Number.isInteger(v) && v >= OBSERVATION_WINDOW_DEFAULT;
+  if (!okMonths(w.months)) out.push(`months は ${OBSERVATION_WINDOW_DEFAULT} 以上の整数で書く(下限は第5章 5.4.6 の既定。許されるのは長くすることだけ)`);
+  const h = w.history;
+  if (!Array.isArray(h)) {
+    out.push('history(値・記録した日・決定した者・理由の履歴)を配列で書く');
+    return out;
+  }
+  let prev = null;
+  h.forEach((e, i) => {
+    if (!okMonths(e?.months)) out.push(`history[${i}].months は ${OBSERVATION_WINDOW_DEFAULT} 以上の整数で書く`);
+    if (!isRealDay(e?.recordedAt)) out.push(`history[${i}].recordedAt は実在する日付(YYYY-MM-DD)で書く`);
+    else if (prev !== null && String(e.recordedAt) < prev) out.push(`history[${i}].recordedAt が前の記録より前の日付である(日付の順に並べる)`);
+    if (isRealDay(e?.recordedAt)) prev = String(e.recordedAt);
+    if (typeof e?.decidedBy !== 'string' || !e.decidedBy.trim()) out.push(`history[${i}].decidedBy(決定した者の記名)が無い`);
+    else if (aiNameReason(e.decidedBy, { account: true })) out.push(`history[${i}].decidedBy "${e.decidedBy}" は ${aiNameReason(e.decidedBy, { account: true })}。観測の窓の決定は人が記名する`);
+    if (typeof e?.reason !== 'string' || !e.reason.trim()) out.push(`history[${i}].reason(理由)が無い`);
+  });
+  const last = h.length ? h[h.length - 1]?.months : OBSERVATION_WINDOW_DEFAULT;
+  if (okMonths(w.months) && w.months !== last) out.push(`months(${w.months})が履歴の最後の値(${last ?? '無し'})と一致しない。値は履歴を経ずに変えられない`);
+  return out;
 }
 
 /** GitHub Actions の注釈として出す(ローカル実行では素の行として出る) */
