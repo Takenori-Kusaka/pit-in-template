@@ -19,7 +19,7 @@
 // PR_NUMBER / PR_TITLE / PR_BODY / PR_AUTHOR から読む。題名と本文をシェルへ展開しないため、ワークフローは
 // 環境変数で渡す。
 //
-// 検査は 1〜8 と 3b。1〜3・3b・5〜7 は失敗させる。4・8 は失敗させない。
+// 検査は 1〜8 と 3b・4c。1〜3・3b・5〜7 は失敗させる。4・4c・8 は失敗させない。4c は基底にある機能仕様の受入基準・前提・スコープ外の変更の表示(#334)。
 //   1. トレーラ Spec: スカッシュのメッセージになる PR の本文の末尾の段落に `Spec: F-NNN / Task-N` があり、
 //      指す仕様(specs/F-NNN/spec.md)と実装計画のタスクが実在すること。製品のコードを変えない PR と、
 //      依存の更新の bot の PR は対象外(出力に出す)
@@ -184,6 +184,7 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm } from './records.mjs';
+import { SPEC_FILE, changedSpecSections } from './spec-sections.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -1436,7 +1437,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
 export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head = null, requireControlApproval = false, today = null }) {
   const git = gitIn(root);
-  const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [] };
+  const result = { errors: [], warnings: [], notices: [], size: null, thresholds: null, spec: null, riskClass: null, testChanges: [], specChanges: [] };
   // 判定の対象の版。head を渡したとき(基底から読む判定。gate-g5-base.yml)は、PR の先頭を取得した参照をデータとして読み、
   // 作業ツリー(既定ブランチの判定のコード)を判定の対象にしない。PR のファイルを取り出さず、実行しない(process-compass #371 / ADR-0115)。
   // 省いたとき(手元の実行と gate-g5.yml の pr-rules)は、取り出した作業ツリー(HEAD)を読む
@@ -2002,6 +2003,18 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     result.testChanges.push({ file: e.path, kind: e.from ? `名前の変更と行の削除(${from} →)` : '行の削除・書き換え', removed: e.removed, assertions });
   }
 
+  // --- 4c. 基底にある機能仕様の受入基準・前提・スコープ外の変更の表示(#334 / IMPL-0520。合否に使わない) ---
+  // 判定を待つ状態と判定を欠いた状態を機械が区別できないため、errors・warnings へ足さない。基底の版が判定を通過した版か、判定記録の有無は読まない(IMPL-0241 / #355)
+  for (const e of all) {
+    const from = e.from ?? e.path;
+    if (!SPEC_FILE.test(from)) continue;
+    const baseText = atBase(from);
+    if (baseText === null) continue;
+    const headText = atHead(e.path);
+    const sections = changedSpecSections(baseText, headText);
+    if (sections.length) result.specChanges.push({ file: from, to: e.from ? e.path : null, deleted: headText === null, sections });
+  }
+
   // --- 4b. 検証を弱める変更の検出・期待値の改めの根拠・落ちることを期待する印(process-compass #360。合否に使わない。IMPL-0489 だけは失敗) ---
   // IMPL-0204・IMPL-0488・IMPL-0489。対象は基底にあるテストと、基底に無い新しいテストのファイルの両方
   {
@@ -2497,9 +2510,23 @@ export function planPathTrace({ specs, atPolicy, atHead, changed, isTest, readTa
 
 const esc = (s) => String(s ?? '').replace(/[|`]/g, ' ').replace(/\s+/g, ' ').trim();
 
+/** 基底にある機能仕様の受入基準・前提・スコープ外の変更の表示(#334)。変更が無ければ節を出さない。合否には使わない */
+export function renderSpecChanges(changes) {
+  if (!changes.length) return [];
+  const L = ['### 基底にある機能仕様の受入基準・前提・スコープ外の変更(G-4 の材料。合否には使わない)', ''];
+  for (const c of changes) {
+    const tail = c.deleted ? '機能仕様の削除' : c.to ? `(→ ${esc(c.to)})` : '';
+    L.push(`- \`${esc(c.file)}\`: ${c.sections.join('・')}${tail ? ` ${tail}` : ''} — この PR の基底からの差分`);
+  }
+  L.push('- 基底の版が G-2 または G-4 を通過した版なら、変更後の版で G-4 の判定を受ける(標準 第4章「確定した版を変える場合」)');
+  L.push('- 基底の版が判定を通過した版か、変更が意味を変えるかは、この検査では確かめていない。判定記録の有無も読んでいない(出荷判定者が判定記録の版と突合する)', '');
+  return L;
+}
+
 /** G-6 の材料(機械の検出の一覧)を Markdown にする。既存のテストの変更(IMPL-0203)に、検出の一覧を足したもの。合否には使わない */
 export function renderG6Material(r) {
   const L = [renderTestChanges(r.testChanges ?? []), ''];
+  L.push(...renderSpecChanges(r.specChanges ?? []));
   const w = r.weakening;
   if (w) {
     L.push('### 検証を弱める変更の検出(G-6 の必須の確認事項。合否には使わない)', '');
@@ -2653,6 +2680,7 @@ if (isMain) {
     for (const w of r.warnings) warn(w);
     for (const n of r.notices) notice(n);
     if (r.testChanges.length) warn(`既存のテストの変更が ${r.testChanges.length} 件あります(G-6 の材料。合否には使わない)`);
+    if (r.specChanges.length) warn(`基底にある機能仕様の受入基準・前提・スコープ外の変更が ${r.specChanges.length} 件あります(G-4 の材料。合否には使わない)`);
     const w = r.weakening;
     if (w && w.skips.length + w.xfails.length + w.removedAssertions.length + w.pairs.length) {
       warn(`検証を弱める変更の検出: skip ${w.skips.length} / 落ちることを期待する印 ${w.xfails.length} / 削除行のアサーション ${w.removedAssertions.length} / 期待値の改め ${w.pairs.length}(G-6 の必須の確認事項。合否には使わない)`);

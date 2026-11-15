@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
+import { specSections, changedSpecSections } from './spec-sections.mjs';
 import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
@@ -56,7 +57,9 @@ write('adapters/node.json', fs.readFileSync(path.join(ROOT, 'adapters/node.json'
 write('.claude/guard.json', fs.readFileSync(path.join(ROOT, '.claude/guard.json'), 'utf8'));
 write('.gitattributes', 'src/gen/** linguist-generated\n');
 write('.eslintrc.json', '{ "rules": { "no-unused-vars": "error" } }\n');
-write('specs/F-001/spec.md', '# 機能仕様: 招待\n');
+// 基底の機能仕様(確定した版の3節と、数えない節を持つ。#334)
+const SPEC_BASE = '---\nid: F-001\n---\n# 機能仕様: 招待\n\n## 背景\n\n招待する。\n\n## 前提\n\n- 利用者は登録済み\n\n## スコープ外\n\n- 一括招待\n\n## 受入基準\n\n| # | 型 | 受入基準 |\n| --- | --- | --- |\n| 1 | 常時 | x |\n\n## 承認\n\n| ゲート | 判定 |\n| --- | --- |\n| G-4 | 通過 / 差し戻し / 未判定 |\n';
+write('specs/F-001/spec.md', SPEC_BASE);
 write('specs/F-001/plan.md', '| ID | 内容 |\n| --- | --- |\n| Task-1 | 招待 |\n| Task-2 | 一覧 |\n');
 write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7));
 write('src/a.js', lines(20));
@@ -1056,6 +1059,75 @@ ${instr}
     write('.github/stack-exclusions.json', EXCL('tools'));
   }, passes((r) => (r.thresholds.changed.includes('.github/stack-exclusions.json') ? [] : [`除外の一覧の変更として識別していない: ${JSON.stringify(r.thresholds)}`])));
   unit('統制の設定の変更の承認の範囲: 製品のスタックの除外の一覧を数える', controlTouchedOf([{ path: '.github/stack-exclusions.json' }]).includes('.github/stack-exclusions.json'));
+}
+
+// --- 基底にある機能仕様の受入基準・前提・スコープ外の変更の表示(#334 / IMPL-0520。合否に使わない) ---
+{
+  const SPEC = 'specs/F-001/spec.md';
+  const specCount = (n, sections) => (r) => {
+    const out = [];
+    if (r.specChanges.length !== n) out.push(`specChanges ${r.specChanges.length} 件(期待 ${n}): ${JSON.stringify(r.specChanges)}`);
+    if (sections && r.specChanges[0] && JSON.stringify(r.specChanges[0].sections) !== JSON.stringify(sections)) out.push(`sections ${JSON.stringify(r.specChanges[0].sections)}(期待 ${JSON.stringify(sections)})`);
+    return out;
+  };
+  const shown = (re) => (r) => (re.test(renderG6Material(r)) ? [] : [`表示に ${re} が出ていない`]);
+  const noShown = () => (r) => (/基底にある機能仕様の受入基準/.test(renderG6Material(r)) ? ['表示が出てはならない'] : []);
+  const edit = (f) => write(SPEC, f(read(SPEC)));
+  // IMPL-0520:ok(違反と適合の対。標準の実装マーク。process-compass #334)
+  scenario('機能仕様の表示: 基底にある仕様の受入基準を書き換えると表示が出る(合否は変えない)', {}, () => {
+    edit((t) => t.replace('| 1 | 常時 | x |', '| 1 | 常時 | y |'));
+  }, passes(specCount(1, ['受入基準']), shown(/F-001\/spec\.md`: 受入基準/), shown(/G-4 の判定を受ける/), shown(/判定記録の有無も読んでいない/)));
+  scenario('機能仕様の表示: 前提とスコープ外の両方を書き換えると2節が出る', {}, () => {
+    edit((t) => t.replace('登録済み', '未登録').replace('一括招待', '個別招待'));
+  }, passes(specCount(1, ['前提', 'スコープ外'])));
+  scenario('機能仕様の表示: 基底にある仕様を削除すると3節が出る', {}, () => {
+    remove(SPEC);
+  }, passes((r) => (r.specChanges.length === 1 && r.specChanges[0].deleted && r.specChanges[0].sections.length === 3 ? [] : [`削除の検出: ${JSON.stringify(r.specChanges)}`]), shown(/機能仕様の削除/)));
+  scenario('機能仕様の表示: スコープ外の見出しごと消すと出る', {}, () => {
+    edit((t) => t.replace('## スコープ外\n\n- 一括招待\n\n', ''));
+  }, passes(specCount(1, ['スコープ外'])));
+  scenario('機能仕様の表示: 別のパスへ移して受入基準も変えると、移動元で数える', {}, () => {
+    fs.mkdirSync(path.join(TMP, 'specs/F-002'), { recursive: true });
+    git('mv', SPEC, 'specs/F-002/spec.md');
+    write('specs/F-002/spec.md', read('specs/F-002/spec.md').replace('| 1 | 常時 | x |', '| 1 | 常時 | z |'));
+  }, passes((r) => (r.specChanges.length === 1 && r.specChanges[0].file === SPEC && r.specChanges[0].to === 'specs/F-002/spec.md' ? [] : [`移動の検出: ${JSON.stringify(r.specChanges)}`])));
+  scenario('機能仕様の表示: 基底に無い新しい仕様を足しても出ない', {}, () => {
+    write('specs/F-099/spec.md', SPEC_BASE);
+  }, passes(specCount(0), noShown()));
+  scenario('機能仕様の表示: 背景・承認の表・frontmatter だけの変更は出ない', {}, () => {
+    edit((t) => t.replace('招待する。', '招待を送る。').replace('未判定 |', '未判定(転記) |').replace('id: F-001', 'id: F-001\nstatus: draft'));
+  }, passes(specCount(0), noShown()));
+  scenario('機能仕様の表示: 受入基準の行末の空白と改行コード(CRLF)だけの変更は出ない', {}, () => {
+    write(SPEC, read(SPEC).replace('| 1 | 常時 | x |', '| 1 | 常時 | x |   ').replace(/\n/g, '\r\n'));
+  }, passes(specCount(0)));
+  scenario('機能仕様の表示: 背景のコードフェンスの中へ受入基準の見出しを足しても出ない', {}, () => {
+    edit((t) => t.replace('招待する。', '招待する。\n\n```md\n## 受入基準\n\n- 例\n```'));
+  }, passes(specCount(0)));
+  scenario('機能仕様の表示: 実装計画(plan.md)だけの変更は出ない', {}, () => {
+    write('specs/F-001/plan.md', read('specs/F-001/plan.md') + '| Task-3 | 追加 |\n');
+  }, passes(specCount(0)));
+  // 合否: 同じ PR で仕様を変えない場合と errors が変わらない
+  const withSpec = scenario('機能仕様の表示(合否): 仕様を変える PR の errors', {}, () => {
+    write('src/a.js', lines(21));
+    edit((t) => t.replace('| 1 | 常時 | x |', '| 1 | 常時 | y |'));
+  }, specCount(1, ['受入基準']));
+  const without = scenario('機能仕様の表示(合否): 仕様を変えない同じ PR の errors', {}, () => {
+    write('src/a.js', lines(21));
+  }, specCount(0));
+  n++;
+  const same = JSON.stringify(withSpec.errors) === JSON.stringify(without.errors) && JSON.stringify(withSpec.warnings) === JSON.stringify(without.warnings);
+  console.log(`${same ? 'ok  ' : 'NG  '} 機能仕様の表示は errors・warnings を変えない`);
+  if (!same) failures++;
+  // 単体
+  const u = (name, ok) => {
+    n++;
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
+  };
+  u('specSections: 見出しが無い節は null、text が null なら3節とも null', specSections('# x\n').受入基準 === null && Object.values(specSections(null)).every((v) => v === null));
+  const dup = specSections('## 前提\n\na\n\n## 背景\n\nb\n\n## 前提\n\nc\n').前提;
+  u('specSections: 同じ見出しが複数あれば出現順につなぐ', dup.includes('a') && dup.includes('c') && !dup.includes('b'));
+  u('changedSpecSections: 見出しの語は完全一致(「前提条件」は数えない)', changedSpecSections('## 前提条件\n\na\n', '## 前提条件\n\nb\n').length === 0);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
