@@ -331,6 +331,30 @@ export function prRecordFromCopy(copy) {
   };
 }
 
+/**
+ * ホスティングから gate-g5 の結果を読めない PR の欠落の文。PR の記録は読めたが head の check-runs に gate-g5 が無い場合は、
+ * マージの時点の写し(record-copy が足す checks.gate_g5)で、保持切れの可能性と、必須チェックを経ていない可能性を書き分ける
+ * (process-compass #333 / ADR-0135 / IMPL-0244)。どの場合も欠落に数え、写しの値で G-5 の充足に数えない
+ * (照合できない写しで数えない。ADR-0109 決定2 と同じ向き)。日数は mergedAt と now の差で、表示にだけ使う(分岐に使わない)。
+ * 限界: 欄を足す前にマージした PR と、写しの取り出しで check run を読めなかった PR は区別できない
+ */
+export function g5MissingText({ number, recordFound, fetchError = null, mergedAt = null, now = null, copyG5 = null }) {
+  if (!recordFound) {
+    return `PR #${number}: gate-g5 の結果の記録がありません(PR の記録を gh で取得できず(${fetchError ?? '理由不明'})、写しで対応づけた PR。写しの head の check-runs にも gate-g5 が無い。gh で集約し直す(ワークフローの GITHUB_TOKEN には checks: read が要る))`;
+  }
+  const t0 = Date.parse(mergedAt ?? '');
+  const t1 = now instanceof Date ? now.getTime() : Date.parse(now ?? '');
+  const days = Number.isFinite(t0) && Number.isFinite(t1) ? Math.max(0, Math.floor((t1 - t0) / 86400000)) : null;
+  const since = days === null ? '' : `マージから ${days} 日`;
+  if (copyG5?.found === true) {
+    return `PR #${number}: gate-g5 の結果をホスティングから読めません。マージの時点の写しは、gate-g5 の結論を ${copyG5.conclusion ?? '不明'}(check run ${copyG5.id ?? '?'}、完了 ${copyG5.completed_at ?? '不明'})と記録しています。基盤の保持期間を過ぎて消えた可能性があります${since ? `(${since})` : ''}。写しの値はホスティングと照合できないため、G-5 の充足には数えません`;
+  }
+  if (copyG5?.found === false) {
+    return `PR #${number}: gate-g5 の結果の記録がありません。マージの時点の写しにも gate-g5 の check run がありません(必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる)`;
+  }
+  return `PR #${number}: gate-g5 の結果の記録がありません。基盤の保持期間を過ぎて読めない可能性と、必須チェックを経ずにマージされた可能性を、この記録からは区別できません(${since ? `${since}。` : ''}マージの時点の gate-g5 の写しが無い)。ブランチ保護の適用を確かめる`;
+}
+
 const stripReviewComments = (s) => String(s ?? '').replace(/<!--[\s\S]*?-->/g, '');
 
 /**
@@ -2119,6 +2143,9 @@ if (isMain) {
       // 受信箱のラベル(停止の申し立ての保留に使う。第7章 7.11)
       labels: (Array.isArray(d?.labels) ? d.labels : []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean),
       g5: g5 ? (g5.conclusion ?? g5.state ?? 'unknown').toLowerCase() : 'unknown',
+      // マージの時点の写しの gate-g5 の結論(record-copy の checks.gate_g5)とマージの時刻。無ければ null。G-5 の充足には数えない(g5MissingText)
+      g5AtMerge: copyEntry?.copy?.checks?.gate_g5 ?? null,
+      mergedAt: rest?.mergedAt ?? copyEntry?.copy?.merged_at ?? null,
       // 作成側の検証の記載(PR 本文「検証方法と結果」)。レビュアの挙動要約ではない
       authorVerificationPresent: Boolean(sectionOf(d?.body, '検証方法と結果')),
       // 作成を指示した者と、その出所。declared(PR 本文の欄) / default(既定値: PR の作成者と、開発者の席の責任者)
@@ -2961,7 +2988,7 @@ if (isMain) {
   // gate-g5 の成功を持たない PR は欠落である。結果の記録が無い PR(unknown)も含める。ブランチ保護(必須チェック)を
   // 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
   for (const p of [...prs, ...recordPrs]) {
-    if (p.g5 === 'unknown') gaps.push(`PR #${p.number}: gate-g5 の結果の記録がありません(${p.recordFound ? '必須チェックを経ずにマージされた可能性。ブランチ保護の適用を確かめる。PR の head の check-runs にも gate-g5 が無い' : `PR の記録を gh で取得できず(${p.fetchError ?? '理由不明'})、写しで対応づけた PR。写しの head の check-runs にも gate-g5 が無い。gh で集約し直す(ワークフローの GITHUB_TOKEN には checks: read が要る)`})`);
+    if (p.g5 === 'unknown') gaps.push(g5MissingText({ number: p.number, recordFound: p.recordFound, fetchError: p.fetchError, mergedAt: p.mergedAt, now: new Date(), copyG5: p.g5AtMerge }));
     else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
   }
 
@@ -3862,6 +3889,8 @@ if (isMain) {
           success: count(prs, (p) => p.g5 === 'success'),
           notSuccess: count(prs, (p) => p.g5 !== 'success' && p.g5 !== 'unknown'),
           notRecorded: count(prs, (p) => p.g5 === 'unknown'),
+          // 読めない PR のマージの時点の写しの gate-g5 の結論(g5AtMerge。照合できない値。G-5 の充足には数えない。#333)
+          notRecordedAtMerge: prs.filter((p) => p.g5 === 'unknown').map((p) => ({ number: p.number, g5AtMerge: p.g5AtMerge ?? null })),
         }
       : NO_RECORD,
     test: phase('test', 'test'),
@@ -4586,7 +4615,7 @@ if (isMain) {
     },
     inRange: { forms: records.length, branchForms: branchFormsInRange.map((g) => g.file), judgements: copyJudgementsInRange.length, g6Approvals: copyG6InRange.map((p) => p.number) },
     attribution: { backed: attribution.backed.length, selfAttested: attribution.selfAttested, clerical: attribution.clerical },
-    recordPrs: recordPrs.map((p) => ({ number: p.number, approvers: p.g6.approvers, files: p.files, g5: p.g5 })),
+    recordPrs: recordPrs.map((p) => ({ number: p.number, approvers: p.g6.approvers, files: p.files, g5: p.g5, g5AtMerge: p.g5AtMerge ?? null })),
   };
   // AI自律レベル(第5章 5.4.4・5.4.6)。登録した変更種別ごとの現在のレベル・停止・差し戻し率の窓。
   // 委任の判定(check-delegation)と同じ導出を、出荷の終点の日で使う。判定不能を「異常なし」と出さない

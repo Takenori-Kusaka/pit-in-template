@@ -111,6 +111,8 @@ jobs:
       - run: node scripts/gate/test-aggregate-records.mjs
       # 出荷の証跡の一式の写しと digest の一覧(process-compass #333 / ADR-0135。IMPL-0521)
       - run: node scripts/gate/test-evidence-manifest.mjs
+      # ホスティングから gate-g5 の結果を読めない PR の欠落の文の書き分け(process-compass #333 / ADR-0135。IMPL-0244)
+      - run: node scripts/gate/test-g5-missing.mjs
       # 記録用ブランチの履歴の走査・先頭の固定・署名の要否・置き場の規則・書き込める主体の開示(process-compass #379 / ADR-0109)
       - run: node scripts/gate/test-records-history.mjs
       # 検査の道具を動かす Node の版の固定(process-compass #377)
