@@ -3,15 +3,16 @@
 // PR の時点の表示(check-pr.mjs 4c)が使う。出荷の証跡の集約(IMPL-0241 / #355)が同じ定義を使えるよう、節の取り出しを1か所に置く。
 //
 // 比較の形: 改行を LF に揃え、各行の行末の空白を除き、本文の先頭と末尾の空行を除く。行内の空白・途中の空行・表の整形は変えない。
-// 表示では偽の一致・不一致が害にならないが、合否に使う場合は同じ規則でよいかを決め直す(#355)。
+// 出荷の証跡の集約(IMPL-0241 / #355)は、同じ規則で文字列の一致を合否にする。整形だけの変更も不一致になる
+// (戻り幅は G-4 の判定者が決める。機械が先に「意味は同じ」と決めない)。
 
 export const SPEC_FILE = /^specs\/F-\d+\/spec\.md$/;
 export const CONFIRMED_SECTIONS = ['受入基準', '前提', 'スコープ外'];
 
 /** 受入基準の節の見出し。spec-lint.mjs と同じ定義(階層は問わず、語は前方一致)。定義を2か所に持たない */
 export const AC_HEADING = /^(#{1,6})\s*受入基準/;
-/** 前提・スコープ外の見出し(階層は問わず、語は完全一致) */
-const OTHER_HEADING = /^(#{1,6})\s+(前提|スコープ外)\s*$/;
+/** 前提・スコープ外の見出し(階層は問わず、語は前方一致。標準の様式の見出し「スコープ外(やらないこと)」を読む。#355)。空白なしの「#前提」は見出しに数えない */
+export const OTHER_HEADING = /^(#{1,6})\s+(前提|スコープ外)/;
 const ANY_HEADING = /^(#{1,6})\s+\S/;
 const FENCE = /^(```|~~~)/;
 
@@ -77,4 +78,34 @@ export function changedSpecSections(baseText, headText) {
   const a = specSections(baseText);
   const b = specSections(headText);
   return CONFIRMED_SECTIONS.filter((s) => a[s] !== b[s]);
+}
+
+/** 全文の正規化(節の取り出しと同じ規則: 改行・行末の空白・端の空行だけ)。本文が無ければ null */
+export function normalizeSpecText(text) {
+  if (text === null || text === undefined) return null;
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\s+$/, ''));
+  let i = 0;
+  let j = lines.length;
+  while (i < j && lines[i] === '') i++;
+  while (j > i && lines[j - 1] === '') j--;
+  return lines.slice(i, j).join('\n');
+}
+
+/**
+ * 判定した版の本文と、先端の本文を3節ごとに比べる(合否に使う3値。IMPL-0241 / #355)。
+ * 節ごとの結果: 'match'(両側が文字列で等しい) / 'mismatch'(等しくない。片側だけ null を含む) /
+ * 'unreadable'(両側 null。一致に数えない)。fullMatch は全文(同じ正規化)の一致。
+ * 表示用の changedSpecSections は両側 null を変更に数えないままで、この関数とは別である
+ */
+export function compareSpecSections(judgedText, tipText) {
+  const a = specSections(judgedText);
+  const b = specSections(tipText);
+  const sections = {};
+  for (const s of CONFIRMED_SECTIONS) {
+    if (a[s] === null && b[s] === null) sections[s] = 'unreadable';
+    else sections[s] = a[s] === b[s] ? 'match' : 'mismatch';
+  }
+  const na = normalizeSpecText(judgedText);
+  const nb = normalizeSpecText(tipText);
+  return { sections, fullMatch: na !== null && nb !== null && na === nb };
 }

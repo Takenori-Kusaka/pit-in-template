@@ -54,6 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord, lastCommitOf, parseCopy, headOfCopy, targetOfForm, judgeOfForm, scanRecordsHistory, classifyRecordsHistory, isAncestorCommit, recordsSignatureRequired } from './records.mjs';
 // 写し・様式の読み方の正本は records.mjs。試験(test-aggregate-records.mjs)が従来の名前で引けるよう、ここからも出す
 export { parseCopy, targetOfForm, judgeOfForm };
+import { specRecheck, specRecheckGapText, specRecheckSummary, targetVersionOfForm } from './spec-recheck.mjs';
 import {
   loadConfig,
   loadAdapter,
@@ -994,6 +995,39 @@ export function supersededByLater(g, pool, sameTarget) {
 export function reviewSupersededByLater(j, judgements, spec) {
   const at = Date.parse(j.submittedAt ?? '');
   return judgements.some((o) => o !== j && o.gate === j.gate && o.result !== '通過' && (o.specs ?? []).includes(spec) && o.judgeOk !== false && Date.parse(o.submittedAt ?? '') >= at);
+}
+
+/**
+ * 宣言と実態のずれ(標準 第3章 3.13.5)。純関数。ずれごとに { kind: 'headcount' | 'performer', text } を返す。
+ * 人数は、承認者の数が宣言した規模の上限を上回る場合に限る(size-10plus など上限の無い規模と、下回る向きは検出しない)。
+ * 担い手の識別は、コミットの共著者の記録と宣言したモデルの名称の部分一致で比べる。版を含まない記録と名称だけの宣言では、
+ * 版の違いを検出しない。人の共著者を検出することがある。ずれは警告で、記載の欠落には数えない
+ */
+export function declarationDrift({ sizeAnswer, sizeLabel, approvers, declaredModels, coAuthors }) {
+  const out = [];
+  const sizeLimit = { 'size-1-2': 2, 'size-3-9': 9 }[sizeAnswer];
+  const n = new Set(approvers ?? []).size;
+  if (sizeLimit && n > sizeLimit) {
+    out.push({
+      kind: 'headcount',
+      text:
+        `人数: 宣言したチーム規模は ${sizeLabel ?? sizeAnswer} だが、期間中の承認者は ${n} 名いる。` +
+        '直し方: /process-change の種別 headcount で、人数の境界の通過として記録する(補助ファイル .claude/skills/process-change/kinds/headcount.md)',
+    });
+  }
+  const norm = (s) => String(s).toLowerCase().replace(/<[^>]*>/g, '').replace(/[^a-z0-9]/g, '');
+  const declared = (declaredModels ?? []).map((m) => norm(m ?? '')).filter(Boolean);
+  const undeclared = (coAuthors ?? []).filter((c) => !declared.some((m) => norm(c).includes(m) || m.includes(norm(c))));
+  if (undeclared.length) {
+    out.push({
+      kind: 'performer',
+      text:
+        `担い手の識別: 宣言にない共著者の記録がある(${undeclared.join(' / ')})。人の共著者を含む場合がある。` +
+        '直し方: AI の担い手なら、/process-change の種別 performer で、その席の担い手の識別(モデルの名称と版)を宣言する(補助ファイル .claude/skills/process-change/kinds/performer.md)。' +
+        '宣言した版と異なる版がコミットに残っているなら、担い手の識別の変更(変化点)として扱う。人の共著者なら宣言は要らない。どちらかを出荷判定者が確かめる',
+    });
+  }
+  return out;
 }
 
 // --- 集約の本体 ----------------------------------------------------------------
@@ -2377,6 +2411,8 @@ if (isMain) {
         notExemptBecause: exempt ? [] : notRecord.slice(0, 3),
         files: files.length,
         specs: c.specs ?? [],
+        // 変更したファイルが指す機能仕様(specs/F-NNN/spec.md)。確定した版の再確認(IMPL-0241)の対象
+        specFilesTouched: [...new Set(files.map((x) => x.match(/^specs\/(F-\d+)\/spec\.md$/)?.[1]).filter(Boolean))],
         independent,
         instructedBy: independent ? [...independent.instructors, ...independent.unresolvedInstructors] : [],
       };
@@ -3041,6 +3077,41 @@ if (isMain) {
         '機能仕様承認(G-4)の判定記録(結果が通過で、「対象」に仕様の識別子。または仕様の PR への判定者本人のレビュー(宣言行 G-4: 通過)の写し)がありません(第4章 G-7 基準5)'
     );
   }
+
+  // 確定した版の再確認(IMPL-0241 / #355)。出荷の範囲で spec.md が変わった機能ごとに、効いている G-4 の通過の記録のいずれかが
+  // 対象とする版と範囲の先端とで、3節の本文の文字列が一致するかを比べる。不一致は記載の欠落。版に届かない場合は未確認(欠落にしない)
+  const specRecheckItems = (() => {
+    if (!isActive('g4')) return [];
+    const ids = [...new Set([...prs.flatMap((p) => p.specsTouched ?? []), ...directProduct.flatMap((d) => d.specFilesTouched ?? [])])].sort();
+    const readSpec = (ref, id) => (ref ? gitText(['show', `${ref}:specs/${id}/spec.md`]) : null);
+    const features = ids.map((id) => ({ id, tipText: readSpec(to, id) })).filter((f) => f.tipText !== null);
+    const passes = [];
+    for (const f of features) {
+      for (const g of gateDetails) {
+        if (!(/G-4/.test(g.gate ?? '') && passed(g) && specRe(f.id).test(String(g.target ?? '')) && !supersededByLater(g, gateDetails, (o) => specRe(f.id).test(String(o.target ?? ''))))) continue;
+        const v = targetVersionOfForm(g.target);
+        let ref = null;
+        let why = null;
+        if (v.kind === 'commit') ref = v.commit;
+        else if (v.kind === 'pr') {
+          const head = headOfCopy(recordSources.copies.get(v.pr)?.copy);
+          if (head) ref = head;
+          else why = `PR #${v.pr} の写しが無く、判定の版を特定できない`;
+        } else why = '様式の「対象」に版が無い';
+        const text = ref ? readSpec(ref, f.id) : null;
+        if (ref && text === null) why = `判定の版 ${String(ref).slice(0, 7)} のオブジェクトを取得できない`;
+        passes.push({ feature: f.id, source: g.file, ref, text, unresolved: text === null ? why : null });
+      }
+      for (const j of reviewJudgements) {
+        if (!(j.gate === 'G-4' && j.result === '通過' && j.headMatch && j.judgeOk !== false && j.specs.includes(f.id) && !reviewSupersededByLater(j, reviewJudgements, f.id))) continue;
+        const text = j.commitId ? readSpec(j.commitId, f.id) : null;
+        passes.push({ feature: f.id, source: `PR #${j.pr} のレビュー ${j.reviewId ?? ''}`.trim(), ref: j.commitId ?? null, text, unresolved: text === null ? (j.commitId ? `判定の版 ${String(j.commitId).slice(0, 7)} のオブジェクトを取得できない` : '写しに commit_id が無い') : null });
+      }
+    }
+    return specRecheck({ features, passes });
+  })();
+  for (const it of specRecheckItems) if (it.result === 'mismatch') gaps.push(specRecheckGapText(it));
+  const specRecheckInfo = { ...specRecheckSummary(specRecheckItems), items: specRecheckItems };
 
   // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版がマージ時の head と一致しない判定を欠落に数える(IMPL-0129)
   gaps.push(...unconfirmedVersionGaps(reviewJudgements));
@@ -4592,23 +4663,16 @@ if (isMain) {
   }
   generation.decisionAttribution = decisionAttribution;
 
-  // 宣言と実態のずれ(標準 第3章 3.13.5)。検出したずれは変化点の起票として扱う
-  const drift = [];
+  // 宣言と実態のずれ(標準 第3章 3.13.5)。検出したずれは変化点の起票として扱う。起票するのは人で、機械は起票しない
   const approvers = new Set(prs.flatMap((p) => p.g6.approvers));
-  const sizeLimit = { 'size-1-2': 2, 'size-3-9': 9 }[config.answers?.['q-team-size']];
-  if (sizeLimit && approvers.size > sizeLimit) {
-    drift.push(`人数: 宣言したチーム規模は ${config.answerLabels?.['q-team-size'] ?? config.answers['q-team-size']} だが、期間中の承認者は ${approvers.size} 名いる`);
-  }
-  const norm = (s) => String(s).toLowerCase().replace(/<[^>]*>/g, '').replace(/[^a-z0-9]/g, '');
-  const declaredModels = declaredPerformers.map((p) => norm(p.model ?? '')).filter(Boolean);
-  const undeclared = observedCoAuthors.filter((c) => !declaredModels.some((m) => norm(c).includes(m) || m.includes(norm(c))));
-  if (undeclared.length) {
-    drift.push(
-      `担い手の識別: 宣言にない共著者の記録がある(${undeclared.join(' / ')})。人の共著者を含む場合がある。` +
-        '直し方: AI の担い手なら、/process-change の種別 performer で、その席の担い手の識別(モデルの名称と版)を宣言する(補助ファイル .claude/skills/process-change/kinds/performer.md)。' +
-        '宣言した版と異なる版がコミットに残っているなら、担い手の識別の変更(変化点)として扱う。人の共著者なら宣言は要らない。どちらかを出荷判定者が確かめる'
-    );
-  }
+  const driftItems = declarationDrift({
+    sizeAnswer: config.answers?.['q-team-size'],
+    sizeLabel: config.answerLabels?.['q-team-size'],
+    approvers: [...approvers],
+    declaredModels: declaredPerformers.map((p) => p.model ?? ''),
+    coAuthors: observedCoAuthors,
+  });
+  const drift = driftItems.map((d) => d.text);
 
   // 承認レビューの写しと記録用ブランチの開示(項目1)。読めた・読めない、範囲との一致、不一致、所見、判定者本人のレビューの判定、
   // 記録の帰属。値であり、評価を足さない
@@ -5135,6 +5199,7 @@ if (isMain) {
       machine: 'partial',
       result:
         `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件。` +
+        `確定した版の再確認(範囲で変わった機能仕様): 一致 ${specRecheckInfo.match} / 不一致 ${specRecheckInfo.mismatch} / 未確認 ${specRecheckInfo.unconfirmed}(未確認は欠落に数えない。出荷判定者が判定記録の版と突合する)。` +
         `当該${period ? '期間' : '出荷の範囲'}の判定記録の件数: ${gatesInRange.map((g) => `${g.label} ${g.records}`).join(' / ') || 'なし'}`,
       humanReconcile: '適用するゲートごとの判定記録の件数が、当該の出荷に対応しているか(G-1〜G-3・G-7・G-8 の、出荷に対応する件数は機械で決められない)',
     },
@@ -5217,6 +5282,8 @@ if (isMain) {
     criteria,
     gatesInRange,
     specsWithoutG4,
+    // 確定した版の再確認(IMPL-0241)。機能ごとの3値と未確認の理由
+    specRecheck: specRecheckInfo,
     // G-6 を事後へ移した変更ごとの、事後の抜き取りの記録
     sampling,
     generatedAt: new Date().toISOString(),
@@ -6111,7 +6178,7 @@ if (isMain) {
     R.push('');
     R.push(...renderContinuityGeneration(A.continuity, A.stopReleases, external));
     if (A.drift.length) {
-      R.push('**宣言と実態のずれ**(体制の変化点として起票してください):');
+      R.push('**宣言と実態のずれ**(体制の変化点として起票してください。機械は起票しません。起票されたかは出荷判定者が確かめます):');
       R.push('');
       if (external) R.push(`- ${A.drift.length} 件(内容は組織の内側の開示にある)`);
       else for (const d of A.drift) R.push(`- ${d}`);

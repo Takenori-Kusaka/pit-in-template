@@ -109,6 +109,9 @@ jobs:
       - run: node scripts/gate/test-records.mjs
       - run: node scripts/gate/test-next-records.mjs
       - run: node scripts/gate/test-aggregate-records.mjs
+      # 確定した版の再確認(3節の文字列の一致による合否。IMPL-0241)と、宣言と実態のずれの検出(IMPL-0023)。process-compass #355
+      - run: node scripts/gate/test-spec-recheck.mjs
+      - run: node scripts/gate/test-aggregate-drift.mjs
       # 出荷の証跡の一式の写しと digest の一覧(process-compass #333 / ADR-0135。IMPL-0522)
       - run: node scripts/gate/test-evidence-manifest.mjs
       # ship-evidence.yml の手順の本文(前回の証跡・取り込み・verify の一式の検査)を、偽の gh で動かす(IMPL-0522・IMPL-0246)

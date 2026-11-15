@@ -1119,7 +1119,7 @@ ${instr}
     git('add', '-A');
     git('commit', '-q', '-m', 'spec heading restore');
   }
-  // 前提・スコープ外も階層を問わない(語は完全一致)。基底の見出しを「### 前提」に替えて、本文を変えると出る
+  // 前提・スコープ外も階層を問わない(語は前方一致。#355)。基底の見出しを「### 前提」に替えて、本文を変えると出る
   {
     const orig = read(SPEC);
     git('switch', '-q', 'main');
@@ -1133,6 +1133,24 @@ ${instr}
     write(SPEC, orig);
     git('add', '-A');
     git('commit', '-q', '-m', 'spec heading restore (premise)');
+  }
+  // 見出しの語は前方一致(#355)。「前提条件」と、標準の様式の見出し「スコープ外(やらないこと)」の本文の変更でも表示が出る
+  {
+    const orig = read(SPEC);
+    git('switch', '-q', 'main');
+    write(SPEC, orig.replace('## 前提', '## 前提条件').replace('## スコープ外', '## スコープ外(やらないこと)'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading variant (prefix)');
+    scenario('機能仕様の表示: 見出しが「前提条件」でも、本文を変えると前提の節として出る', {}, () => {
+      edit((t) => t.replace('登録済み', '未登録'));
+    }, passes(specCount(1, ['前提'])));
+    scenario('機能仕様の表示: 見出しが「スコープ外(やらないこと)」でも、本文を変えるとスコープ外の節として出る', {}, () => {
+      edit((t) => t.replace('一括招待', '一括削除'));
+    }, passes(specCount(1, ['スコープ外'])));
+    git('switch', '-q', 'main');
+    write(SPEC, orig);
+    git('add', '-A');
+    git('commit', '-q', '-m', 'spec heading restore (prefix)');
   }
   scenario('機能仕様の表示: 実装計画(plan.md)だけの変更は出ない', {}, () => {
     write('specs/F-001/plan.md', read('specs/F-001/plan.md') + '| Task-3 | 追加 |\n');
@@ -1158,7 +1176,8 @@ ${instr}
   u('specSections: 見出しが無い節は null、text が null なら3節とも null', specSections('# x\n').受入基準 === null && Object.values(specSections(null)).every((v) => v === null));
   const dup = specSections('## 前提\n\na\n\n## 背景\n\nb\n\n## 前提\n\nc\n').前提;
   u('specSections: 同じ見出しが複数あれば出現順につなぐ', dup.includes('a') && dup.includes('c') && !dup.includes('b'));
-  u('changedSpecSections: 見出しの語は完全一致(「前提条件」は数えない)', changedSpecSections('## 前提条件\n\na\n', '## 前提条件\n\nb\n').length === 0);
+  u('changedSpecSections: 見出しの語は前方一致(「前提条件」「スコープ外(やらないこと)」の変更を数える。#355)', changedSpecSections('## 前提条件\n\na\n', '## 前提条件\n\nb\n').join() === '前提' && changedSpecSections('## スコープ外(やらないこと)\n\na\n', '## スコープ外(やらないこと)\n\nb\n').join() === 'スコープ外');
+  u('changedSpecSections: 空白なしの「##前提」は見出しに数えない', changedSpecSections('##前提\n\na\n', '##前提\n\nb\n').length === 0);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
