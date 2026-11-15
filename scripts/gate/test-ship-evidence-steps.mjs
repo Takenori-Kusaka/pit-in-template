@@ -274,6 +274,55 @@ const addShipFiles = (d, name = '2026-11-15-start..v1', { mdOnly = false } = {})
   check('IMPL-0521:ng 基底ブランチにある一式の変更(追加以外)は失敗する', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
 }
 
+{
+  // 一覧の形が壊れた置き場の追加だけ(P8)。例外で検査が落ちても verify は通らない
+  const r = shipScenario({
+    ship: true,
+    prepare: (d) => {
+      addShipFiles(d);
+      fs.writeFileSync(path.join(d, 'docs', 'evidence', '2026-11-15-start..v1', 'manifest.json'), '{"files":[null]}');
+    },
+  });
+  check('IMPL-0521:ng 一覧が {"files":[null]} の一式の追加は失敗する(黙って通らない)', r.status !== 0 && /fails=|不一致|一致しない/.test(r.out) , r.out);
+}
+{
+  // 基底の一式の変更(M)+ 壊れた一覧の置き場の追加(P2)。追加以外の変更の検出が、壊れた一覧で失われない
+  const d0 = mkRepo();
+  bundle(d0, 'old', '2026-10-01T00:00:00.000Z', { x: 0 });
+  git(d0, 'add', '-A', '-f');
+  git(d0, 'commit', '-q', '-m', 'old bundle');
+  git(d0, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  git(d0, 'checkout', '-q', '-b', 'pr-head');
+  fs.writeFileSync(path.join(d0, 'docs', 'evidence', 'old', 'evidence.json'), '{"x":9}\n');
+  addShipFiles(d0);
+  fs.writeFileSync(path.join(d0, 'docs', 'evidence', '2026-11-15-start..v1', 'manifest.json'), '{"files":[null]}');
+  git(d0, 'add', '-A', '-f');
+  git(d0, 'commit', '-q', '-m', 'edit');
+  git(d0, 'checkout', '-q', 'main');
+  const out = path.join(d0, 'gh-output.txt');
+  fs.writeFileSync(out, '');
+  const r = runStep(d0, compareBody, { BASE: 'main', SHIP: 'true', GITHUB_OUTPUT: out.replace(/\\/g, '/'), RECORDS_BRANCH: 'records' });
+  check('IMPL-0521:ng 基底の一式の変更と壊れた一覧の追加を併せても、追加以外の変更を失敗にする', r.status !== 0 && /追加以外の変更\(M\)/.test(r.out), r.out);
+}
+for (const [label, stub] of [
+  ['例外で終了コード 1・出力なし', 'process.exit(1);'],
+  ['異常終了(終了コード 7)', 'process.exit(7);'],
+]) {
+  // スクリプトが失敗の理由を出さずに落ちても、ワークフローの手順は成功にしない
+  const d = mkRepo();
+  git(d, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  git(d, 'checkout', '-q', '-b', 'pr-head');
+  addShipFiles(d);
+  git(d, 'add', '-A', '-f');
+  git(d, 'commit', '-q', '-m', 'pr');
+  git(d, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(d, 'scripts', 'gate', 'evidence-manifest.mjs'), stub);
+  const out = path.join(d, 'gh-output.txt');
+  fs.writeFileSync(out, '');
+  const r = runStep(d, compareBody, { BASE: 'main', SHIP: 'true', GITHUB_OUTPUT: out.replace(/\\/g, '/'), RECORDS_BRANCH: 'records' });
+  check(`IMPL-0521:ng 一式の検査が${label}でも、手順は成功にしない`, r.status !== 0 && /証跡の一式の検査/.test(r.out), r.out);
+}
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 if (failed) {
   console.error(`\n${failed} 件失敗`);

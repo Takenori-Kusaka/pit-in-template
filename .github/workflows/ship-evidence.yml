@@ -158,11 +158,11 @@ jobs:
           fi
 
       # 保証の開示の項目1・3・6 へ、前回の出荷の値を併記するための入力。
-      # 取得できない場合(初回、成果物の保存期間の経過)は「前回なし」と出力される
+      # 取得できない場合(初回、成果物の保存期間の経過)は、基底ブランチの写しから読む。写しも読めないときは、見た場所と理由を添えて「前回なし」とする
       # 成果物の取得の失敗(成果物が無い実行を選んだ・保持の経過など)で手順を終えない(bash -e が既定のため、失敗は if で明示して受ける。
       # GitHub の文書: shell を指定しない run は Linux で `bash -e {0}`。ADR-0135)。取れないときは、基底ブランチの写しを digest の一覧と
       # 照合して読む(evidence-manifest.mjs previous)。写しも読めないときは、見た場所と読まなかった理由を警告と evidence/previous-source.json
-      # に出し、集約が evidence.json の previousSource とレポートの「前回なし」に出す(黙って「前回なし」にしない)
+      # に出し、集約が evidence.json の previousSource と、品質レポート・外へ渡す開示の「前回の証跡: なし」の1行に出す(黙って「前回なし」にしない)
       - name: 前回の出荷の証跡を取り込む
         continue-on-error: true
         env:
@@ -487,7 +487,9 @@ jobs:
           # 証跡の一式(docs/evidence/)の検査。追加だけ・運ぶのは出荷の PR だけ・出荷の PR には一式がある(evidence.json と manifest.json)・
           # digest の一覧との一致。スクリプトは基底ブランチのもの。PR の側の置き場(/tmp/pr/...)を渡す。一覧は置き場の自己整合しか示さない(ADR-0135)
           ev_out=$(node scripts/gate/evidence-manifest.mjs changes --changes /tmp/changes.txt --pr-root /tmp/pr --ship "$SHIP") && ev_rc=0 || ev_rc=$?
+          # 終了コードが 0 でも 1 でもないとき、または 1 なのに失敗の行が無いとき(例外で落ちた)は、成功にせず失敗にする
           if [ "$ev_rc" -gt 1 ]; then fail "証跡の一式の検査を実行できません(終了コード $ev_rc)"; fi
+          if [ "$ev_rc" -ne 0 ] && [ -z "$ev_out" ]; then fail "証跡の一式の検査が失敗の理由を出さずに終わりました(終了コード $ev_rc)"; fi
           while IFS= read -r line; do
             [ -z "$line" ] || fail "$line"
           done <<< "$ev_out"

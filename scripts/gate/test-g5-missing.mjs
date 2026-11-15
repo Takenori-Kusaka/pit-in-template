@@ -55,10 +55,12 @@ const base = { number: 12, recordFound: true, mergedAt: '2026-08-01T00:00:00Z', 
   check('IMPL-0244:ng 写しの結論が null(実行中)なら状態を文に出す', /状態 in_progress/.test(t) && /充足には数えません/.test(t));
 }
 
-// 集約の通し。template の写しを一時のリポジトリへ作り、PR #7 のマージと記録用ブランチの写しを置き、偽の gh(AGGREGATE_GH_FAKE)で
-// 集約を実際に動かす。ホスティングの rollup と check-runs の応答、写しの checks.gate_g5 を変えて、欠落と集計を確かめる。
+// 集約の通し。template の写しを一時のリポジトリへ作り、PR #7 のマージと記録用ブランチの写しを置き、偽の gh(PATH の先頭に置いた `gh`。
+// test-material-records-more.mjs と同じ流儀。集約のコードには試験用の分岐を持たせない)で集約を実際に動かす。ホスティングの rollup と check-runs の応答、写しの checks.gate_g5 を変えて、欠落と集計を確かめる。
 // 実装を壊すと落ちること(写しの値で充足に数える・欠落に入れない・書き分けをやめる)は、この通しが確かめる
-function runAggregate({ copy, rollup }) {
+// PATH に偽の gh を置く形は Windows では動かせない。既存の試験と同じく読み飛ばし、CI の Linux で確かめる
+const CAN_E2E = process.platform !== 'win32';
+function runAggregate({ copy, rollup, prevSource = null }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'g5e2e-'));
   const work = path.join(tmp, 'repo');
   const root = path.join(here, '..', '..');
@@ -91,10 +93,13 @@ function runAggregate({ copy, rollup }) {
   const body = '## 変更の概要\n\nx\n\n## 検証方法と結果\n\n単体テストを実行した\n\n## リスク区分\n\nR3\n';
   const state = path.join(tmp, 'state.json');
   fs.writeFileSync(state, JSON.stringify({ MC, F, body, rollup }));
-  const fake = path.join(tmp, 'fakegh.mjs');
+  const binDir = path.join(tmp, 'bin');
+  fs.mkdirSync(binDir);
+  const fake = path.join(binDir, 'gh');
   fs.writeFileSync(
     fake,
-    `import fs from 'node:fs';
+    `#!/usr/bin/env node
+const fs = require('node:fs');
 const a = process.argv.slice(2);
 const st = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, 'utf8'));
 if (a[0] === 'pr' && a[1] === 'view') {
@@ -105,8 +110,10 @@ if (a[0] === 'pr' && a[1] === 'view') {
   process.exit(0);
 }
 if (a[0] === 'api' && a[1].includes('check-runs')) { process.stdout.write(JSON.stringify({ check_runs: [] })); process.exit(0); }
+if (a[0] === '--version') { process.stdout.write('gh version 2.0.0 (fake)\\n'); process.exit(0); }
 process.stderr.write('fake gh: unsupported ' + a.join(' ')); process.exit(1);
 `,
+    { mode: 0o755 },
   );
   if (copy !== 'nocopy') {
     git('checkout', '-q', '--orphan', 'records');
@@ -122,12 +129,14 @@ process.stderr.write('fake gh: unsupported ' + a.join(' ')); process.exit(1);
     git('checkout', '-q', 'main');
   }
   fs.mkdirSync(path.join(work, 'evidence'), { recursive: true });
+  if (prevSource) fs.writeFileSync(path.join(work, 'evidence', 'previous-source.json'), JSON.stringify(prevSource));
   const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs', '--from', 'v0', '--to', 'main'], {
     cwd: work,
     encoding: 'utf8',
-    env: { ...process.env, AGGREGATE_GH_FAKE: fake, FAKE_STATE: state, GITHUB_REPOSITORY: 'o/r' },
+    env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}`, FAKE_STATE: state, GITHUB_REPOSITORY: 'o/r' },
     maxBuffer: 64 * 1024 * 1024,
   });
+  const readText = (n) => (fs.existsSync(path.join(work, 'evidence', n)) ? fs.readFileSync(path.join(work, 'evidence', n), 'utf8') : '');
   let ev = null;
   try {
     ev = JSON.parse(fs.readFileSync(path.join(work, 'evidence', 'evidence.json'), 'utf8'));
@@ -141,27 +150,42 @@ process.stderr.write('fake gh: unsupported ' + a.join(' ')); process.exit(1);
     }
     return acc;
   };
-  const out = { ev, gaps: (find(ev, 'gaps')[0] ?? []).filter((x) => typeof x === 'string'), gateG5: find(ev, 'gateG5')[0] ?? null, log: `${r.stdout}${r.stderr}`.slice(-800) };
+  const out = { ev, gaps: (find(ev, 'gaps')[0] ?? []).filter((x) => typeof x === 'string'), gateG5: find(ev, 'gateG5')[0] ?? null, log: `${r.stdout}${r.stderr}`.slice(-800), report: readText('quality-report.md'), external: readText('assurance-disclosure.external.md') };
   fs.rmSync(tmp, { recursive: true, force: true });
   return out;
 }
 const g5Gap = (gaps) => gaps.filter((x) => /^PR #7: gate-g5/.test(x));
 
-// IMPL-0244:ok(適合側。ホスティングが gate-g5 の成功を返す PR は、写しの値に依らず文を出さず、充足に数える)
-{
-  const r = runAggregate({ copy: 'success', rollup: 'ok' });
-  check('IMPL-0244:ok 集約の通し: ホスティングが成功を返す PR は欠落にならず success に数える', r.ev !== null && g5Gap(r.gaps).length === 0 && r.gateG5?.success === 1 && r.gateG5?.notRecorded === 0, `${JSON.stringify(r.gateG5)} ${r.log}`);
-}
-// IMPL-0244:ng(違反側。読めない G-5 を、写しの値で充足に数える・欠落に入れない・書き分けない、のいずれかになると落ちる)
-{
-  const r = runAggregate({ copy: 'success', rollup: 'empty' });
-  check('IMPL-0244:ng 集約の通し: 写しが success でも、ホスティングから読めない G-5 は欠落に数え、充足に数えない', g5Gap(r.gaps).length === 1 && /保持期間を過ぎて消えた可能性/.test(g5Gap(r.gaps)[0]) && r.gateG5?.success === 0 && r.gateG5?.notRecorded === 1, `${JSON.stringify(r.gateG5)} ${r.gaps.slice(0, 3).join(' | ')} ${r.log}`);
-  const f = runAggregate({ copy: 'found_false', rollup: 'empty' });
-  check('IMPL-0244:ng 集約の通し: 写しにも check run が無ければ、必須チェックを経ていない可能性の文で欠落に数える', g5Gap(f.gaps).length === 1 && /必須チェックを経ずにマージされた可能性/.test(g5Gap(f.gaps)[0]) && f.gateG5?.success === 0, `${JSON.stringify(f.gateG5)} ${f.log}`);
-  const n = runAggregate({ copy: 'nocopy', rollup: 'empty' });
-  check('IMPL-0244:ng 集約の通し: 写しが無ければ区別できない旨の文で欠落に数える', g5Gap(n.gaps).length === 1 && /区別できません/.test(g5Gap(n.gaps)[0]) && n.gateG5?.success === 0, `${JSON.stringify(n.gateG5)} ${n.log}`);
-  const x = runAggregate({ copy: 'success', rollup: 'fail' });
-  check('IMPL-0244:ng 集約の通し: ホスティングが failure を返す PR は、写しが success でも failure として欠落に数える', g5Gap(x.gaps).some((t) => /gate-g5 が failure です/.test(t)) && x.gateG5?.success === 0, `${JSON.stringify(x.gateG5)} ${x.log}`);
+if (!CAN_E2E) console.log('SKIP 集約の通し(PATH に偽の gh を置く形)は Windows では動かせないため行いません(CI の Linux で確かめる)');
+if (CAN_E2E) {
+  // IMPL-0244:ok(適合側。ホスティングが gate-g5 の成功を返す PR は、写しの値に依らず文を出さず、充足に数える)
+  {
+    const r = runAggregate({ copy: 'success', rollup: 'ok' });
+    check('IMPL-0244:ok 集約の通し: ホスティングが成功を返す PR は欠落にならず success に数える', r.ev !== null && g5Gap(r.gaps).length === 0 && r.gateG5?.success === 1 && r.gateG5?.notRecorded === 0, `${JSON.stringify(r.gateG5)} ${r.log}`);
+  }
+  // IMPL-0244:ng(違反側。読めない G-5 を、写しの値で充足に数える・欠落に入れない・書き分けない、のいずれかになると落ちる)
+  {
+    const r = runAggregate({ copy: 'success', rollup: 'empty' });
+    check('IMPL-0244:ng 集約の通し: 写しが success でも、ホスティングから読めない G-5 は欠落に数え、充足に数えない', g5Gap(r.gaps).length === 1 && /保持期間を過ぎて消えた可能性/.test(g5Gap(r.gaps)[0]) && r.gateG5?.success === 0 && r.gateG5?.notRecorded === 1, `${JSON.stringify(r.gateG5)} ${r.gaps.slice(0, 3).join(' | ')} ${r.log}`);
+    const f = runAggregate({ copy: 'found_false', rollup: 'empty' });
+    check('IMPL-0244:ng 集約の通し: 写しにも check run が無ければ、必須チェックを経ていない可能性の文で欠落に数える', g5Gap(f.gaps).length === 1 && /必須チェックを経ずにマージされた可能性/.test(g5Gap(f.gaps)[0]) && f.gateG5?.success === 0, `${JSON.stringify(f.gateG5)} ${f.log}`);
+    const n = runAggregate({ copy: 'nocopy', rollup: 'empty' });
+    check('IMPL-0244:ng 集約の通し: 写しが無ければ区別できない旨の文で欠落に数える', g5Gap(n.gaps).length === 1 && /区別できません/.test(g5Gap(n.gaps)[0]) && n.gateG5?.success === 0, `${JSON.stringify(n.gateG5)} ${n.log}`);
+    const x = runAggregate({ copy: 'success', rollup: 'fail' });
+    check('IMPL-0244:ng 集約の通し: ホスティングが failure を返す PR は、写しが success でも failure として欠落に数える', g5Gap(x.gaps).some((t) => /gate-g5 が failure です/.test(t)) && x.gateG5?.success === 0, `${JSON.stringify(x.gateG5)} ${x.log}`);
+  }
+
+  // 前回の証跡が無いとき、見た場所と理由を品質レポートと外へ渡す開示の両方に出す(evidence.json の previousSource だけにしない)
+  const ps = { source: 'none', artifact: { status: 'failed', run: '77' }, copies: { root: 'docs/evidence', used: null, looked: [{ dir: 'b2', ok: false, problems: ['sha256 が一覧と一致しません'] }] } };
+  const p = runAggregate({ copy: 'success', rollup: 'ok', prevSource: ps });
+  const has = (t) => /前回の証跡: なし/.test(t) && /成果物: 実行 77 から取得できず/.test(t) && /読まなかった理由: b2 sha256/.test(t);
+  check('IMPL-0244:ng 集約の通し: 前回の証跡が無いとき、見た場所と理由が品質レポートに出る', has(p.report), p.report.slice(0, 300));
+  check('IMPL-0244:ng 集約の通し: 前回の証跡が無いとき、見た場所と理由が外へ渡す開示にも出る', has(p.external), p.external.slice(0, 300));
+  check('IMPL-0244:ng 集約の通し: evidence.json の previousSource にも出る', p.ev?.previousSource?.source === 'none');
+  const line = p.report.split(/\r?\n/).find((l) => l.startsWith('前回の証跡: なし')) ?? '';
+  check('IMPL-0244:ng 出力の文は原因を断定しない(見た場所に無かった事実だけ)', line !== '' && !/(消えた|改ざん|失われた)/.test(line));
+  const q = runAggregate({ copy: 'success', rollup: 'ok' });
+  check('IMPL-0244:ng 読み先の記録が無いときも、記録が無い旨を両方に出す', /previous-source\.json が無く/.test(q.report) && /previous-source\.json が無く/.test(q.external));
 }
 
 // record-copy.yml の静的な確認

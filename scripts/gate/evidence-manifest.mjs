@@ -91,10 +91,24 @@ export function verifyManifest(dir) {
   if (!Array.isArray(m.files)) return [`${MANIFEST_NAME} に files がありません`];
   const listed = new Set();
   for (const f of m.files) {
+    // 一覧の要素の形は PR の側の入力。形が壊れていれば不一致として返す(例外で検査が落ちて黙って通る形にしない)
+    if (f === null || typeof f !== 'object' || typeof f.path !== 'string' || f.path === '') {
+      problems.push(`${MANIFEST_NAME} の files に、path を持たない要素があります`);
+      continue;
+    }
     listed.add(f.path);
     const fp = path.join(dir, f.path);
+    const rel = path.relative(dir, fp);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      problems.push(`${f.path}: 置き場の外を指しています`);
+      continue;
+    }
     if (!fs.existsSync(fp)) {
       problems.push(`${f.path}: 一覧にあるがファイルがありません`);
+      continue;
+    }
+    if (!fs.statSync(fp).isFile()) {
+      problems.push(`${f.path}: 通常のファイルではありません`);
       continue;
     }
     const buf = fs.readFileSync(fp);
@@ -191,7 +205,12 @@ export function evidenceChangeProblems({ changes, ship, bundleDir }) {
   for (const d of dirs) {
     const real = bundleDir(d);
     for (const need of ['evidence.json', MANIFEST_NAME]) if (!fs.existsSync(path.join(real, need))) fails.push(`${d}: 出荷の PR の一式に ${need} がありません(一式の欠け)`);
-    const problems = verifyManifest(real);
+    let problems;
+    try {
+      problems = verifyManifest(real);
+    } catch (e) {
+      problems = [`一覧を検査できません(${e.message})`];
+    }
     if (problems.length) fails.push(`${d}: digest の一覧と一致しない(${problems.join(' ')})`);
   }
   return fails;
@@ -239,17 +258,23 @@ function main(argv) {
       console.error('使い方: evidence-manifest.mjs changes --changes <git diff --name-status の出力> --pr-root <PR の側の docs の展開先> --ship true|false');
       return 2;
     }
-    const changes = fs
-      .readFileSync(file, 'utf8')
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((l) => {
-        const [status, p] = l.split('\t');
-        return { status, path: p };
-      });
-    const fails = evidenceChangeProblems({ changes, ship: arg('--ship') === 'true', bundleDir: (d) => path.join(prRoot, d) });
-    for (const f of fails) console.log(f);
-    return fails.length ? 1 : 0;
+    // 検査を実行できない(読めない・例外)ときは、成功にせず、理由の1行と終了コード 3 を返す(失敗の側へ倒す)
+    try {
+      const changes = fs
+        .readFileSync(file, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          const [status, p] = l.split('\t');
+          return { status, path: p };
+        });
+      const fails = evidenceChangeProblems({ changes, ship: arg('--ship') === 'true', bundleDir: (d) => path.join(prRoot, d) });
+      for (const f of fails) console.log(f);
+      return fails.length ? 1 : 0;
+    } catch (e) {
+      console.log(`証跡の一式の検査を実行できません(${e.message})`);
+      return 3;
+    }
   }
   const dir = arg('--dir');
   if (!dir || !['write', 'verify'].includes(cmd)) {

@@ -116,6 +116,55 @@ function freshBundle(parent = os.tmpdir(), name = null, at = '2026-11-15T00:00:0
   check('IMPL-0521:ng CLI changes は一覧と食い違う一式で終了コード 1 と理由を出す', cli('true').status === 1 && /digest の一覧と一致しない/.test(cli('true').stdout));
 }
 
+// --- 一覧の形が壊れているとき、検査は失敗の側へ倒れる(例外で黙って通らない。H2-1) ---
+{
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'evbad-'));
+  const name = '2026-11-15-start..v1';
+  const bundleDir = (d) => path.join(parent, d);
+  const dir = freshBundle(path.join(parent, 'docs', 'evidence'), name);
+  const adds = fs.readdirSync(dir).map((f) => ({ status: 'A', path: `docs/evidence/${name}/${f}` }));
+  const mp = path.join(dir, 'manifest.json');
+  const good = fs.readFileSync(mp, 'utf8');
+  const cf = path.join(parent, 'changes.txt');
+  fs.writeFileSync(cf, `${adds.map((a) => `${a.status}\t${a.path}`).join('\n')}\n`);
+  const cli = () => spawnSync(process.execPath, [path.join(here, 'evidence-manifest.mjs'), 'changes', '--changes', cf, '--pr-root', parent, '--ship', 'true'], { encoding: 'utf8' });
+  const shapes = {
+    'files に null': '{"files":[null]}',
+    'files が配列でない': '{"files":{"a":1}}',
+    '要素が文字列': '{"files":["evidence.json"]}',
+    '要素に path が無い': '{"files":[{"sha256":"x","bytes":1}]}',
+    'path がディレクトリ': '{"files":[{"path":".","sha256":"x","bytes":1}]}',
+    'path が置き場の外': '{"files":[{"path":"../x","sha256":"x","bytes":1}]}',
+    'JSON として壊れている': '{broken',
+    '空のファイル': '',
+  };
+  for (const [label, body] of Object.entries(shapes)) {
+    fs.writeFileSync(mp, body);
+    let threw = false;
+    let ps = [];
+    try {
+      ps = evidenceChangeProblems({ changes: adds, ship: true, bundleDir });
+    } catch {
+      threw = true;
+    }
+    const r = cli();
+    check(`IMPL-0521:ng 一覧の形が壊れている(${label})と失敗の一覧に入り、CLI は 0 を返さない`, !threw && ps.length > 0 && r.status !== 0 && (r.stdout ?? '').trim() !== '', `${JSON.stringify(ps)} rc=${r.status} ${r.stdout}${r.stderr}`);
+  }
+  const subdir = path.join(dir, 'sub');
+  fs.mkdirSync(subdir, { recursive: true });
+  fs.writeFileSync(mp, '{"files":[{"path":"sub","sha256":"x","bytes":1}]}');
+  check('IMPL-0521:ng path が通常のファイルでない一覧は不一致を返す(例外にしない)', verifyManifest(dir).some((p) => /通常のファイルではありません/.test(p)));
+  fs.rmSync(subdir, { recursive: true, force: true });
+  fs.writeFileSync(cf, '');
+  check('IMPL-0521:ng 変更の一覧が空でも、出荷の PR に一式が無ければ CLI は失敗する', cli().status === 1);
+  fs.rmSync(cf);
+  const missing = cli();
+  check('IMPL-0521:ng 変更の一覧を読めないとき CLI は成功にせず、理由を出す(終了コード 3)', missing.status === 3 && /実行できません/.test(missing.stdout));
+  fs.writeFileSync(mp, good);
+  fs.writeFileSync(cf, `${adds.map((a) => `${a.status}\t${a.path}`).join('\n')}\n`);
+  check('IMPL-0521:ok 正しい一覧の追加だけなら CLI は 0 を返し何も出さない', cli().status === 0 && (cli().stdout ?? '').trim() === '');
+}
+
 // --- 前回の証跡を写しから選ぶ ---
 {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'evprev-'));

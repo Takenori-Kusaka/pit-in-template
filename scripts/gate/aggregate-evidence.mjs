@@ -1038,9 +1038,7 @@ if (isMain) {
   let lastGhError = null;
   function gh(args) {
     try {
-      // 試験の継ぎ目: AGGREGATE_GH_FAKE に偽の gh(node のスクリプト)の場所を渡すと、gh の代わりにそれを動かす(test-g5-missing.mjs)。未設定なら gh
-      const fake = process.env.AGGREGATE_GH_FAKE;
-      const text = execFileSync(fake ? process.execPath : 'gh', fake ? [fake, ...args] : args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const text = execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       // --paginate の頁ごとの配列の連結にも耐える(#430 突合 C-3)
       return args.includes('--paginate') ? parsePagedJson(text) : JSON.parse(text);
     } catch (e) {
@@ -3398,7 +3396,13 @@ if (isMain) {
     const bad = (c.looked ?? []).filter((l) => !l.ok);
     return `(成果物: ${a.status === 'failed' ? `実行 ${a.run} から取得できず` : '前回の実行なし'}。基底ブランチの写し ${c.root ?? 'docs/evidence'}: 置き場 ${(c.looked ?? []).length} 件を見て読めるものなし${bad.length ? `。読まなかった理由: ${bad.map((l) => `${l.dir} ${(l.problems ?? []).join(' ')}`).join(' / ')}` : ''})`;
   })();
-  const prevLabel = previous ? `前回 ${previous.range?.to ?? '(終点の記録なし)'}` : `${NO_PREVIOUS}${previousSourceText}`;
+  // 前回の証跡が無いとき、品質レポートと外へ渡す開示に出す1行。見た場所と理由の事実だけを書き、原因を断定しない
+  const previousSourceLine = previous
+    ? ''
+    : previousSource
+      ? `前回の証跡: なし${previousSourceText}`
+      : '前回の証跡: なし(読み先の記録 evidence/previous-source.json が無く、どこを見たかは記録されていません)';
+  const prevLabel = previous ?`前回 ${previous.range?.to ?? '(終点の記録なし)'}` : `${NO_PREVIOUS}${previousSourceText}`;
   /** 前回の値を取り出して文字列にする。前回の出力が無い、または当該の値を持たない場合は「前回なし」 */
   const prev = (pick) => {
     if (!prevA) return NO_PREVIOUS;
@@ -5470,6 +5474,10 @@ if (isMain) {
         '開示したことは、出荷してよい理由になりません。残存リスクの受容は、リリース決裁(G-8)の決断の記録に事業決裁者が記名します。'
     );
     R.push('');
+    if (previousSourceLine) {
+      R.push(`${previousSourceLine}。`);
+      R.push('');
+    }
     if (A.independence.statement) {
       R.push(`> ${A.independence.statement}`);
       R.push('');
