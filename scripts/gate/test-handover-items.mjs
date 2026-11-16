@@ -133,14 +133,14 @@ const ITEMS = ['監視項目', '障害時の連絡先', '復旧手順'];
   const w = workspace();
   const first = w.run(BLANK);
   check('試験の前提: 集約が最後まで走る', /を出力しました/.test(first.out), first.out);
-  // IMPL-NEW1:ng(通し。違反の入力。標準の実装マーク)
+  // IMPL-0985:ng(通し。違反の入力。標準の実装マーク)
   check('白紙の様式のまま → 3項目の未記入の文が出る', ITEMS.every((l) => gapOf(first.out, l)), first.out);
   const c4 = criterion4(first.ev);
   check('白紙の様式のまま → 基準4 の行に「未記入」が出て、完備とは書かない', !!c4 && /監視項目=未記入/.test(c4.result) && /記入が在ることは完備を意味しない/.test(c4.humanReconcile), JSON.stringify(c4));
   check('evidence.json の handover に items が出る', Array.isArray(first.ev?.handover?.items) && first.ev.handover.items.length === 3, JSON.stringify(first.ev?.handover));
   const mon = w.run(fillMon(BLANK));
   check('監視だけ記入 → 残り2項目の文が出る', gapOf(mon.out, '障害時の連絡先') && gapOf(mon.out, '復旧手順'), mon.out);
-  // IMPL-NEW1:ok(通し。適合の入力。標準の実装マーク)
+  // IMPL-0985:ok(通し。適合の入力。標準の実装マーク)
   check('監視だけ記入 → 監視の文は出ない', !gapOf(mon.out, '監視項目') && !missingOf(mon.out, '監視項目'));
   const renamed = w.run(fillAll(BLANK).replace('## 4. 監視', '## 4. モニタリング'));
   check('見出しを「4. モニタリング」へ改めた文書 → 「置き場がありません」が出る', missingOf(renamed.out, '監視項目'), renamed.out);
