@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
 import { loadDecisions, checkDecisions, overdueDecisions, parseDecision, countsLine, DECISIONS_DIR, ARCHIVE_DIR } from './check-decisions.mjs';
 
@@ -134,6 +135,60 @@ scenario('番号の重複(置き場と保管領域)', {
   check('このリポジトリの判断記録に不一致が無い', !r.problems.length, JSON.stringify(r.problems));
   const settings = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/settings.json'), 'utf8'));
   check('権限設定が保管領域の読み込みを拒否している(第3章 3.11.4 要求事項7)', (settings.permissions?.deny ?? []).includes('Read(./context/_archive/**)'), JSON.stringify(settings.permissions?.deny));
+}
+
+// ---------------------------------------------------------------- 事業影響の5欄の検査(IMPL-0132。process-compass #355)
+// 入口は node scripts/gate/check-decisions.mjs --root <一時> を子として走らせ、終了コードと出力を見る
+const impactSection = (o = {}, heading = '## 事業への影響') => {
+  const v = { users: '決済を使う全利用者の購入', signs: '決済の失敗率が 2% を超える', recovery: '30分〜4時間', revocable: '人手で戻せる', criteria: '該当なし', ...o };
+  return `\n${heading}\n\n| 項目 | 内容 |\n| --- | --- |\n| 影響を受ける利用者・業務 | ${v.users} |\n| 顕在化が分かる兆候 | ${v.signs} |\n| 回復に要する時間 | ${v.recovery} |\n| 取り消しの可否 | ${v.revocable} |\n| 影響する必達基準 | ${v.criteria} |\n`;
+};
+const runCheck = (files, extra = []) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-decisions-cli-'));
+  const all = { 'templates/02-adr.md': fs.readFileSync(path.join(ROOT, 'templates/02-adr.md'), 'utf8'), ...files };
+  for (const [rel, text] of Object.entries(all)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  }
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/gate/check-decisions.mjs'), '--root', dir, ...extra], { encoding: 'utf8' });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+};
+const withImpact = (o, heading) => ({ [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) + impactSection(o, heading) });
+const fieldCase = (name, files, wantFail, re) => {
+  const r = runCheck(files);
+  const hit = re ? re.test(r.out) : true;
+  check(name, wantFail ? r.status === 1 && hit : r.status === 0 && !/事業影響の欄の形式の欠落/.test(r.out) && hit, `終了 ${r.status}\n       ${r.out.split('\n').slice(0, 8).join('\n       ')}`);
+};
+const blankTemplate = fs.readFileSync(path.join(ROOT, 'templates/02-adr.md'), 'utf8').replace(/^# ADR-NNNN:.*$/m, '# ADR-0001: 白紙').replace('採用(YYYY-MM-DD)', '採用(2026-10-01)');
+// IMPL-0132:ng(違反の入力。標準の実装マーク)
+fieldCase('白紙の様式の写しは、事業影響の5欄すべてが空として落ちる', { [D('0001-a.md')]: blankTemplate }, true, /影響を受ける利用者・業務.*空[\s\S]*顕在化が分かる兆候.*空[\s\S]*回復に要する時間.*空[\s\S]*取り消しの可否[\s\S]*影響する必達基準.*空/);
+for (const [key, label] of [['users', '影響を受ける利用者・業務'], ['signs', '顕在化が分かる兆候'], ['recovery', '回復に要する時間'], ['revocable', '取り消しの可否'], ['criteria', '影響する必達基準']]) {
+  fieldCase(`欄が空白: ${label}`, withImpact({ [key]: '' }), true, new RegExp(`「${label}」が空`));
+  fieldCase(`欄が「—」: ${label}`, withImpact({ [key]: '—' }), true, new RegExp(`「${label}」が空`));
+}
+for (const v of ['2時間', '約1日', '2時間〜2時間', '1時間以内']) fieldCase(`回復が単一の値: ${v}`, withImpact({ recovery: v }), true, /単一の値/);
+for (const v of ['なし', '特になし', 'N/A', '無し。', '該当なし']) fieldCase(`兆候が「なし」: ${v}`, withImpact({ signs: v }), true, /が「なし」/);
+fieldCase('取り消しの可否に選択肢が2つ以上残る', withImpact({ revocable: '自動で戻せる / 人手で戻せる' }), true, /選択肢が2つ残っている/);
+fieldCase('事業影響の節が無い記録', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) }, true, /事業影響の節/);
+fieldCase('標準の見出し(事業影響)と欄の名(影響する利用者と業務)で空', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) + impactSection({ users: '' }, '## 事業影響(G-3 判定基準5)').replace('影響を受ける利用者・業務', '影響する利用者と業務') }, true, /「影響を受ける利用者・業務」が空/);
+// IMPL-0132:ok(適合の入力。標準の実装マーク)
+fieldCase('全記入の記録は、欄の文が出ず終了 0', withImpact({}), false);
+fieldCase('標準の見出しと欄の名で全記入', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) + impactSection({}, '## 事業影響(G-3 判定基準5)').replace('影響を受ける利用者・業務', '影響する利用者と業務') }, false);
+fieldCase('必達基準「該当なし」は通る', withImpact({ criteria: '該当なし' }), false);
+fieldCase('兆候「更新がなしのまま 3 日続く」は通る', withImpact({ signs: '更新がなしのまま 3 日続く' }), false);
+fieldCase('幅の別の書き方(から・2-3日)は通る', withImpact({ recovery: '数分から数十分' }), false);
+fieldCase('保管領域の節の無い記録は見ない', { [A('0001-a.md')]: adr({ num: '0001', state: '廃止(2026-10-03)' }) }, false);
+// 限界の固定(目印なし。落とさないことを固定する。標準の文を超えて落とさない)
+fieldCase('限界: 兆候「不明」は通る', withImpact({ signs: '不明' }), false);
+fieldCase('限界: 兆候「TBD」は通る', withImpact({ signs: 'TBD' }), false);
+fieldCase('限界: 「なし(自動で戻せるため)」は通る', withImpact({ signs: 'なし(自動で戻せるため)' }), false);
+fieldCase('限界: 回復「2026-11-20 まで」は通る(幅の中身は見ない)', withImpact({ recovery: '2026-11-20 まで' }), true, /単一の値/);
+fieldCase('限界: 初期の文を1字書き換えた記載は通る', withImpact({ users: 'この選択が裏目に出たとき、誰の何が止まるのか' }), false);
+// 静的確認: gate-g5.yml が検査の手順を結線している
+{
+  const yml = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
+  check('gate-g5.yml が check-decisions.mjs と test-decisions.mjs を手順に持つ', /run: node scripts\/gate\/check-decisions\.mjs/.test(yml) && /run: node scripts\/gate\/test-decisions\.mjs/.test(yml));
 }
 
 if (failures) {

@@ -178,7 +178,8 @@ import {
   lastCommitOfLine,
   controlApprovalBacking,
 } from './material-attribution.mjs';
-import { loadDecisions, checkDecisions, countsLine } from './check-decisions.mjs';
+import { loadDecisions, checkDecisions, countsLine, fieldProblems } from './check-decisions.mjs';
+import { handoverItems, handoverGapText, handoverResultText } from './handover-items.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
@@ -1193,9 +1194,22 @@ if (isMain) {
   const gateRecords = listDir('docs/gates');
   // 判断記録は件数を出さない。状態ごとの件数と、置き換えの両側の参照の不一致の件数を出す(README を数えない。
   // 運用メトリクス「採用しない指標」、標準 第6章 テンプレ2「置き換えと廃止」。process-compass #289)
-  const decisionCheck = checkDecisions(loadDecisions(ROOT));
+  const decisionList = loadDecisions(ROOT);
+  const decisionCheck = checkDecisions(decisionList);
+  {
+    const tpl = path.join(ROOT, 'templates/02-adr.md');
+    const tplText = fs.existsSync(tpl) ? fs.readFileSync(tpl, 'utf8') : null;
+    decisionCheck.fieldProblems = decisionList.flatMap((d) => fieldProblems(d, tplText));
+  }
   const debtFile = 'docs/debt-ledger.md';
   const handoverFile = 'docs/handover.md';
+  // 運用引き継ぎ文書の3項目の未記入(標準 第4章 G-7 基準4 の記録。process-compass #355)。同梱の様式(templates/05-handover.md)の初期の文と比べる。様式が無ければ空欄だけを見る
+  const handoverInfo = exists(handoverFile)
+    ? handoverItems(
+        fs.readFileSync(path.join(ROOT, handoverFile), 'utf8'),
+        fs.existsSync(path.join(ROOT, 'templates/05-handover.md')) ? fs.readFileSync(path.join(ROOT, 'templates/05-handover.md'), 'utf8') : null,
+      )
+    : null;
 
   const coverage = exists('evidence/coverage-result.json')
     ? JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/coverage-result.json'), 'utf8'))
@@ -3246,6 +3260,7 @@ if (isMain) {
 
   if (!period && config.gates.g7?.state !== 'omitted') {
     if (!exists(handoverFile)) gaps.push('運用引き継ぎ文書(docs/handover.md)がありません');
+    else for (const it of handoverInfo.items) if (handoverGapText(it)) gaps.push(handoverGapText(it));
     if (!exists(debtFile)) gaps.push('技術負債台帳(docs/debt-ledger.md)がありません');
     // 判定記録の有無は、当該出荷の範囲のものだけを見る。過去の出荷の1件で通さない。承認レビューの写しによる判定と、
     // 記録用ブランチの様式も記録である
@@ -5217,8 +5232,8 @@ if (isMain) {
       id: 4,
       label: '運用引き継ぎ文書',
       machine: 'partial',
-      result: `docs/handover.md ${exists(handoverFile) ? 'あり' : 'なし'}(文書の有無だけを見た)`,
-      humanReconcile: '完備(監視項目・障害時連絡先・復旧手順)は機械で確かめていない。docs/handover.md の中身',
+      result: handoverInfo ? handoverResultText(handoverInfo) : 'docs/handover.md なし',
+      humanReconcile: '記入が在ることは完備を意味しない。閾値の妥当性、連絡先へ届くか、復旧手順の実行の実績は機械で確かめていない。docs/handover.md の中身を読んで判定する' + (handoverInfo && !handoverInfo.compared ? '。様式の初期の文と比べていない(同梱の様式が無いため、空欄だけを見た)' : ''),
     },
     {
       id: 5,
@@ -5324,7 +5339,7 @@ if (isMain) {
     tests: { coverage },
     dependencies: depDiff ? { manifestsChanged: depDiff.manifestsChanged } : null,
     debt: { ledgerPresent: exists(debtFile) },
-    handover: { updated: exists(handoverFile) },
+    handover: { updated: exists(handoverFile), items: handoverInfo ? handoverInfo.items.map((i) => ({ id: i.id, label: i.label, result: i.result })) : null, compared: handoverInfo ? handoverInfo.compared : null },
     gateRecords,
     // 当該出荷の範囲で追加された判定記録(基底の様式)。完備の判定は、これと承認レビューの写し・記録用ブランチの様式(assurance.records)を見る
     gateRecordsInRange: records.map((r) => r.file),
@@ -6436,8 +6451,13 @@ if (isMain) {
   );
   R.push(`- 判断記録(状態ごと): ${countsLine(decisionCheck)}`);
   R.push(`- 判断記録の置き換えの両側の参照・状態・置き場の不一致: ${decisionCheck.problems.length} 件${decisionCheck.problems.length ? `(${decisionCheck.problems.slice(0, 3).join(' / ')}${decisionCheck.problems.length > 3 ? ' ほか' : ''})` : ''}`);
+  {
+    const fp = decisionCheck.fieldProblems ?? [];
+    R.push(`- 判断記録の事業影響の欄の形式の欠落(欠落には数えない。check-decisions.mjs が失敗にする): ${fp.length} 件${fp.length ? `(${fp.slice(0, 3).join(' / ')}${fp.length > 3 ? ' ほか' : ''})` : ''}`);
+  }
   R.push(`- 技術負債台帳: ${exists(debtFile) ? 'あり' : '**なし**'}`);
   R.push(`- 運用引き継ぎ文書: ${exists(handoverFile) ? 'あり' : '**なし**'}`);
+  if (handoverInfo) R.push(`- 運用引き継ぎ文書の3項目の記入の有無(完備は判定しない): ${handoverInfo.items.map((i) => `${i.label}=${{ filled: '記入あり', unfilled: '**未記入**', missing: '**置き場なし**' }[i.result]}`).join(' / ')}${handoverInfo.compared ? '' : '(様式の初期の文と比べていない)'}`);
   R.push(`- 知財潔白性の検査: ${licenseScan.scanRun ? '実施' : '**未実施**'}`);
   R.push('');
 

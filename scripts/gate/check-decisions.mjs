@@ -15,8 +15,13 @@
 //      全部の置き換え(「(全部)」)は状態「置き換え」と、一部の置き換えは状態「一部置き換え」と対応する
 //   4. 状態が置き換え・廃止の判断記録は保管領域にあり、採用・一部置き換えの判断記録は保管領域に無い
 //
-// 確かめないこと: 置き換えた決定の内容が妥当か、決定の番号(決定 n)が実在するか、欄が空でないか・回復の時間が幅か・
-// 兆候が「なし」でないか(第4章 G-3「記載の検査」のうち、この 3 つは実装していない)。
+//   5. 採用・一部置き換えの判断記録(保管領域を除く)の事業影響の5欄(第4章 G-3「記載の検査」のうち3つ)。節が無い・行が無い・欄が空・
+//      回復に要する時間が単一の値・兆候が「なし」・取り消しの可否に選択肢が2つ以上残る、を失敗にする。同梱の様式(templates/02-adr.md)の
+//      初期の文と一致する欄は空として数える。様式が無ければ空欄だけを見る
+//
+// 確かめないこと: 置き換えた決定の内容が妥当か、決定の番号(決定 n)が実在するか。事業影響の欄は形式の欠落までで、
+// 様式の文を1字書き換えた記載、「不明」「TBD」、理由を添えた「なし(…)」、言い換えた写し、幅の中身(上限と下限の妥当性)は通る。
+// 前の判断記録との記述の一致は検査しない(IMPL-NEW2。標準 第4章 G-3 の表は「検査する」と書くが、定義が標準に無い)。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -103,6 +108,7 @@ export function parseDecision(text, file) {
     kind: state.kind,
     successors: state.successors,
     replaces: replacesOf(text),
+    impact: businessImpactOf(text),
     deadline: deadlineOf(text),
     continued: continuedOf(stateLine),
   };
@@ -118,6 +124,95 @@ export function loadDecisions(root = ROOT) {
       if (!f.endsWith('.md') || /^readme\.md$/i.test(f)) continue;
       const rel = `${dir}/${f}`;
       out.push(parseDecision(fs.readFileSync(path.join(abs, f), 'utf8'), rel));
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- 事業影響の5欄の検査(第4章 G-3「記載の検査」。process-compass #355 / IMPL-0132)
+
+const IMPACT_ROWS = [
+  { key: 'users', label: '影響を受ける利用者・業務', names: ['影響を受ける利用者・業務', '影響する利用者と業務'] },
+  { key: 'signs', label: '顕在化が分かる兆候', names: ['顕在化が分かる兆候'] },
+  { key: 'recovery', label: '回復に要する時間', names: ['回復に要する時間'] },
+  { key: 'revocable', label: '取り消しの可否', names: ['取り消しの可否'] },
+  { key: 'criteria', label: '影響する必達基準', names: ['影響する必達基準'] },
+];
+const REVOCABLE_OPTIONS = ['自動で戻せる', '人手で戻せる', '相手方の同意を要する'];
+
+/** 比べるための正規化。NFKC・強調と引用の記号・空白を除く */
+const normCell = (s) => String(s ?? '').normalize('NFKC').replace(/[*_`]/g, '').replace(/\s+/g, '');
+
+/**
+ * 「## 事業影響…」「## 事業への影響…」の節の5欄を読む。節が無ければ null。欄(行)が無ければ、その値は null。
+ * 1つ目の欄は「影響を受ける利用者・業務」「影響する利用者と業務」のどちらも読む
+ */
+export function businessImpactOf(text) {
+  const body = stripComments(text).replace(/\r\n/g, '\n');
+  const m = body.match(/^##[ \t]+事業(?:への)?影響[^\n]*\n([\s\S]*?)(?=^##[ \t]|(?![\s\S]))/m);
+  if (!m) return null;
+  const out = {};
+  for (const row of IMPACT_ROWS) out[row.key] = null;
+  for (const line of m[1].split('\n')) {
+    if (!/^\s*\|/.test(line)) continue;
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
+    if (cells.length < 2) continue;
+    const head = normCell(cells[0]);
+    for (const row of IMPACT_ROWS) if (row.names.some((n) => normCell(n) === head)) out[row.key] = cells.slice(1).join('|').trim();
+  }
+  return out;
+}
+
+/** 空: 空白、ダッシュ、全体が <…>、様式の初期の文と一致 */
+function isEmptyCell(value, initialValue) {
+  const n = normCell(value);
+  if (n === '' || /^[-–—―]+$/.test(n) || /^<[^<>]*>$/.test(n)) return true;
+  return initialValue != null && normCell(initialValue) === n;
+}
+
+const RANGE_SEPARATOR = /〜|~|から|ないし|(?<=\d)[-–](?=\d)/;
+/** 幅か。区切りの前後がともに空でなく、正規化の後に同じでないもの。日付は除く */
+export function isRangeValue(value) {
+  const t = String(value ?? '').normalize('NFKC').replace(/\d{4}-\d{2}-\d{2}/g, '').replace(/[*_`]/g, '');
+  const parts = t.split(RANGE_SEPARATOR).map((p) => p.replace(/\s+/g, ''));
+  if (parts.length < 2) return false;
+  return parts.some((p, i) => p !== '' && parts.some((q, j) => j !== i && q !== '' && q !== p)) && parts.every((p) => p !== '');
+}
+
+const NASHI = new Set(['なし', '無し', '特になし', '該当なし', 'n/a']);
+/** 「なし」と一致するか。NFKC・空白・文末の句点を除く。理由つきの「なし(…)」「不明」「TBD」は一致しない */
+export function isNashi(value) {
+  const n = String(value ?? '').normalize('NFKC').replace(/\s+/g, '').replace(/[。.]+$/, '').toLowerCase();
+  return NASHI.has(n);
+}
+
+/**
+ * 採用・一部置き換えの判断記録(保管領域を除く)の事業影響の欄を検査する。戻りは失敗の文の配列。
+ * initialText は同梱の様式(templates/02-adr.md)の本文。null なら様式の初期の文と比べない。
+ * 閉じるのは形式の欠落だけで、様式の文を書き換えた記載、「不明」「TBD」、理由を添えた「なし」、幅の中身は通る
+ */
+export function fieldProblems(decision, initialText = null) {
+  if (decision.archived || (decision.kind !== 'adopted' && decision.kind !== 'partial')) return [];
+  const name = decision.id ?? decision.file;
+  const impact = decision.impact === undefined ? null : decision.impact;
+  if (!impact) return [`${name}: 事業影響の節(「## 事業への影響」)が無い。判断記録を置き換える判断記録を起こして書く(採用した記録の本文は書き換えない)`];
+  const initial = initialText ? businessImpactOf(initialText) : null;
+  const out = [];
+  for (const row of IMPACT_ROWS) {
+    const v = impact[row.key];
+    if (v === null) {
+      out.push(`${name}: 事業影響の「${row.label}」の行が無い`);
+      continue;
+    }
+    if (isEmptyCell(v, initial?.[row.key])) {
+      out.push(`${name}: 事業影響の「${row.label}」が空(空白・「—」・プレースホルダ・様式の初期の文のまま)`);
+      continue;
+    }
+    if (row.key === 'recovery' && !isRangeValue(v)) out.push(`${name}: 事業影響の「回復に要する時間」が単一の値(「下限〜上限」の幅で書く。例: 30分〜4時間)`);
+    if (row.key === 'signs' && isNashi(v)) out.push(`${name}: 事業影響の「顕在化が分かる兆候」が「なし」(何を観測すれば誤りだったと分かるかを書く)`);
+    if (row.key === 'revocable') {
+      const kept = REVOCABLE_OPTIONS.filter((o) => normCell(v).includes(o));
+      if (kept.length >= 2) out.push(`${name}: 事業影響の「取り消しの可否」に選択肢が${kept.length}つ残っている(1つに絞る)`);
     }
   }
   return out;
@@ -207,10 +302,13 @@ function main(argv) {
   const today = opt('--today') ?? new Date().toISOString().slice(0, 10);
   const list = loadDecisions(root);
   const result = checkDecisions(list);
+  const tplFile = path.join(root, 'templates/02-adr.md');
+  const initialText = fs.existsSync(tplFile) ? fs.readFileSync(tplFile, 'utf8') : null;
+  const fields = list.flatMap((d) => fieldProblems(d, initialText));
   const overdue = overdueDecisions(list, today);
   if (argv.includes('--json')) {
-    console.log(JSON.stringify({ ...result, overdue: overdue.map((d) => ({ id: d.id, file: d.file, deadline: d.deadline })) }, null, 2));
-    return result.problems.length && !argv.includes('--overdue') ? 1 : 0;
+    console.log(JSON.stringify({ ...result, fieldProblems: fields, fieldsCompared: initialText !== null, overdue: overdue.map((d) => ({ id: d.id, file: d.file, deadline: d.deadline })) }, null, 2));
+    return (result.problems.length || fields.length) && !argv.includes('--overdue') ? 1 : 0;
   }
   if (argv.includes('--overdue')) {
     if (!overdue.length) console.log(`期限を過ぎて結果が状態に反映されていない判断記録はありません(${today} 時点)`);
@@ -221,12 +319,18 @@ function main(argv) {
     return 0;
   }
   console.log(`判断記録: ${countsLine(result)}`);
+  if (fields.length) {
+    console.log(`事業影響の欄の形式の欠落: ${fields.length} 件${initialText === null ? '(様式 templates/02-adr.md が無いため、初期の文と比べていない)' : ''}`);
+    for (const p of fields) console.log(`- ${p}`);
+    console.log('採用した判断記録の本文は書き換えない。落ちた記録は、置き換える判断記録を起こして直す(標準 第6章 テンプレ2「置き換えと廃止」)');
+  }
   if (result.problems.length) {
     console.log(`置き換えの両側の参照・状態・置き場の不一致: ${result.problems.length} 件`);
     for (const p of result.problems) console.log(`- ${p}`);
     console.log('規約: 標準 第6章 テンプレ2「置き換えと廃止」(templates/02-adr.md)');
     return 1;
   }
+  if (fields.length) return 1;
   console.log('置き換えの両側の参照・状態・置き場の不一致: 0 件');
   if (overdue.length) console.log(`期限を過ぎて結果が状態に反映されていない判断記録: ${overdue.length} 件(--overdue で一覧。失敗にはしない)`);
   return 0;
