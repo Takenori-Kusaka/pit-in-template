@@ -75,6 +75,7 @@ import {
   qualificationProblems,
   readGateRecords,
   personKey,
+  shippingSeparatedFromDevLine,
   personName,
   nameProblems,
   namingProblems,
@@ -552,10 +553,13 @@ export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, so
  * 単独で実行できるため未達ではないが、開発ラインからの独立は失われる(第3章 3.5.2)。
  * 簡略化して適用する構成(simplified)でも判定は実施するため、逸脱として記録する。
  */
-export function detectDeviations(answers, gates) {
+export function detectDeviations(answers, gates, { seats = [], people = [] } = {}) {
   const deviations = [];
 
-  if (gates.g7?.params?.approverMode === 'value-owner-merged' && isActiveState(gates.g7.state)) {
+  // 出荷判定者の席の責任者が、開発者・独立レビュアの席の責任者と別の名簿の人だと席の割り当てで確かめられたときは、
+  // 兼ねていないので D-1 を出さない。未割当・名簿が空・識別できないときは出す(IMPL-0988。process-compass #351)
+  const separated = shippingSeparatedFromDevLine({ seats, people });
+  if (gates.g7?.params?.approverMode === 'value-owner-merged' && isActiveState(gates.g7.state) && !separated) {
     deviations.push({
       gate: 'g7',
       category: 'listed',
@@ -889,7 +893,7 @@ export function buildConfig(answers, opts = {}) {
   const unmet = detectUnmet(answers, gates, opts.stack ?? 'none', { reviewerIsAuthor, soleAuthor, seatBlank });
   // 記入済みの調達先は再生成で失わない
   for (const u of unmet) u.reviewSourcing = opts.reviewSourcing?.[u.gate] ?? u.reviewSourcing;
-  const deviations = detectDeviations(answers, gates);
+  const deviations = detectDeviations(answers, gates, { seats, people });
   // 1〜2名の体制で成立しない兼務禁止は、拒否せず列挙に無い離脱として記録する(第3章 3.5)。
   // 規模の規則が分離を必須とした組(10名以上の価値責任者 × 技術判断者。第8章 軸A)を、兼務禁止表へ足す
   // 出荷判定者 × 事業決裁者は、知識ベースが同じ組を持たない版でも兼務禁止表へ足す(第3章 3.5)

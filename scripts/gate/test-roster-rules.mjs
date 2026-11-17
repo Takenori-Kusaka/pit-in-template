@@ -124,6 +124,18 @@ for (const size of ['size-3-9', 'size-10plus']) {
   // IMPL-0002:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('2名: 独立レビュア = 出荷判定者 は拒否せず、代償措置つきの例外(第3章 3.5.2)として扱う', f2.violations.length === 0 && f2.excepted.some((v) => v.includes('独立レビュア') && v.includes('出荷判定者')), JSON.stringify(f2));
   check('2名: 出荷判定(G-7)の兼務は逸脱として記録される', two.deviations.some((d) => d.gate === 'g7'));
+  // 出荷判定者の席の責任者が、席の割り当てで開発ラインの席と別の名簿の人と確かめられるときだけ D-1 を出さない(IMPL-0988。process-compass #351)
+  const d1 = (people, seats) => build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' }, { people, seats: seatsOf(seats) });
+  const base2 = { 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b' };
+  // IMPL-0988:ng(違反の入力: 出荷判定者が開発者の席を兼ねる2名 / 独立レビュアの席を兼ねる2名 / 1名 / 席が未割当 / 名簿が空)
+  check('D-1: 出荷判定者が開発者の席の責任者を兼ねる2名なら出す', d1([A, B], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'a' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 出荷判定者が独立レビュアの席の責任者を兼ねる2名なら出す', d1([A, B], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 1名なら出す', d1([A], { 'biz-approver': 'a', 'value-owner': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'a', 'qa-gatekeeper': 'a' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 出荷判定者の席が未割当なら出す(兼ねないことを確かめられない)', d1([A, B, X], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 名簿が空なら出す', d1([], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  // IMPL-0988:ok(適合の入力: 外部の確認者を独立レビュアの席に置き、出荷判定者が開発者とも独立レビュアとも別の名簿の人)
+  const apart = d1([A, B, X], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b' });
+  check('D-1: 出荷判定者が開発者とも独立レビュアとも別の名簿の人なら出さない', !apart.deviations.some((d) => d.gate === 'g7'), JSON.stringify(apart.deviations.map((d) => d.gate ?? d.separationId)));
   // 項目ごとの区分(process-compass #316 / ADR-0086)。G-7 の兼務は閉じた列挙の逸脱、1〜2名の席の兼務は列挙に無い離脱
   const twoBiz = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'a' }) });
   // IMPL-0329:ok(適合の入力: 初期化が書いた区分は閉じた列挙と一致する)

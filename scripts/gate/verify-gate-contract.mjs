@@ -46,6 +46,7 @@ import {
   aiNameReason,
   namingProblems,
   personKey,
+  shippingSeparatedFromDevLine,
   headcountProblems,
   delegationRuleProblems,
   aiNameBlocked,
@@ -390,6 +391,7 @@ for (const d of config.deviations ?? []) {
 if (
   config.gates?.g7?.params?.approverMode === 'value-owner-merged' &&
   isActive(config.gates?.g7?.state) &&
+  !shippingSeparatedFromDevLine(config) &&
   !(config.deviations ?? []).some((d) => d.gate === 'g7')
 ) {
   problems.push(

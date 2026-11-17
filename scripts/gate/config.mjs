@@ -494,6 +494,25 @@ export function personKey(config, ref) {
   return findPerson(config, n)?.id ?? n;
 }
 
+/**
+ * 出荷判定者の席の責任者が、開発ラインの席(開発者・独立レビュアの席)の責任者を兼ねないと、席の割り当てで確かめられるか。
+ * 3つの席のすべてに名簿の人が割り当てられ、互いに異なるときだけ true。未割当・名簿が空・名簿に無い名義は、確かめられない(false)。
+ * G-7 の判定者を価値責任者へ移した構成(approverMode が value-owner-merged)で、D-1 を出すかどうかの条件に使う。
+ * IMPL-0988 (process-compass #351)
+ */
+export function shippingSeparatedFromDevLine(config) {
+  const seats = Array.isArray(config?.seats) ? config.seats : [];
+  const holder = (role) => {
+    const who = seats.find((s) => s?.role === role)?.accountable;
+    const person = findPerson(config ?? {}, who);
+    return person ? personKey(config, who) : null;
+  };
+  const qa = holder('qa-gatekeeper');
+  const dev = holder('dev-verifier');
+  const rev = holder('independent-reviewer');
+  return Boolean(qa && dev && rev && qa !== dev && qa !== rev);
+}
+
 /** 表示に使う氏名。名簿にあれば名簿の氏名 */
 export function personName(config, ref) {
   return findPerson(config, ref)?.name ?? normName(ref);
