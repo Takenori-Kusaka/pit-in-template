@@ -407,6 +407,49 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
     const c = claimWith(files);
     check(`集約(${label}): 離脱に数えず、数えなかった理由とともに確かめられない旨を出す`, !coreDep(c).length && coreUnv(c).length === 1 && /書いた 2 名のうち数えたのは 0 名/.test(coreUnv(c)[0]), JSON.stringify(c));
   }
+  // IMPL-0521:ng(違反の入力: 確認日の語が無い・周期超過・本人。要求事項8 を欠く。書いた名が2名でも離脱。独立の突合 2巡目 高-1・低-4)
+  for (const [label, files] of [
+    ['L 確認日の欄が空', TWO('名簿 丙', '')],
+    ['O 日付の語が無い(演習)', TWO('名簿 丙', '演習')],
+    ['P 日付の語が無い(未確認)', TWO('名簿 丙', '未確認')],
+    ['M 確認日が周期を過ぎた', TWO('名簿 丙', '演習 2024-01-01')],
+    ['N 確認者が保持者本人', TWO('名簿 甲', '演習 2026-10-01')],
+  ]) {
+    const c = claimWith({ ...files, ...POLICY12 });
+    check(`集約(${label}): 書いた名が2名でも離脱に数える`, coreDep(c).length === 1 && !coreUnv(c).length, JSON.stringify(c));
+  }
+  // IMPL-0521:ng/ok(違反と適合の対: 2名のうち1名が数えられ、もう1名の理由で分かれる。Q は書式で決まらない、R は確認者の空欄)
+  const MIX = (second) => ({ 'docs/handover.md': HANDOVER_HEAD + row('名簿 甲', '名簿 丙', '演習 2026-10-01') + second });
+  const cQ = claimWith({ ...MIX(row('名簿 乙', '名簿 丙', '演習 2026/10/01')), ...POLICY12 });
+  check('集約(Q): 1名を数え、もう1名が書式で決まらないときは、離脱に数えず確かめられない旨を出す', !coreDep(cQ).length && coreUnv(cQ).length === 1 && /書いた 2 名のうち数えたのは 1 名/.test(coreUnv(cQ)[0]), JSON.stringify(cQ));
+  const cR = claimWith({ ...MIX(row('名簿 乙', '', '演習 2026-10-01')), ...POLICY12 });
+  check('集約(R): 1名を数え、もう1名が確認者の空欄のときは、離脱に数える', coreDep(cR).length === 1 && /数えた 1 名・書いた 2 名/.test(coreDep(cR)[0]) && !coreUnv(cR).length, JSON.stringify(cR));
+  // 同じ人を2行に書き、1行を数えたとき、数えた名を「数えなかった」に出さない(低-1)
+  const cT = claimWith({ ...MIX(row('名簿 甲', '名簿 丙', '演習 2026/10/01')), ...POLICY12 });
+  check('集約(T): 数えた名は「数えなかった」に出さない', coreDep(cT).length === 1 && /数えた 1 名・書いた 1 名/.test(coreDep(cT)[0]) && !/数えなかった/.test(coreDep(cT)[0]), JSON.stringify(cT));
+  // 終点が先頭でない範囲(独立の突合 2巡目 低-3・中-1)。終点のコミットの記録で、名と開示の表の両方を読む
+  const claimAtEnd = (endFiles, headFiles) => {
+    const w = workspace();
+    w.commit('chore: template');
+    w.writeJson('process.config.json', sealed(issued));
+    w.commit('chore: init');
+    fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+    for (const f of ['docs/handover.md', 'docs/quality-assurance-policy.md']) fs.rmSync(path.join(w.dir, f), { force: true });
+    const put = (files) => { for (const [rel, text] of Object.entries(files)) fs.writeFileSync(path.join(w.dir, rel), text); w.git('add', '-A'); w.git('commit', '-q', '--allow-empty', '-m', 'chore: records'); };
+    put(endFiles);
+    const end = w.git('rev-parse', 'HEAD').toString().trim();
+    put(headFiles);
+    w.node('scripts/gate/aggregate-evidence.mjs', '--to', end);
+    const ev = w.readJson('evidence/evidence.json');
+    w.done();
+    return ev;
+  };
+  // 終点は保持者2名、先頭は1名。終点の記録で読むので離脱に数えず、開示の表も2名を示す
+  const evR1 = claimAtEnd({ ...TWO(), ...POLICY12 }, { ...ONE, ...POLICY12 });
+  check('集約(R1): 終点の記録が2名なら、名は離脱に数えず、開示の表も終点の2名を示す', !coreDep(evR1.claim).length && evR1.assurance.continuity.core[0]?.holders === 2, JSON.stringify([evR1.claim.unlistedDepartures, evR1.assurance.continuity.core]));
+  // 終点は保持者1名、先頭は2名。終点の記録で読むので離脱に数え、開示の表も1名を示す
+  const evR2 = claimAtEnd({ ...ONE, ...POLICY12 }, { ...TWO(), ...POLICY12 });
+  check('集約(R2): 終点の記録が1名なら、名は離脱に数え、開示の表も終点の1名を示す', coreDep(evR2.claim).length === 1 && evR2.assurance.continuity.core[0]?.holders === 1, JSON.stringify([evR2.claim.unlistedDepartures, evR2.assurance.continuity.core]));
   // IMPL-0521:ng(違反の入力: 確認の記録を欠く(要求事項8)。確認者の列なし・空欄は、書いた名が2名でも離脱)
   const OLD = { 'docs/handover.md': '# 運用引き継ぎ\n\n## 2. コア機能\n\n| 機能 | 理解保持者 | 判断記録 |\n| --- | --- | --- |\n| 決済 | 名簿 甲、名簿 乙 | |\n' };
   for (const [label, files] of [['E 確認者の列なし', OLD], ['F 確認者が空欄', TWO('', '演習 2026-10-01')]]) {

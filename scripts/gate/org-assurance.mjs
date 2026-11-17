@@ -636,6 +636,8 @@ export function discouragedText(p, { recorded = null } = {}) {
   );
 }
 
+// 日付らしい語: 数字の年・月・日の並び(区切りは / . 年 月 -)。YYYY-MM-DD の実在の日に解けないものを「書式」とみなす線
+const DATE_LIKE = /\d{4}\s*[/.年-]\s*\d{1,2}\s*[/.月-]\s*\d{1,2}/;
 export function continuityState(config, policy, { root = ROOT, day = null, acceptanceBacking = null } = {}) {
   const d0 = readText(D0_FILE, root);
   const seats = config.seats ?? [];
@@ -777,8 +779,10 @@ export function continuityState(config, policy, { root = ROOT, day = null, accep
       if (iBy < 0) [why, kind] = ['確認した者と確認日の列が無い(旧い様式。名前だけでは数えない)', 'missing'];
       else if (!isFilledValue(by)) [why, kind] = ['確認した者が空欄', 'missing'];
       else if (signerKey(by) === signerKey(h) || samePerson(config, by, h)) [why, kind] = ['確認した者が保持者本人', 'missing'];
-      else if (!at || !isRealDay(at)) [why, kind] = ['確認日(YYYY-MM-DD)が無い', isFilledValue(rec) ? 'unresolved' : 'missing'];
-      else if (!cycle.competence) [why, kind] = ['層1 の AI を使わない力量の確認の周期が空欄', 'unresolved'];
+      // 日付らしい語(数字の年・月・日の並び)があり YYYY-MM-DD の実在の日に解けないときだけ、書式で決まらない(unresolved)。
+      // 日付らしい語が無い(「演習」「未確認」など)は、確認日なしであり、要求事項8 を欠く(missing)
+      else if (!at || !isRealDay(at)) [why, kind] = DATE_LIKE.test(rec) ? ['確認日が YYYY-MM-DD の実在の日の書式でない', 'unresolved'] : ['確認日(YYYY-MM-DD)が無い', 'missing'];
+      else if (!cycle.competence) [why, kind] = [policy?.present === false ? '層1 なし(周期を読めない)' : '層1 の AI を使わない力量の確認の周期が空欄', 'unresolved'];
       else if (!withinInterval(at, cycle.competence, day)) [why, kind] = [`確認日 ${at} が力量の確認の周期(${cycle.competence.raw})を過ぎている`, 'lapsed'];
       const key = signerKey(h);
       if (why) c.uncounted.push({ name: h, why, kind });

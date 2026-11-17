@@ -5341,7 +5341,7 @@ if (isMain) {
   // 記録から決まる、列挙に無い離脱(標準 第1章 1.10.2。process-compass #354 項目2 / ADR-0147)。決定可能な条件だけを数える:
   //   (a) 運用引き継ぎ文書の節2 の、保持者(本人以外の確認つき)が1名以下のコア機能  (b) 層1 の記名者が事業決裁者の席の責任者と同一
   // 数える線(保持者): 書いた名が1名以下、または数えられるか決まらない名を足しても1名以下 → 離脱。書いた名は2名以上あり、
-  // 数えられるか決まらない名(周期の欠け・層1 なし・日付の書式)を足せば2名に届く → 名を下げず、数えなかった理由を出す。
+  // 数えられるか決まらない名(周期の欠け・層1 なし・日付の書式。日付らしい語が無い確認日は書式でなく確認日なし)を足せば2名に届く → 名を下げず、数えなかった理由を出す。
   // 確認者の列なし・空欄・本人・確認日なし・周期超過は、本人以外の確認の記録を欠く(3.4.3 要求事項8)ため離脱の側。
   // 「解けない」= 引き継ぎ文書なし・節2 の記載なし・上の3つ(周期の欠け・層1 なし・日付の書式)。人が確かめる(出荷判定者。IMPL-1102)。
   // 記録は範囲の終点のコミットの記録と構成で読む(autonomy.mjs と同じ。終点が無ければ作業ツリー)
@@ -5368,12 +5368,18 @@ if (isMain) {
   else if (!recCore.length) recordUnverifiable.push(`${handoverFile} の節2 にコア機能の記載が無く、理解の保持者を確かめられません`);
   else {
     const thin = recCore.filter((c) => c.holders.length <= 1);
-    const detail = (c) => (c.uncounted.length ? `。数えなかった: ${c.uncounted.map((u) => `${u.name}(${u.why})`).join(' / ')}` : '');
+    // 数えた名は「数えなかった」に出さない(同じ人を2行に書き、1行を数えたとき)
+    const detail = (c) => {
+      const rest = c.uncounted.filter((u) => !c.holders.includes(signerKey(u.name)));
+      return rest.length ? `。数えなかった: ${rest.map((u) => `${u.name}(${u.why})`).join(' / ')}` : '';
+    };
     const departed = thin.filter((c) => c.potential <= 1);
     const undecided = thin.filter((c) => c.potential > 1);
     if (departed.length) recordDepartures.push({ label: `コア機能の理解の保持者が1名以下(${departed.map((c) => `${c.name} 数えた ${c.holders.length} 名・書いた ${c.written} 名${detail(c)}`).join('・')}。運用引き継ぎ文書の節2。本人以外の確認つきで数えた)`, derived: 'core-holders' });
     for (const c of undecided) recordUnverifiable.push(`コア機能「${c.name}」は書いた ${c.written} 名のうち数えたのは ${c.holders.length} 名で、数えなかった理由が書式・層1 の欠けのため、離脱かどうかを決められません${detail(c)}`);
   }
+  // 開示の表(assurance.continuity.core)も、名と同じ終点の記録で読む(同じ出力の中で、表と名が別の時点を示さない。ADR-0147)
+  assurance.continuity.core = recCore.map((c) => ({ name: c.name, holders: c.holders.length, uncounted: c.uncounted.length, uncountedDetail: c.uncounted }));
   if (!recPolicy.present) recordUnverifiable.push(`${POLICY_FILE} が無く(層1 なし)、層1 の記名者と事業決裁者の同一性を確かめられません`);
   else if (recPolicy.signerIsBizApprover) recordDepartures.push({ label: '層1 の記名者が事業決裁者の席の責任者と同一(テンプレ11 の要求事項5)', derived: 'policy-signer-biz-approver' });
   const claimForRange = {
