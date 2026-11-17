@@ -87,6 +87,10 @@ check('基準値: 様式の説明のまま(<…>)は未記入', briefCoverageBas
 check('基準値: 行が無ければ null', briefCoverageBaseline('| カバレッジの測る範囲(G-5 基準3) | 全体 |\n') === null);
 check('基準値: 数でない記載は value null(未記入ではない)', (() => { const b = briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | abc |\n'); return b?.value === null && !b.blank; })());
 check('基準値: 100 を超える値は value null', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 120% |\n')?.value === null);
+check('基準値: 「85%」は 85(正しい記載は読める)', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 85% |\n')?.value === 85);
+check('基準値: 「85 %」(空白あり)は 85', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 85 % |\n')?.value === 85);
+check('基準値: 文の中の数は読まない(「G-5 を強める構成のため 90%」は value null。5 や 90 を拾わない)', (() => { const b = briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | G-5 を強める構成のため 90% |\n'); return b?.value === null && !b.blank; })());
+check('基準値: 小数は読めない(value null)', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 85.5% |\n')?.value === null);
 {
   const pass = [{ gate: 'G-1 企画承認', result: '通過' }];
   check('企画書の範囲の行: G-1 を通過済みの企画書に無ければ欠落(遡って失敗させない)', briefScopeRowState('| 安定性指標の閾値 | 80 |\n', pass) === 'gap');

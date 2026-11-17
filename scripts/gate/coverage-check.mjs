@@ -133,7 +133,7 @@ export const BRIEF_BASELINE_ROW = 'カバレッジの基準値(G-5 基準3)';
 
 /**
  * G-1 企画書の「カバレッジの基準値(G-5 基準3)」の行の値。行が無ければ null、未記入なら { value: null, raw, blank: true }、
- * 最初の整数(0〜100)を読めれば { value, raw }、読めなければ { value: null, raw }。未達の代償措置の下限(90)は基準値に含めない
+ * 値の欄が「整数」か「整数%」だけなら { value, raw }(0〜100)、それ以外の記載(文・小数・複数の数)は読めないとして { value: null, raw }。欄の値の書式を決めて読み、文中の最初の数を拾わない。未達の代償措置の下限(90)は基準値に含めない
  */
 export function briefCoverageBaseline(text) {
   const row = String(text ?? '')
@@ -143,7 +143,7 @@ export function briefCoverageBaseline(text) {
   const cells = row.replace(/\*/g, '').trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
   const raw = cells[1] ?? '';
   if (!isFilledValue(raw)) return { value: null, raw, blank: true };
-  const m = /(\d{1,3})\s*%?/.exec(raw);
+  const m = /^\s*(\d{1,3})\s*%?\s*$/.exec(raw);
   const value = m ? Number(m[1]) : null;
   return { value: value !== null && value >= 0 && value <= 100 ? value : null, raw };
 }

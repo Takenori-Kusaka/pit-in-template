@@ -790,7 +790,7 @@ if (adapter && config.gates?.g5?.state !== 'omitted') {
       else if (base.blank) notes.push('企画書の「カバレッジの基準値(G-5 基準3)」が未記入です。構成の基準値との一致を確かめていません(G-1 の前の企画書では check-g1 が未記入を落とします)');
       else if (base.value === null) problems.push(`企画書の「カバレッジの基準値」の記載 "${base.raw}" から、基準値(整数の %)を読み取れません`);
       else if (thresholdOk && base.value !== cfgBaseline) {
-        problems.push(`企画書に記録した基準値(${base.value}%)と、構成の基準値(${cfgBaseline}%)が一致しません。記録した基準値で測っていません。未達の代償措置の下限(90)は基準値に含めません(第4章 G-5)。企画書か構成(/process-change 種別 settings)を直してください`);
+        problems.push(`企画書に記録した基準値(${base.value}%)と、構成の基準値(${cfgBaseline}%)が一致しません。記録した基準値で測っていません。未達の代償措置の下限(90)は基準値に含めません(第4章 G-5)。由来の記録(ci.coverageBaseline)の無い旧い構成では、構成の値(ci.coverageThreshold)をそのまま企画書へ書きます。企画書か構成(/process-change 種別 settings)を直してください`);
       }
       const rec = briefCoverageScope(brief);
       if (!rec) notes.push('企画書(docs/project-brief.md)に「カバレッジの測る範囲(G-5 基準3)」の行がありません。構成の範囲と記録の一致を確かめていません');
