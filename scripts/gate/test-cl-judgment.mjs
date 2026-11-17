@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
+import { clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, sraResidualProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -231,6 +231,32 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
   check('テンプレ9: 作成者と別の名簿の人が承認日と版を書けば問題なし', p.length === 0, JSON.stringify(p));
   const tpl = fs.readFileSync(path.join(ROOT, 'templates/09-safety-risk-assessment.md'), 'utf8');
   check('テンプレ9: 様式のままの表は承認の欄を未記入として読む', sraApprovalProblems(config, tpl).some((x) => /「承認」の欄が未記入/.test(x)), JSON.stringify(sraApprovalProblems(config, tpl)));
+}
+
+// --- IMPL-0849: テンプレ9 に SR4 が残る危険源(危険源ごとの最新の値の一致だけを見る) ---
+{
+  const t = (s2, s3 = '', s5 = '') =>
+    `# AI エージェント安全リスクアセスメント\n\n## 2. 危険源とリスク\n| Hz | 危険源 | 参照ID | Hs | Ex | Oc | Av | SR | 判定の根拠 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${s2}\n\n## 3. 低減策\n| Hz | RRS1(実行不能にする) | RRS2(検知・承認) | RRS3(周知) | 低減後 SR |\n| --- | --- | --- | --- | --- |\n${s3}\n\n## 5. 残留リスクの受容\n| Hz | 残留 SR | 受容の理由 | 決裁者 | 日付 |\n| --- | --- | --- | --- | --- |\n${s5}\n`;
+  const r2 = (hz, sr, why = '') => `| ${hz} | 危険源 | ASI01 | Hs3 | Ex3 | Oc3 | Av3 | ${sr} | ${why} |`;
+  // IMPL-0849:ng(違反の入力。SR4 が残る危険源)
+  let p = sraResidualProblems(t(r2('Hz-001', 'SR4'), '| Hz-001 | | | | |'));
+  check('IMPL-0849:ng 節2 で SR4・節3 が空欄の危険源は残る(1件)', p.length === 1 && p[0] === 'Hz-001', JSON.stringify(p));
+  p = sraResidualProblems(t(r2('Hz-001', 'SR3'), '| Hz-001 | a | b | c | SR4 |'));
+  check('IMPL-0849:ng 節3 の低減後 SR が SR4 なら残る', p.length === 1, JSON.stringify(p));
+  p = sraResidualProblems(t(r2('Hz-001', 'SR4'), '| Hz-001 | a | b | c | SR2 |', '| Hz-001 | SR4 | 受容しない | 甲 | 2026-10-01 |'));
+  check('IMPL-0849:ng 節5 の残留 SR が SR4 なら、節3 が SR2 でも残る(最新の値は節5)', p.length === 1, JSON.stringify(p));
+  p = sraResidualProblems('# 表\n\n```markdown\n' + t(r2('Hz-007', '**SR4**')) + '\n```\n');
+  check('IMPL-0849:ng 囲みの中の表も読み、強調記号は除く', p.length === 1 && p[0] === 'Hz-007', JSON.stringify(p));
+  p = sraResidualProblems(t(r2('Hz-001', 'SR4') + '\n' + r2('Hz-002', 'SR4'), '| Hz-001 | a | b | c | SR2 |'));
+  check('IMPL-0849:ng 危険源ごとに数える(Hz-001 は低減済み、Hz-002 は残る)', p.length === 1 && p[0] === 'Hz-002', JSON.stringify(p));
+  // IMPL-0849:ok(適合の入力。危険源ごとの最新の値が SR4 でない)
+  p = sraResidualProblems(t(r2('Hz-001', 'SR4'), '| Hz-001 | a | b | c | SR2 |'));
+  check('IMPL-0849:ok 節2 で SR4・節3 で SR2 なら残らない(0件)', p.length === 0, JSON.stringify(p));
+  p = sraResidualProblems(t(r2('Hz-001', 'SR3', '当初は SR4 だったが SR4 から下げた'), '', ''));
+  check('IMPL-0849:ok 判定の根拠の欄に「SR4 から下げた」とだけある行は反応しない', p.length === 0, JSON.stringify(p));
+  const tpl = fs.readFileSync(path.join(ROOT, 'templates/09-safety-risk-assessment.md'), 'utf8');
+  check('IMPL-0849:ok 様式の写しそのまま(凡例の SR4・空欄の Hz-001 行)は 0 件', sraResidualProblems(tpl).length === 0, JSON.stringify(sraResidualProblems(tpl)));
+  check('IMPL-0849:ok 表を置いていない文書は 0 件', sraResidualProblems('# 表\n\nSR4 の説明だけ\n').length === 0);
 }
 
 // --- 一時の置き場: D-0 の検査・区分を下げる変化点・出荷の証跡の集約 ---

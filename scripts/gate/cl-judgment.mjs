@@ -512,6 +512,56 @@ export function sraApprovalProblems(config, text) {
   return out;
 }
 
+/**
+ * テンプレ9(docs/safety-risk-assessment.md)に、SR4 が残る危険源(Hz)の一覧を返す(第4章 G-1 前提条件3。IMPL-0849)。
+ * 危険源ごとの最新の値を採る: 節5 の「残留 SR」が記入されていればその値、無ければ節3 の「低減後 SR」、無ければ節2 の「SR」。
+ * その値が SR4 に一致する危険源だけを返す(値の一致だけを見る)。表は見出し行の欄名で特定する(節2: Hz と SR、節3: Hz と低減後 SR、
+ * 節5: Hz と残留 SR)。凡例の表は Hz の欄を持たないので読まない。囲み(```)の中の表も読む。自由な文の欄(判定の根拠・受容の理由・
+ * 再評価の結果)は読まない。適用条件への該当・表の要否・見積りの中身は人が判定する
+ */
+export function sraResidualProblems(text) {
+  const norm = (c) => String(c ?? '').replace(/\*/g, '').normalize('NFKC').trim();
+  const levels = { 2: new Map(), 3: new Map(), 5: new Map() };
+  const kindOf = (head) => {
+    if (!head.includes('Hz')) return null;
+    if (head.includes('残留 SR')) return 5;
+    if (head.includes('低減後 SR')) return 3;
+    if (head.includes('SR')) return 2;
+    return null;
+  };
+  let head = null;
+  let kind = null;
+  let sepSeen = false;
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('|')) {
+      head = null;
+      kind = null;
+      sepSeen = false;
+      continue;
+    }
+    const cells = line.replace(/^\||\|$/g, '').split('|').map(norm);
+    if (head === null) {
+      head = cells;
+      kind = kindOf(head);
+      sepSeen = false;
+      continue;
+    }
+    if (!sepSeen) {
+      sepSeen = /^[\s|:-]+$/.test(line);
+      if (!sepSeen) head = cells;
+      continue;
+    }
+    if (kind === null) continue;
+    const hz = cells[head.indexOf('Hz')];
+    const sr = cells[head.indexOf(kind === 5 ? '残留 SR' : kind === 3 ? '低減後 SR' : 'SR')];
+    if (!hz || !isFilledValue(hz) || !isFilledValue(sr)) continue;
+    levels[kind].set(hz, sr);
+  }
+  const hazards = new Set([...levels[2].keys(), ...levels[3].keys(), ...levels[5].keys()]);
+  return [...hazards].filter((hz) => /^SR4$/i.test(levels[5].get(hz) ?? levels[3].get(hz) ?? levels[2].get(hz) ?? ''));
+}
+
 /** ADR の識別子(ADR-NNNN)が context/decisions/ に実在するか */
 function adrExists(root, id) {
   const n = Number(id);

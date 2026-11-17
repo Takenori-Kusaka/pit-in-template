@@ -14,7 +14,7 @@ import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT, BRIEF_BASELI
 import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
-import { sraApprovalProblems } from './cl-judgment.mjs';
+import { sraApprovalProblems, sraResidualProblems } from './cl-judgment.mjs';
 import { g1PassState } from './records.mjs';
 
 const config = loadConfig();
@@ -222,6 +222,13 @@ if (generalEmpty.length) {
     for (const p of sraApprovalProblems(config, fs.readFileSync(sra, 'utf8'))) {
       if (g1Passed) warn(`${p}(G-1 を通過済みのため、遡って失敗させません)`);
       else g1Dependent(`${p}(承認済みの安全リスクアセスメント表が G-1 の前提条件です。標準 第2章 2.8)`);
+    }
+    // SR4 が残る間は G-1 の審議を開始できない(第4章 G-1 前提条件3・第2章 2.8。IMPL-0849)。危険源ごとの最新の値の一致だけを見る
+    const residual = sraResidualProblems(fs.readFileSync(sra, 'utf8'));
+    if (residual.length) {
+      const msg = `安全リスクアセスメント表に SR4 の危険源が残っています(Hz: ${residual.join('、')})。SR4 が残る間は G-1 の審議を開始できません(標準 第4章 G-1 前提条件3・第2章 2.8)`;
+      if (g1Passed) warn(`${msg}(G-1 を通過済みのため、遡って失敗させません)`);
+      else g1Dependent(msg);
     }
   }
 }

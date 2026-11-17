@@ -122,6 +122,30 @@ function workspace() {
   fs.rmSync(W.dir, { recursive: true, force: true });
 }
 
+// ---------------------------------------------------------------- SR4 の残存(IMPL-0849)。入口(check-g1)で見る
+{
+  const W = workspace();
+  const form = fs.readFileSync(path.join(ROOT, 'templates/06-project-brief.md'), 'utf8');
+  W.write('docs/project-brief.md', form);
+  const sra = (s2, s3 = '') =>
+    `# AI エージェント安全リスクアセスメント\n\n## 2. 危険源とリスク\n| Hz | 危険源 | 参照ID | Hs | Ex | Oc | Av | SR | 判定の根拠 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| Hz-001 | 本番への到達 | ASI02 | Hs3 | Ex3 | Oc3 | Av3 | ${s2} | 根拠 |\n\n## 3. 低減策\n| Hz | RRS1(実行不能にする) | RRS2(検知・承認) | RRS3(周知) | 低減後 SR |\n| --- | --- | --- | --- | --- |\n| Hz-001 | 隔離 | 承認 | 周知 | ${s3} |\n`;
+  const SR4_TEXT = '安全リスクアセスメント表に SR4 の危険源が残っています';
+  // IMPL-0849:ng(SR4 が残る表は、G-1 の審議を止める)
+  W.write('docs/safety-risk-assessment.md', sra('SR4'));
+  let r = W.g1();
+  check('IMPL-0849:ng 入口: 残る SR4 の危険源があれば失敗し、Hz を示す', !r.ok && r.out.includes(SR4_TEXT) && r.out.includes('Hz-001') && r.out.includes('G-1 の審議を開始できません'), r.out);
+  // IMPL-0849:ok(低減後 SR が SR2 なら SR4 の文は出ない)
+  W.write('docs/safety-risk-assessment.md', sra('SR4', 'SR2'));
+  r = W.g1();
+  check('IMPL-0849:ok 入口: 低減後 SR が SR2 なら SR4 の文を出さない', !r.out.includes(SR4_TEXT), r.out);
+  // IMPL-0849:ok(G-1 を通過済みは遡って失敗させず注意にする)
+  W.write('docs/safety-risk-assessment.md', sra('SR4'));
+  W.write('docs/gates/g1.md', ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 企画承認 |', '| 対象 | P-001 |', '| 判定者 | 判定 花子 |', '| 判定日時 | 2026-11-04 10:00 |', '| 結果 | 通過 |', '| 確定の形態 | 人確定 |', '| 参照した D-0 の版 | v1.0 |', ''].join('\n'));
+  r = W.g1();
+  check('IMPL-0849:ok 入口: G-1 を通過済みなら SR4 の残存を注意に出し、遡って失敗させない', r.out.includes(SR4_TEXT) && r.out.includes('遡って失敗させません'), r.out);
+  fs.rmSync(W.dir, { recursive: true, force: true });
+}
+
 // ---------------------------------------------------------------- G-1 の通過を記録用ブランチからも読む(process-compass #359 の独立の突合 高-1)
 // G-1 の様式の正本は記録用ブランチ records の records/gates/。基底ブランチへは出荷の PR が複製する。複製の前の案件を「G-1 の前」と
 // 読み違えて遡って失敗させないこと、記録用ブランチを読めないときは「判定記録を読めない」として出すことを確かめる
