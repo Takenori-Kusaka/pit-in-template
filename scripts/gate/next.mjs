@@ -41,7 +41,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { overdueExceptionNote } from './exception-expiry.mjs';
+import { overdueExceptionNote, validDay } from './exception-expiry.mjs';
 import { ROOT, resolveSigner, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
@@ -955,6 +955,7 @@ export function computeNext({ fetch = true, network = true, today = localDay() }
     const ledger = path.join(ROOT, 'docs/debt-ledger.md');
     const note = overdueExceptionNote({ ledgerText: fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8') : null, today });
     if (note) result.notes.push(note);
+    else if (!validDay(today)) result.notes.push(`--today の値 "${today}" が実在する日付(YYYY-MM-DD)として読めず、期限を過ぎた例外承認の注記を出していません`);
   } catch {
     // 読めなければ出さない(次の一手は止めない)
   }

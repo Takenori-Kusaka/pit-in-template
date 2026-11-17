@@ -1279,9 +1279,19 @@ if (isMain) {
   // 例外承認の回収の期限と比べる突合の日(第7章 7.3。#353)。引数 --exception-day で渡す(実行の時計に依らない)。
   // 無ければ範囲の終点のコミットの日(判定の日と同じ)。引数が日付として読めなければ、使わず記録の欠落に出す
   const exceptionDayArg = arg('--exception-day', null);
-  const exceptionDay = validDay(exceptionDayArg)
-    ? exceptionDayArg
-    : (period?.to && validDay(period.to) ? period.to : null) || git(['log', '-1', '--format=%cs', to]) || new Date().toISOString().slice(0, 10);
+  const exceptionEndDay = (period?.to && validDay(period.to) ? period.to : null) || git(['log', '-1', '--format=%cs', to]) || null;
+  const exceptionDay = validDay(exceptionDayArg) ? exceptionDayArg : exceptionEndDay || new Date().toISOString().slice(0, 10);
+  // 突合の日の出どころ。出荷判定の経路は --exception-day で判定の日を渡す。渡さないと範囲の終点のコミットの日になり、判定の日と異なることがある
+  const exceptionDaySource = validDay(exceptionDayArg) ? '引数 --exception-day で渡された判定の日' : exceptionEndDay ? '既定: 範囲の終点のコミットの日(判定の日と異なることがある)' : '既定: 実行の時計(範囲の終点の日を得られなかった)';
+  // 期限の比較に使う台帳の行は、範囲の終点のコミットの台帳で読む(件数と同じ時点。作業ツリーの台帳で読まない)
+  const exceptionRows = (() => {
+    const t = git(['show', `${to}:${debtFile}`]);
+    return t ? parseLedger(t) : null;
+  })();
+  const exceptionStartIds = (() => {
+    const t = from ? git(['show', `${from}:${debtFile}`]) : '';
+    return t ? new Set(parseLedger(t).filter((r) => r.kind === '例外').map((r) => r.id)) : null;
+  })();
   // 独立した人の確認を経ず、例外承認の記録が対応づいて出荷した変更の数(PR と PR を経ないコミット。#353 / IMPL-0573)
   let exceptionShipments = 0;
 
@@ -2590,7 +2600,7 @@ if (isMain) {
   function exceptionMatch(refers, ins, material = null) {
     const matched = [];
     const rejected = [];
-    for (const r of ledgerRows ?? []) {
+    for (const r of exceptionRows ?? []) {
       if (r.kind !== '例外') continue;
       if (r.target === null) {
         if (refers(r.text)) rejected.push(`${r.id}: 台帳に「対象」の欄が無い(旧い様式)。「対象」と「承認した者」の欄を足す`);
@@ -2639,7 +2649,7 @@ if (isMain) {
   // AI の名義でないことを確かめる。成立しない行は欠落にする(記録として例外承認の成立を示さないため)。
   // どの基準を欠いた判定か、承認した者が成果物の作成者と別の人か、権限を持つ者かは、機械では確かめない
   const gateExceptions = { matched: [], rejected: [] };
-  for (const r of ledgerRows ?? []) {
+  for (const r of exceptionRows ?? []) {
     if (r.kind !== '例外') continue;
     const t = gateExceptionTarget(r.target);
     if (!t) continue;
@@ -2703,7 +2713,7 @@ if (isMain) {
   }
   // 回収の期限を過ぎた例外承認(有効のまま期限を過ぎた行と失効の行)。台帳全体で数える。対象が出荷の範囲の外の行、
   // ゲートの判定を対象とする行も含む。新しい行で承認し直された元の行は数えない(第7章 7.3。#353 / IMPL-0574)
-  for (const x of lapsedExceptions(ledgerRows, exceptionDay)) gaps.push(lapsedGapText(x, exceptionDay));
+  for (const x of lapsedExceptions(exceptionRows, exceptionDay, exceptionStartIds)) gaps.push(lapsedGapText(x, exceptionDay));
   for (const x of gateExceptions.rejected) {
     gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);
   }
@@ -5415,13 +5425,16 @@ if (isMain) {
     unverifiable: recordUnverifiable,
     // 範囲の第7章の例外承認の件数(第1章 1.10.2 の併記する事項。#353 / IMPL-0573)。claimStatus と閉じた列挙は変えない(例外承認は逸脱でない)。
     // 台帳の始点は範囲の始点のコミット、終点は範囲の終点のコミット(上の記録と同じ読み方)。数えた日は突合の日
-    exceptions: countRangeExceptions({
-      startText: from ? gitText(['show', `${from}:${debtFile}`]) || null : null,
-      endText: recordAt(debtFile),
-      day: exceptionDay,
-      ledger: debtFile,
-      withoutIndependentConfirmation: exceptionShipments,
-    }),
+    exceptions: {
+      ...countRangeExceptions({
+        startText: from ? gitText(['show', `${from}:${debtFile}`]) || null : null,
+        endText: recordAt(debtFile),
+        day: exceptionDay,
+        ledger: debtFile,
+        withoutIndependentConfirmation: exceptionShipments,
+      }),
+      daySource: exceptionDaySource,
+    },
     blockers: [
       ...(straddles ? [`この範囲は版の切り替えをまたぎます(${editionsInRange.join(' → ')})。範囲を版ごとに分けて集約してください(第1章 1.10.2)`] : []),
       ...claimBase.blockers,
@@ -6173,12 +6186,13 @@ if (isMain) {
       const x = evidence.claim.exceptions;
       R.push(
         `- 範囲の第7章の例外承認の件数(第1章 1.10.2 の併記する事項): ${x.inRange} 件(未回収 ${x.uncollected} 件、うち回収の期限を過ぎた ${x.overdue} 件。独立した人の確認を経ない出荷 ${x.withoutIndependentConfirmation} 件)。` +
-          `${x.day} 時点。台帳は ${x.ledger}` + (x.undatedDue ? `。期限が日付として読めない有効の行が ${x.undatedDue} 件あり、期限超過に数えていない` : '')
+          `${x.day} 時点(突合の日の出どころ: ${x.daySource})。台帳は ${x.ledger}(範囲の終点のコミットの版)` + (x.undatedDue ? `。期限が日付として読めない有効の行が ${x.undatedDue} 件あり、期限超過に数えていない` : '') +
+          '。独立した人の確認を経ない出荷の件数は、例外承認の記録が変更へ対応づく経路の件数を試験で確かめていない(IMPL-0573。出荷判定者が対応づいた変更を確かめる)'
       );
     }
     // 組織の外へ渡す形では、台帳の自由記述(内容)を出さない。行の ID と件数で出す
     const idsOnly = (v) => (Array.isArray(v) ? v.map((x) => String(x).split(' ')[0]) : v);
-    R.push(`- 未回収の例外(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);
+    R.push(`- 状態が有効の例外(技術負債台帳。上の件数の「未回収」は失効の行を含み、この行は含まない): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);
     R.push(`- 独立した人の確認を経ていないが、例外承認の記録が対応づいた変更(未回収の例外): ${listOr(A.residual.exceptedChanges ?? [])}`);
     R.push(`- ゲートの判定を対象とする例外承認(未回収): ${listOr(A.residual.gateExceptions ?? [])}`);
     R.push(`- 未解決事項(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openUnresolved) : A.residual.openUnresolved)}`);

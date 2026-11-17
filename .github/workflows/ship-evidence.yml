@@ -199,7 +199,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          node scripts/gate/aggregate-evidence.mjs \
+          # 例外承認の回収の期限(第7章 7.3)と比べる突合の日は、判定の日(この実行の日。UTC)を明示して渡し、出力に記録する。
+          # 渡さないと範囲の終点のコミットの日になり、候補を切ってから日を置いて判定すると、その間に期限を過ぎた行を見逃す
+          node scripts/gate/aggregate-evidence.mjs --exception-day "$(date -u +%F)" \
             ${{ inputs.from && format('--from {0}', inputs.from) || '' }} \
             ${{ inputs.to && format('--to {0}', inputs.to) || '' }}
 
@@ -445,7 +447,8 @@ jobs:
           FROM: ${{ steps.pr.outputs.from }}
           TO: ${{ steps.pr.outputs.to }}
         run: |
-          node scripts/gate/aggregate-evidence.mjs ${FROM:+--from "$FROM"} ${TO:+--to "$TO"}
+          # 突合の日は判定の日(この実行の日。UTC)を明示して渡す(上の集約と同じ。第7章 7.3)
+          node scripts/gate/aggregate-evidence.mjs --exception-day "$(date -u +%F)" ${FROM:+--from "$FROM"} ${TO:+--to "$TO"}
 
       - name: 複製が記録用ブランチと一致することを検査する
         id: compare

@@ -1408,7 +1408,9 @@ export function parseLedger(text) {
 
 /** 期限の欄から日付(YYYY-MM-DD または YYYY/MM/DD)を取り出す。実在する日付として解釈できなければ null */
 export function dueDayOf(v) {
-  const m = /(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(String(v ?? '').normalize('NFKC'));
+  const text = String(v ?? '').normalize('NFKC');
+  // 「承認の日。期限の日 まで」のように日付が複数あるとき、「まで」の直前の日付を期限とする(無ければ最初の日付)
+  const m = /(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*まで/.exec(text) ?? /(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(text);
   if (!m) return null;
   const day = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
   return isRealDay(day) ? day : null;
