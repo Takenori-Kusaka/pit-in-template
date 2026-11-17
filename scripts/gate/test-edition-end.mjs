@@ -358,11 +358,11 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   // IMPL-0120:ng(違反の入力: 作業中の版でコミットの識別が無い)
   check('値の行(ng): 作業中の版でコミットが無ければ「コミットの識別なし」を添える', /コミットの識別なし/.test(draftNoCommit), draftNoCommit);
   const draftWith = statementFactsLine({ editionLabel: '作業中の版(第1版の後。標準のコミット abcdef123456)', edition: null, kbCommit: 'abcdef1234567890abcdef1234567890abcdef12', unmet: [], gapCount: 0, listed: [], unlisted: [] });
-  // IMPL-0120:ok(適合の入力: 作業中の版でコミットあり)
-  check('値の行(ok): 作業中の版でコミットがあれば先頭12字が出て、識別なしの注記は出ない', /abcdef123456/.test(draftWith) && !/コミットの識別なし/.test(draftWith), draftWith);
+  // IMPL-0120:ok(適合の入力: 作業中の版でコミットあり)。コミットの先頭12字を出すのは editionLabel(claimStatus)で、行は識別なしの注記の有無だけを kbCommit で決める
+  check('値の行(ok): 作業中の版でコミットの識別があれば、識別なしの注記を出さない(先頭12字は版の表示が運ぶ)', /abcdef123456/.test(draftWith) && !/コミットの識別なし/.test(draftWith), draftWith);
   const some = statementFactsLine({ editionLabel: '第1版', edition: '第1版', unmet: ['G-5'], gapCount: 2, listed: ['L-1 兼務(第3章)'], unlisted: ['名義の共有'] });
-  // IMPL-0120:ng(違反の入力: 未達1件・欠落2件・離脱あり。件数と一覧が値のとおり出る)
-  check('値の行(ng): 未達1件・欠落2件・一覧の値が出る', /未達のゲート 1 件/.test(some) && /集約の欠落の一覧\) 2 件/.test(some) && /L-1 兼務/.test(some) && /名義の共有/.test(some), some);
+  // IMPL-0120:ok(適合の入力: 未達1件・欠落2件・離脱あり。件数と一覧が値のとおり出る。値の出力の確認であり違反の検出ではない)
+  check('値の行: 未達1件・欠落2件・一覧の値が出る', /未達のゲート 1 件/.test(some) && /集約の欠落の一覧\) 2 件/.test(some) && /L-1 兼務/.test(some) && /名義の共有/.test(some), some);
   const none = statementFactsLine({ editionLabel: '第1版', edition: '第1版', unmet: [], gapCount: 0, listed: [], unlisted: [] });
   // IMPL-0120:ok(適合の入力: 0 件・離脱なし。0 件と「無し」を省かない)
   check('値の行(ok): 0 件と「無し」が両方出る', /未達のゲート 0 件/.test(none) && /欠落の一覧\) 0 件/.test(none) && (none.match(/無し/g) || []).length === 2 && /ADR-0165/.test(none), none);
@@ -383,7 +383,9 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
     w.git('add', '-A');
     w.git('commit', '-q', '--allow-empty', '-m', 'chore: records');
     w.node('scripts/gate/aggregate-evidence.mjs');
-    const claim = w.readJson('evidence/evidence.json').claim;
+    const ev = w.readJson('evidence/evidence.json');
+    const claim = ev.claim;
+    Object.defineProperty(claim, '__full', { value: { gaps: ev.gaps, report: fs.readFileSync(path.join(w.dir, 'evidence/quality-report.md'), 'utf8'), external: fs.readFileSync(path.join(w.dir, 'evidence/assurance-disclosure.external.md'), 'utf8') }, enumerable: false });
     w.done();
     return claim;
   };
@@ -398,7 +400,14 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   // IMPL-0521:ok(適合の入力: 記録が無い。名を下げず確かめられない旨を出す)
   check('集約(vi): 引き継ぎ文書も層1 も無いときは、離脱に数えず、確かめられない旨を出す', !c3.unlistedDepartures.some((l) => /保持者|記名者/.test(l)) && c3.unverifiable.length === 2 && c3.blockers.some((b) => /この項目では名を下げません/.test(b)), JSON.stringify(c3));
 
-  check('集約の値の行: claim.statementFacts の欠落の件数は、名を下げる欠落の一覧と同じ数', typeof c3.statementFacts?.gapCount === 'number' && Array.isArray(c3.statementFacts.unmet), JSON.stringify(c3.statementFacts));
+  // IMPL-0120:ok(適合の入力: 集約の値の行の件数が、同じ実行の欠落の一覧の件数と一致する。品質レポートの行・外へ渡す形も通す)
+  check('集約の値の行: claim.statementFacts の欠落の件数は、同じ実行の欠落の一覧(evidence.gaps)の件数と一致する', Array.isArray(c3.__full.gaps) && c3.statementFacts?.gapCount === c3.__full.gaps.length && c1.statementFacts?.gapCount === c1.__full.gaps.length && Array.isArray(c3.statementFacts.unmet), JSON.stringify({ facts: c3.statementFacts, gaps: c3.__full.gaps?.length }));
+  const factsLineOf = (text) => (text.match(/^- 適用の表明に併記する事項.*$/m) || [''])[0];
+  const lineC3 = factsLineOf(c3.__full.report);
+  check('品質レポートの行: 値の行が1行出て、欠落の件数が evidence.gaps の件数と同じ', lineC3 !== '' && lineC3.includes(`集約の欠落の一覧) ${c3.__full.gaps.length} 件`), lineC3);
+  // IMPL-0120:ng(違反の入力: 外へ渡す形に離脱の内容(保持者の名)を出す)と対(内部の形は一覧を出す)
+  check('外へ渡す形: 列挙に無い離脱は件数だけで、内容(保持者の名)を出さない。内部の品質レポートは内容を出す', factsLineOf(c1.__full.external).includes(`${c1.unlistedDepartures.length} 件(内容は外へ出さない)`) && !/名簿 [甲乙]/.test(factsLineOf(c1.__full.external)) && /保持者が1名以下/.test(factsLineOf(c1.__full.report)), `${factsLineOf(c1.__full.external)}
+${factsLineOf(c1.__full.report)}`);
 
   // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める
   const tpl11 = fs.readFileSync(path.join(ROOT, 'templates/11-quality-assurance-policy.md'), 'utf8').replace(/\r\n/g, '\n');
