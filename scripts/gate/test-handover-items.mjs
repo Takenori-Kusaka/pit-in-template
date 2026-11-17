@@ -148,6 +148,8 @@ const ITEMS = ['監視項目', '障害時の連絡先', '復旧手順'];
   check('3項目を記入 → 3つの未記入・置き場なしの文のどれも出ない', ITEMS.every((l) => !gapOf(all.out, l) && !missingOf(all.out, l)), all.out);
   const std = w.run(STD);
   check('標準の様式の見出しと箇条書きで記入 → 文が出ない', ITEMS.every((l) => !gapOf(std.out, l) && !missingOf(std.out, l)), std.out);
+  const alias = w.run(STD.replace('## 障害時の連絡先・体制', '## 障害時連絡先'));
+  check('見出し「障害時連絡先」(基準の表の語)で記入 → 文が出ない', ITEMS.every((l) => !gapOf(alias.out, l) && !missingOf(alias.out, l)), alias.out);
   // 限界の固定(目印なし)
   const tbd = w.run(fillAll(BLANK).replace('決済の失敗率', 'TBD'));
   check('限界: 「TBD」だけでも記入ありとして通る(完備は判定しない)', !gapOf(tbd.out, '監視項目'));

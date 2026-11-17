@@ -21,7 +21,7 @@
 //
 // 確かめないこと: 置き換えた決定の内容が妥当か、決定の番号(決定 n)が実在するか。事業影響の欄は形式の欠落までで、
 // 様式の文を1字書き換えた記載、「不明」「TBD」、理由を添えた「なし(…)」、言い換えた写し、幅の中身(上限と下限の妥当性)は通る。
-// 前の判断記録との記述の一致は検査しない(IMPL-NEW2。標準 第4章 G-3 の表は「検査する」と書くが、定義が標準に無い)。
+// 前の判断記録との記述の一致は検査しない(IMPL-0986。標準 第4章 G-3 の表は「検査する」と書くが、定義が標準に無い)。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -195,7 +195,7 @@ export function fieldProblems(decision, initialText = null) {
   if (decision.archived || (decision.kind !== 'adopted' && decision.kind !== 'partial')) return [];
   const name = decision.id ?? decision.file;
   const impact = decision.impact === undefined ? null : decision.impact;
-  if (!impact) return [`${name}: 事業影響の節(「## 事業への影響」)が無い。判断記録を置き換える判断記録を起こして書く(採用した記録の本文は書き換えない)`];
+  if (!impact) return [`${name}: 事業影響の節(「## 事業への影響」)が無い。全部を置き換える判断記録を起こして書き、旧い記録を保管領域へ移す(採用した記録の本文は書き換えない。一部置き換えは置き場に残るため解けない)`];
   const initial = initialText ? businessImpactOf(initialText) : null;
   const out = [];
   for (const row of IMPACT_ROWS) {
@@ -322,7 +322,7 @@ function main(argv) {
   if (fields.length) {
     console.log(`事業影響の欄の形式の欠落: ${fields.length} 件${initialText === null ? '(様式 templates/02-adr.md が無いため、初期の文と比べていない)' : ''}`);
     for (const p of fields) console.log(`- ${p}`);
-    console.log('採用した判断記録の本文は書き換えない。落ちた記録は、置き換える判断記録を起こして直す(標準 第6章 テンプレ2「置き換えと廃止」)');
+    console.log('採用した判断記録の本文は書き換えない。落ちた記録は、全部を置き換える判断記録を起こし、旧い記録を保管領域へ移して直す(context/decisions/README.md「既存の判断記録の移行」。標準 第6章 テンプレ2「置き換えと廃止」)');
   }
   if (result.problems.length) {
     console.log(`置き換えの両側の参照・状態・置き場の不一致: ${result.problems.length} 件`);

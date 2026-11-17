@@ -172,6 +172,7 @@ for (const v of ['なし', '特になし', 'N/A', '無し。', '該当なし']) 
 fieldCase('取り消しの可否に選択肢が2つ以上残る', withImpact({ revocable: '自動で戻せる / 人手で戻せる' }), true, /選択肢が2つ残っている/);
 fieldCase('事業影響の節が無い記録', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) }, true, /事業影響の節/);
 fieldCase('標準の見出し(事業影響)と欄の名(影響する利用者と業務)で空', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) + impactSection({ users: '' }, '## 事業影響(G-3 判定基準5)').replace('影響を受ける利用者・業務', '影響する利用者と業務') }, true, /「影響を受ける利用者・業務」が空/);
+fieldCase('旧い様式(「## ステータス」の節だけ)の採用の記録は、事業影響の節が無いとして落ちる', { [D('0001-a.md')]: '# ADR-0001: 旧\n\n## ステータス\n\n採用(2026-10-01)\n\n## 決定\n\n- 決定 1: a\n' }, true, /事業影響の節/);
 // IMPL-0132:ok(適合の入力。標準の実装マーク)
 fieldCase('全記入の記録は、欄の文が出ず終了 0', withImpact({}), false);
 fieldCase('標準の見出しと欄の名で全記入', { [D('0001-a.md')]: adr({ num: '0001', state: '採用(2026-10-01)' }) + impactSection({}, '## 事業影響(G-3 判定基準5)').replace('影響を受ける利用者・業務', '影響する利用者と業務') }, false);
@@ -183,8 +184,11 @@ fieldCase('保管領域の節の無い記録は見ない', { [A('0001-a.md')]: a
 fieldCase('限界: 兆候「不明」は通る', withImpact({ signs: '不明' }), false);
 fieldCase('限界: 兆候「TBD」は通る', withImpact({ signs: 'TBD' }), false);
 fieldCase('限界: 「なし(自動で戻せるため)」は通る', withImpact({ signs: 'なし(自動で戻せるため)' }), false);
-fieldCase('限界: 回復「2026-11-20 まで」は通る(幅の中身は見ない)', withImpact({ recovery: '2026-11-20 まで' }), true, /単一の値/);
+fieldCase('開示した偽の失敗: 回復「2026-11-20 まで」は単一の値として落ちる', withImpact({ recovery: '2026-11-20 まで' }), true, /単一の値/);
 fieldCase('限界: 初期の文を1字書き換えた記載は通る', withImpact({ users: 'この選択が裏目に出たとき、誰の何が止まるのか' }), false);
+// 開示した偽の失敗(目印なし。幅でも単一の値として落ちる。EV-0283)
+fieldCase('開示した偽の失敗: 回復「1日(最悪で3日)」は落ちる', withImpact({ recovery: '1日(最悪で3日)' }), true, /単一の値/);
+fieldCase('開示した偽の失敗: 取り消し「人手で戻せる(一部は自動で戻せる)」は落ちる', withImpact({ revocable: '人手で戻せる(一部は自動で戻せる)' }), true, /選択肢が2つ残っている/);
 // 静的確認: gate-g5.yml が検査の手順を結線している
 {
   const yml = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
