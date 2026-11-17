@@ -1282,7 +1282,7 @@ if (isMain) {
   const exceptionEndDay = (period?.to && validDay(period.to) ? period.to : null) || git(['log', '-1', '--format=%cs', to]) || null;
   const exceptionDay = validDay(exceptionDayArg) ? exceptionDayArg : exceptionEndDay || new Date().toISOString().slice(0, 10);
   // 突合の日の出どころ。出荷判定の経路は --exception-day で判定の日を渡す。渡さないと範囲の終点のコミットの日になり、判定の日と異なることがある
-  const exceptionDaySource = validDay(exceptionDayArg) ? '引数 --exception-day で渡された判定の日' : exceptionEndDay ? '既定: 範囲の終点のコミットの日(判定の日と異なることがある)' : '既定: 実行の時計(範囲の終点の日を得られなかった)';
+  const exceptionDaySource = validDay(exceptionDayArg) ? '引数 --exception-day で渡された日' : exceptionEndDay ? '既定: 範囲の終点のコミットの日(判定の日と異なることがある)' : '既定: 実行の時計(範囲の終点の日を得られなかった)';
   // 期限の比較に使う台帳の行は、範囲の終点のコミットの台帳で読む(件数と同じ時点。作業ツリーの台帳で読まない)
   const exceptionRows = (() => {
     const t = git(['show', `${to}:${debtFile}`]);
@@ -4176,7 +4176,7 @@ if (isMain) {
   });
 
   // 5. 残存リスク、既知の不具合、未回収の例外
-  const debtRows = ledgerRows ? ledgerRows.filter((r) => r.state.startsWith('未返却')) : null;
+  const debtRows = exceptionRows ? exceptionRows.filter((r) => r.state.startsWith('未返却')) : null;
   const residual = {
     unmet: unmet.map((u) => u.label),
     deviations: deviations.map((d) => d.label),
@@ -6192,7 +6192,7 @@ if (isMain) {
     }
     // 組織の外へ渡す形では、台帳の自由記述(内容)を出さない。行の ID と件数で出す
     const idsOnly = (v) => (Array.isArray(v) ? v.map((x) => String(x).split(' ')[0]) : v);
-    R.push(`- 状態が有効の例外(技術負債台帳。上の件数の「未回収」は失効の行を含み、この行は含まない): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);
+    R.push(`- 状態が有効の例外(技術負債台帳の範囲の終点の版。状態が「未返却」で始まる行で、承認し直された元の行を含み、失効の行を含まない): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);
     R.push(`- 独立した人の確認を経ていないが、例外承認の記録が対応づいた変更(未回収の例外): ${listOr(A.residual.exceptedChanges ?? [])}`);
     R.push(`- ゲートの判定を対象とする例外承認(未回収): ${listOr(A.residual.gateExceptions ?? [])}`);
     R.push(`- 未解決事項(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openUnresolved) : A.residual.openUnresolved)}`);

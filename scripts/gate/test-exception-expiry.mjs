@@ -55,6 +55,10 @@ check('出荷の範囲の外の行(対象が過去のコミット)も数える',
   // 突合の1巡目 H-1: 名指された行は、対象が一致し、元の行より後に足され、有効で期限内でなければならない
   const mutual = ledger(row('D-002', 'PR #14', '2026-11-01', '未返却', 'D-003 で承認し直した'), row('D-003', 'PR #14', '2026-12-31', '未返却', 'D-002 の承認し直し'));
   check('相互に名指す2行: 元の行(D-002)だけを外し、新しい行(D-003)は未回収に数える', ids(mutual).length === 0 && countRangeExceptions({ startText: null, endText: mutual, day: DAY, ledger: 'x' }).uncollected === 1);
+  // 突合の2巡目 M2-2: 両方が有効で互いを名指す場面(1巡目の欠陥では両方が未回収から外れた)
+  const mutualActive = ledger(row('D-002', 'PR #14', '2026-12-25', '未返却', 'D-003 で承認し直した'), row('D-003', 'PR #14', '2026-12-31', '未返却', 'D-002 の承認し直し'));
+  const ma = countRangeExceptions({ startText: null, endText: mutualActive, day: DAY, ledger: 'x' });
+  check('相互に名指す2行が両方有効: 新しい行(D-003)は未回収から外れない', ma.inRange === 2 && ma.uncollected === 1 && ids(mutualActive).length === 0, JSON.stringify(ma));
   const mention = ledger(row('D-010', 'G-2 F-001', '2026-11-01', '未返却', 'D-011 と同じ事情'), row('D-011', 'PR #30', '2026-12-31', '未返却'));
   check('付け足しの名指し(対象の異なる有効な行の識別が内容に出るだけ)は、承認し直しに数えない', ids(mention).join() === 'D-010');
   const mentionActive = ledger(row('D-020', 'PR #31', '2026-12-31', '未返却', 'D-021 と同じ事情'), row('D-021', 'PR #32', '2026-12-31', '未返却'));
@@ -228,7 +232,7 @@ function workspace() {
   const to3 = w.commit('docs: 台帳(承認し直しの場面)');
   const r3 = w.node('scripts/gate/aggregate-evidence.mjs', '--from', from, '--to', to3, '--exception-day', DAY);
   const ev3 = JSON.parse(fs.readFileSync(path.join(w.dir, 'evidence/evidence.json'), 'utf8'));
-  check('通し(承認し直し): 相互の名指しで両方を外さず、付け足しの名指しで期限超過の行を外さない', gapIdsOf(ev3).join() === 'D-023' && ev3.claim.exceptions.uncollected >= 3, `${r3.out.slice(-200)}
+  check('通し(承認し直し): 相互の名指しで両方を外さず、付け足しの名指しで期限超過の行を外さない', gapIdsOf(ev3).join() === 'D-023' && ev3.claim.exceptions.uncollected === 4, `${r3.out.slice(-200)}
 ${gapIdsOf(ev3).join()}
 ${JSON.stringify(ev3.claim.exceptions)}`);
   w.done();
