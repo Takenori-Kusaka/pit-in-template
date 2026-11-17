@@ -181,6 +181,19 @@ jobs:
           mkdir -p evidence
           node scripts/gate/evidence-manifest.mjs previous --root docs/evidence --out evidence/previous --artifact "$artifact" --run "$prev" --source-file evidence/previous-source.json
 
+      # 欠陥注入の標識の走査(標準 第5章 5.6.2 の第3層。#356 / IMPL-0047)。集約の前に、演習の有無に依らず毎回無条件に走らせる。
+      # 記録 evidence/seeded-error-scan.json は同じジョブの中で集約へ渡す(evidence/ は .gitignore の下で別のジョブへ届かない)。
+      # 集約(第4層)は、この記録の欠落・residual が 0 でない・範囲の不一致を失敗にする。演習をしない採用者は residual 0 で通る。
+      # 台帳の照合は、採用者が台帳をリポジトリの外で持ち、ここへ `--ledger` で渡す場合だけ(渡さなければ「台帳と照合していない」と記録に出す)。
+      # 走査が拾うのは標識の残存だけ。手で写した変更は対象外で、流出がないことを示さない
+      - name: 標識の残存を走査する
+        env:
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+        run: |
+          mkdir -p evidence
+          node scripts/gate/seeded-error-scan.mjs ${FROM:+--from "$FROM"} ${TO:+--to "$TO"}
+
       - name: 証跡を集約する
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,6 +213,7 @@ jobs:
             evidence/evidence.json
             evidence/quality-report.md
             evidence/assurance-disclosure.external.md
+            evidence/seeded-error-scan.json
           if-no-files-found: error
           # 一時置き。保管ではない(IMPL-0243。保管期間の値と充足は採用者が定める)。retention-days は明示しない(ADR-0135):
           # 明示すると、保持を既定(90 日)より長くしているリポジトリで保持が短くなる。成果物の保持はリポジトリの設定に従う。
@@ -259,7 +273,7 @@ jobs:
           bundle="docs/evidence/$day-$safe"
           [ -e "$bundle" ] && bundle="docs/evidence/$day-$safe-$RUN_NUMBER"
           mkdir -p "$bundle"
-          for f in evidence.json assurance-disclosure.external.md license-scan.json test-results.json coverage-result.json inputs.json; do
+          for f in evidence.json assurance-disclosure.external.md seeded-error-scan.json license-scan.json test-results.json coverage-result.json inputs.json; do
             if [ -e "evidence/$f" ]; then cp "evidence/$f" "$bundle/$f"; fi
           done
           # 一覧の range・target は、置き場の evidence.json(集約の出力)が持つ実際の範囲と終点から取る。読めなければ null(ここで推定しない)
@@ -413,6 +427,16 @@ jobs:
           fi
 
       # 同じ集約を再実行する。出荷の PR では同じ範囲(本文の印)で実行し、失敗(欠落)はこのジョブの失敗になる
+      # 集約の再実行に要る走査の記録を、同じ範囲で作り直す(evidence/ は別のジョブから届かない)
+      - name: 標識の残存を走査し直す
+        if: steps.pr.outputs.ship == 'true'
+        env:
+          FROM: ${{ steps.pr.outputs.from }}
+          TO: ${{ steps.pr.outputs.to }}
+        run: |
+          mkdir -p evidence
+          node scripts/gate/seeded-error-scan.mjs ${FROM:+--from "$FROM"} ${TO:+--to "$TO"}
+
       - name: 証跡を集約し直す
         if: steps.pr.outputs.ship == 'true'
         env:

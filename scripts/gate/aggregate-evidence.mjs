@@ -1037,6 +1037,45 @@ export function declarationDrift({ sizeAnswer, sizeLabel, approvers, declaredMod
 // ここから末尾までが、コマンドとして実行したときの本体である。上の関数は、試験が本体を動かさずに import する。
 // 本体の字下げは変えていない(履歴の差分を、本体の変更に限るため)
 
+/**
+ * 欠陥注入の標識の走査の記録(evidence/seeded-error-scan.json)を読む。欠落・scanRun が true でない・residual が 0 でない・
+ * 範囲(range.toSha・fromSha)が対象と合わない、のいずれかを problems に出す。期間の集約(period)は出荷の範囲を持たないため読まない。
+ * 「流出なし」とは書かない(手で写した変更は走査の対象外)。
+ */
+export function readSeededScan({ exists, root, git, to, from, period }) {
+  if (period) return { problems: [], line: '期間の集約のため対象外(出荷の範囲の走査ではない)', summary: null };
+  const file = 'evidence/seeded-error-scan.json';
+  const why = [];
+  let rec = null;
+  if (!exists(file)) why.push(`走査の記録 ${file} がありません`);
+  else {
+    try {
+      rec = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
+    } catch {
+      why.push(`走査の記録 ${file} を JSON として読めません`);
+    }
+  }
+  if (rec) {
+    if (rec.scanRun !== true) why.push('走査の記録の scanRun が true でありません(走査を実行していない)');
+    if (!Number.isInteger(rec.residual) || rec.residual !== 0) why.push(`走査の記録の residual が 0 でありません(${rec.residual ?? '値なし'})`);
+    const toSha = String(git(['rev-parse', '--verify', '--quiet', `${to}^{commit}`]) ?? '').trim();
+    const fromSha = from ? String(git(['rev-parse', '--verify', '--quiet', `${from}^{commit}`]) ?? '').trim() : '';
+    if (!toSha || rec.range?.toSha !== toSha) why.push(`走査の記録の範囲の終点(${rec.range?.to ?? '無し'} ${String(rec.range?.toSha ?? '').slice(0, 12)})が対象 ${to}(${toSha.slice(0, 12)})と合いません`);
+    if ((rec.range?.fromSha ?? '') !== fromSha) why.push(`走査の記録の範囲の起点(${rec.range?.from ?? '根'})が対象の起点 ${from || '根'} と合いません`);
+  }
+  const problems = why.map((w) => `欠陥注入の標識の走査: ${w}。標識の残存がないことを確かめられません(標準 5.6.2。seeded-error-scan.mjs が出荷の経路で作る記録です)`);
+  const line = rec
+    ? `${why.length ? '**失敗**: ' + why.join(' / ') : (rec.statement ?? '標識の残存なし(手で写した変更は走査の対象外)')}。${rec.ledgerChecked ? rec.ledgerNote : '台帳と照合していない'}(走査 ${rec.scannedAt ?? '時刻なし'}、コミット ${rec.commitsScanned ?? '?'} 件)。流出がないことは示さない`
+    : `**記録なし**(${why.join(' / ')})`;
+  return {
+    problems,
+    line,
+    summary: rec
+      ? { scanRun: rec.scanRun, residual: rec.residual, ledgerChecked: rec.ledgerChecked === true, range: rec.range ?? null, scannedAt: rec.scannedAt ?? null, statement: rec.statement ?? null }
+      : { scanRun: false, residual: null, ledgerChecked: false, range: null, scannedAt: null, statement: null },
+  };
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const config = loadConfig();
@@ -1222,6 +1261,10 @@ if (isMain) {
   const licenseScan = exists('evidence/license-scan.json')
     ? JSON.parse(fs.readFileSync(path.join(ROOT, 'evidence/license-scan.json'), 'utf8'))
     : { scanRun: false };
+
+  // 欠陥注入の標識の走査の記録(seeded-error-scan.mjs が出荷の経路で毎回作る。標準 5.6.2 第3層・第4層。#356 / IMPL-0192)。
+  // 欠落・scanRun が true でない・residual が 0 でない・範囲が対象と合わない、のいずれかは欠落。項目6(検出率)とは別の行に出す
+  const seededScan = readSeededScan({ exists, root: ROOT, git, to, from, period });
 
   /** 記入があるか。「—」「未定」などの記入でない値と、様式の説明(<…>)を残したままの欄は、未記入である(登録の根拠と同じ関数) */
   const filled = isFilledValue;
@@ -3365,6 +3408,8 @@ if (isMain) {
     gaps.push('知財潔白性の検査記録がありません。判定するのは検査を実施し記録したことです');
   }
 
+  for (const p of seededScan.problems) gaps.push(p);
+
   // 層1(品質保証の方針と受容の基準。テンプレ11)。保証の主張の成立条件1・5・6 と、G-8 の照合の材料(#288)
   // 層1 の帰属(第4章「判定記録を基底ブランチへ入れる操作」。#428 / IMPL-0415)。層1 を最後に変えた PR の作成者・承認者に、
   // 層1 の記名者のアカウントがあるか。確かめられない層1 は、項目4 の権限者の照合(checkAuthority)に使わず、事業決裁者の席の
@@ -5347,6 +5392,7 @@ if (isMain) {
     recordPrs: recordsDisclosure.recordPrs,
     decisions: { counts: decisionCheck.counts, problems: decisionCheck.problems },
     ipClearance: licenseScan,
+    seededErrorScan: seededScan.summary,
     shipBlocked: config.shipBlocked ?? null,
     unmet,
     deviations,
@@ -6459,6 +6505,7 @@ if (isMain) {
   R.push(`- 運用引き継ぎ文書: ${exists(handoverFile) ? 'あり' : '**なし**'}`);
   if (handoverInfo) R.push(`- 運用引き継ぎ文書の3項目の記入の有無(完備は判定しない): ${handoverInfo.items.map((i) => `${i.label}=${{ filled: '記入あり', unfilled: '**未記入**', missing: '**置き場なし**' }[i.result]}`).join(' / ')}${handoverInfo.compared ? '' : '(様式の初期の文と比べていない)'}`);
   R.push(`- 知財潔白性の検査: ${licenseScan.scanRun ? '実施' : '**未実施**'}`);
+  R.push(`- 欠陥注入の標識の走査(項目6 の検出率とは別): ${seededScan.line}`);
   R.push('');
 
   if (gaps.length) {
