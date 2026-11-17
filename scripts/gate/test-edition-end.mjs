@@ -502,6 +502,27 @@ ${factsLineOf(c1.__full.report)}`);
   check('追跡: CL0・標準品質の構成は、追跡の文を出さない', !TRACE.test(none.profile) && !TRACE.test(none.rules));
 }
 
+// ---------------------------------------------------------------- 提案書へ写す調整の宣言(IMPL-0959。process-compass #446)
+{
+  const built = (answers, opts = {}) => quiet(() => buildConfig({ ...COMMON, 'q-external-reviewer': 'reviewer-yes', ...answers }, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS3, ...opts }));
+  const section = (b) => {
+    const t = renderProfileMd(b.config, b.result);
+    const i = t.indexOf('## 提案書へ写す調整の宣言');
+    return i < 0 ? '' : t.slice(i).split('\n## ')[0];
+  };
+  // IMPL-0959:ng(違反の入力: 外した項目・簡略化した項目・practice の調整があるのに、節が無い・項目が載らない構成は、この対が落とす)
+  const poc = built({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'poc' });
+  const sec = section(poc);
+  check('宣言: 外した項目(PoC の独立レビュー・出荷判定の省略)が、区分と理由とともに載る', /独立レビュー/.test(sec) && /適用しない/.test(sec) && !/調整の宣言: \*\*なし\*\*/.test(sec), sec.slice(0, 400));
+  check('宣言: 簡略化した項目と practice の調整(役割の委譲など)が載る', /簡略化して適用する|practice:/.test(sec), sec.slice(0, 400));
+  check('宣言: 承認者の欄に AI の名義を書かない(決裁者が記名する旨を案内する)', /決裁者が記名/.test(sec) && !/承認者: /.test(sec), sec);
+  // IMPL-0959:ok(適合の入力: 調整が何も無い構成は、「なし」と出す)
+  const plain = built({ 'q-team-size': 'size-3-9' });
+  const allRequired = { ...plain.config, gates: Object.fromEntries(Object.entries(plain.config.gates).map(([k, g]) => [k, { ...g, state: 'required' }])) };
+  const t0 = renderProfileMd(allRequired, { ...plain.result, profile: {} });
+  check('宣言: 調整が何も無い構成は「なし」と出す', /調整の宣言: \*\*なし\*\*/.test(t0.slice(t0.indexOf('## 提案書へ写す調整の宣言'))), t0.slice(t0.indexOf('## 提案書へ写す調整の宣言'), t0.indexOf('## 提案書へ写す調整の宣言') + 300));
+}
+
 console.log('');
 if (failures) {
   console.log(`版・適用の終了・適用の開始の境の試験: ${failures} 件が期待と一致しません`);

@@ -3846,6 +3846,45 @@ export function renderProfileMd(config, result) {
     }
   }
 
+  // --- 提案書へ写す調整の宣言(標準 附属書D の「調整の宣言」。IMPL-0959。process-compass #446) ---
+  {
+    const cells = (t) => String(t).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    const gateRows = Object.values(config.gates ?? {})
+      .filter((g) => g.state !== 'required' && !g.state.startsWith('unmet'))
+      .map((g) => `| ${cells(g.label)} | ${cells(stateLabel(g.state))} | ${cells((g.why ?? []).join(' / ') || '(構成に理由の記載なし)')} |`);
+    const adjRows = Object.entries(result?.profile ?? {})
+      .filter(([key, v]) => /^(practice|constraint):/.test(key) && ((v.notes ?? []).length || Object.keys(v.params ?? {}).length))
+      .map(([key, v]) => {
+        const params = Object.entries(v.params ?? {}).map(([k, x]) => `${k}=${JSON.stringify(x)}`).join(', ');
+        return `| ${cells(key)} | ${cells(params || '—')} | ${cells((v.notes ?? []).join(' / ') || '—')} |`;
+      });
+    L.push('## 提案書へ写す調整の宣言');
+    L.push('');
+    L.push('標準の附属書D の提案書の「調整の宣言」(テーラリングで外した項目・簡略化した項目と、その理由)へ写す材料です。写すのは提案書の起案者で、宣言せずに運用しません(禁止 c-tailoring-must-be-declared)。承認者の欄は、提案書の決裁者が記名します。この節は承認者を書きません。');
+    L.push('');
+    if (!gateRows.length && !adjRows.length) {
+      L.push('調整の宣言: **なし**(外した項目・簡略化した項目・practice と constraint の調整は、この構成にありません)。');
+      L.push('');
+    } else {
+      if (gateRows.length) {
+        L.push('外した項目・簡略化した項目・統合した項目(ゲート)');
+        L.push('');
+        L.push('| 項目 | 区分 | 理由 |');
+        L.push('| --- | --- | --- |');
+        L.push(...gateRows);
+        L.push('');
+      }
+      if (adjRows.length) {
+        L.push('practice・constraint の調整');
+        L.push('');
+        L.push('| 項目 | 設定 | 理由 |');
+        L.push('| --- | --- | --- |');
+        L.push(...adjRows);
+        L.push('');
+      }
+    }
+  }
+
   // --- ブロック2.5: ロールと担ってはならない工程 ---
   if (config.roles?.length) {
     L.push('## ロールの構成');
