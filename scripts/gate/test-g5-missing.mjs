@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { g5MissingText } from './aggregate-evidence.mjs';
+import { g5MissingText, g5TriggerVerdict, g5TriggerGapText } from './aggregate-evidence.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let failed = 0;
@@ -60,7 +60,7 @@ const base = { number: 12, recordFound: true, mergedAt: '2026-08-01T00:00:00Z', 
 // 実装を壊すと落ちること(写しの値で充足に数える・欠落に入れない・書き分けをやめる)は、この通しが確かめる
 // PATH に偽の gh を置く形は Windows では動かせない。既存の試験と同じく読み飛ばし、CI の Linux で確かめる
 const CAN_E2E = process.platform !== 'win32';
-function runAggregate({ copy, rollup, prevSource = null }) {
+function runAggregate({ copy, rollup, prevSource = null, runs = 'pr' }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'g5e2e-'));
   const work = path.join(tmp, 'repo');
   const root = path.join(here, '..', '..');
@@ -92,7 +92,7 @@ function runAggregate({ copy, rollup, prevSource = null }) {
   const MC = git('rev-parse', 'HEAD');
   const body = '## 変更の概要\n\nx\n\n## 検証方法と結果\n\n単体テストを実行した\n\n## リスク区分\n\nR3\n';
   const state = path.join(tmp, 'state.json');
-  fs.writeFileSync(state, JSON.stringify({ MC, F, body, rollup }));
+  fs.writeFileSync(state, JSON.stringify({ MC, F, body, rollup, runs }));
   const binDir = path.join(tmp, 'bin');
   fs.mkdirSync(binDir);
   const fake = path.join(binDir, 'gh');
@@ -110,6 +110,13 @@ if (a[0] === 'pr' && a[1] === 'view') {
   process.exit(0);
 }
 if (a[0] === 'api' && a[1].includes('check-runs')) { process.stdout.write(JSON.stringify({ check_runs: [] })); process.exit(0); }
+if (a[0] === 'api' && a[1].includes('actions/runs')) {
+  // gate-g5 のワークフローの実行(起動の事象つき)。pr: pull_request の成功 / dispatch: 手動の起動の成功だけ / none: 読めない
+  if (st.runs === 'none') { process.stderr.write('fake gh: HTTP 403'); process.exit(1); }
+  const ev = st.runs === 'dispatch' ? 'workflow_dispatch' : 'pull_request';
+  process.stdout.write(JSON.stringify({ workflow_runs: [{ id: 501, path: '.github/workflows/gate-g5.yml', event: ev, status: 'completed', conclusion: 'success' }, { id: 502, path: '.github/workflows/other.yml', event: 'pull_request', status: 'completed', conclusion: 'success' }] }));
+  process.exit(0);
+}
 if (a[0] === '--version') { process.stdout.write('gh version 2.0.0 (fake)\\n'); process.exit(0); }
 process.stderr.write('fake gh: unsupported ' + a.join(' ')); process.exit(1);
 `,
@@ -175,6 +182,15 @@ if (CAN_E2E) {
     check('IMPL-0244:ng 集約の通し: ホスティングが failure を返す PR は、写しが success でも failure として欠落に数える', g5Gap(x.gaps).some((t) => /gate-g5 が failure です/.test(t)) && x.gateG5?.success === 0, `${JSON.stringify(x.gateG5)} ${x.log}`);
   }
 
+  // IMPL-0987:ng(違反側。ホスティングの rollup が成功でも、起動が手動だけ・読めない PR は、通過に数えず欠落にする)
+  // IMPL-0987:ok(適合側。pull_request の成功がある PR は、上の IMPL-0244:ok が通過に数える)
+  {
+    const d = runAggregate({ copy: 'success', rollup: 'ok', runs: 'dispatch' });
+    check('IMPL-0987:ng 集約の通し: 手動の起動の成功だけの PR は、success に数えず欠落にする', d.gateG5?.success === 0 && g5Gap(d.gaps).length === 1 && /workflow_dispatch/.test(g5Gap(d.gaps)[0]), JSON.stringify([d.gateG5, d.gaps]));
+    const u = runAggregate({ copy: 'success', rollup: 'ok', runs: 'none' });
+    check('IMPL-0987:ng 集約の通し: 起動の事象を読めない PR は、「未確認(起動の事象を読めない)」として欠落にする', u.gateG5?.success === 0 && g5Gap(u.gaps).length === 1 && /未確認\(起動の事象を読めない\)/.test(g5Gap(u.gaps)[0]), JSON.stringify([u.gateG5, u.gaps]));
+  }
+
   // 前回の証跡が無いとき、見た場所と理由を品質レポートと外へ渡す開示の両方に出す(evidence.json の previousSource だけにしない)
   const ps = { source: 'none', artifact: { status: 'failed', run: '77' }, copies: { root: 'docs/evidence', used: null, looked: [{ dir: 'b2', ok: false, problems: ['sha256 が一覧と一致しません'] }] } };
   const p = runAggregate({ copy: 'success', rollup: 'ok', prevSource: ps });
@@ -188,6 +204,28 @@ if (CAN_E2E) {
   check('IMPL-0244:ng 読み先の記録が無いときも、記録が無い旨を両方に出す', /previous-source\.json が無く/.test(q.report) && /previous-source\.json が無く/.test(q.external));
 }
 
+// 起動の事象による通過の判定(IMPL-0987。process-compass #329 / ADR-0165)
+// IMPL-0987:ng(違反の入力: 手動の起動(workflow_dispatch)の成功だけを持つ PR は通過に数えない。起動の事象を読めないものも数えない)
+{
+  const dispatchOnly = g5TriggerVerdict([{ id: 1, event: 'workflow_dispatch', status: 'completed', conclusion: 'success' }]);
+  check('IMPL-0987:ng workflow_dispatch の成功だけの PR は、通過に数えず欠落にする', dispatchOnly.verdict === 'not-pr' && /workflow_dispatch/.test(g5TriggerGapText({ number: 5, ...dispatchOnly })) && /通過に数えません/.test(g5TriggerGapText({ number: 5, ...dispatchOnly })));
+  const failedPr = g5TriggerVerdict([{ event: 'pull_request', conclusion: 'failure' }, { event: 'workflow_dispatch', conclusion: 'success' }]);
+  check('IMPL-0987:ng pull_request が失敗で workflow_dispatch が成功の PR は、通過に数えない', failedPr.verdict === 'not-pr');
+  const pushOnly = g5TriggerVerdict([{ event: 'push', conclusion: 'success' }]);
+  check('IMPL-0987:ng PR を評価していない起動(push)の成功だけの PR は、通過に数えない', pushOnly.verdict === 'not-pr');
+  for (const [label, runs] of [['読めない(null)', null], ['実行が1件も無い', []]]) {
+    const v = g5TriggerVerdict(runs);
+    const t = g5TriggerGapText({ number: 6, ...v });
+    check(`IMPL-0987:ng 起動の事象を${label}PR は、未確認として通過に数えない`, v.verdict === 'unverified' && /未確認\(起動の事象を読めない\)/.test(t) && /通過に数えません/.test(t));
+  }
+}
+// IMPL-0987:ok(適合の入力: PR を評価した起動(pull_request・pull_request_target)の成功がある PR は通過に数える)
+{
+  check('IMPL-0987:ok pull_request の成功は通過に数える', g5TriggerVerdict([{ event: 'pull_request', conclusion: 'success' }]).verdict === 'pr');
+  check('IMPL-0987:ok pull_request_target の成功は通過に数える', g5TriggerVerdict([{ event: 'pull_request_target', conclusion: 'success' }]).verdict === 'pr');
+  check('IMPL-0987:ok 手動の起動が混じっても、pull_request の成功があれば通過に数える', g5TriggerVerdict([{ event: 'workflow_dispatch', conclusion: 'success' }, { event: 'pull_request', conclusion: 'success' }]).verdict === 'pr');
+}
+
 // record-copy.yml の静的な確認
 {
   const y = fs.readFileSync(path.join(here, '..', '..', '.github', 'workflows', 'record-copy.yml'), 'utf8');
@@ -195,6 +233,8 @@ if (CAN_E2E) {
   check('record-copy.yml: head の gate-g5 の check-runs を読む', /commits\/\$HEAD_SHA\/check-runs\?check_name=gate-g5/.test(y));
   check('record-copy.yml: 写しへ checks.gate_g5 を足す', /checks:\s*\{gate_g5:\s*\$g5\}/.test(y));
   check('record-copy.yml: 読めなかったとき found: null を写し、手順を失敗させない', /found: null, read_error/.test(y) && !/g5raw=.*\|\| exit/.test(y));
+  check('record-copy.yml: permissions に actions: read がある(gate-g5 の実行の起動の事象を読む)', /^ {2}actions:\s*read\s*$/m.test(y));
+  check('record-copy.yml: head の gate-g5 のワークフローの実行を読み、読めなければ runs: null を写す', y.includes('actions/runs?head_sha=$HEAD_SHA') && y.includes('runs: null'));
   check('record-copy.yml: 比べる欄(shape)に checks を入れない', !/shape='[^']*checks/.test(y));
 }
 

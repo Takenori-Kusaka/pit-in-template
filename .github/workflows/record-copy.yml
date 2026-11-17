@@ -30,7 +30,7 @@
 # 写しに含めるのは最小の組だけです: pr・merge_commit_sha・head_sha・copied_at、PR の作成者 author{id,login}(作成を指示した者との別と
 # G-6 の独立の判定に要る)、reviews[] の id・state・commit_id・submitted_at・user{id,login,type}(User / Bot は API の値。`[bot]` の接尾で推定しない)・body、
 # および任意の欄として merged_at・merged_by.login・base.ref・default_branch(マージの時点の既定ブランチ)・title・body・head_ref(next.mjs が機能 ID を Spec: トレーラから引く)・
-# checks.gate_g5(マージの時点の head の gate-g5 の check run。{found, id, status, conclusion, completed_at, head_sha}。読めなければ found: null)。
+# checks.gate_g5(マージの時点の head の gate-g5 の check run。{found, id, status, conclusion, completed_at, head_sha, runs}。runs は同じ head の gate-g5 のワークフローの実行 {id, event, status, conclusion}、読めなければ null(IMPL-0987)。読めなければ found: null)。
 # **この欄はホスティングと照合できなくなる(基盤の保持期間の後)。充足の根拠に数えない**。出荷の集約が、ホスティングから G-5 を読めない PR の文を書き分けるのに使う(process-compass #333)。
 # 同じ期間の bypass・保護の変更の記録(監査ログ)は、無料のプランでは API で取れません。取れないことを写しに書きます。
 #
@@ -55,6 +55,8 @@ permissions:
   pull-requests: read
   # マージの時点の head の gate-g5 の check run を読む(写しの欄 checks.gate_g5。読み取りだけ。process-compass #333 / ADR-0135)
   checks: read
+  # gate-g5 のワークフローの実行の起動の事象を読む(写しの欄 checks.gate_g5.runs。読み取りだけ。IMPL-0987)
+  actions: read
 
 concurrency:
   group: record-copy
@@ -128,6 +130,15 @@ jobs:
           else
             g5=$(jq -nc --arg e "$(head -c 200 /tmp/record-copy/g5.err 2>/dev/null | tr '\n' ' ')" '{found: null, read_error: (if $e == "" then "unknown" else $e end)}')
             echo "::warning::PR #$PR の head の gate-g5 の check run を読めませんでした(写しには found: null を書きます)"
+          fi
+          # gate-g5 のワークフローの実行(起動の事象 event つき)。手動の起動(workflow_dispatch)の成功を PR の通過に数えないための記録で、
+          # 出荷の集約はホスティングから読み直して判定する。この欄は照合できなくなる(基盤の保持期間の後)ため、充足の根拠に数えない。
+          # 読めなくても写しの手順を失敗させない(runs: null)
+          if runsraw=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" 2>/dev/null) \
+            && runs=$(printf '%s' "$runsraw" | jq -c '[(.workflow_runs // [])[] | select((.path // "") | split("@")[0] == ".github/workflows/gate-g5.yml") | {id, event, status, conclusion}]' 2>/dev/null); then
+            g5=$(printf '%s' "$g5" | jq -c --argjson r "$runs" '. + {runs: $r}')
+          else
+            g5=$(printf '%s' "$g5" | jq -c '. + {runs: null}')
           fi
           jq -n \
             --arg repo "$REPO" \

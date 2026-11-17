@@ -372,6 +372,30 @@ export function coverageScopeText(c) {
   return `。${parts.join('、')}`;
 }
 
+/** gate-g5 の成功を G-5 の通過に数えてよい起動の事象(PR を評価したもの)。手動の起動(workflow_dispatch)・push・schedule は数えない */
+export const G5_PR_EVENTS = ['pull_request', 'pull_request_target'];
+
+/**
+ * PR の head の gate-g5 のワークフローの実行(runs)から、成功が PR を評価した起動によるものかを判定する(IMPL-0987。process-compass #329 / ADR-0165)。
+ * runs は { id, event, status, conclusion } の配列。読めなかった(null)・実行が1件も無い場合は、起動の事象を読めない(unverified)。
+ * 実行があるのに、PR を評価した起動(G5_PR_EVENTS)の成功が1件も無い場合は not-pr。1件でもあれば pr。
+ * 手動の起動は PR の変更を評価しないため、その成功を PR の通過に数えない。限界: 実行の履歴の保持期間の後は unverified になる(通過に数えない側へ倒れる)。
+ */
+export function g5TriggerVerdict(runs) {
+  if (!Array.isArray(runs) || !runs.length) return { verdict: 'unverified', events: [] };
+  const events = [...new Set(runs.map((r) => String(r?.event ?? '不明')))];
+  const ok = runs.some((r) => G5_PR_EVENTS.includes(r?.event) && String(r?.conclusion ?? '').toLowerCase() === 'success');
+  return { verdict: ok ? 'pr' : 'not-pr', events };
+}
+
+/** gate-g5 が成功でも、起動の事象を確かめられない PR の欠落の文。通過に数えない */
+export function g5TriggerGapText({ number, verdict, events = [] }) {
+  if (verdict === 'not-pr') {
+    return `PR #${number}: gate-g5 の成功が、PR を評価した起動(${G5_PR_EVENTS.join('・')})によるものではありません(起動の事象: ${events.join('・') || '不明'})。手動の起動(workflow_dispatch)などの成功は PR の変更を評価していないため、G-5 の通過に数えません`;
+  }
+  return `PR #${number}: gate-g5 は成功ですが、未確認(起動の事象を読めない)ため、G-5 の通過に数えません。ワークフローの実行の履歴が保持期間を過ぎたか、読む権限(actions: read)が無い可能性があります`;
+}
+
 /**
  * ホスティングから gate-g5 の結果を読めない PR の欠落の文。PR の記録は読めたが head の check-runs に gate-g5 が無い場合は、
  * マージの時点の写し(record-copy が足す checks.gate_g5)で、保持切れの可能性と、必須チェックを経ていない可能性を書き分ける
@@ -1547,6 +1571,16 @@ if (isMain) {
     return { name: 'gate-g5', conclusion: runs[0].conclusion ?? null, state: runs[0].status ?? null, source: 'check-runs' };
   };
 
+  /** PR の head の gate-g5 のワークフローの実行(起動の事象つき)。読めなければ null(起動の事象を読めない) */
+  const g5RunsOf = (sha) => {
+    if (!repo || !sha) return null;
+    const r = gh(['api', `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`]);
+    if (!Array.isArray(r?.workflow_runs)) return null;
+    return r.workflow_runs
+      .filter((x) => String(x?.path ?? '').split('@')[0] === '.github/workflows/gate-g5.yml')
+      .map((x) => ({ id: x.id ?? null, event: x.event ?? null, status: x.status ?? null, conclusion: x.conclusion ?? null }));
+  };
+
   const inRange = new Map(commits.map((c) => [c.hash, c]));
   const sameTime = (a, b) => Boolean(a && b) && new Date(a).getTime() === new Date(b).getTime();
   // コミット → PR。role は merge(PR の変更として数えるコミット)または constituent(PR の構成要素。数えない)
@@ -2200,6 +2234,10 @@ if (isMain) {
     // gate-g5 の結果。PR の記録の rollup に無ければ(rollup を読めない、または写しで対応づけた PR)、PR の head の check-runs を引く
     const headSha = (Array.isArray(api?.commits) ? api.commits.at(-1)?.oid : null) ?? headOfCopy(copyEntry?.copy) ?? null;
     const g5 = (api?.statusCheckRollup ?? []).find((s) => s.name === 'gate-g5' || s.context === 'gate-g5') ?? g5FromCheckRuns(headSha);
+    // gate-g5 の成功は、PR を評価した起動(pull_request・pull_request_target)の成功があるときだけ通過に数える。手動の起動(workflow_dispatch)の
+    // 成功は数えない。起動の事象を読めないものは「未確認(起動の事象を読めない)」として数えない(IMPL-0987。push の経路は対象外)
+    const g5Success = g5 ? String(g5.conclusion ?? g5.state ?? '').toLowerCase() === 'success' : false;
+    const g5Trigger = g5Success ? g5TriggerVerdict(g5RunsOf(headSha)) : null;
     // 写しが無い PR は、レビューと作成者の数値の識別子を REST(user.id を持つ)から読む。gh pr view の reviews・author は
     // 数値の識別子を持たない。REST を読めなければ gh pr view の値を使い、書き手・作成者は「記録に数値の識別子が無い」として
     // 名簿へ対応づけない(process-compass #430)。作成者の識別子は、既定値の指示者(instructorsOf)より先に補う
@@ -2317,7 +2355,8 @@ if (isMain) {
       riskConfirmer: riskConfirmerOf(d?.body),
       // 受信箱のラベル(停止の申し立ての保留に使う。第7章 7.11)
       labels: (Array.isArray(d?.labels) ? d.labels : []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean),
-      g5: g5 ? (g5.conclusion ?? g5.state ?? 'unknown').toLowerCase() : 'unknown',
+      g5: g5Trigger && g5Trigger.verdict !== 'pr' ? (g5Trigger.verdict === 'not-pr' ? 'event-not-pr' : 'event-unverified') : g5 ? (g5.conclusion ?? g5.state ?? 'unknown').toLowerCase() : 'unknown',
+      g5Trigger,
       // マージの時点の写しの gate-g5 の結論(record-copy の checks.gate_g5)とマージの時刻。無ければ null。G-5 の充足には数えない(g5MissingText)
       g5AtMerge: copyEntry?.copy?.checks?.gate_g5 ?? null,
       mergedAt: rest?.mergedAt ?? copyEntry?.copy?.merged_at ?? null,
@@ -3186,6 +3225,7 @@ if (isMain) {
   // 適用していない、またはプランの都合で適用できないリポジトリでは、G-5 を経ずにマージされた PR をここで事後に検出する(#286)
   for (const p of [...prs, ...recordPrs]) {
     if (p.g5 === 'unknown') gaps.push(g5MissingText({ number: p.number, recordFound: p.recordFound, fetchError: p.fetchError, mergedAt: p.mergedAt, now: new Date(), copyG5: p.g5AtMerge }));
+    else if (p.g5 === 'event-not-pr' || p.g5 === 'event-unverified') gaps.push(g5TriggerGapText({ number: p.number, ...p.g5Trigger }));
     else if (p.g5 !== 'success') gaps.push(`PR #${p.number}: gate-g5 が ${p.g5} です`);
   }
 
