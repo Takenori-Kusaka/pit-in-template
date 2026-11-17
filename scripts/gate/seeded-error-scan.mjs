@@ -26,7 +26,8 @@ const MARKER_LINE = new RegExp(`^[ \\t]*${MARKER.replace(/[.*+?^${}()|[\]\\]/g, 
 
 export const SCAN_FILE = 'evidence/seeded-error-scan.json';
 export const STATEMENT = '標識の残存なし(手で写した変更は走査の対象外)';
-export const STATEMENT_FOUND = '標識の残存あり';
+export const STATEMENT_FAILED = '走査が成立していない(理由は failures)';
+export const STATEMENT_FOUND ='標識の残存あり';
 export const LEDGER_OFF = '台帳と照合していない';
 export const FALSE_POSITIVE_HINT = `標識の文字列を本文に含むコミットは、本文から語を外すか、第7章の例外承認で受ける`;
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -68,6 +69,7 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
     commitsScanned: 0,
     markerCommits: [],
     ledgerFindings: [],
+    failures: [],
     statement: null,
     ledgerNote: LEDGER_OFF,
     limits: '標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash は拾えない。流出がないとは記録しない',
@@ -78,6 +80,12 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
   }
   if (fromRef && !fromSha) {
     problems.push(`起点 ${fromRef} を読めません`);
+    return { record, problems };
+  }
+  if (git(cwd, ['rev-parse', '--is-shallow-repository'])?.trim() === 'true') {
+    problems.push('浅い clone です。範囲の全コミットを走査できません(fetch-depth: 0 で取得します)');
+    record.failures = [...problems];
+    record.statement = STATEMENT_FAILED;
     return { record, problems };
   }
   const spec = fromSha ? `${fromSha}..${toSha}` : toSha;
@@ -94,16 +102,21 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
   record.markerCommits = commits.filter((c) => hasMarker(c.body)).map((c) => c.sha);
   for (const sha of record.markerCommits) problems.push(`コミット ${sha.slice(0, 12)} の本文に標識 ${MARKER} があります。${FALSE_POSITIVE_HINT}`);
 
+  let ledgerBroken = false;
   if (ledger) {
     const top = git(cwd, ['rev-parse', '--show-toplevel'])?.trim();
     const abs = path.resolve(ledger);
     const rel = top ? path.relative(path.resolve(top), abs) : '';
     if (top && rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
       problems.push(`台帳 ${ledger} がリポジトリの中にあります。台帳はリポジトリの外に置きます(識別子が流出します)`);
+      ledgerBroken = true;
     } else {
       try {
         const entries = readLedger(abs);
-        const diff = git(cwd, ['diff', fromSha ?? EMPTY_TREE, toSha]) ?? '';
+        const diffRaw = git(cwd, ['diff', fromSha ?? EMPTY_TREE, toSha]);
+        if (diffRaw === null) throw new Error('範囲の差分を読めません');
+        // 追加の行だけを、語の境界で照合する(ハンクの見出しや SE-1 と SE-10 の部分一致を避ける)
+        const added = diffRaw.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).join('\n');
         const today = now.toISOString().slice(0, 10);
         for (const e of entries) {
           if (e.reclaimedAt) continue;
@@ -111,7 +124,7 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
             record.ledgerFindings.push({ id: '', reason: '識別子が空の未回収の行' });
             continue;
           }
-          if (diff.includes(e.id)) record.ledgerFindings.push({ id: e.id, reason: '未回収の識別子が範囲の差分にある' });
+          if (new RegExp(`(?<![A-Za-z0-9_-])${e.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(added)) record.ledgerFindings.push({ id: e.id, reason: '未回収の識別子が範囲の差分にある' });
           const exp = String(e.expiresAt ?? '').slice(0, 10);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) record.ledgerFindings.push({ id: e.id, reason: 'expiresAt が日付でない未回収の行' });
           else if (exp < today) record.ledgerFindings.push({ id: e.id, reason: `期限(${exp})を超えた未回収` });
@@ -121,8 +134,15 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
         for (const f of record.ledgerFindings) problems.push(`台帳 ${f.id || '(識別子なし)'}: ${f.reason}`);
       } catch (e) {
         problems.push(`台帳を読めません: ${e.message}`);
+        ledgerBroken = true;
       }
     }
+  }
+  // 台帳を渡したのに読めない・解けないときは、走査を成立させない(記録を「残存なし」で残さない)
+  if (ledgerBroken) {
+    record.failures = [...problems];
+    record.statement = STATEMENT_FAILED;
+    return { record, problems };
   }
   record.scanRun = true;
   record.residual = record.markerCommits.length + record.ledgerFindings.length;

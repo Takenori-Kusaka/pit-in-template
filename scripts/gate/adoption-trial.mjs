@@ -1080,7 +1080,7 @@ function run() {
   L.push('');
   L.push('| 項目 | 基準 |');
   L.push('| --- | --- |');
-  for (const it of Object.values(criteria.items)) L.push(`| ${it.label} | ${it.rowPresent ? it.value : '(様式に行なし。第6巡より前の様式)'} |`);
+  for (const [id, it] of Object.entries(criteria.items)) L.push(`| ${it.label} | ${it.rowPresent ? it.value : id === 'notice' ? '(様式に行なし。#356 より前の様式)' : '(様式に行なし。第6巡より前の様式)'} |`);
   L.push('');
   L.push('## 2. 欠陥注入(要件③。コマンドが埋める)');
   if (!injection) L.push('- 記録なし(seal と tally を実行していない)。検出率は「確かめていない」');

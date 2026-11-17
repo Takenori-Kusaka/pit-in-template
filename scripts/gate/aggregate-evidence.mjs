@@ -1056,6 +1056,7 @@ export function readSeededScan({ exists, root, git, to, from, period }) {
     }
   }
   if (rec) {
+    if (Array.isArray(rec.failures) && rec.failures.length) why.push(`走査の記録に失敗の理由があります(${rec.failures.length} 件。走査が成立していません)`);
     if (rec.scanRun !== true) why.push('走査の記録の scanRun が true でありません(走査を実行していない)');
     if (!Number.isInteger(rec.residual) || rec.residual !== 0) why.push(`走査の記録の residual が 0 でありません(${rec.residual ?? '値なし'})`);
     const toSha = String(git(['rev-parse', '--verify', '--quiet', `${to}^{commit}`]) ?? '').trim();

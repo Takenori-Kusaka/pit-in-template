@@ -159,6 +159,15 @@ for (const [way, fn] of Object.entries(WAYS)) {
   fs.writeFileSync(inRepo, '[]');
   const r5 = runScan(d, SCAN, ['--ledger', inRepo]);
   check('T-2 リポジトリの中の台帳は拒否する', r5.code === 1 && /リポジトリの中/.test(r5.err));
+  check('T-2 台帳を渡したのに読めないときは、走査を成立させない(scanRun false・failures あり。残存なしと書かない)(ng)', r5.rec?.scanRun === false && r5.rec?.failures?.length > 0 && !/残存なし/.test(r5.out + JSON.stringify(r5.rec.statement)));
+  const bad = path.join(tmpRoot, 'ledger-bad.json');
+  fs.writeFileSync(bad, '{ not json');
+  const r6 = runScan(d, SCAN, ['--ledger', bad]);
+  check('T-2 壊れた台帳は失敗し、scanRun は false', r6.code === 1 && r6.rec?.scanRun === false && /台帳を読めません/.test(r6.err));
+  const sid = path.join(tmpRoot, 'ledger-sid.json');
+  fs.writeFileSync(sid, JSON.stringify([{ id: '1', expiresAt: '2999-01-01' }, { id: 'SE-1', expiresAt: '2999-01-01' }]));
+  const r7 = runScan(d, SCAN, ['--ledger', sid]);
+  check('T-2 識別子は追加の行を語の境界で照合する(ハンクの見出しの数字や SE-10 の部分一致で偽の失敗にしない)', r7.code === 0 && r7.rec?.residual === 0, r7.err);
 }
 
 // 壊して確かめる(1): 標識の照合を外した版では、4通りの ng が通ってしまう
@@ -206,6 +215,7 @@ function aggCheck(d, rec, mod = readSeededScan) {
     '記録の欠落': undefined,
     '読めない JSON': '{not json',
     'scanRun が true でない': { ...good, scanRun: false },
+    '失敗の理由(failures)がある': { ...good, failures: ['台帳を読めません'] },
     'residual が 0 でない': { ...good, residual: 1 },
     'residual が整数でない': { ...good, residual: '0' },
     '終点の SHA が合わない': { ...good, range: { ...good.range, toSha: 'deadbeef' } },
