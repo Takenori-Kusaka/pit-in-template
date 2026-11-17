@@ -214,9 +214,26 @@ export function sharedCredentialForbiddenPairs(config, states = performerAccount
 }
 
 /**
+ * 適用の表明に併記する事項の値の行(標準 第1章 1.10.2。IMPL-0120。ADR-0165 決定1)。値だけを出し、表明の文は書かない(表明する者が述べる)。
+ * 0 件と「無し」も省かない。記録の欠落などの件数(gapCount)は、集約が名を下げる式と同じ欠落の一覧の件数を渡す(別の数え方を作らない)。
+ * 例外承認の件数は別の行(IMPL-0573)
+ */
+export const STATEMENT_FACTS_NOTE = '配備の資格情報を参照に結び付けていない構成は、この一覧に数えていません(表明する者が確かめる。標準 ADR-0165)';
+export function statementFactsLine({ editionLabel: label, edition = null, kbCommit = null, unmet = [], gapCount = 0, listed = [], unlisted = [] } = {}) {
+  const hasCommit = typeof kbCommit === 'string' && /^[0-9a-f]{7,40}$/.test(kbCommit);
+  const ed = `従う版: ${label}` + (edition === null && !hasCommit ? '(コミットの識別なし。作業中の版の適用の表明に要る併記を欠く)' : '');
+  const cnt = (n) => `${n} 件`;
+  const lst = (v) => (v.length ? v.join(' / ') : '無し');
+  return (
+    `${ed}。未達のゲート ${cnt(unmet.length)}。記録の欠落など(集約の欠落の一覧) ${cnt(gapCount)}。` +
+    `逸脱: ${lst(listed)}。列挙に無い離脱: ${lst(unlisted)}。例外承認の件数は次の行(IMPL-0573)。${STATEMENT_FACTS_NOTE}`
+  );
+}
+
+/**
  * 構成だけから決まる、述べられる表明と主張(標準 第1章 1.10.2・1.10.3・1.10.4)。
  * 記録の欠落は出荷の証跡の集約が数えるため、ここでは判定しない(「記録の欠落が無い範囲に限る」と添える)。
- * 表明・主張の文そのものは出力しない(IMPL-0120。降りていない)
+ * 値の行は出す(statementFactsLine)。表明・主張の文そのものは出さない(IMPL-0120)
  */
 export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {}) {
   const edition = standardEdition(config);

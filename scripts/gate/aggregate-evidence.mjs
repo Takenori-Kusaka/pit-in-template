@@ -128,6 +128,7 @@ import {
   initRecordProblem,
   preflightRecordProblem,
   claimStatus,
+  statementFactsLine,
   recordsProtectionState,
   standardEdition,
   deviationCategory,
@@ -5423,6 +5424,14 @@ if (isMain) {
     unlistedDepartures: [...claimBase.unlisted.map((d) => d.label), ...recordDepartures.map((d) => d.label)],
     // 記録から数えられなかった項目(名は下げない。出荷判定者が確かめる)
     unverifiable: recordUnverifiable,
+    // 適用の表明に併記する事項の値(第1章 1.10.2。IMPL-0120)。欠落の件数は名を下げる式(gaps.length)と同じ
+    statementFacts: {
+      editionLabel: claimBase.editionLabel,
+      edition: claimBase.edition,
+      kbCommit: typeof kbSourceForClaim?.commit === 'string' ? kbSourceForClaim.commit : null,
+      unmet: claimBase.unmet,
+      gapCount: gaps.length,
+    },
     // 範囲の第7章の例外承認の件数(第1章 1.10.2 の併記する事項。#353 / IMPL-0573)。claimStatus と閉じた列挙は変えない(例外承認は逸脱でない)。
     // 台帳の始点は範囲の始点のコミット、終点は範囲の終点のコミット(上の記録と同じ読み方)。数えた日は突合の日
     exceptions: {
@@ -6181,6 +6190,12 @@ if (isMain) {
         (evidence.claim.blockers.length ? `。理由: ${evidence.claim.blockers.join(' / ')}` : '') +
         (evidence.claim.listedDeviations.length ? `。列挙する逸脱: ${evidence.claim.listedDeviations.join(' / ')}` : '')
     );
+    {
+      // 適用の表明に併記する事項の値(第1章 1.10.2。IMPL-0120。値だけ。表明の文は表明する者が書く)。外へ渡す形では離脱の内容(保持者の名を含みうる)を出さず件数だけにする
+      const c = evidence.claim;
+      const unl = external ? [...(c.unlistedDepartures.length ? [`${c.unlistedDepartures.length} 件(内容は外へ出さない)`] : [])] : c.unlistedDepartures;
+      R.push(`- 適用の表明に併記する事項(第1章 1.10.2。値だけ。表明の文は表明する者が書く): ${statementFactsLine({ ...c.statementFacts, listed: c.listedDeviations, unlisted: unl })}`);
+    }
     {
       // 適用の表明・適合の主張に併記する、範囲の第7章の例外承認の件数(第1章 1.10.2)。0 件も書く。表明する者がこの句を転記して確かめる
       const x = evidence.claim.exceptions;

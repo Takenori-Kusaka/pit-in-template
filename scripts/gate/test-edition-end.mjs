@@ -20,7 +20,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, claimStatus, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
+import { ROOT, claimStatus, statementFactsLine, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
 import { buildConfig, renderProcessRules, renderProfileMd } from '../init/generate-profile.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
@@ -352,6 +352,22 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   w.done();
 }
 
+// ---------------------------------------------------------------- 適用の表明に併記する事項の値の行(IMPL-0120。ADR-0165 決定1)
+{
+  const draftNoCommit = statementFactsLine({ editionLabel: '作業中の版(第1版の後)', edition: null, kbCommit: null, unmet: [], gapCount: 0, listed: [], unlisted: [] });
+  // IMPL-0120:ng(違反の入力: 作業中の版でコミットの識別が無い)
+  check('値の行(ng): 作業中の版でコミットが無ければ「コミットの識別なし」を添える', /コミットの識別なし/.test(draftNoCommit), draftNoCommit);
+  const draftWith = statementFactsLine({ editionLabel: '作業中の版(第1版の後。標準のコミット abcdef123456)', edition: null, kbCommit: 'abcdef1234567890abcdef1234567890abcdef12', unmet: [], gapCount: 0, listed: [], unlisted: [] });
+  // IMPL-0120:ok(適合の入力: 作業中の版でコミットあり)
+  check('値の行(ok): 作業中の版でコミットがあれば先頭12字が出て、識別なしの注記は出ない', /abcdef123456/.test(draftWith) && !/コミットの識別なし/.test(draftWith), draftWith);
+  const some = statementFactsLine({ editionLabel: '第1版', edition: '第1版', unmet: ['G-5'], gapCount: 2, listed: ['L-1 兼務(第3章)'], unlisted: ['名義の共有'] });
+  // IMPL-0120:ng(違反の入力: 未達1件・欠落2件・離脱あり。件数と一覧が値のとおり出る)
+  check('値の行(ng): 未達1件・欠落2件・一覧の値が出る', /未達のゲート 1 件/.test(some) && /集約の欠落の一覧\) 2 件/.test(some) && /L-1 兼務/.test(some) && /名義の共有/.test(some), some);
+  const none = statementFactsLine({ editionLabel: '第1版', edition: '第1版', unmet: [], gapCount: 0, listed: [], unlisted: [] });
+  // IMPL-0120:ok(適合の入力: 0 件・離脱なし。0 件と「無し」を省かない)
+  check('値の行(ok): 0 件と「無し」が両方出る', /未達のゲート 0 件/.test(none) && /欠落の一覧\) 0 件/.test(none) && (none.match(/無し/g) || []).length === 2 && /ADR-0165/.test(none), none);
+}
+
 // ---------------------------------------------------------------- 記録から数える、列挙に無い離脱(process-compass #354 項目2 / ADR-0147)
 {
   const issued = { ...base, standard: { edition: '第1版' } };
@@ -381,6 +397,8 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const c3 = claimWith({});
   // IMPL-0521:ok(適合の入力: 記録が無い。名を下げず確かめられない旨を出す)
   check('集約(vi): 引き継ぎ文書も層1 も無いときは、離脱に数えず、確かめられない旨を出す', !c3.unlistedDepartures.some((l) => /保持者|記名者/.test(l)) && c3.unverifiable.length === 2 && c3.blockers.some((b) => /この項目では名を下げません/.test(b)), JSON.stringify(c3));
+
+  check('集約の値の行: claim.statementFacts の欠落の件数は、名を下げる欠落の一覧と同じ数', typeof c3.statementFacts?.gapCount === 'number' && Array.isArray(c3.statementFacts.unmet), JSON.stringify(c3.statementFacts));
 
   // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める
   const tpl11 = fs.readFileSync(path.join(ROOT, 'templates/11-quality-assurance-policy.md'), 'utf8').replace(/\r\n/g, '\n');
