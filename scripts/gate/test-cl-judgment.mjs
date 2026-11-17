@@ -294,6 +294,17 @@ try {
   check('IMPL-0449:ng D-0 の検査は、G-1 の前に判定者の記名が無ければ失敗し、仮の判定の旨を出す', r.status !== 0 && /「判定者」が未記入/.test(r.out) && /仮の判定/.test(r.out), r.out);
   r = run('scripts/gate/check-d0.mjs', ['--no-cl']);
   check('D-0 の検査: --no-cl では判定の記録を見ない(next.mjs が分けて出す)', !/「判定者」が未記入/.test(r.out), r.out);
+  // 次回レビュー期日の超過は SG の判定も開始させない(IMPL-0951。manual のため目印は付けない。表示の回帰を固定する)
+  {
+    const withReview = (v) => fs.writeFileSync(d0Path, fs.readFileSync(d0Path, 'utf8').replace(/^next_review:.*$/m, `next_review: ${v}`));
+    withReview('2020-01-01');
+    r = run('scripts/gate/check-d0.mjs');
+    check('D-0 の検査: 次回レビュー期日を過ぎていれば失敗し、SG の判定を開始できない旨を出す(G-1 の文も残る)', r.status === 1 && /ステージ移行ゲート\(SG\)の判定を開始できません/.test(r.out) && /企画承認\(G-1\)の審議を開始できません/.test(r.out), r.out);
+    withReview('2999-01-01');
+    r = run('scripts/gate/check-d0.mjs');
+    check('D-0 の検査: 次回レビュー期日が先なら、SG の文を出さない', !/ステージ移行ゲート\(SG\)/.test(r.out), r.out);
+    writeD0({ 判定者: '' });
+  }
   r = run('scripts/gate/next.mjs', ['--json']);
   check('next.mjs: 判定の記録と記名が無いことを人の判断待ちとして出し、止めた理由と次の一手を添える', /安全重要度の判定の記録と記名が無い\(仮の判定\)/.test(r.out) && /次の一手: D-0 の節16 の欄を埋め/.test(r.out), r.out.slice(0, 2000));
   // 旧い構成の境界は、G-1 の判定日時と、その判定記録を入れたコミットの時刻の両方で決める(議長の裁定 X-3)

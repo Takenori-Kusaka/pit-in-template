@@ -3,7 +3,7 @@
 //   node scripts/gate/check-d0.mjs
 //
 // D-0 は規模によらず必須で、企画承認(G-1)の前提条件です。
-// 未承認・期限切れの状態では、G-1 の審議を開始できません。
+// 未承認・期限切れの状態では、G-1 の審議を開始できません。次回レビュー期日の超過では、SG の判定も開始できません。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -69,10 +69,14 @@ if (noSpace.length) warn(`frontmatter の ${noSpace.join('・')} は、コロン
   }
 }
 
+let overdue = false;
 if (fm.next_review) {
   const due = Date.parse(fm.next_review);
   if (Number.isNaN(due)) problems.push(`next_review "${fm.next_review}" を日付として読めません`);
-  else if (due < Date.now()) problems.push(`next_review ${fm.next_review} が過ぎています。体制図の見直しを行ってください`);
+  else if (due < Date.now()) {
+    overdue = true;
+    problems.push(`next_review ${fm.next_review} が過ぎています。体制図の見直しを行ってください`);
+  }
 }
 
 // 版の形式は N.N に限る(構成を生成する側と同じ検査。1.0.0・v1.1 は前後を比べられない)
@@ -188,6 +192,7 @@ for (const p of problems) fail(p);
 if (problems.length) {
   console.log('');
   console.log('D-0 が承認済みでない状態では、企画承認(G-1)の審議を開始できません');
+  if (overdue) console.log('D-0 の次回レビュー期日を過ぎています。ステージ移行ゲート(SG)の判定を開始できません(標準 第2章 2.8)');
   process.exit(1);
 }
 
