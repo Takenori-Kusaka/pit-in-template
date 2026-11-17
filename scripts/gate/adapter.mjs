@@ -115,6 +115,7 @@ const env = {
   PIT_IN_FAIL_ON_SEVERITY: failLevels.join(';'),
   PIT_IN_AUDIT_LEVEL: auditLevel === 'medium' ? 'moderate' : auditLevel,
   PIT_IN_ALLOWED_LICENSES: (config.ci?.allowedLicenses ?? []).join(';'),
+  // 値の有無は coverage-check と契約検査が確かめて落とす。ここは子の検査器へ渡すだけ(#337 項目2)
   PIT_IN_COVERAGE_THRESHOLD: String(config.ci?.coverageThreshold ?? 80),
   PIT_IN_ROOT: rootPosix,
   PIT_IN_PROJECT_DIR: cwd.replace(/\\/g, '/'),

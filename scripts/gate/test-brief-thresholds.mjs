@@ -1,6 +1,7 @@
 // 企画書の閾値の行の検査(brief-thresholds.mjs)の試験。process-compass #419 / ADR-0097
 import { BRIEF_THRESHOLD_ROWS, briefThresholdProblems, briefThresholdMessage, BRIEF_STOP_ROW, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { isFilledValue } from './config.mjs';
+import { briefCoverageBaseline } from './coverage-check.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +67,7 @@ for (const f of ['templates/06-project-brief.md', 'profiles/internal/templates/0
   const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
   const q = briefThresholdProblems(text, [], isFilledValue);
   check(`${f} は停止条件の値の行を持ち、様式の説明のままである`, briefStopConditionState(text, [], isFilledValue, {}).problem === 'blank');
+  check(`${f} は「カバレッジの基準値(G-5 基準3)」の行を持ち、様式の説明のままである`, briefCoverageBaseline(text)?.blank === true);
   check(`${f} は閾値の2行を持ち、様式の説明のままである`, BRIEF_THRESHOLD_ROWS.every((k) => q.some((x) => x.key === k && x.problem === 'blank')), JSON.stringify(q));
 }
 
@@ -101,6 +103,22 @@ function workspace() {
   W.write('docs/gates/g1.md', ['# ゲート判定記録', '', '| 項目 | 値 |', '| --- | --- |', '| ゲート | G-1 企画承認 |', '| 対象 | P-001 |', '| 判定者 | 判定 花子 |', '| 判定日時 | 2026-11-04 10:00 |', '| 結果 | 通過 |', '| 確定の形態 | 人確定 |', '| 参照した D-0 の版 | v1.0 |', ''].join('\n'));
   r = W.g1();
   check('入口: G-1 を通過済みの企画書は、閾値の2行を欠落として出し、問題に数えない', r.out.includes('遡って失敗させません') && !r.out.includes('閾値は組織が定める値です'), r.out);
+  // カバレッジの基準値の行(#337 項目1): G-1 の前は行と記入を必須にし、通過済みで行が無いときは warn も失敗も出さずに飛ばす
+  const noBase = form.split(/\r?\n/).filter((l) => !l.startsWith('| カバレッジの基準値')).join('\n');
+  W.write('docs/project-brief.md', noBase);
+  r = W.g1();
+  check('入口: G-1 を通過済みの企画書に基準値の行が無くても、その行を失敗にも通知にも出さない', !r.out.includes('カバレッジの基準値'), r.out);
+  W.write('docs/project-brief.md', form);
+  r = W.g1();
+  check('入口: G-1 を通過済みの企画書の基準値の行が説明のままなら、未記入として失敗にする', !r.ok && r.out.includes('「カバレッジの基準値(G-5 基準3)」が未記入です'), r.out);
+  W.write('docs/gates/g1.md', '');
+  fs.rmSync(path.join(W.dir, 'docs/gates/g1.md'));
+  W.write('docs/project-brief.md', noBase);
+  r = W.g1();
+  check('入口: G-1 の前の企画書に基準値の行が無ければ、失敗にする', !r.ok && r.out.includes('欄「カバレッジの基準値(G-5 基準3)」がありません'), r.out);
+  W.write('docs/project-brief.md', form);
+  r = W.g1();
+  check('入口: G-1 の前の企画書の基準値の行が説明のままなら、未記入として失敗にする', !r.ok && r.out.includes('「カバレッジの基準値(G-5 基準3)」が未記入です'), r.out);
   fs.rmSync(W.dir, { recursive: true, force: true });
 }
 

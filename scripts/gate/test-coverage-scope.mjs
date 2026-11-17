@@ -31,6 +31,7 @@ import {
   parseAddedLines,
   lineHits,
   briefCoverageScope,
+  briefCoverageBaseline,
   coverageScopeOf,
   changedScopeCoverage,
   derivedCoverageScope,
@@ -79,6 +80,13 @@ check('企画書: 「全体」は whole', briefCoverageScope('| **カバレッ�
 check('企画書: 様式の説明のまま(<…>)は未記入', briefCoverageScope('| カバレッジの測る範囲(G-5 基準3) | <変更で加えた・変えたコード / 全体 のいずれか> |\n')?.blank === true);
 check('企画書: 両方を書いた記載は範囲を読み取れない', briefCoverageScope('| カバレッジの測る範囲(G-5 基準3) | 変更と全体 |\n')?.scope === null);
 check('企画書: 行が無ければ null', briefCoverageScope('| 安定性指標の閾値 | 80 |\n') === null);
+// 基準値の行(#337 項目1)
+check('基準値: 「80%」は 80', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 80% |\n')?.value === 80);
+check('基準値: 「80」(% なし)は 80', briefCoverageBaseline('| **カバレッジの基準値(G-5 基準3)** | 80 |\n')?.value === 80);
+check('基準値: 様式の説明のまま(<…>)は未記入', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | <整数の %> |\n')?.blank === true);
+check('基準値: 行が無ければ null', briefCoverageBaseline('| カバレッジの測る範囲(G-5 基準3) | 全体 |\n') === null);
+check('基準値: 数でない記載は value null(未記入ではない)', (() => { const b = briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | abc |\n'); return b?.value === null && !b.blank; })());
+check('基準値: 100 を超える値は value null', briefCoverageBaseline('| カバレッジの基準値(G-5 基準3) | 120% |\n')?.value === null);
 {
   const pass = [{ gate: 'G-1 企画承認', result: '通過' }];
   check('企画書の範囲の行: G-1 を通過済みの企画書に無ければ欠落(遡って失敗させない)', briefScopeRowState('| 安定性指標の閾値 | 80 |\n', pass) === 'gap');
@@ -154,6 +162,9 @@ writeCoverage([stmts('src/old.js', 100, () => 1), stmts('src/new.js', 10, (l) =>
 r = evaluateCoverage({ root: dir, config: cfg({ coverageScope: 'changed' }), adapter: NODE, base: 'main' });
 // IMPL-0245:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 check('changed: 変更の範囲 90%(10 行中 9 行)は基準値 80% を通る', r.code === 0 && r.result.pct === 90 && r.result.covered === 9 && r.result.ok === true, JSON.stringify(r.result));
+// 構成に ci.coverageThreshold が無い: 参考の値(80)では判定せず落とす(#337 項目2。標準 第1章 1.7.7)
+r = evaluateCoverage({ root: dir, config: { ci: { coverageScope: 'whole' } }, adapter: NODE, base: 'main' });
+check('基準値なし: ci.coverageThreshold が無い構成は code 1 で、参考の値では判定しない旨を出す', r.code === 1 && r.result.measured === false && r.messages.some((m) => m.level === 'fail' && /参考の値では判定しません/.test(m.text)), JSON.stringify(r));
 r = evaluateCoverage({ root: dir, config: cfg({}), adapter: NODE, base: 'main' });
 check('構成に範囲が無い node は従来どおり whole で測り、既定から補った旨と移行の手順(--reporter=json)を出す', r.code === 0 && r.result.scope === 'whole' && r.result.scopeDeclared === false && r.result.scopeDefaulted === true && r.messages.some((m) => /ci\.coverageScope/.test(m.text) && /--reporter=json/.test(m.text)), JSON.stringify(r.messages));
 

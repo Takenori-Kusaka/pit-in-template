@@ -88,7 +88,7 @@ import { seatSeparationFindings, ruleStanding, pendingSeparationProblems } from 
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
-import { coverageScopeOf, canMeasureChanged, briefCoverageScope, SCOPE_LABEL, coverageFormatOf, isLanguageAdapter, COVERAGE_FORMATS } from './coverage-check.mjs';
+import { coverageScopeOf, canMeasureChanged, briefCoverageScope, briefCoverageBaseline, SCOPE_LABEL, coverageFormatOf, isLanguageAdapter, COVERAGE_FORMATS } from './coverage-check.mjs';
 import { stackCoverageReport } from './stack-coverage.mjs';
 
 const config = loadConfig();
@@ -778,8 +778,20 @@ if (adapter && config.gates?.g5?.state !== 'omitted') {
       problems.push(`構成のカバレッジの測る範囲は「変更で加えた・変えたコード」ですが、アダプタ ${adapter.id} は行単位の被覆(coverageDetail)を持たず、変更の範囲を測れません。範囲を whole にするか、アダプタに行単位の被覆を足してください`);
     }
     if (!sc.declared) notes.push(`構成にカバレッジの測る範囲(ci.coverageScope)がありません。従来どおり「${SCOPE_LABEL[sc.scope]}」で測り、既定から補った旨を結果と保証の開示に出します。/process-change(種別 settings)で範囲を記録し、企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃えてください`);
+    // 基準値の有無(組織が定める値。無いとき参考の値は効かない。標準 第1章 1.7.7。#337 項目2)
+    const cfgThreshold = config.ci?.coverageThreshold;
+    const thresholdOk = typeof cfgThreshold === 'number' && Number.isFinite(cfgThreshold) && cfgThreshold >= 0 && cfgThreshold <= 100;
+    if (!thresholdOk) problems.push('構成に ci.coverageThreshold(G-5 基準3 の基準値。組織が定める値)がありません。参考の値では判定しません(第1章 1.7.7)。/process-change(種別 settings)で値を書いてください');
     const brief = read('docs/project-brief.md');
     if (brief !== null) {
+      const base = briefCoverageBaseline(brief);
+      const cfgBaseline = config.ci?.coverageBaseline ?? cfgThreshold;
+      if (!base) notes.push('企画書に「カバレッジの基準値(G-5 基準3)」の行がありません。構成の基準値との一致を確かめていません');
+      else if (base.blank) notes.push('企画書の「カバレッジの基準値(G-5 基準3)」が未記入です。構成の基準値との一致を確かめていません(G-1 の前の企画書では check-g1 が未記入を落とします)');
+      else if (base.value === null) problems.push(`企画書の「カバレッジの基準値」の記載 "${base.raw}" から、基準値(整数の %)を読み取れません`);
+      else if (thresholdOk && base.value !== cfgBaseline) {
+        problems.push(`企画書に記録した基準値(${base.value}%)と、構成の基準値(${cfgBaseline}%)が一致しません。記録した基準値で測っていません。未達の代償措置の下限(90)は基準値に含めません(第4章 G-5)。企画書か構成(/process-change 種別 settings)を直してください`);
+      }
       const rec = briefCoverageScope(brief);
       if (!rec) notes.push('企画書(docs/project-brief.md)に「カバレッジの測る範囲(G-5 基準3)」の行がありません。構成の範囲と記録の一致を確かめていません');
       else if (rec.blank) notes.push('企画書の「カバレッジの測る範囲(G-5 基準3)」が未記入です。構成の範囲と記録の一致を確かめていません(G-1 の検査が未記入を落とします)');

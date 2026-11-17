@@ -23,7 +23,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT } from './config.mjs';
+import { ROOT, sealChangeLog } from './config.mjs';
 import { buildManifest, loadManifest, missingResident } from './claude-md-resident.mjs';
 
 const own = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
@@ -288,6 +288,54 @@ for (const n of [1, 3]) {
     r = W.node('scripts/gate/verify-gate-contract.mjs');
     // IMPL-0261:ok(違反と適合の対。標準の実装マーク。process-compass #314)
     check(`${tag}: 企画書の範囲と構成の範囲が一致すれば、契約検査が通る`, r.ok, r.out);
+    // カバレッジの基準値(G-5 基準3。#337 項目1・2): 企画書の記録と構成の基準値の一致を契約検査が確かめる
+    {
+      const cfgText = W.read('process.config.json');
+      const withCi = (patch) => {
+        const c = JSON.parse(cfgText);
+        c.ci = { ...c.ci, ...patch };
+        for (const [k, v] of Object.entries(patch)) if (v === undefined) delete c.ci[k];
+        // 構成の手での書き換えは要約値の不一致で落ちる。試験の材料として要約値を書き直す
+        W.write('process.config.json', JSON.stringify(sealChangeLog(c), null, 2));
+      };
+      const scoped = row('変更で加えた・変えたコード');
+      const baseRow = (v) => scoped.replace(/^\| カバレッジの基準値\(G-5 基準3\) \|.*$/m, `| カバレッジの基準値(G-5 基準3) | ${v} |`);
+      check(`${tag}: 企画書の様式に「カバレッジの基準値」の行がある`, baseRow('80%') !== scoped);
+      withCi({ coverageThreshold: 80, coverageBaseline: undefined });
+      W.write('docs/project-brief.md', baseRow('80%'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      // IMPL-0994:ok(基準値の一致で通る)
+      check(`${tag}: 企画書の基準値と構成の基準値が一致すれば、契約検査が通る`, r.ok, r.out);
+      W.write('docs/project-brief.md', baseRow('85%'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      // IMPL-0994:ng(基準値の食い違いで落ちる)
+      check(`${tag}: 企画書の基準値(85)と構成の基準値(80)が食い違えば、契約検査が落ちる`, !r.ok && /企画書に記録した基準値\(85%\)と、構成の基準値\(80%\)が一致しません/.test(r.out), r.out);
+      // 未達の代償措置の間: 下限 90 が効いていても、基準値(coverageBaseline 80)と企画書(80)を比べる
+      withCi({ coverageThreshold: 90, coverageBaseline: 80, coverageOrigin: 'compensation' });
+      W.write('docs/project-brief.md', baseRow('80%'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 未達の代償措置の間(下限 90・基準値 80)は、企画書の 80 と構成の基準値が一致して通る`, r.ok, r.out);
+      W.write('docs/project-brief.md', baseRow('90%'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 同じ構成で企画書が 90 なら落ち、「基準値に含めません」を出す`, !r.ok && /基準値に含めません/.test(r.out), r.out);
+      // 旧い構成(coverageBaseline なし)は coverageThreshold と比べる
+      withCi({ coverageThreshold: 85, coverageBaseline: undefined, coverageOrigin: undefined });
+      W.write('docs/project-brief.md', baseRow('85%'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 旧い構成(coverageBaseline なし・coverageThreshold 85)は企画書の 85 と一致して通る`, r.ok, r.out);
+      // 未記入・行なしは通知(落とさない)
+      W.write('docs/project-brief.md', scoped);
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 企画書の基準値が未記入なら、通知にして落とさない`, r.ok && /「カバレッジの基準値\(G-5 基準3\)」が未記入です/.test(r.out), r.out);
+      W.write('docs/project-brief.md', scoped.split('\n').filter((l) => !l.startsWith('| カバレッジの基準値')).join('\n'));
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 企画書に基準値の行が無ければ、通知にして落とさない`, r.ok && /「カバレッジの基準値\(G-5 基準3\)」の行がありません/.test(r.out), r.out);
+      // 構成に基準値(ci.coverageThreshold)が無ければ、参考の値では判定せず契約検査が落ちる(項目2)
+      withCi({ coverageThreshold: undefined, coverageBaseline: undefined, coverageOrigin: undefined });
+      r = W.node('scripts/gate/verify-gate-contract.mjs');
+      check(`${tag}: 構成に ci.coverageThreshold が無ければ、契約検査が落ちる`, !r.ok && /参考の値では判定しません/.test(r.out), r.out);
+      W.write('process.config.json', cfgText);
+    }
     fs.rmSync(path.join(W.dir, 'docs/project-brief.md'));
   }
   r = W.node('scripts/gate/check-process-rules.mjs');

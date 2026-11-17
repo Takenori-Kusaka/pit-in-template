@@ -128,6 +128,26 @@ export function briefCoverageScope(text) {
   return { scope: changed && !whole ? 'changed' : whole && !changed ? 'whole' : null, raw };
 }
 
+/** 企画書の基準値の行の名前(項目1。#337)。範囲の行の隣に置く */
+export const BRIEF_BASELINE_ROW = 'カバレッジの基準値(G-5 基準3)';
+
+/**
+ * G-1 企画書の「カバレッジの基準値(G-5 基準3)」の行の値。行が無ければ null、未記入なら { value: null, raw, blank: true }、
+ * 最初の整数(0〜100)を読めれば { value, raw }、読めなければ { value: null, raw }。未達の代償措置の下限(90)は基準値に含めない
+ */
+export function briefCoverageBaseline(text) {
+  const row = String(text ?? '')
+    .split(/\r?\n/)
+    .find((l) => /^\|\s*\**カバレッジの基準値/.test(l));
+  if (!row) return null;
+  const cells = row.replace(/\*/g, '').trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const raw = cells[1] ?? '';
+  if (!isFilledValue(raw)) return { value: null, raw, blank: true };
+  const m = /(\d{1,3})\s*%?/.exec(raw);
+  const value = m ? Number(m[1]) : null;
+  return { value: value !== null && value >= 0 && value <= 100 ? value : null, raw };
+}
+
 /** git diff -U0 の出力から、ファイルごとの追加行の行番号(変更後の側)を読む */
 export function parseAddedLines(diffText) {
   const out = new Map();
@@ -415,7 +435,12 @@ export function productFilter(root, adapter) {
 export function evaluateCoverage({ root = ROOT, config, adapter, base = null }) {
   const messages = [];
   const say = (level, text) => messages.push({ level, text });
-  const threshold = config.ci?.coverageThreshold ?? 80;
+  const threshold = config.ci?.coverageThreshold;
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+    // 組織が定める値の記録が無いとき、参考の値は効かない(標準 第1章 1.7.7)。値の無い構成は手で消した場合だけ(#337 項目2)
+    say('fail', '構成に ci.coverageThreshold(G-5 基準3 の基準値。組織が定める値)がありません。参考の値では判定しません(第1章 1.7.7)。/process-change(種別 settings)で値を書きます');
+    return { code: 1, result: { measured: false, reason: 'ci.coverageThreshold が無い', scope: null }, messages };
+  }
   const { scope, declared, invalid } = coverageScopeOf(config, adapter);
   if (invalid !== undefined) {
     say('fail', `構成 ci.coverageScope の値 "${invalid}" は changed / whole のいずれでもありません`);

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords, resolveSigner, aiNameBlocked } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
-import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
+import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT, BRIEF_BASELINE_ROW } from './coverage-check.mjs';
 import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
@@ -101,6 +101,9 @@ const REQUIRED_ROWS = [
   // 基準3 の基準値は、測る範囲を併せて企画時に決めて記録する(標準 第4章 G-5。#296)。構成との一致は契約検査が確かめる。
   // G-1 を通過済みの企画書に行が無い場合は、遡って失敗させず欠落として出す(突合 X-4)
   ['指標の閾値と予算区分', BRIEF_SCOPE_ROW],
+  // 基準値の行(#337 項目1)。G-1 の前の企画書では行と記入を必須にする。G-1 を通過済みの企画書に行が無い場合は、warn も gaps も出さずに飛ばす
+  // (基準値は既に自由記述で記録されている。構造化のために既存の採用者の G-7 を落とさない)
+  ['指標の閾値と予算区分', BRIEF_BASELINE_ROW],
 ];
 // G-1 を通過済みか。基底ブランチの docs/gates/ と、記録用ブランチ records の records/gates/(判定記録の正本)の両方を読む
 // (process-compass #359 の独立の突合 高-1)。記録用ブランチを読めず、基底ブランチにも通過の記録が無い間は、G-1 の前とも通過済みとも
@@ -120,9 +123,10 @@ for (const [section, key] of REQUIRED_ROWS) {
     warn(BRIEF_SCOPE_GAP_TEXT);
     continue;
   }
+  if (!row && key === BRIEF_BASELINE_ROW && g1.passed === true) continue;
   if (!row) {
     const msg = `「${section}」の欄「${key}」がありません(templates/06-project-brief.md の様式から写す)`;
-    if (key === BRIEF_SCOPE_ROW) g1Dependent(msg);
+    if (key === BRIEF_SCOPE_ROW || key === BRIEF_BASELINE_ROW) g1Dependent(msg);
     else problems.push(msg);
     continue;
   }
