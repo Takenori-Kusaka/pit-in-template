@@ -391,7 +391,7 @@ for (const d of config.deviations ?? []) {
 if (
   config.gates?.g7?.params?.approverMode === 'value-owner-merged' &&
   isActive(config.gates?.g7?.state) &&
-  !shippingSeparatedFromDevLine(config) &&
+  !shippingSeparatedFromDevLine(config, 'value-owner') &&
   !(config.deviations ?? []).some((d) => d.gate === 'g7')
 ) {
   problems.push(

@@ -556,9 +556,9 @@ export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, so
 export function detectDeviations(answers, gates, { seats = [], people = [] } = {}) {
   const deviations = [];
 
-  // 出荷判定者の席の責任者が、開発者・独立レビュアの席の責任者と別の名簿の人だと席の割り当てで確かめられたときは、
+  // G-7 を判定する席(value-owner-merged では価値責任者の席)の責任者が、開発者・独立レビュアの席の責任者と別の名簿の人だと席の割り当てで確かめられたときは、
   // 兼ねていないので D-1 を出さない。未割当・名簿が空・識別できないときは出す(IMPL-0988。process-compass #351)
-  const separated = shippingSeparatedFromDevLine({ seats, people });
+  const separated = shippingSeparatedFromDevLine({ seats, people }, 'value-owner'); // value-owner-merged では G-7 を判定する席は価値責任者の席
   if (gates.g7?.params?.approverMode === 'value-owner-merged' && isActiveState(gates.g7.state) && !separated) {
     deviations.push({
       gate: 'g7',

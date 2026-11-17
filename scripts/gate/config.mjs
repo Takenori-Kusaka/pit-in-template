@@ -495,19 +495,19 @@ export function personKey(config, ref) {
 }
 
 /**
- * 出荷判定者の席の責任者が、開発ラインの席(開発者・独立レビュアの席)の責任者を兼ねないと、席の割り当てで確かめられるか。
+ * G-7 を判定する席の責任者が、開発ラインの席(開発者・独立レビュアの席)の責任者を兼ねないと、席の割り当てで確かめられるか。判定する席は judgeRole で渡す(approverMode が value-owner-merged の構成では value-owner、それ以外は qa-gatekeeper)。
  * 3つの席のすべてに名簿の人が割り当てられ、互いに異なるときだけ true。未割当・名簿が空・名簿に無い名義は、確かめられない(false)。
  * G-7 の判定者を価値責任者へ移した構成(approverMode が value-owner-merged)で、D-1 を出すかどうかの条件に使う。
  * IMPL-0988 (process-compass #351)
  */
-export function shippingSeparatedFromDevLine(config) {
+export function shippingSeparatedFromDevLine(config, judgeRole = 'qa-gatekeeper') {
   const seats = Array.isArray(config?.seats) ? config.seats : [];
   const holder = (role) => {
     const who = seats.find((s) => s?.role === role)?.accountable;
     const person = findPerson(config ?? {}, who);
     return person ? personKey(config, who) : null;
   };
-  const qa = holder('qa-gatekeeper');
+  const qa = holder(judgeRole);
   const dev = holder('dev-verifier');
   const rev = holder('independent-reviewer');
   return Boolean(qa && dev && rev && qa !== dev && qa !== rev);
