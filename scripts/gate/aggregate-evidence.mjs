@@ -49,6 +49,7 @@
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REVIEWS_DIR, GATES_DIR, readRecordsBranch, judgementsFromCopy, headMatches, recordAttribution, gateOfRecord, lastCommitOf, parseCopy, headOfCopy, targetOfForm, judgeOfForm, scanRecordsHistory, classifyRecordsHistory, isAncestorCommit, recordsSignatureRequired } from './records.mjs';
@@ -5339,18 +5340,42 @@ if (isMain) {
   const endedForRange = claimBase.ended;
   // 記録から決まる、列挙に無い離脱(標準 第1章 1.10.2。process-compass #354 項目2 / ADR-0147)。決定可能な条件だけを数える:
   //   (a) 運用引き継ぎ文書の節2 の、保持者(本人以外の確認つき)が1名以下のコア機能  (b) 層1 の記名者が事業決裁者の席の責任者と同一
-  // 記録が無い・解けない(引き継ぎ文書なし・節2 の記載なし・層1 なし)ときは名を下げず、確かめられない旨を出す(人が確かめる)。
-  // 記録は作業ツリーから読む(範囲の終点のコミットの記録は読まない。continuityState・readPolicy が作業ツリーを読むため)
+  // 数える線(保持者): 書いた名が1名以下、または数えられるか決まらない名を足しても1名以下 → 離脱。書いた名は2名以上あり、
+  // 数えられるか決まらない名(周期の欠け・層1 なし・日付の書式)を足せば2名に届く → 名を下げず、数えなかった理由を出す。
+  // 確認者の列なし・空欄・本人・確認日なし・周期超過は、本人以外の確認の記録を欠く(3.4.3 要求事項8)ため離脱の側。
+  // 「解けない」= 引き継ぎ文書なし・節2 の記載なし・上の3つ(周期の欠け・層1 なし・日付の書式)。人が確かめる(出荷判定者。IMPL-1102)。
+  // 記録は範囲の終点のコミットの記録と構成で読む(autonomy.mjs と同じ。終点が無ければ作業ツリー)
   const recordDepartures = [];
   const recordUnverifiable = [];
-  if (!exists(handoverFile)) recordUnverifiable.push(`${handoverFile} が無く、コア機能の理解の保持者を確かめられません`);
-  else if (!continuity.core.length) recordUnverifiable.push(`${handoverFile} の節2 にコア機能の記載が無く、理解の保持者を確かめられません`);
+  const recordAt = (file) => {
+    if (claimEndRev) return gitText(['show', `${claimEndRev}:${file}`]) || null;
+    return exists(file) ? fs.readFileSync(path.join(ROOT, file), 'utf8') : null;
+  };
+  const recHandover = recordAt(handoverFile);
+  const recPolicy = readPolicy(claimConfig, { text: recordAt(POLICY_FILE), today: localDay() });
+  const recCore = (() => {
+    if (!recHandover) return [];
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-core-'));
+    try {
+      fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, handoverFile), recHandover);
+      return continuityState(claimConfig, recPolicy, { root: tmp, day: releaseDay }).core ?? [];
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  })();
+  if (!recHandover) recordUnverifiable.push(`${handoverFile} が無く、コア機能の理解の保持者を確かめられません`);
+  else if (!recCore.length) recordUnverifiable.push(`${handoverFile} の節2 にコア機能の記載が無く、理解の保持者を確かめられません`);
   else {
-    const thin = continuity.core.filter((c) => c.holders.length <= 1);
-    if (thin.length) recordDepartures.push({ label: `コア機能の理解の保持者が1名以下(${thin.map((c) => `${c.name} ${c.holders.length} 名`).join('・')}。運用引き継ぎ文書の節2。本人以外の確認つきで数えた)`, derived: 'core-holders' });
+    const thin = recCore.filter((c) => c.holders.length <= 1);
+    const detail = (c) => (c.uncounted.length ? `。数えなかった: ${c.uncounted.map((u) => `${u.name}(${u.why})`).join(' / ')}` : '');
+    const departed = thin.filter((c) => c.potential <= 1);
+    const undecided = thin.filter((c) => c.potential > 1);
+    if (departed.length) recordDepartures.push({ label: `コア機能の理解の保持者が1名以下(${departed.map((c) => `${c.name} 数えた ${c.holders.length} 名・書いた ${c.written} 名${detail(c)}`).join('・')}。運用引き継ぎ文書の節2。本人以外の確認つきで数えた)`, derived: 'core-holders' });
+    for (const c of undecided) recordUnverifiable.push(`コア機能「${c.name}」は書いた ${c.written} 名のうち数えたのは ${c.holders.length} 名で、数えなかった理由が書式・層1 の欠けのため、離脱かどうかを決められません${detail(c)}`);
   }
-  if (!policy.present) recordUnverifiable.push(`${POLICY_FILE} が無く(層1 なし)、層1 の記名者と事業決裁者の同一性を確かめられません`);
-  else if (policy.signerIsBizApprover) recordDepartures.push({ label: '層1 の記名者が事業決裁者の席の責任者と同一(テンプレ11 の要求事項5)', derived: 'policy-signer-biz-approver' });
+  if (!recPolicy.present) recordUnverifiable.push(`${POLICY_FILE} が無く(層1 なし)、層1 の記名者と事業決裁者の同一性を確かめられません`);
+  else if (recPolicy.signerIsBizApprover) recordDepartures.push({ label: '層1 の記名者が事業決裁者の席の責任者と同一(テンプレ11 の要求事項5)', derived: 'policy-signer-biz-approver' });
   const claimForRange = {
     edition: claimBase.editionLabel,
     endRevision: claimEndRev ? claimEndRev.slice(0, 12) : null,
@@ -5365,7 +5390,7 @@ if (isMain) {
       ...(straddles ? [`この範囲は版の切り替えをまたぎます(${editionsInRange.join(' → ')})。範囲を版ごとに分けて集約してください(第1章 1.10.2)`] : []),
       ...claimBase.blockers,
       ...(recordDepartures.length ? [`記録から数えた、逸脱の閉じた列挙に無い離脱があります(${recordDepartures.map((d) => d.label).join(' / ')})。適合の主張を述べられません`] : []),
-      ...recordUnverifiable.map((t) => `${t}(名は下げません。人が確かめます)`),
+      ...recordUnverifiable.map((t) => `${t}(この項目では名を下げません。人が確かめます)`),
       ...(endedForRange ? [`適用を終えています(${endedForRange.date}。${endedForRange.reasonLabel})。この範囲についての表明と主張は、過去の範囲として述べます。現在形の表明をしません(第1章 1.10.4)`] : []),
       ...(gaps.length ? [`この範囲に記録の欠落などの欠落が ${gaps.length} 件あります。適合の主張を述べられません`] : []),
     ],

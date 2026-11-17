@@ -237,7 +237,7 @@ const UNDECLARED = cfgOf([
 {
   const SEP = [
     { id: 'sep-dev-reviewer', roles: ['dev-verifier', 'independent-reviewer'], scope: 'same-work-product', exception: 'none', gate: null },
-    { id: 'sep-ctx', roles: ['ai-maintainer', 'ai-ops'], unit: 'context', exception: 'none', gate: null },
+    { id: 'sep-ctx', roles: ['value-owner', 'biz-approver'], unit: 'context', exception: 'none', gate: null },
   ];
   const seat = (role, name, a) => ({ role, name, accountable: 'p1', performer: PERFORMER, performerAccount: { kind: 'dedicated', account: a } });
   const same = { login: 'pit-bot', id: 4242 };
@@ -252,8 +252,11 @@ const UNDECLARED = cfgOf([
   check('認証情報(ii): 禁止でない組の同じアカウントは数えない(人が確かめる)', !claimStatus(notForbidden).unlisted.some((d) => d.derived === 'performer-credential-shared') && performerAccountProblems(notForbidden).notes.length === 0);
   const diff = withSeats([seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', { login: 'pit-bot-2', id: 4343 })]);
   check('認証情報(iii): 異なる識別子は数えない', !claimStatus(diff).unlisted.some((d) => d.derived === 'performer-credential-shared'));
-  const ctx = withSeats([seat('ai-maintainer', 'AI維持管理者', same), seat('ai-ops', 'AI運用担当者', same)]);
-  check('認証情報: 実行主体の文脈の単位の規則(unit: context)は人の組として数えない', !claimStatus(ctx).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+  const ctx = withSeats([seat('value-owner', '価値責任者', same), seat('biz-approver', '事業決裁者', same)]);
+  check('認証情報: 文脈の単位の規則(unit: context。架空の規則で試す)は人の組として数えない', !claimStatus(ctx).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+  // 低-3: 同じ id を3席が申告したとき、2席目と3席目が禁止の組でも注記に出る
+  const three = withSeats([seat('value-owner', '価値責任者', same), seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', same)]);
+  check('認証情報(iv): 3席が同じ識別子のとき、2席目と3席目の禁止の組も注記に出る', performerAccountProblems(three).notes.some((n) => /独立レビュア/.test(n) && /開発者/.test(n)), JSON.stringify(performerAccountProblems(three)));
   check('認証情報: separations の無い旧い構成は数えない(読めないときは下げない向き)', !claimStatus({ ...forbidden, separations: undefined }).unlisted.some((d) => d.derived === 'performer-credential-shared'));
 }
 

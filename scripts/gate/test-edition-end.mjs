@@ -380,7 +380,39 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   check('集約(v): 層1 の記名者 = 事業決裁者は、名が適用の表明・離脱の一覧に出る', c2.name === '適用の表明' && c2.unlistedDepartures.some((l) => /層1 の記名者が事業決裁者/.test(l)), JSON.stringify(c2));
   const c3 = claimWith({});
   // IMPL-0521:ok(適合の入力: 記録が無い。名を下げず確かめられない旨を出す)
-  check('集約(vi): 引き継ぎ文書も層1 も無いときは、離脱に数えず、確かめられない旨を出す', !c3.unlistedDepartures.some((l) => /保持者|記名者/.test(l)) && c3.unverifiable.length === 2 && c3.blockers.some((b) => /名は下げません/.test(b)), JSON.stringify(c3));
+  check('集約(vi): 引き継ぎ文書も層1 も無いときは、離脱に数えず、確かめられない旨を出す', !c3.unlistedDepartures.some((l) => /保持者|記名者/.test(l)) && c3.unverifiable.length === 2 && c3.blockers.some((b) => /この項目では名を下げません/.test(b)), JSON.stringify(c3));
+
+  // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める
+  const tpl11 = fs.readFileSync(path.join(ROOT, 'templates/11-quality-assurance-policy.md'), 'utf8').replace(/\r\n/g, '\n');
+  const signed = tpl11.replace(/^\| 記名\(記名者\) \|.*$/m, '| 記名(記名者) | 名簿 丁 |').replace(/^\| 記名日 \|.*$/m, '| 記名日 | 2026-10-01 |');
+  const POLICY12 = { 'docs/quality-assurance-policy.md': signed.replace(/^(\| AI を使わない力量の確認の周期[^|]*\| )<例: 12か月>/m, '$112か月') };
+  const POLICY_BLANK = { 'docs/quality-assurance-policy.md': signed };
+  const row = (holders, by, at) => `| 決済 | ${holders} | ${by} | ${at} | | なし |\n`;
+  const TWO = (by = '名簿 丙', at = '演習 2026-10-01') => ({ 'docs/handover.md': HANDOVER_HEAD + row('名簿 甲、名簿 乙', by, at) });
+  const coreDep = (c) => c.unlistedDepartures.filter((l) => /コア機能の理解の保持者/.test(l));
+  const coreUnv = (c) => c.unverifiable.filter((l) => /コア機能/.test(l));
+  // IMPL-0521:ng(違反の入力: 保持者1名・有効な層1。離脱の文に「1 名」が出る)
+  const cOne = claimWith({ ...ONE, ...POLICY12 });
+  check('集約(iv): 層1 を置いた保持者1名は、「数えた 1 名」で離脱に数える', coreDep(cOne).length === 1 && /数えた 1 名・書いた 1 名/.test(coreDep(cOne)[0]), JSON.stringify(cOne));
+  // IMPL-0521:ok(適合の入力: 保持者2名・有効な層1。離脱にも確かめられない旨にも出さない)
+  const cA = claimWith({ ...TWO(), ...POLICY12 });
+  check('集約(A): 保持者2名・有効な層1 は、離脱に数えず、確かめられない旨も出さない', !coreDep(cA).length && !coreUnv(cA).length, JSON.stringify(cA));
+  // IMPL-0521:ok(適合の入力: 書いた名は2名で、層1 なし・周期の空欄・日付の書式は、解けない記録として名を下げない)
+  for (const [label, files] of [
+    ['B 層1 なし', TWO()],
+    ['C 周期の空欄', { ...TWO(), ...POLICY_BLANK }],
+    ['D 確認日の書式', { ...TWO('名簿 丙', '演習 2026/10/01'), ...POLICY12 }],
+    ['K 層1 が雛形のまま', { ...TWO(), 'docs/quality-assurance-policy.md': tpl11 }],
+  ]) {
+    const c = claimWith(files);
+    check(`集約(${label}): 離脱に数えず、数えなかった理由とともに確かめられない旨を出す`, !coreDep(c).length && coreUnv(c).length === 1 && /書いた 2 名のうち数えたのは 0 名/.test(coreUnv(c)[0]), JSON.stringify(c));
+  }
+  // IMPL-0521:ng(違反の入力: 確認の記録を欠く(要求事項8)。確認者の列なし・空欄は、書いた名が2名でも離脱)
+  const OLD = { 'docs/handover.md': '# 運用引き継ぎ\n\n## 2. コア機能\n\n| 機能 | 理解保持者 | 判断記録 |\n| --- | --- | --- |\n| 決済 | 名簿 甲、名簿 乙 | |\n' };
+  for (const [label, files] of [['E 確認者の列なし', OLD], ['F 確認者が空欄', TWO('', '演習 2026-10-01')]]) {
+    const c = claimWith({ ...files, ...POLICY12 });
+    check(`集約(${label}): 書いた名が2名でも離脱に数える`, coreDep(c).length === 1 && /書いた 2 名/.test(coreDep(c)[0]) && !coreUnv(c).length, JSON.stringify(c));
+  }
 }
 
 console.log('');

@@ -770,19 +770,28 @@ export function continuityState(config, policy, { root = ROOT, day = null, accep
     const rec = iRec >= 0 ? nfkc(r[iRec]) : '';
     const at = rec.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
     for (const h of clean(r[iHolder >= 0 ? iHolder : 1]).split(/[、,，・/／]|\s+と\s+/).map((x) => x.trim()).filter((x) => isFilledValue(x))) {
+      // kind: 'missing'(本人以外の確認の記録を欠く。要求事項8 を欠く)・'lapsed'(確認日が周期を過ぎた)・
+      // 'unresolved'(記録は読めるが、書式・層1 の欠けで数えられるか決まらない。集約は離脱に数えず、確かめられない旨を出す。ADR-0147)
       let why = null;
-      if (iBy < 0) why = '確認した者と確認日の列が無い(旧い様式。名前だけでは数えない)';
-      else if (!isFilledValue(by)) why = '確認した者が空欄';
-      else if (signerKey(by) === signerKey(h) || samePerson(config, by, h)) why = '確認した者が保持者本人';
-      else if (!at || !isRealDay(at)) why = '確認日(YYYY-MM-DD)が無い';
-      else if (!cycle.competence) why = '層1 の AI を使わない力量の確認の周期が空欄';
-      else if (!withinInterval(at, cycle.competence, day)) why = `確認日 ${at} が力量の確認の周期(${cycle.competence.raw})を過ぎている`;
+      let kind = null;
+      if (iBy < 0) [why, kind] = ['確認した者と確認日の列が無い(旧い様式。名前だけでは数えない)', 'missing'];
+      else if (!isFilledValue(by)) [why, kind] = ['確認した者が空欄', 'missing'];
+      else if (signerKey(by) === signerKey(h) || samePerson(config, by, h)) [why, kind] = ['確認した者が保持者本人', 'missing'];
+      else if (!at || !isRealDay(at)) [why, kind] = ['確認日(YYYY-MM-DD)が無い', isFilledValue(rec) ? 'unresolved' : 'missing'];
+      else if (!cycle.competence) [why, kind] = ['層1 の AI を使わない力量の確認の周期が空欄', 'unresolved'];
+      else if (!withinInterval(at, cycle.competence, day)) [why, kind] = [`確認日 ${at} が力量の確認の周期(${cycle.competence.raw})を過ぎている`, 'lapsed'];
       const key = signerKey(h);
-      if (why) c.uncounted.push({ name: h, why });
+      if (why) c.uncounted.push({ name: h, why, kind });
       else if (!c.holders.includes(key)) c.holders.push(key);
     }
   }
-  const core = [...coreMap.values()];
+  // written = 書いた保持者の異なる名の数。potential = 数えた名と、数えられるか決まらない名(kind unresolved)の和。
+  // 集約は potential が1名以下なら、どう読んでも2名に届かない離脱として数える(ADR-0147 決定2)
+  const core = [...coreMap.values()].map((c) => ({
+    ...c,
+    written: new Set([...c.holders, ...c.uncounted.map((u) => signerKey(u.name))]).size,
+    potential: new Set([...c.holders, ...c.uncounted.filter((u) => u.kind === 'unresolved').map((u) => signerKey(u.name))]).size,
+  }));
 
   // 退出の予行
   const ex = readExitRehearsals({ root });

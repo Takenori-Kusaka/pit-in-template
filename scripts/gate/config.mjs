@@ -1238,11 +1238,12 @@ export function performerAccountProblems(config) {
       if (byId) problems.push(`${label}: 専用と申告したアカウントの数値の識別子 ${id} が、人の名簿の ${byId.name}(${byId.id})のアカウントにある。名簿の人のアカウントで動く担い手は「共有」(kind: "shared", person: "${byId.id}")で申告する`);
       else if (byLogin) problems.push(`${label}: 専用と申告したアカウント "${login}" が、人の名簿の ${byLogin.name}(${byLogin.id})のアカウントと同じログイン名である。担い手のアカウントを人の名簿に書かない(標準 第3章 3.5.3 要求事項3)`);
       if (id !== null) {
-        const prev = dedicatedIds.get(id);
+        const prevs = dedicatedIds.get(id) ?? [];
+        const prev = prevs[0];
         // 同じ id を申告した席が兼務を禁止した組なら、拒否せず注記を出す(拒否すると構成を記録できず、離脱を表示できない。ADR-0147)
-        if (prev && forbiddenPairOf(config, prev.role, s.role)) notes.push(`${label}: 兼務を禁止した組の ${prev.seat} の担い手と同じ数値の識別子 ${id} を申告している。席ごとに認証情報を分けていない列挙に無い離脱として、述べられる名は適用の表明までになる(標準 第1章 1.10.2)`);
+        for (const pv of prevs) if (forbiddenPairOf(config, pv.role, s.role)) notes.push(`${label}: 兼務を禁止した組の ${pv.seat} の担い手と同じ数値の識別子 ${id} を申告している。席ごとに認証情報を分けていない列挙に無い離脱として、述べられる名は適用の表明までになる(標準 第1章 1.10.2)`);
         if (prev && prev.login && login && accountKey(prev.login) !== accountKey(login)) problems.push(`${label}: 数値の識別子 ${id} が、${prev.seat} の担い手の "${prev.login}" と "${login}" の両方に書かれている`);
-        else if (!prev) dedicatedIds.set(id, { login, seat: s.name ?? s.role, role: s.role });
+        else dedicatedIds.set(id, [...prevs, { login, seat: s.name ?? s.role, role: s.role }]);
       }
     } else {
       const ref = typeof pa.person === 'string' ? pa.person.trim() : pa.person;

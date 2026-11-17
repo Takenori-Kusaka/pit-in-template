@@ -371,7 +371,7 @@ for (const d of config.deviations ?? []) {
   if (!d.reason) problems.push(`deviations の ${id} に reason がありません`);
   if (!d.resolveWhen) problems.push(`deviations の ${id} に解消の時点(resolveWhen)がありません`);
   if (!d.gate) {
-    // 成立しない兼務禁止(列挙に無い離脱。1〜2名の体制)。代償措置は定められていない。記録と表示を求める(第3章 3.5)
+    // 成立しない兼務禁止(列挙に無い離脱。1〜2名の体制)。本標準は条件と代償措置を定めない。記録と表示を求める(第3章 3.5)
     if (config.answers?.['q-team-size'] !== 'size-1-2') {
       problems.push(`deviations の ${id}: 成立しない兼務禁止(列挙に無い離脱)を記録できるのは 1〜2名の体制に限ります(第3章 3.5、第1章 1.10.2)`);
     }
