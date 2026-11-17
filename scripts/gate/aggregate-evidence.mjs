@@ -5348,7 +5348,7 @@ if (isMain) {
       label: '知財潔白性の検査記録',
       machine: 'partial',
       result: licenseStatus.chosen
-        ? '依存関係のライセンス検査の記録 なし(構成で選んだ未実施。記録の有無だけを見た)'
+        ? '依存関係のライセンス検査の実施の記録 なし(構成で選んだ未実施。記録とアダプタの構成を見た)'
         : `依存関係のライセンス検査の記録 ${licenseScan.scanRun ? 'あり' : 'なし'}(記録の有無だけを見た)`,
       humanReconcile: '類似の検知の実施記録と結果、判定できなかった項目の台帳記録',
     },
@@ -5506,7 +5506,9 @@ if (isMain) {
     // 記録だけの PR(変更の単位に数えない。承認者と記名者の照合は assurance.records.attribution)
     recordPrs: recordsDisclosure.recordPrs,
     decisions: { counts: decisionCheck.counts, problems: decisionCheck.problems },
+    // ipClearance は記録(evidence/license-scan.json)の生の値。実施と数えてよいかは ipClearanceStatus(項目4 と同じ判定)を読む
     ipClearance: licenseScan,
+    ipClearanceStatus: { run: licenseStatus.run, text: licenseStatus.text },
     seededErrorScan: seededScan.summary,
     shipBlocked: config.shipBlocked ?? null,
     unmet,

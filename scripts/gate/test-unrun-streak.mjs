@@ -87,6 +87,10 @@ const OK = '実施(結果は gate-g5 に含む)';
   const legacyOk = computeUnrunStreaks({ machineChecks: { licenses: UNRUN }, prevMachineChecks: { licenses: OK }, previous: { range: { to: 'v1' } }, sameRelease: false, releaseDay: DAY.r2, dayOfRef });
   check('旧い形式の前回で値が実施だった: 今回から 1 回', legacyOk.licenses?.releases === 1 && legacyOk.licenses.since === DAY.r2, JSON.stringify(legacyOk));
 
+  // 旧い集約は空のライセンス検査も「実施」と出した。前回が実施と読めても、確かめたようには出さない
+  const legacyRun = computeUnrunStreaks({ machineChecks: { licenses: UNRUN }, prevMachineChecks: { licenses: '実施(success)' }, previous: { range: { to: 'v1' } }, sameRelease: false, releaseDay: DAY.r2, dayOfRef });
+  check('旧い形式の前回で licenses が実施: 旧い形式であることを note に開示する', legacyRun.licenses?.releases === 1 && /旧い形式/.test(legacyRun.licenses.note ?? ''), JSON.stringify(legacyRun));
+
   const cov = computeUnrunStreaks({ machineChecks: { coverage: '未測定(集計ファイルがありません)' }, prevMachineChecks: { coverage: '未測定(別の理由)', unrunStreaks: { coverage: { since: DAY.r1, releases: 1, note: null } } }, previous: { range: { to: 'v1' } }, sameRelease: false, releaseDay: DAY.r2, dayOfRef });
   check('カバレッジの「未測定(…)」が継続の対象になる(理由が変わっても続く)', cov.coverage?.releases === 2 && cov.coverage.since === DAY.r1, JSON.stringify(cov));
 

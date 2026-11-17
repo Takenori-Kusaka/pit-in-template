@@ -49,6 +49,9 @@ export function computeUnrunStreaks({ machineChecks, prevMachineChecks = null, p
   for (const name of UNRUN_CHECKS) {
     if (!isUnrunValue(machineChecks?.[name])) continue;
     const prev = prevMachineChecks?.unrunStreaks?.[name] ?? null;
+    // 旧い形式(unrunStreaks なし)の前回で licenses が「実施」のとき: 旧い集約は空のコマンドも実施と出した(IMPL-0995)。
+    // 前回が実施だったと確かめたようには読ませない
+    const legacyRun = name === 'licenses' && prevMachineChecks && !prevMachineChecks.unrunStreaks && String(prevMachineChecks.licenses ?? '').startsWith('実施');
     out[name] = unrunStreak({
       measured: false,
       prevSince: prev?.since ?? undefined,
@@ -59,6 +62,7 @@ export function computeUnrunStreaks({ machineChecks, prevMachineChecks = null, p
       releaseDay,
       dayOfRef,
     });
+    if (legacyRun && out[name].note === '今回の出荷から') out[name].note = '前回の出力は旧い形式(空のライセンス検査も実施と出した)。起点は今回';
   }
   return out;
 }
