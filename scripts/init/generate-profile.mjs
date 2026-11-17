@@ -6152,7 +6152,7 @@ if (isMain) {
         }
       }
     }
-    for (const p of headcountProblems(config)) refused.push(p);
+    for (const p of headcountProblems(config, { requireRoster: false })) refused.push(p);
     // 回答と名簿・席の矛盾(回答は確認者なし、席には別の人の確認者を記入、など。第3章 3.13.5)
     for (const p of answersRosterProblems(config)) refused.push(p);
     // 規模の規則が分離を必須とした組(10名以上)は、10名以上の体制に限る兼務禁止である。拒否の文を書き分ける

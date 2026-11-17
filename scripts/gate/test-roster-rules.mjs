@@ -358,7 +358,15 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(第3章 3.
   check('人数: 3〜9名の回答で名簿に10名なら出す', headcountProblems(cfg('size-3-9', 10)).length === 1);
   check('人数: 10名以上の回答で名簿に5名なら出す', headcountProblems(cfg('size-10plus', 5)).length === 1);
   check('人数: 3〜9名の回答で名簿に2名なら出す', headcountProblems(cfg('size-3-9', 2)).length === 1);
-  check('人数: 3名以上の回答で名簿が空なら出さない(降りていない差。IMPL-0278)', headcountProblems(cfg('size-3-9', 0)).length === 0);
+  // IMPL-0278:ng(違反の入力: 3名以上の回答で、D-0 を作成済みなのに名簿の体制の内が空。外部の確認者だけの名簿も空に数える)
+  const withD0 = (size, k, extra = []) => ({ ...cfg(size, k), people: [...people(k), ...extra], d0Version: '1.0' });
+  check('人数: 3〜9名の回答で、D-0 作成済みなのに名簿が空なら出す(IMPL-0278)', headcountProblems(withD0('size-3-9', 0)).length === 1);
+  check('人数: 10名以上の回答で、D-0 作成済みなのに名簿が空なら出す(IMPL-0278)', headcountProblems(withD0('size-10plus', 0)).length === 1);
+  check('人数: 3名以上の回答で、D-0 作成済みで名簿が外部の確認者だけなら出す(IMPL-0278)', headcountProblems(withD0('size-3-9', 0, [{ ...X }])).length === 1);
+  // IMPL-0278:ok(適合の入力: D-0 の作成前、1〜2名の回答、名簿に体制の内の人がいる)
+  check('人数: D-0 の作成前(d0Version なし)は、名簿が空でも出さない(初期化の途中)', headcountProblems(cfg('size-3-9', 0)).length === 0);
+  check('人数: 1〜2名の回答は、D-0 作成済みで名簿が空でも、この検査では出さない', headcountProblems(withD0('size-1-2', 0)).length === 0);
+  check('人数: 3〜9名の回答で名簿に3名いれば、この検査では出さない', headcountProblems(withD0('size-3-9', 3)).length === 0);
   // IMPL-0300:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('人数: 外部の確認者は数えない', headcountProblems({ answers: { 'q-team-size': 'size-1-2' }, people: [...people(2), { ...X }], seats: [] }).length === 0);
 }
