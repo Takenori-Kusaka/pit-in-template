@@ -39,7 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { reworkBaselineAt, reworkBaselineInfo } from './config.mjs';
 import { lastParagraph } from './check-pr.mjs';
-import { ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
+import { detectionFilled, CHANGE_TYPE_DETECTION, ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
@@ -58,8 +58,17 @@ export const MIN_SAMPLE = 30;
  */
 export const REWORK_UNCOUNTED =
   '数えていない残り: 計画表に「やり直し」と書かれず、トレーラの取り込みも1回だけの、不採用(マージされずに閉じた PR)の後の再作成。' +
-  '採用者が登録の根拠 basis.detection.reworkRate に書いた手段で補い、内部監査で確かめる。' +
+  '採用者が登録の根拠 basis.detection.reworkRate に書いた手段で補う。その手段の内容は機械で確かめていない(内部監査で確かめる)。' +
   'トレーラは、第1親のコミットの本文の末尾の段落のものだけを読む(トレーラの後に段落が続くもの、マージコミットで取り込んだ第2親の側のトレーラは数えない)';
+
+export const DETECTION_UNVERIFIED = '記入の有無は機械が確かめた。内容は機械で確かめていない';
+/** 登録の根拠の記入の表示。記入のある検知条件だけを名指す。内容の確認の結果を含まないことを内外とも同じ文で出す */
+export function detectionBasisText(type) {
+  const keys = type?.detectionFilled ?? [];
+  if (!keys.length) return '';
+  const names = CHANGE_TYPE_DETECTION.filter(([k]) => keys.includes(k)).map(([k, label]) => `${label} ${k}`).join('・');
+  return `登録の根拠(basis.detection の算出の所在: ${names}): ${DETECTION_UNVERIFIED}。内容は登録する者が登録の時に判定する。適用中のレベルが計測する手段に裏づけられているかの確認は標準の内部監査の観点23 に委ね、この出力はその結果を含まない`;
+}
 
 export const DEFECT_FILE = 'docs/defect-ledger.md';
 export const HANDOVER_FILE = 'docs/handover.md';
@@ -223,7 +232,7 @@ export function autonomyState(config, records) {
     if (!registeredAt) stop('記録', 'unmeasurable', '登録日(registeredAt)が無く、登録の判定と事象・窓の前後を確かめられない。登録が完了していないものとして止める');
     if (!records || !asOf) {
       stop('記録', 'unmeasurable', '検知の記録を読んでいない(判定の日が無い)。判定できないものとして止める');
-      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null });
+      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null, detectionFilled: detectionFilled(t?.basis) });
       continue;
     }
     const applies = (list) => list === null || list === undefined || list.includes(id);
@@ -343,7 +352,7 @@ export function autonomyState(config, records) {
     }
     // 窓の長さは、履歴を読めないときも出す(rejection が null でも)
     const windowText = asOf ? windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf))) : windowLengthText({ months: WINDOW_MONTHS, longer: false });
-    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText });
+    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText, detectionFilled: detectionFilled(t?.basis) });
   }
   return out;
 }
@@ -445,6 +454,12 @@ function reworkCount(config, typeId, rr, m, months) {
  * 判定不能と基準値の未設定を「異常なし」と書かない。数えていない残りは、読めないときも含めて常に出す
  */
 export function reworkText(type) {
+  const body = reworkTextBody(type);
+  const basis = detectionBasisText(type);
+  return basis ? `${body}。${basis}` : body;
+}
+
+function reworkTextBody(type) {
   const r = type.rework;
   if (!r) return `手戻り率: 判定できない(検知の記録を読んでいない)。${REWORK_UNCOUNTED}`;
   if (r.state === '読めない') return `手戻り率: 読めない(${r.reason})。${REWORK_UNCOUNTED}`;

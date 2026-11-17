@@ -2129,6 +2129,13 @@ export function retiredDetectionTypes(config) {
     .map((t) => String(t.id ?? '').trim());
 }
 
+/** 登録の根拠の detection のうち、記入のある検知条件のキー(登録の検査と表示が同じ判定を使う) */
+export function detectionFilled(basis) {
+  const d = basis?.detection;
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) return [];
+  return CHANGE_TYPE_DETECTION.map(([k]) => k).filter((k) => typeof d[k] === 'string' && isFilledValue(d[k]));
+}
+
 /** 登録の根拠のうち、記入が無いものを [キー, 名前] の配列で返す */
 function missingBasis(basis) {
   const out = [];
@@ -2136,8 +2143,9 @@ function missingBasis(basis) {
   if (d === null || typeof d !== 'object' || Array.isArray(d)) {
     out.push(['detection', `${CHANGE_TYPE_BASIS[0][1]}(${CHANGE_TYPE_DETECTION.map(([k, label]) => `${k}: ${label}`).join('・')} を、それぞれ書く)`]);
   } else {
+    const filled = detectionFilled(basis);
     for (const [k, label] of CHANGE_TYPE_DETECTION) {
-      if (typeof d[k] !== 'string' || !isFilledValue(d[k])) out.push([`detection.${k}`, `${label}の算出の所在`]);
+      if (!filled.includes(k)) out.push([`detection.${k}`, `${label}の算出の所在`]);
     }
   }
   for (const [k, label] of CHANGE_TYPE_BASIS.slice(1)) {

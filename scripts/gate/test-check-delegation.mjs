@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED } from './autonomy.mjs';
+import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -522,6 +522,35 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   }
   const sNote = autonomyState(mk({ doubles: 7 }).config, mk({ doubles: 7 }).records);
   check('手戻り率の表示: /pit の注記に、算出した値・母数・内訳・基準値・数えていない残りが出る', (() => { const l = autonomyNoteLines(sNote).join('\n'); return /母数 32 件のうち手戻り 7 件/.test(l) && /基準値 20%/.test(l) && /トレーラの取り込みが2回以上のみ 7 件/.test(l) && /数えていない残り/.test(l); })());
+
+  // IMPL-0983:ok(登録の根拠の記入の表示。次の一手・保証の開示・D-0 の表の4出口が同じ文を出す。process-compass #339)
+  {
+    const okB = base();
+    const nGate = '保証の開示と次の一手';
+    const lines = [autonomyNoteLines(autonomyState(okB.config, okB.records)).join(' '), autonomyNoteLines(autonomyState(mk({ doubles: 7 }).config, mk({ doubles: 7 }).records)).join(' ')];
+    const tbl = renderAutonomyTable(base().config).join(' ');
+    const rt = reworkText(tOf(base()));
+    check(`IMPL-0983 ok: ${nGate}: 次の一手(停止なし・停止あり)・reworkText・D-0 の表が「内容は機械で確かめていない」を出し、結果を含まない旨も出す`,
+      lines.every((l) => l.includes(DETECTION_UNVERIFIED) && l.includes('この出力はその結果を含まない')) &&
+        rt.includes(DETECTION_UNVERIFIED) && rt.includes('この出力はその結果を含まない') && rt.includes(REWORK_UNCOUNTED) &&
+        tbl.includes(DETECTION_UNVERIFIED));
+  }
+  // IMPL-0983:ng(記入が無い検知条件を、記入済みとして表示しない。登録の検査が拒否する入力)
+  {
+    const ng = base();
+    delete ng.config.delegation.changeTypes[0].basis.detection.reworkRate;
+    const j = judgeDelegatedMerge(ng);
+    const t = autonomyState(ng.config, ng.records).types[0];
+    check('IMPL-0983 ng: reworkRate が未記入なら、登録の検査が拒否し(条件2)、reworkText は reworkRate を名指さず、D-0 の表は「記入の有無は機械が確かめた」を出さない',
+      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes('手戻り率 reworkRate') && !renderAutonomyTable(ng.config).join(' ').includes(DETECTION_UNVERIFIED));
+  }
+  {
+    const num = base();
+    num.config.delegation.changeTypes[0].basis.detection.reworkRate = 1;
+    const j = judgeDelegatedMerge(num);
+    check('登録の根拠の判定の一致: reworkRate が数値なら、登録の検査が拒否し(条件2)、D-0 の表も「未計測」と出す', !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && /未計測/.test(renderAutonomyTable(num.config).join(' ')));
+  }
+  check('文言: REWORK_UNCOUNTED は手段の内容を機械で確かめていないと書き、reworkText を保証の開示の行で呼ぶ', REWORK_UNCOUNTED.includes('内容は機械で確かめていない') && fs.readFileSync(path.join(ROOT, 'scripts/gate/aggregate-evidence.mjs'), 'utf8').includes('reworkText(t)') && detectionBasisText({}) === '');
 
   // 構成の欄の検査(範囲・記名と理由・順序・最後の値との一致・AI の名義)
   check('手戻り率の基準値の欄: 欄が無い構成・正しい欄は問題なし', reworkBaselineProblems({}).length === 0 && reworkBaselineProblems({ reworkBaseline: baseline(20) }).length === 0);
