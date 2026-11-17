@@ -1106,6 +1106,20 @@ export function readSeededScan({ exists, root, git, to, from, period }) {
 }
 
 /**
+ * 構成の上の G-7 の成立の表示。G-7 を判定する席は、価値責任者の兼務の構成(approverMode が value-owner-merged)では価値責任者の席、
+ * それ以外は qa-gatekeeper の席。構成(判定者の表示・D-1)と契約検査と同じ席で語る(IMPL-0988。process-compass #351)
+ */
+export function g7StatusText({ config, seats, deviation, active, omitted, whoKey, whoName }) {
+  const judgeRole = config?.gates?.g7?.params?.approverMode === 'value-owner-merged' ? 'value-owner' : 'qa-gatekeeper';
+  const seatLabel = judgeRole === 'value-owner' ? '出荷判定者を兼ねる価値責任者の席' : '出荷判定者の席';
+  if (deviation) return `兼務(代償措置: ${(deviation.compensation ?? []).join(' / ')})`;
+  if (!active) return omitted;
+  if (seats.length && !whoKey(judgeRole)) return `成立を確認できない(${seatLabel}の責任者が未記入)`;
+  if (whoKey(judgeRole) && whoKey(judgeRole) === whoKey('dev-verifier')) return `成立しない(責任者が同一: ${whoName('dev-verifier')})`;
+  return '成立(構成上。変更ごとの実施は件数による)';
+}
+
+/**
  * ライセンス検査を「実施した」と数えてよいか、と項目4 に出す文(process-compass #330 T-8 / IMPL-0995)。
  * アダプタの licenses は、コマンドが空・検査対象なしでも終了コード 0 で通る。その通過を実施と数えない。古い記録(scanRun: true)や
  * 構成の変化があっても効くよう、記録の側(license-scan-record.mjs)とこの集約の側の両方で判定する。
@@ -3707,12 +3721,7 @@ if (isMain) {
   } else if (small) g6Status = '成立(相互。作成を指示していない側の人が確認する。構成上。変更ごとの実施は件数による)';
   else g6Status = `成立(構成上。変更ごとの実施は件数による${reviewersRequired >= 2 ? `。承認者 ${reviewersRequired} 名を要する` : ''})`;
 
-  let g7Status;
-  if (g7Deviation) g7Status = `兼務(代償措置: ${(g7Deviation.compensation ?? []).join(' / ')})`;
-  else if (!isActive('g7')) g7Status = omittedText('g7');
-  else if (seats.length && !whoKey('qa-gatekeeper')) g7Status = '成立を確認できない(出荷判定者の席の責任者が未記入)';
-  else if (whoKey('qa-gatekeeper') && whoKey('qa-gatekeeper') === whoKey('dev-verifier')) g7Status =`成立しない(責任者が同一: ${whoName('dev-verifier')})`;
-  else g7Status = '成立(構成上。変更ごとの実施は件数による)';
+  const g7Status = g7StatusText({ config, seats, deviation: g7Deviation, active: isActive('g7'), omitted: omittedText('g7'), whoKey, whoName });
 
   // 変更の一覧(PR と、PR を経ていないコミット)。独立した人の確認の有無を、同じ条件で数える
   const directCommits = directProduct.length;

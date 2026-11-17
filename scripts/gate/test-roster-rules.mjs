@@ -133,11 +133,23 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('D-1: 1名なら出す', d1([A], { 'biz-approver': 'a', 'value-owner': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'a', 'qa-gatekeeper': 'a' }).deviations.some((d) => d.gate === 'g7'));
   check('D-1: 出荷判定者の席が未割当なら出す(兼ねないことを確かめられない)', d1([A, B, X], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x' }).deviations.some((d) => d.gate === 'g7'));
   check('D-1: 名簿が空なら出す', d1([], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  // IMPL-0988:ng(違反の入力: 判定する席 value-owner の責任者が開発者と別でも、独立レビュアの席と同じ / 席が未割当 / 名簿に無い名義なら、確かめられない)
+  const voSeat = (m) => d1([A, B], { 'biz-approver': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b', 'qa-gatekeeper': 'b', ...m });
+  check('D-1: 判定する価値責任者が独立レビュアの席の責任者と同じ(開発者とは別)なら出す', voSeat({ 'value-owner': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 判定する価値責任者の席が未割当なら出す(他の席は別の人)', voSeat({ 'dev-verifier': 'a', 'independent-reviewer': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  check('D-1: 判定する価値責任者が名簿に無い名義なら出す', voSeat({ 'value-owner': 'zz', 'dev-verifier': 'a', 'independent-reviewer': 'b' }).deviations.some((d) => d.gate === 'g7'));
+  // IMPL-0988:ng(違反の入力: 逸脱を出す構成では、判定者の表示と席の注記も逸脱と言う)
+  const dvOwn = voSeat({ 'value-owner': 'a', 'dev-verifier': 'a', 'independent-reviewer': 'b' });
+  check('D-1: 逸脱を出す構成では判定者の表示と価値責任者の席の注記が「代償措置つきの逸脱」と言う', /代償措置つきの逸脱/.test(dvOwn.gates.g7.approver) && (dvOwn.roles.find((r) => r.id === 'value-owner')?.notes ?? []).some((n) => /代償措置つきの逸脱/.test(n)) && (dvOwn.roles.find((r) => r.id === 'qa-gatekeeper')?.notes ?? []).some((n) => /分離できていない/.test(n)), JSON.stringify([dvOwn.gates.g7.approver, dvOwn.roles.map((r) => [r.id, r.notes])]));
   // IMPL-0988:ng(違反の入力: 価値責任者が G-7 を判定し、開発者の席も兼ねる。出荷判定者の席 qa-gatekeeper が別の人でも出す)
   check('D-1: 価値責任者が G-7 を判定する構成で、価値責任者が開発者の席を兼ねるなら、qa-gatekeeper が別の人でも出す', d1([A, B, X], { ...base2, 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b' }).deviations.some((d) => d.gate === 'g7'));
   // IMPL-0988:ok(適合の入力: 外部の確認者を独立レビュアの席に置き、G-7 を判定する価値責任者が開発者とも独立レビュアとも別の名簿の人)
   const apart = d1([A, B, X], { ...base2, 'value-owner': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'x', 'qa-gatekeeper': 'b' });
   check('D-1: G-7 を判定する価値責任者が開発者とも独立レビュアとも別の名簿の人なら出さない', !apart.deviations.some((d) => d.gate === 'g7'), JSON.stringify(apart.deviations.map((d) => d.gate ?? d.separationId)));
+  // IMPL-0988:ok(適合の入力: 分離を確かめられた構成では、判定者の表示と席の注記も「逸脱」「分離できていない」と言わない)
+  const apartRoles = apart.roles ?? [];
+  const apartNotes = [...(apartRoles.find((r) => r.id === 'value-owner')?.notes ?? []), ...(apartRoles.find((r) => r.id === 'qa-gatekeeper')?.notes ?? [])].join('\n');
+  check('D-1: 分離を確かめられた構成では、判定者の表示と席の注記が「代償措置つきの逸脱」「分離できていない」と言わない', !/代償措置つきの逸脱|分離できていない/.test(apart.gates.g7.approver + ' ' + apartNotes) && /価値責任者/.test(apart.gates.g7.approver) && /分離できている/.test(apartNotes), JSON.stringify([apart.gates.g7.approver, apartNotes]));
   // 項目ごとの区分(process-compass #316 / ADR-0086)。G-7 の兼務は閉じた列挙の逸脱、1〜2名の席の兼務は列挙に無い離脱
   const twoBiz = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes' }, { people: [A, B], seats: seatsOf({ 'biz-approver': 'a', 'value-owner': 'a', 'tech-lead': 'a', 'context-owner': 'a', 'ai-maintainer': 'a', 'ai-ops': 'b', 'dev-verifier': 'a', 'independent-reviewer': 'b', 'qa-gatekeeper': 'a' }) });
   // IMPL-0329:ok(適合の入力: 初期化が書いた区分は閉じた列挙と一致する)

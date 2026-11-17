@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  g7StatusText,
   BASE_COPIES_DIR,
   parseCopy,
   readBaseCopies,
@@ -473,6 +474,22 @@ const config = {
   check('検証の節の比較: ホスティングの本文を読めなければ比べない', !d5.compared && !d5.differs, JSON.stringify(d5));
   const txt = verificationDiffText(12);
   check('検証の節の所見の文: 限定を同じ文に書く(マージより前の編集・書き換え・妥当性は見ない。欠落にしない)', /マージより前の編集/.test(txt) && /写しの書き換え/.test(txt) && /内容の妥当性も見ない/.test(txt) && /欠落にしない/.test(txt), txt);
+}
+
+// ---------------------------------------------------------------- G-7 の成立の表示は、構成と同じ席で語る(IMPL-0988。process-compass #351)
+{
+  const mk = (merged, map) => {
+    const seats = Object.entries(map).map(([role, accountable]) => ({ role, accountable }));
+    const who = (role) => seats.find((x) => x.role === role)?.accountable ?? null;
+    return g7StatusText({ config: { gates: { g7: { params: { approverMode: merged ? 'value-owner-merged' : 'dedicated-qa' } } } }, seats, deviation: null, active: true, omitted: '省略', whoKey: who, whoName: who });
+  };
+  // IMPL-0988:ok(適合の入力: 価値責任者の兼務の構成で、判定する席 value-owner が別の人なら、qa-gatekeeper の席が未割当・同一でも成立の側)
+  check('G-7 の成立: 兼務の構成では価値責任者の席で判定する(qa-gatekeeper が未割当でも成立)', /^成立\(/.test(mk(true, { 'value-owner': 'b', 'dev-verifier': 'a' })));
+  check('G-7 の成立: 兼務の構成では価値責任者の席で判定する(qa-gatekeeper が開発者と同じでも成立)', /^成立\(/.test(mk(true, { 'value-owner': 'b', 'dev-verifier': 'a', 'qa-gatekeeper': 'a' })));
+  // IMPL-0988:ng(違反の入力: 判定する席が未記入・開発者と同一なら成立と言わない)
+  check('G-7 の成立: 兼務の構成で価値責任者の席が未記入なら成立を確認できない', /成立を確認できない.*価値責任者の席/.test(mk(true, { 'dev-verifier': 'a', 'qa-gatekeeper': 'b' })));
+  check('G-7 の成立: 兼務の構成で価値責任者が開発者と同一なら成立しない(qa-gatekeeper が別の人でも)', /^成立しない/.test(mk(true, { 'value-owner': 'a', 'dev-verifier': 'a', 'qa-gatekeeper': 'b' })));
+  check('G-7 の成立: 兼務でない構成は qa-gatekeeper の席で判定する(未記入なら確認できない・同一なら成立しない)', /成立を確認できない.*出荷判定者の席/.test(mk(false, { 'value-owner': 'b', 'dev-verifier': 'a' })) && /^成立しない/.test(mk(false, { 'value-owner': 'b', 'dev-verifier': 'a', 'qa-gatekeeper': 'a' })));
 }
 
 console.log('');

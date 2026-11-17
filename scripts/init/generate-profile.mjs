@@ -588,7 +588,7 @@ export function detectDeviations(answers, gates, { seats = [], people = [] } = {
  * 「担ってはならない工程」は知識ベースの兼務禁止表(separations)から**導出する**。
  * 手で書かせる欄にしない。
  */
-export function buildRoles(gates, separations = KB.separations ?? []) {
+export function buildRoles(gates, separations = KB.separations ?? [], { g7JudgeSeparated = false } = {}) {
   const gateKeyById = Object.fromEntries(KB.gates.map((g) => [g.id, GATE_KEY[g.id]]));
   const owner = {};
   const notes = {};
@@ -601,8 +601,13 @@ export function buildRoles(gates, separations = KB.separations ?? []) {
   if (gates.g7?.params?.approverMode === 'value-owner-merged') {
     owner['qa-gatekeeper'] = (owner['qa-gatekeeper'] ?? []).filter((k) => k !== 'g7');
     (owner['value-owner'] ??= []).push('g7');
-    notes['value-owner'] = ['G-7 を兼務する(代償措置つきの逸脱。判定記録と抜き取り確認を要する)'];
-    notes['qa-gatekeeper'] = ['この構成では分離できていない。判定は価値責任者が兼ねる'];
+    // 判定する席の責任者が開発者・独立レビュアの席の責任者と別の名簿の人と確かめられたときは、逸脱と言わない(D-1 と同じ判定。IMPL-0988)
+    notes['value-owner'] = g7JudgeSeparated
+      ? ['G-7 を判定する(責任者が開発者の席・独立レビュアの席の責任者とは別の人であることを、席の割り当てで確かめた。逸脱ではない)']
+      : ['G-7 を兼務する(代償措置つきの逸脱。判定記録と抜き取り確認を要する)'];
+    notes['qa-gatekeeper'] = g7JudgeSeparated
+      ? ['判定は価値責任者の席が担う。判定する席は開発ラインから分離できている']
+      : ['この構成では分離できていない。判定は価値責任者が兼ねる'];
   }
 
   const isActive = (key) => {
@@ -912,8 +917,12 @@ export function buildConfig(answers, opts = {}) {
 
   // 兼務を認めた場合、判定者の表示も移す。表示が分離されたままだと、構成と体制図が
   // 食い違ったまま可視化されない(#209)
+  // 判定する席の責任者が開発ラインと別の人と席の割り当てで確かめられたときは、逸脱と表示しない(D-1 と同じ判定)
+  const g7ApproverSeparated = shippingSeparatedFromDevLine({ seats, people }, 'value-owner');
   if (gates.g7?.params?.approverMode === 'value-owner-merged') {
-    gates.g7.approver = '価値責任者(出荷判定者を兼務。代償措置つきの逸脱)';
+    gates.g7.approver = g7ApproverSeparated
+      ? '価値責任者(出荷判定者を兼務。開発者・独立レビュアの席とは別の責任者であることを席の割り当てで確認済み)'
+      : '価値責任者(出荷判定者を兼務。代償措置つきの逸脱)';
   }
 
   // CI の強度。g-ci に strengthen が乗った場合、既定値を引き上げる。未達の代償措置として ci-strict を
@@ -1060,7 +1069,7 @@ export function buildConfig(answers, opts = {}) {
     ...(opts.template ? { template: opts.template } : {}),
     ruleset,
     gates,
-    roles: buildRoles(gates, separations),
+    roles: buildRoles(gates, separations, { g7JudgeSeparated: g7ApproverSeparated }),
     separations,
     governance,
     d0Version,
