@@ -1080,6 +1080,26 @@ export function readSeededScan({ exists, root, git, to, from, period }) {
   };
 }
 
+/**
+ * ライセンス検査を「実施した」と数えてよいか、と項目4 に出す文(process-compass #330 T-8 / IMPL-0995)。
+ * アダプタの licenses は、コマンドが空・検査対象なしでも終了コード 0 で通る。その通過を実施と数えない。古い記録(scanRun: true)や
+ * 構成の変化があっても効くよう、記録の側(license-scan-record.mjs)とこの集約の側の両方で判定する。
+ *   licenseScan: evidence/license-scan.json の中身(無ければ { scanRun: false })
+ *   phaseStatus: machineCheckStatus({ name: 'licenses', job: 'ip-clearance', … }) の値(アダプタの構成から決まる)
+ *   aggregate: readAggregate の結果(無ければ null)
+ * 返す run が false のとき、text は項目4 の値(「未実施…」)。run が true のとき text は「実施(…)」。
+ * chosen は、構成で選んだ未実施(コマンドが空・検査対象なし)かどうか。記録が無いこと・集約が使っていないことは chosen ではない
+ */
+export function licenseScanStatus({ licenseScan, phaseStatus, aggregate }) {
+  if (typeof phaseStatus === 'string' && phaseStatus.startsWith('未実施')) {
+    // 構成が空・対象なしの理由は、記録の scanRun に依らず優先する。集約の側の理由は、記録の有無を添えて下で出す
+    if (/(コマンドが未設定)|(検査対象が存在しない)/.test(phaseStatus)) return { run: false, chosen: true, text: phaseStatus };
+  }
+  if (!licenseScan?.scanRun) return { run: false, chosen: Boolean(licenseScan?.reason), text: licenseScan?.reason ? `未実施(${licenseScan.reason})` : '未実施' };
+  if (!aggregate?.effective.has('ip-clearance')) return { run: false, chosen: false, text: '未実施(記録はあるが、ジョブ ip-clearance を集約 gate-g5 が合否に使っていない)' };
+  return { run: true, chosen: false, text: `実施(${licenseScan.result ?? '結果の記録なし'})` };
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const config = loadConfig();
@@ -3438,7 +3458,8 @@ if (isMain) {
         '記載の欠落です。出荷判定者が記載します。異議が無い場合も「異議なし」と書きます'
     );
   }
-  if (!period && !licenseScan.scanRun) {
+  // 欠落にするのは記録が無いときだけ。構成で選んだ未実施(コマンドが空・検査対象なし)は欠落にしない(議長の裁定 2026-11-17。ADR-0151 決定1・3)
+  if (!period && !exists('evidence/license-scan.json')) {
     gaps.push('知財潔白性の検査記録がありません。判定するのは検査を実施し記録したことです');
   }
 
@@ -4124,6 +4145,7 @@ if (isMain) {
   const g5Aggregate = readAggregate(ROOT);
   const phase = (name, job) =>
     machineCheckStatus({ adapter, hasTarget: adapter ? hasTarget(adapter) : false, aggregate: g5Aggregate, name, job, noRecord: NO_RECORD });
+  const licenseStatus = licenseScanStatus({ licenseScan, phaseStatus: phase('licenses', 'ip-clearance'), aggregate: g5Aggregate });
   const envCheck = readEnvCheck(config);
   const machineChecks = {
     gateG5: prs.length
@@ -4143,11 +4165,7 @@ if (isMain) {
         : `未実施(測定 ${coverage.pct}% はあるが、ジョブ test を集約 gate-g5 が合否に使っていない${coverageScopeText(coverage)})`,
     staticAnalysis: phase('lint', 'static-analysis'),
     dependencyAudit: phase('audit', 'static-analysis'),
-    licenses: !licenseScan.scanRun
-      ? '未実施'
-      : g5Aggregate?.effective.has('ip-clearance')
-        ? `実施(${licenseScan.result ?? '結果の記録なし'})`
-        : `未実施(記録はあるが、ジョブ ip-clearance を集約 gate-g5 が合否に使っていない)`,
+    licenses: licenseStatus.text,
     secretScan: phase('secretScan', 'secret-scan'),
     // 集約が合否に使う検査の不備(基準を実装するジョブが needs に無い等)。項目は増やさず、項目4 の値の出所として出す
     aggregateProblems: g5Aggregate ? g5Aggregate.problems : ['集約 gate-g5 の定義(.github/workflows/gate-g5.yml)が無い'],
@@ -5336,7 +5354,9 @@ if (isMain) {
       id: 8,
       label: '知財潔白性の検査記録',
       machine: 'partial',
-      result: `依存関係のライセンス検査の記録 ${licenseScan.scanRun ? 'あり' : 'なし'}(記録の有無だけを見た)`,
+      result: licenseStatus.chosen
+        ? '依存関係のライセンス検査の記録 なし(構成で選んだ未実施。記録の有無だけを見た)'
+        : `依存関係のライセンス検査の記録 ${licenseScan.scanRun ? 'あり' : 'なし'}(記録の有無だけを見た)`,
       humanReconcile: '類似の検知の実施記録と結果、判定できなかった項目の台帳記録',
     },
     {
@@ -6621,7 +6641,7 @@ if (isMain) {
   R.push(`- 技術負債台帳: ${exists(debtFile) ? 'あり' : '**なし**'}`);
   R.push(`- 運用引き継ぎ文書: ${exists(handoverFile) ? 'あり' : '**なし**'}`);
   if (handoverInfo) R.push(`- 運用引き継ぎ文書の3項目の記入の有無(完備は判定しない): ${handoverInfo.items.map((i) => `${i.label}=${{ filled: '記入あり', unfilled: '**未記入**', missing: '**置き場なし**' }[i.result]}`).join(' / ')}${handoverInfo.compared ? '' : '(様式の初期の文と比べていない)'}`);
-  R.push(`- 知財潔白性の検査: ${licenseScan.scanRun ? '実施' : '**未実施**'}`);
+  R.push(`- 知財潔白性の検査: ${licenseStatus.run ? '実施' : `**未実施**${licenseStatus.text.startsWith('未実施(') ? licenseStatus.text.slice(3) : ''}`}`);
   R.push(`- 欠陥注入の標識の走査(項目6 の検出率とは別): ${seededScan.line}`);
   R.push('');
 

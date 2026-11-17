@@ -189,6 +189,8 @@ jobs:
       # 「対象なし」にしないこと、製品のコードの所在(projectDir)、python の依存の取得の入れ方(標準 第4章 G-5「検査対象が
       # 存在しない場合の扱い」。process-compass #363)
       - run: node scripts/gate/test-adapter.mjs
+      # ライセンス検査の実施記録と項目4 の表示: 空のコマンド・対象なしの通過を実施と記録・表示しない(標準 第4章 G-5。process-compass #330 T-8 / IMPL-0995)
+      - run: node scripts/gate/test-license-scan.mjs
       # 製品のすべてのスタック: 製品のコードのスタック(目印と拡張子の集計)と、宣言したスタック + 除外の突き合わせ。除外の記名・区分・
       # パスの単位(標準 第4章 G-5「製品のすべてのスタック」。process-compass #363 / ADR-0121)
       - run: node scripts/gate/test-stack-coverage.mjs
@@ -350,10 +352,8 @@ jobs:
         run: node scripts/gate/adapter.mjs run licenses
       - name: 検査の実施記録
         if: always()
-        run: |
-          mkdir -p evidence
-          printf '{ "scanRun": true, "result": "%s", "scannedAt": "%s" }\n' \
-            "${{ steps.lic.outcome }}" "$(date -u +%FT%TZ)" > evidence/license-scan.json
+        # コマンドが空・検査対象なしのときは scanRun false で記録する(通過と取り違えさせない。process-compass #330 T-8)
+        run: node scripts/gate/license-scan-record.mjs --outcome "${{ steps.lic.outcome }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
