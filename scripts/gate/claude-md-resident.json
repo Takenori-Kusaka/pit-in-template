@@ -148,7 +148,7 @@
     {
       "id": "CR-014",
       "section": "人へ戻す3つの場合",
-      "core": "強制層(.claude/ 等)の縮小・遮断の解除・閾値の緩和 / state:needs-platform(取り消せない操作なら state:needs-owner も)"
+      "core": "強制層(.claude/ 等)の縮小・遮断の解除・閾値の緩和 / state:needs-platform(取り消せない操作に当たる場合と、ガード・検証ゲート・重要テストの削除の場合は state:needs-owner も)"
     },
     {
       "id": "CR-015",

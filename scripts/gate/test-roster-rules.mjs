@@ -314,10 +314,10 @@ check('dev-done の受け手は独立レビュアだけ', Object.entries(MAILBOX
 check('ready-to-merge を付けるのは独立レビュアだけ', Object.entries(MAILBOX).filter(([, m]) => m.hands.includes('state:ready-to-merge')).map(([r]) => r).join(',') === 'independent-reviewer');
 check('ready-to-merge は出荷判定者の受信箱に入る', MAILBOX['qa-gatekeeper'].inbox.includes('state:ready-to-merge'));
 check('事業決裁者の受信箱は needs-owner(価値責任者の受信箱と分ける)', MAILBOX['biz-approver'].inbox.includes('state:needs-owner') && !MAILBOX['value-owner'].inbox.includes('state:needs-owner'));
-check('needs-platform は独立レビュア・出荷判定者も付けられる(4.3 の付与者・4.7.3)', MAILBOX['independent-reviewer'].hands.includes('state:needs-platform') && MAILBOX['qa-gatekeeper'].hands.includes('state:needs-platform'));
+check('needs-platform は独立レビュア・出荷判定者も付けられる(第3章 3.5.5「ラベルの語彙」の付ける席)', MAILBOX['independent-reviewer'].hands.includes('state:needs-platform') && MAILBOX['qa-gatekeeper'].hands.includes('state:needs-platform'));
 // IMPL-0013:ng IMPL-0302:ng(違反と適合の対。標準の実装マーク。process-compass #314)
-check('needs-dev を独立レビュア・出荷判定者は付けない(差し戻しは qm-blocked。4.3 の付与者)', !MAILBOX['independent-reviewer'].hands.includes('state:needs-dev') && !MAILBOX['qa-gatekeeper'].hands.includes('state:needs-dev'));
-check('qm-blocked は独立レビュアと出荷判定者が付ける(4.3.1 の差し戻しの2行)', Object.entries(MAILBOX).filter(([, m]) => m.hands.includes('state:qm-blocked')).map(([r]) => r).sort().join(',') === 'independent-reviewer,qa-gatekeeper');
+check('needs-dev を独立レビュア・出荷判定者は付けない(差し戻しは qm-blocked。第3章 3.5.5「ラベルの語彙」の付ける席)', !MAILBOX['independent-reviewer'].hands.includes('state:needs-dev') && !MAILBOX['qa-gatekeeper'].hands.includes('state:needs-dev'));
+check('qm-blocked は独立レビュアと出荷判定者が付ける(第3章 3.5.5「ラベルの語彙」の qm-blocked の行)', Object.entries(MAILBOX).filter(([, m]) => m.hands.includes('state:qm-blocked')).map(([r]) => r).sort().join(',') === 'independent-reviewer,qa-gatekeeper');
 
 // 構成ごとの dev-done の受け手(突合 X-1)
 {

@@ -712,6 +712,15 @@ node scripts/init/generate-profile.mjs --change <migrate の入力> --dry-run   
 
 試行前チェックリストの「差し引き」の項目を、ゼロを許す文から差し引きが負の文へ改めました(標準 ADR-0013 決定2・ADR-0154 決定6)。旧い文の写しを持つ案件は、`trial-checklist.mjs` が項目の欠けを1件出します。新しい文(「廃止・置換する既存の承認・様式と、新設する判定の差し引きが負であることを確認した」)へ書き換えてから確認します。
 
+### 13. process-compass #335 の更新を取り込むとき
+
+#335 は、統制の弱化の併記(標準 第3章 3.5.5・ADR-0078 決定2)の写しを、`CLAUDE.md`・`claude-md-resident.json`・`.claude/skills/pit/reference/handoff.md` で揃えた更新です。併記の基準そのものは変わっていません。旧い行は、ガード・検証ゲート・重要テストの削除の場合の `state:needs-owner` の併記を落としていました。
+
+- **常駐の規則 CR-014 の核が変わったため、旧い行を持つ `CLAUDE.md` は、取り込むと常駐の規則の照合で失敗します**。統制を強める向きの変更であり、照合を緩めて通しません
+- 採用者が直す所は、`CLAUDE.md` の「人へ戻す3つの場合」の戻す先の表の、強制層の縮小の行のラベルの列の括弧です。「取り消せない操作に当たる場合と、ガード・検証ゲート・重要テストの削除の場合は `state:needs-owner` も」にします。(c) の例の列の「削除」は「データの削除」にします(照合には掛かりません)
+- `.claude/skills/pit/reference/handoff.md` は取り込みで書き換わります。独自に改めている場合は、同じ箇所を直してください
+- `CLAUDE.md` の変更は AI維持管理者の承認を経ます(`state:needs-platform`)
+
 ## 関連
 
 - 📖 [ピットイン方式とは — AI が実装する時代の開発プロセスを、一枚の図で理解する](https://zenn.dev/takenori_kusaka/articles/pit-in-process-overview) — 全体像の概要(Zenn)

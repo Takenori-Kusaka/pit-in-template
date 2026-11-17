@@ -4243,7 +4243,7 @@ export const MAILBOX = {
   // state:dev-done の受け手は独立レビュアだけ(標準 第3章 3.5.5。#312)。ready-to-merge は、
   // 独立レビュアが G-6 の判定記録を作成した後に付け、出荷判定者のレーンへ渡す。出荷判定者は dev-done を受け取らず、
   // ready-to-merge を付けない。G-7 は出荷の範囲ごとの判定で、このラベルでは起動しない(next.mjs の出荷の段が出す)
-  // needs-platform は、レビューや記録の突合で強制層の変更の要否・統制の弱化に気付いた席が付ける(4.3 の付与者・4.7.3)
+  // needs-platform は、レビューや記録の突合で強制層の変更の要否・統制の弱化に気付いた席が付ける(第3章 3.5.5「ラベルの語彙」の付ける席)
   'independent-reviewer': { inbox: ['state:dev-done'], hands: ['state:qm-blocked', 'state:ready-to-merge', 'state:needs-platform', STOP_REQUEST_LABEL] },
   'qa-gatekeeper': { inbox: ['state:ready-to-merge'], hands: ['state:qm-blocked', 'state:needs-platform', STOP_REQUEST_LABEL] },
   'ai-maintainer': { inbox: ['state:needs-platform'], hands: ['state:dev-done', STOP_REQUEST_LABEL] },
@@ -4278,7 +4278,7 @@ export function devDoneReceiver(config) {
 }
 
 /**
- * エスカレーションの段階と、判定する者・ラベルの対応(第7章 7.6 / 第5章 4.5.2 / ADR-0095)。
+ * エスカレーションの段階と、判定する者・ラベルの対応(第7章 7.6 / ADR-0095)。
  * 起票する者は価値責任者。起票した者は自分の起票を判定しない。実際の宛先は D-0 の節6 による。
  * 閾値は案件が企画承認(G-1)で事業決裁者が確定するため、ここでは持たない。
  */
@@ -4467,7 +4467,7 @@ export function renderRoleCard(config, roleId) {
     if (r.gatesUnmet.length && !r.gatesOwned.length) {
       L.push('この構成では未達です。担い手がいないため、受信箱を置きません。');
     } else {
-      L.push('**このロールの受信箱だけを見てください**。他のロールの受信箱を見た時点で文脈は合流し、分離は成立しなくなります([第5章 4.5.1](https://takenori-kusaka.github.io/process-compass/phase5-implementation/label-mailbox/))。');
+      L.push('**このロールの受信箱だけを見てください**。他のロールの受信箱を見た時点で文脈は合流し、分離は成立しなくなります([第3章 3.5.3](https://takenori-kusaka.github.io/process-compass/phase4-process-design/roles-responsibilities/))。');
       L.push('');
       L.push('```bash');
       for (const s of mb.inbox) {
