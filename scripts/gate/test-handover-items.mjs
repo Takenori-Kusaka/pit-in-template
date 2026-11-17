@@ -65,6 +65,11 @@ const STD = '# 引き継ぎ\n\n## 監視項目\n\n- ダッシュボードで失�
   })());
   check('全体が <…> のセルと「—」は記入に数えない', resultsOf(BLANK.replace(MON_BLANK, MON_FILLED.replace('決済の失敗率', '<入力>').replace('ダッシュボード', '—').replace('2% 超', '-').replace('当番の運用担当', ' '))).monitoring === 'unfilled');
   check('HTML コメントの中は読まない', resultsOf(BLANK.replace(CON_BLANK, '<!-- ' + CON_FILLED + ' -->\n' + CON_BLANK)).contacts === 'unfilled');
+  // 「エスカレーション」だけを含む別の節は、連絡先の置き場にしない(偽の合格を防ぐ)
+  const other = BLANK.replace(CON_BLANK, CON_BLANK + '\n\n### エスカレーションの見直し\n\n- 四半期ごとに見直す');
+  check('白紙の連絡先の節と、記入のある別の「エスカレーション」の節: 連絡先は unfilled のまま', resultsOf(other).contacts === 'unfilled', JSON.stringify(resultsOf(other)));
+  const only = '# 引き継ぎ\n\n## エスカレーションの見直し\n\n- 四半期ごとに見直す\n';
+  check('「エスカレーション」だけを見出しに持つ文書: 連絡先は置き場なし(missing)', resultsOf(only).contacts === 'missing', JSON.stringify(resultsOf(only)));
 }
 
 // ---------------------------------------------------------------- 集約の通し
