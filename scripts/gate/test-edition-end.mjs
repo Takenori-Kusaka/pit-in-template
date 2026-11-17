@@ -352,6 +352,37 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   w.done();
 }
 
+// ---------------------------------------------------------------- 記録から数える、列挙に無い離脱(process-compass #354 項目2 / ADR-0147)
+{
+  const issued = { ...base, standard: { edition: '第1版' } };
+  const HANDOVER_HEAD = '# 運用引き継ぎ\n\n## 2. コア機能\n\n| 機能 | 理解保持者 | 確認した者(本人以外) | 確認の記録と確認日 | 判断記録 | 関わる登録した変更種別 |\n| --- | --- | --- | --- | --- | --- |\n';
+  const claimWith = (files) => {
+    const w = workspace();
+    w.commit('chore: template');
+    w.writeJson('process.config.json', sealed(issued));
+    w.commit('chore: init');
+    fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+    for (const f of ['docs/handover.md', 'docs/quality-assurance-policy.md']) fs.rmSync(path.join(w.dir, f), { force: true });
+    for (const [rel, text] of Object.entries(files)) fs.writeFileSync(path.join(w.dir, rel), text);
+    w.git('add', '-A');
+    w.git('commit', '-q', '--allow-empty', '-m', 'chore: records');
+    w.node('scripts/gate/aggregate-evidence.mjs');
+    const claim = w.readJson('evidence/evidence.json').claim;
+    w.done();
+    return claim;
+  };
+  const ONE = { 'docs/handover.md': `${HANDOVER_HEAD}| 決済 | 名簿 甲 | 名簿 乙 | 演習 2026-10-01 | | なし |\n` };
+  const c1 = claimWith(ONE);
+  // IMPL-0521:ng(違反の入力: 運用引き継ぎ文書の節2 の保持者が1名以下)
+  check('集約(iv): 保持者が1名以下のコア機能は、名が適用の表明・離脱の一覧に出る', c1.name === '適用の表明' && c1.unlistedDepartures.some((l) => /コア機能の理解の保持者が1名以下/.test(l)) && c1.blockers.some((b) => /記録から数えた/.test(b)), JSON.stringify(c1));
+  const BIZ = { 'docs/quality-assurance-policy.md': '# 層1\n\n| 項目 | 値 |\n| --- | --- |\n| 版 | v1 |\n| 記名 | 名簿 戊 |\n| 記名日 | 2026-10-01 |\n' };
+  const c2 = claimWith(BIZ);
+  check('集約(v): 層1 の記名者 = 事業決裁者は、名が適用の表明・離脱の一覧に出る', c2.name === '適用の表明' && c2.unlistedDepartures.some((l) => /層1 の記名者が事業決裁者/.test(l)), JSON.stringify(c2));
+  const c3 = claimWith({});
+  // IMPL-0521:ok(適合の入力: 記録が無い。名を下げず確かめられない旨を出す)
+  check('集約(vi): 引き継ぎ文書も層1 も無いときは、離脱に数えず、確かめられない旨を出す', !c3.unlistedDepartures.some((l) => /保持者|記名者/.test(l)) && c3.unverifiable.length === 2 && c3.blockers.some((b) => /名は下げません/.test(b)), JSON.stringify(c3));
+}
+
 console.log('');
 if (failures) {
   console.log(`版・適用の終了・適用の開始の境の試験: ${failures} 件が期待と一致しません`);

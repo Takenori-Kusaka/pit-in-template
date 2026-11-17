@@ -5337,17 +5337,35 @@ if (isMain) {
   const editionsInRange = [...new Set(commits.map((c) => configAt(c.hash)).filter(Boolean).map((c) => standardEdition(c) ?? '作業中の版'))];
   const straddles = editionsInRange.length > 1;
   const endedForRange = claimBase.ended;
+  // 記録から決まる、列挙に無い離脱(標準 第1章 1.10.2。process-compass #354 項目2 / ADR-0147)。決定可能な条件だけを数える:
+  //   (a) 運用引き継ぎ文書の節2 の、保持者(本人以外の確認つき)が1名以下のコア機能  (b) 層1 の記名者が事業決裁者の席の責任者と同一
+  // 記録が無い・解けない(引き継ぎ文書なし・節2 の記載なし・層1 なし)ときは名を下げず、確かめられない旨を出す(人が確かめる)。
+  // 記録は作業ツリーから読む(範囲の終点のコミットの記録は読まない。continuityState・readPolicy が作業ツリーを読むため)
+  const recordDepartures = [];
+  const recordUnverifiable = [];
+  if (!exists(handoverFile)) recordUnverifiable.push(`${handoverFile} が無く、コア機能の理解の保持者を確かめられません`);
+  else if (!continuity.core.length) recordUnverifiable.push(`${handoverFile} の節2 にコア機能の記載が無く、理解の保持者を確かめられません`);
+  else {
+    const thin = continuity.core.filter((c) => c.holders.length <= 1);
+    if (thin.length) recordDepartures.push({ label: `コア機能の理解の保持者が1名以下(${thin.map((c) => `${c.name} ${c.holders.length} 名`).join('・')}。運用引き継ぎ文書の節2。本人以外の確認つきで数えた)`, derived: 'core-holders' });
+  }
+  if (!policy.present) recordUnverifiable.push(`${POLICY_FILE} が無く(層1 なし)、層1 の記名者と事業決裁者の同一性を確かめられません`);
+  else if (policy.signerIsBizApprover) recordDepartures.push({ label: '層1 の記名者が事業決裁者の席の責任者と同一(テンプレ11 の要求事項5)', derived: 'policy-signer-biz-approver' });
   const claimForRange = {
     edition: claimBase.editionLabel,
     endRevision: claimEndRev ? claimEndRev.slice(0, 12) : null,
-    name: straddles ? null : claimBase.name && gaps.length && claimBase.name !== '適用の表明' ? '適用の表明' : claimBase.name,
+    name: straddles ? null : claimBase.name && (gaps.length || recordDepartures.length) && claimBase.name !== '適用の表明' ? '適用の表明' : claimBase.name,
     editionsInRange,
     ended: endedForRange ? { date: endedForRange.date, reason: endedForRange.reasonLabel } : null,
     listedDeviations: claimBase.listed.map((d) => `${d.closedListId} ${d.label}(${d.clause})`),
-    unlistedDepartures: claimBase.unlisted.map((d) => d.label),
+    unlistedDepartures: [...claimBase.unlisted.map((d) => d.label), ...recordDepartures.map((d) => d.label)],
+    // 記録から数えられなかった項目(名は下げない。出荷判定者が確かめる)
+    unverifiable: recordUnverifiable,
     blockers: [
       ...(straddles ? [`この範囲は版の切り替えをまたぎます(${editionsInRange.join(' → ')})。範囲を版ごとに分けて集約してください(第1章 1.10.2)`] : []),
       ...claimBase.blockers,
+      ...(recordDepartures.length ? [`記録から数えた、逸脱の閉じた列挙に無い離脱があります(${recordDepartures.map((d) => d.label).join(' / ')})。適合の主張を述べられません`] : []),
+      ...recordUnverifiable.map((t) => `${t}(名は下げません。人が確かめます)`),
       ...(endedForRange ? [`適用を終えています(${endedForRange.date}。${endedForRange.reasonLabel})。この範囲についての表明と主張は、過去の範囲として述べます。現在形の表明をしません(第1章 1.10.4)`] : []),
       ...(gaps.length ? [`この範囲に記録の欠落などの欠落が ${gaps.length} 件あります。適合の主張を述べられません`] : []),
     ],

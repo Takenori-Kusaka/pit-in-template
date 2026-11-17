@@ -233,5 +233,29 @@ const UNDECLARED = cfgOf([
   check('L-3: 未申告の席で席の責任者が未記入なら、名義を共有する人が分からない旨を注記に出す', blank.notes.some((n) => /名義を共有する人が分からない/.test(n)), JSON.stringify(blank));
 }
 
+// ---------------------------------------------------------------- 兼務を禁止した組の同じ専用のアカウント(process-compass #354 項目2 / ADR-0147)
+{
+  const SEP = [
+    { id: 'sep-dev-reviewer', roles: ['dev-verifier', 'independent-reviewer'], scope: 'same-work-product', exception: 'none', gate: null },
+    { id: 'sep-ctx', roles: ['ai-maintainer', 'ai-ops'], unit: 'context', exception: 'none', gate: null },
+  ];
+  const seat = (role, name, a) => ({ role, name, accountable: 'p1', performer: PERFORMER, performerAccount: { kind: 'dedicated', account: a } });
+  const same = { login: 'pit-bot', id: 4242 };
+  const withSeats = (seats) => cfgOf(seats, { separations: SEP, performerEnvCheck: Object.fromEntries(seats.map((s) => [s.role, { status: 'confirmed', account: s.performerAccount.account, declared: s.performerAccount }])) });
+  const forbidden = withSeats([seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', same)]);
+  const cs = claimStatus(forbidden);
+  // IMPL-1100:ng(違反の入力: 兼務を禁止した組の2席の担い手が同じ専用のアカウントを申告)
+  check('認証情報(i): 禁止の組の同じ専用のアカウントは、列挙に無い離脱1件・適用の表明', cs.unlisted.filter((d) => d.derived === 'performer-credential-shared').length === 1 && cs.name === '適用の表明', JSON.stringify(cs.unlisted));
+  check('認証情報(i): 契約検査は拒否せず、注記を1行出す', performerAccountProblems(forbidden).problems.length === 0 && performerAccountProblems(forbidden).notes.some((n) => /兼務を禁止した組/.test(n)), JSON.stringify(performerAccountProblems(forbidden)));
+  // IMPL-1100:ok(適合の入力: 禁止でない組、または異なる識別子)
+  const notForbidden = withSeats([seat('dev-verifier', '開発者', same), seat('value-owner', '価値責任者', same)]);
+  check('認証情報(ii): 禁止でない組の同じアカウントは数えない(人が確かめる)', !claimStatus(notForbidden).unlisted.some((d) => d.derived === 'performer-credential-shared') && performerAccountProblems(notForbidden).notes.length === 0);
+  const diff = withSeats([seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', { login: 'pit-bot-2', id: 4343 })]);
+  check('認証情報(iii): 異なる識別子は数えない', !claimStatus(diff).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+  const ctx = withSeats([seat('ai-maintainer', 'AI維持管理者', same), seat('ai-ops', 'AI運用担当者', same)]);
+  check('認証情報: 実行主体の文脈の単位の規則(unit: context)は人の組として数えない', !claimStatus(ctx).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+  check('認証情報: separations の無い旧い構成は数えない(読めないときは下げない向き)', !claimStatus({ ...forbidden, separations: undefined }).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+}
+
 console.log(failures ? `\n担い手の名義の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\n担い手の名義の試験: ${checks} 件が期待と一致しました`);
 process.exit(failures ? 1 : 0);

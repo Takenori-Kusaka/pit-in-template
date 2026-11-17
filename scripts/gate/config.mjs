@@ -191,6 +191,29 @@ export function classifyDeviations(config) {
 }
 
 /**
+ * 兼務を禁止した組(構成の separations。実行主体の文脈の単位の規則 unit: 'context' は除く)の2席の担い手が、同じ数値の識別子の
+ * 専用のアカウントを申告している組。{ roles, names, id }。標準 第1章 1.10.2「席ごとに認証情報を分けていない」と、第3章 3.5.3 の
+ * レーンの条件1(禁止でない組は同じ認証情報に置ける)の両方の読みで離脱に当たる部分だけを数える(ADR-0147)
+ */
+export function sharedCredentialForbiddenPairs(config, states = performerAccountStates(config)) {
+  const out = [];
+  const byRole = new Map(states.filter((st) => st.kind === 'dedicated' && st.account?.id != null).map((st) => [st.role, st]));
+  const seen = new Set();
+  for (const sep of Array.isArray(config?.separations) ? config.separations : []) {
+    if (sep?.unit === 'context') continue;
+    const [a, b] = sep?.roles ?? [];
+    const sa = byRole.get(a);
+    const sb = byRole.get(b);
+    if (!a || !b || a === b || !sa || !sb || sa.account.id !== sb.account.id) continue;
+    const key = [a, b].sort().join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ roles: [a, b], names: [sa.name, sb.name], id: sa.account.id });
+  }
+  return out;
+}
+
+/**
  * 構成だけから決まる、述べられる表明と主張(標準 第1章 1.10.2・1.10.3・1.10.4)。
  * 記録の欠落は出荷の証跡の集約が数えるため、ここでは判定しない(「記録の欠落が無い範囲に限る」と添える)。
  * 表明・主張の文そのものは出力しない(IMPL-0120。降りていない)
@@ -207,8 +230,21 @@ export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {})
   // 専用の申告で、その席の担い手の環境での照合(env-check --seat)が確認済みでないもの。1.10.2 の「申告と実行環境での照合で確かめている」を
   // 満たさないため、名義の照合が無い列挙に無い離脱として数える(名義の数え方では専用のまま扱う)
   const unverifiedSeats = paStates.filter((st) => st.kind === 'dedicated' && !st.envConfirmed);
+  // 兼務を禁止した組の2席の担い手が、同じ数値の識別子の専用のアカウントを申告した構成(構成だけで決まる。process-compass #354 項目2 / ADR-0147)。
+  // 禁止の組は構成の separations(知識ベース + 出荷判定者 × 事業決裁者 + 規模の組。生成が書く)から読む。
+  // 禁止でない組の共有、ホスティングのアカウントの外の認証情報は数えない(人が確かめる)
+  const sharedCredentialPairs = sharedCredentialForbiddenPairs(config, paStates);
   const unlisted = [
     ...declaredUnlisted,
+    ...(sharedCredentialPairs.length
+      ? [
+          {
+            label: `AI の担い手が、兼務を禁止した組の席どうしで同じ専用のアカウントを申告している(${sharedCredentialPairs.map((x) => `${x.names[0]} × ${x.names[1]} id ${x.id}`).join('・')})`,
+            derived: 'performer-credential-shared',
+            pairs: sharedCredentialPairs.map((x) => ({ roles: x.roles, id: x.id })),
+          },
+        ]
+      : []),
     ...(undeclaredSeats.length
       ? [
           {
@@ -1141,6 +1177,11 @@ export function performerAccountEnvFinding(config, user, { seatRoles = null } = 
 }
 const FINDING_WORD = { confirmed: '一致する', mismatch: '一致しない', unknown: '照合できない', unconfirmed: '読めない' };
 
+/** 2席が、構成の兼務を禁止した組(unit: 'context' を除く)か */
+function forbiddenPairOf(config, a, b) {
+  return (Array.isArray(config?.separations) ? config.separations : []).some((sep) => sep?.unit !== 'context' && (sep?.roles ?? []).length === 2 && sep.roles.includes(a) && sep.roles.includes(b) && a !== b);
+}
+
 /**
  * 名義の申告の契約検査(要求事項1〜3)。{ problems, notes }。
  * problems: kind の値、dedicated の account(login と正の整数の id)、名簿の人のアカウント(login・id)との重なり、
@@ -1198,8 +1239,10 @@ export function performerAccountProblems(config) {
       else if (byLogin) problems.push(`${label}: 専用と申告したアカウント "${login}" が、人の名簿の ${byLogin.name}(${byLogin.id})のアカウントと同じログイン名である。担い手のアカウントを人の名簿に書かない(標準 第3章 3.5.3 要求事項3)`);
       if (id !== null) {
         const prev = dedicatedIds.get(id);
+        // 同じ id を申告した席が兼務を禁止した組なら、拒否せず注記を出す(拒否すると構成を記録できず、離脱を表示できない。ADR-0147)
+        if (prev && forbiddenPairOf(config, prev.role, s.role)) notes.push(`${label}: 兼務を禁止した組の ${prev.seat} の担い手と同じ数値の識別子 ${id} を申告している。席ごとに認証情報を分けていない列挙に無い離脱として、述べられる名は適用の表明までになる(標準 第1章 1.10.2)`);
         if (prev && prev.login && login && accountKey(prev.login) !== accountKey(login)) problems.push(`${label}: 数値の識別子 ${id} が、${prev.seat} の担い手の "${prev.login}" と "${login}" の両方に書かれている`);
-        else if (!prev) dedicatedIds.set(id, { login, seat: s.name ?? s.role });
+        else if (!prev) dedicatedIds.set(id, { login, seat: s.name ?? s.role, role: s.role });
       }
     } else {
       const ref = typeof pa.person === 'string' ? pa.person.trim() : pa.person;
