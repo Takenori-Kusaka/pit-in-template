@@ -103,6 +103,28 @@ check('テンプレートのワークフローに、集約の needs の行があ
   check('項目4: アダプタが読めなければ記録なし', machineCheckStatus({ adapter: null, hasTarget: false, aggregate: full, name: 'test', job: 'test', noRecord: '記録なし' }) === '記録なし');
 }
 
+// 9b. 製品のコードの無い構成の項目4(process-compass #330 T-5)。対象なしの検査は検査ごとに「未実施(検査対象が存在しない)」と出し、
+// 秘匿情報の検査(基準7)は対象なしを認めないのでそう出さない。出荷ごとの継続は IMPL-0993(test-unrun-streak.mjs)が固定する。
+// 判定の時刻は記録していない(IMPL-0239 は降りていない規定のまま)
+{
+  const full = { effective: new Set(['test', 'static-analysis', 'secret-scan', 'ip-clearance']) };
+  const adapter = { id: 'node', commands: { test: 'npm test', lint: 'npm run lint', audit: 'npm audit', licenses: 'npx license-checker', secretScan: 'npx secretlint' } };
+  const st = (name, job) => machineCheckStatus({ adapter, hasTarget: false, aggregate: full, name, job, noRecord: '記録なし' });
+  for (const [name, job] of [['test', 'test'], ['lint', 'static-analysis'], ['audit', 'static-analysis'], ['licenses', 'ip-clearance']]) {
+    check(`項目4: 製品のコードが無ければ ${name} は「未実施(検査対象が存在しない)」`, st(name, job) === '未実施(検査対象が存在しない)', st(name, job));
+  }
+  check('項目4: 製品のコードが無くても秘匿情報の検査は「検査対象が存在しない」と出さない', /^実施/.test(st('secretScan', 'secret-scan')), st('secretScan', 'secret-scan'));
+}
+
+// 9c. 依存の取得の失敗が黙って続かない(process-compass #330 T-7)。setup-stack の install の段に continue-on-error を置かない。
+// 検査器(npm audit・license-checker 等)が入力の欠落で失敗するかは道具の実装で、ここでは保証しない(降ろさないと決めた)
+{
+  const setup = fs.readFileSync(path.join(ROOT, '.github/actions/setup-stack/action.yml'), 'utf8');
+  const step = setup.split(/\r?\n/).join('\n').split(/\n    - name: /).find((b) => b.includes('adapter.mjs run install')) ?? '';
+  check('setup-stack: 依存の取得の段(adapter.mjs run install)がある', step.length > 0);
+  check('setup-stack: 依存の取得の段に continue-on-error を置かない(失敗が黙って続かない)', step.length > 0 && !/continue-on-error/.test(step), step);
+}
+
 // 10. ワークフロー: contract でこの試験を実行する
 check('ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-g5-aggregate\.mjs/.test(wf));
 

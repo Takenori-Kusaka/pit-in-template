@@ -184,6 +184,7 @@ import {
 import { loadDecisions, checkDecisions, countsLine, fieldProblems } from './check-decisions.mjs';
 import { handoverItems, handoverGapText, handoverResultText } from './handover-items.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
+import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
 import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
@@ -4269,19 +4270,11 @@ if (isMain) {
     Boolean(previous) &&
     (previous.range?.toCommit ? previous.range.toCommit === toCommit : previous.range?.to === to && to !== 'HEAD');
   const dayOfRef = (ref) => (ref ? git(['log', '-1', '--format=%cs', ref]) : '') || null;
-  function unmeasuredStreak(measured, prevSince, prevReleases, prevWasUnmeasured) {
-    if (measured) return { since: null, releases: 0, note: null };
-    // 同じ出荷の再集計では、回数を進めない
-    if (sameRelease && prevSince) return { since: prevSince, releases: prevReleases ?? 1, note: null };
-    if (prevSince) return { since: prevSince, releases: (prevReleases ?? 1) + 1, note: null };
-    if (previous && prevWasUnmeasured && !sameRelease) {
-      // 起点を持たない旧い形式の出力。前回の出荷を起点とする
-      const since = dayOfRef(previous.range?.to) || String(previous.generatedAt ?? '').slice(0, 10) || releaseDay;
-      return { since, releases: 2, note: null };
-    }
-    return { since: releaseDay, releases: 1, note: previous ? '今回の出荷から' : '前回の出力なし。起点は今回' };
-  }
-  const streakText = (st) => `${st.since} の出荷から ${st.releases} 回連続${st.note ? `。${st.note}` : ''}`;
+  // 継続期間の計算は unrun-streak.mjs(項目4 の検査ごとの継続と共通。IMPL-0993)
+  const unmeasuredStreak = (measured, prevSince, prevReleases, prevWasUnmeasured) =>
+    unrunStreak({ measured, prevSince, prevReleases, prevWasUnmeasured, previous, sameRelease, releaseDay, dayOfRef });
+  // 項目4 の未実施・未測定の検査ごとの継続期間。値の文字列は変えず、起点と回数を別の欄に足す(合否には使わない)
+  machineChecks.unrunStreaks = computeUnrunStreaks({ machineChecks, prevMachineChecks: prevA?.machineChecks ?? null, previous, sameRelease, releaseDay, dayOfRef });
 
   // 組織継続の側の状態(依存先の一覧・単一障害点の一覧。第3章 3.12.11 / 附属書H H.6)。判定の日は出荷の終点の日付。
   // 期限を過ぎた受容は、状態が解消していなければ記載の欠落である(第4章 G-7 基準9)
@@ -6175,15 +6168,17 @@ if (isMain) {
     R.push('### 4. 機械検査の結果(未実施と通過を区別する)');
     R.push('');
     const g5 = A.machineChecks.gateG5;
+    // 未実施・未測定の継続期間(IMPL-0993)。値の後ろに添える。実施に戻った検査には出さない
+    const streakSuffix = (k) => (A.machineChecks.unrunStreaks?.[k] ? ` / ${streakText(A.machineChecks.unrunStreaks[k])}` : '');
     R.push('| 検査 | 結果 |');
     R.push('| --- | --- |');
     R.push(`| gate-g5(PR ごと) | ${g5 === NO_RECORD ? NO_RECORD : `成功 ${g5.success} / 成功以外 ${g5.notSuccess} / 記録なし ${g5.notRecorded}`} |`);
-    R.push(`| テスト | ${A.machineChecks.test} |`);
-    R.push(`| カバレッジ | ${A.machineChecks.coverage} |`);
-    R.push(`| 静的解析 | ${A.machineChecks.staticAnalysis} |`);
-    R.push(`| 依存の監査 | ${A.machineChecks.dependencyAudit} |`);
-    R.push(`| 依存関係のライセンス | ${A.machineChecks.licenses} |`);
-    R.push(`| 秘匿情報 | ${A.machineChecks.secretScan} |`);
+    R.push(`| テスト | ${A.machineChecks.test}${streakSuffix('test')} |`);
+    R.push(`| カバレッジ | ${A.machineChecks.coverage}${streakSuffix('coverage')} |`);
+    R.push(`| 静的解析 | ${A.machineChecks.staticAnalysis}${streakSuffix('staticAnalysis')} |`);
+    R.push(`| 依存の監査 | ${A.machineChecks.dependencyAudit}${streakSuffix('dependencyAudit')} |`);
+    R.push(`| 依存関係のライセンス | ${A.machineChecks.licenses}${streakSuffix('licenses')} |`);
+    R.push(`| 秘匿情報 | ${A.machineChecks.secretScan}${streakSuffix('secretScan')} |`);
     R.push(`| 依存の追加・更新の識別 | ${A.machineChecks.dependencyDiff} |`);
     // 集約が合否に使う検査の不備。「実施」の出所は集約の needs であり、構成にコマンドが書かれていることではない(#290)
     const aggP = A.machineChecks.aggregateProblems ?? [];

@@ -211,6 +211,34 @@ for (const id of ['python-poetry', 'python-uv']) {
   check('項目4: 製品のコードが無ければ、テストは従来どおり「検査対象が存在しない」', st('test', 'test') === '未実施(検査対象が存在しない)');
 }
 
+// ---------------------------------------------------------------- 5. 空のコマンドの扱い(標準 第4章 G-5「構成で選んだ未実施」、ADR-0151。process-compass #330 T-4 / IMPL-0992)
+// 任意の段(lint・audit・licenses・install)が空なら実施せず通す(証跡へ残す)。必須の段(test・secretScan)が空なら失敗させる。
+// coverage が空のときの失敗は coverage-check.mjs の側で、test-coverage-scope.mjs が固定している(ここでは足さない)
+{
+  const base = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', 'node.json'), 'utf8')).commands;
+  const withCommands = (patch) => ({ commands: { ...base, ...patch } });
+  const product = { 'package.json': '{ "name": "x" }\n' };
+  for (const phase of ['lint', 'audit', 'licenses', 'install']) {
+    const W = workspace('node', product, withCommands({ [phase]: '' }));
+    // IMPL-0992:ok(適合側。構成で選んだ未実施は失敗にしない)
+    const r = W.adapter(phase, '1');
+    check(`IMPL-0992:ok node: ${phase} が空なら実施せず、終了コード 0 で通す(代役が失敗しても落ちない)`, r.code === 0 && /実施しません。この事実は証跡へ残ります/.test(r.out) && !W.ran('.', 'npx'), r.out);
+  }
+  for (const phase of ['test', 'secretScan']) {
+    const W = workspace('node', product, withCommands({ [phase]: '' }));
+    // IMPL-0992:ng(違反側。必須の段が空のまま通ることを許さない)
+    const r = W.adapter(phase, '0');
+    check(`IMPL-0992:ng node: ${phase} が空なら失敗させる`, r.code === 1 && /が空です/.test(r.out), r.out);
+  }
+  for (const phase of ['lint', 'audit', 'licenses']) {
+    const W = workspace('node', product, withCommands({ [phase]: 'npx fake-tool' }));
+    const r = W.adapter(phase, '1');
+    check(`node: ${phase} のコマンドの終了コードを段へ伝える(失敗なら 1)`, r.code === 1 && W.ran('.', 'npx'), r.out);
+    const ok = W.adapter(phase, '0');
+    check(`node: ${phase} のコマンドが通れば段も通る`, ok.code === 0, ok.out);
+  }
+}
+
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 console.log('');
 if (failures) {

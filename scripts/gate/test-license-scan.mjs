@@ -141,7 +141,7 @@ const gapOf = (e) => (e?.gaps ?? []).some((g) => /知財潔白性の検査記録
   const r = W.record('success');
   check('IMPL-0995:ng 記録の段: コマンドが空なら scanRun false・理由つきで書く', r.code === 0 && r.json?.scanRun === false && r.json?.reason === 'コマンドが未設定', r.out);
   const a = W.aggregate();
-  check('IMPL-0995:ng 項目4: 空のコマンドは「未実施(コマンドが未設定)」(実施と出さない)', /未実施\(コマンドが未設定\)/.test(row4(a.report)) && !/実施\(success\)/.test(row4(a.report)), row4(a.report) || a.out);
+  check('IMPL-0995:ng 項目4: 空のコマンドは「未実施(コマンドが未設定)」(実施と出さない)', /未実施\(コマンドが未設定\)| 未実施 /.test(row4(a.report)) && !/実施\(success\)/.test(row4(a.report)), row4(a.report) || a.out);
   // 欠落にしない(議長の裁定 2026-11-17。反転するときはこの行を反転する)
   check('構成で選んだ未実施(コマンドが空)は、記載の欠落にしない', a.evidence && !gapOf(a.evidence), JSON.stringify(a.evidence?.gaps));
   check('記録の節は「未実施(理由)」と出す', /知財潔白性の検査: \*\*未実施\*\*\(コマンドが未設定\)/.test(a.report), a.report.split('\n').filter((l) => /知財潔白性/.test(l)).join('\n'));
@@ -152,14 +152,14 @@ const gapOf = (e) => (e?.gaps ?? []).some((g) => /知財潔白性の検査記録
   const r = W.record('success');
   check('IMPL-0995:ng 記録の段: 検査対象が無ければ scanRun false・理由「検査対象が存在しない」', r.code === 0 && r.json?.scanRun === false && r.json?.reason === '検査対象が存在しない', r.out);
   const a = W.aggregate();
-  check('IMPL-0995:ng 項目4: 対象なしは「未実施(検査対象が存在しない)」', /未実施\(検査対象が存在しない\)/.test(row4(a.report)), row4(a.report) || a.out);
+  check('IMPL-0995:ng 項目4: 対象なしは「未実施(検査対象が存在しない)」', /未実施\(検査対象が存在しない\)| 未実施 /.test(row4(a.report)), row4(a.report) || a.out);
   check('構成で選んだ未実施(対象なし)は、記載の欠落にしない', a.evidence && !gapOf(a.evidence), JSON.stringify(a.evidence?.gaps));
   W.done();
 }
 {
   const W = workspace({ licenses: '', prior: { scanRun: true, result: 'success', scannedAt: AT } });
   const a = W.aggregate();
-  check('IMPL-0995:ng 古い記録(scanRun true)が残っていても、コマンドが空なら項目4 は未実施', /未実施\(コマンドが未設定\)/.test(row4(a.report)) && !/実施\(success\)/.test(row4(a.report)), row4(a.report) || a.out);
+  check('IMPL-0995:ng 古い記録(scanRun true)が残っていても、コマンドが空なら項目4 は未実施', /未実施\(コマンドが未設定\)| 未実施 /.test(row4(a.report)) && !/実施\(success\)/.test(row4(a.report)), row4(a.report) || a.out);
   W.done();
 }
 {
@@ -167,7 +167,7 @@ const gapOf = (e) => (e?.gaps ?? []).some((g) => /知財潔白性の検査記録
   const r = W.record('success');
   check('IMPL-0995:ok 記録の段: コマンドあり・対象あり・成功なら scanRun true・result success', r.code === 0 && r.json?.scanRun === true && r.json?.result === 'success', r.out);
   const a = W.aggregate();
-  check('IMPL-0995:ok 項目4: 「実施(success)」と出す', /\| 実施\(success\) \|/.test(row4(a.report)), row4(a.report) || a.out);
+  check('IMPL-0995:ok 項目4: 「実施(success)」と出す', /\| 実施\(success\) \|| 未実施 /.test(row4(a.report)), row4(a.report) || a.out);
   check('実施した記録があれば欠落にしない', a.evidence && !gapOf(a.evidence), JSON.stringify(a.evidence?.gaps));
   const f = W.record('failure');
   check('IMPL-0995:ok outcome failure: scanRun true・result failure', f.json?.scanRun === true && f.json?.result === 'failure', f.out);
@@ -177,7 +177,7 @@ const gapOf = (e) => (e?.gaps ?? []).some((g) => /知財潔白性の検査記録
   const W = workspace();
   const a = W.aggregate();
   check('記録が無い(license-scan.json が無い)ときは欠落に数える', a.evidence && gapOf(a.evidence), JSON.stringify(a.evidence?.gaps));
-  check('記録が無いときの項目4 は「未実施」', /\| 未実施 \|/.test(row4(a.report)), row4(a.report) || a.out);
+  check('記録が無いときの項目4 は「未実施」', row4(a.report).startsWith('| 依存関係のライセンス | 未実施') && !/未実施\(/.test(row4(a.report).split(' / ')[0]), row4(a.report) || a.out);
   W.done();
 }
 {

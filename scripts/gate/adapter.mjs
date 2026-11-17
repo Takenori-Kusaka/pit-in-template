@@ -6,7 +6,11 @@
 //
 // phase: install / test / coverage / lint / audit / licenses / secretScan
 //
-// コマンドが空の場合は失敗させます。「検査したことにする」経路を作らないためです。
+// コマンドが空の場合の扱いは、段で分ける(標準 第4章 G-5「構成で選んだ未実施」、ADR-0151。process-compass #330 T-3)。
+//   - 任意の段(lint・audit・licenses・coverage・install)が空: 実施せず終了コード 0 で通す。この事実は証跡へ残る(保証の開示 項目4 が
+//     「未実施(コマンドが未設定)」と継続期間を出す)。通過と取り違えさせないのは、項目4 の表示と、ライセンス検査の記録(license-scan-record.mjs)の役目
+//   - 必須の段(test・secretScan)が空: 失敗させる。「検査したことにする」経路を作らないため
+//   - coverage が空: このアダプタは通す。失敗にするのは coverage-check.mjs(基準3)で、test-coverage-scope.mjs が固定している
 //
 // 対象の扱い(標準 第4章 G-5「検査対象が存在しない場合の扱い」。process-compass #363):
 //   - 秘匿情報の検査(secretScan。基準7)は、製品のコードの有無に依らず、リポジトリの直下で実行する。対象なしを認めない
