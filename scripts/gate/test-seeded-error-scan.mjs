@@ -9,6 +9,11 @@
 //   - 台帳は --ledger で渡したときだけ読む。未回収の識別子が差分にある・期限を超えた未回収は失敗。渡さなければ ledgerChecked は false
 //   - 集約は、記録の欠落・scanRun が true でない・residual が 0 でない・範囲の不一致を欠落にする(4つの ng と ok)
 //   - 壊して確かめる: 標識の照合を外した版・集約の欠落の判定を外した版では、ng の場面が通ってしまう(試験が照合を確かめている証拠)
+// 違反と適合の対(標準の実装マーク。process-compass #356):
+//   IMPL-0047:ng 標識を持つコミットを merge・rebase・squash・cherry-pick で運んだ範囲は、走査が失敗する(T-1)。台帳の未回収・期限超過も失敗する(T-2)
+//   IMPL-0047:ok 標識の無い範囲は通る。台帳の回収済み・期限内も通る
+//   IMPL-0192:ng 走査の記録の欠落・scanRun が true でない・residual が 0 でない・範囲の不一致は、集約の欠落になる(T-5)
+//   IMPL-0192:ok 正しい記録は集約を通る
 // 確かめていないこと: GitHub 上の squash(文を書き換えたもの)。手元の git の既定の文だけを確かめる。
 
 import fs from 'node:fs';
@@ -274,6 +279,29 @@ function aggCheck(d, rec, mod = readSeededScan) {
     const r = spawnSync('bash', ['-e', '-c', body.join(NL)], { cwd: d, encoding: 'utf8', env: { ...process.env, FROM: 'v1', TO: 'v2' } });
     check('T-4 手順の本文を bash -e で動かすと evidence/seeded-error-scan.json ができ、residual は 0(演習をしない採用者の出荷が通る)', r.status === 0 && JSON.parse(fs.readFileSync(path.join(d, 'evidence', 'seeded-error-scan.json'), 'utf8')).residual === 0, r.stderr);
   } else console.log('SKIP bash が使えないため、手順の本文を動かす場面を省く');
+}
+
+// T-7 基準の様式の行「注入の事前周知の記録の所在」: 未記入(様式の説明のまま)なら run の基準の読み取りが問題を返し、実行を止める。
+// 記入済みなら問題にしない。行を持たない旧い様式は止めない(env の行と同じ扱い。記録の節に「様式に行なし」と出る)
+{
+  const { readCriteria } = await import(pathToFileURL(path.join(here, 'adoption-trial.mjs')).href);
+  const tpl = fs.readFileSync(path.join(here, '..', '..', 'templates', 'adoption-trial-criteria.md'), 'utf8').split(String.fromCharCode(13)).join('');
+  const NOTICE = '注入の事前周知の記録の所在';
+  const problemsFor = (text) => {
+    const d = mkRepo();
+    fs.mkdirSync(path.join(d, 'docs', 'adoption-trial'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'docs', 'adoption-trial', 'criteria.md'), text);
+    git(d, 'add', '-A');
+    git(d, 'commit', '-q', '-m', 'docs: criteria');
+    return readCriteria({ root: d }).problems.filter((p) => p.includes(NOTICE));
+  };
+  const rowLine = tpl.split(String.fromCharCode(10)).find((l) => l.startsWith(`| ${NOTICE} |`));
+  check('T-7 様式に行「注入の事前周知の記録の所在」がある', Boolean(rowLine));
+  check('T-7 行が様式の説明のまま(未記入)なら、基準の読み取りが問題を返す(run を止める)(ng)', problemsFor(tpl).length === 1, JSON.stringify(problemsFor(tpl)));
+  const filled = tpl.replace(rowLine, `| ${NOTICE} | docs/adoption-trial/notice.md |`);
+  check('T-7 行が記入済みなら問題を返さない(ok)', problemsFor(filled).length === 0);
+  const absent = tpl.split(String.fromCharCode(10)).filter((l) => !l.startsWith(`| ${NOTICE} |`)).join(String.fromCharCode(10));
+  check('T-7 行を持たない旧い様式は止めない', problemsFor(absent).length === 0);
 }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });

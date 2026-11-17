@@ -217,6 +217,9 @@ jobs:
       - run: node scripts/gate/test-adoption.mjs
       # 実環境の統制の確認(env-check)の4値と確認の項目を、模擬の gh で試験する(附属書I I.11 要件⑦。process-compass #315)
       - run: node scripts/gate/test-env-check.mjs
+      # 欠陥注入の標識の走査(第3層)と、集約の走査の記録の検査(第4層)を、取り込みの4通り・台帳・欠落の4つの ng と、照合を外した版で試験する
+      # (標準 第5章 5.6.2。process-compass #356 / IMPL-0047・IMPL-0192)
+      - run: node scripts/gate/test-seeded-error-scan.mjs
       # 既定ブランチへの push の契機の形(gate-g5-push.yml が既定ブランチに限って gate-g5.yml を呼ぶ。名が gate-g5 のジョブを
       # ほかの契機に置かない)と、/pit の既定ブランチの読み方(既定ブランチの名は main に限らない。process-compass #362 / ADR-0123)
       - run: node scripts/gate/test-push-trigger.mjs
