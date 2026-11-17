@@ -244,10 +244,10 @@ const UNDECLARED = cfgOf([
   const withSeats = (seats) => cfgOf(seats, { separations: SEP, performerEnvCheck: Object.fromEntries(seats.map((s) => [s.role, { status: 'confirmed', account: s.performerAccount.account, declared: s.performerAccount }])) });
   const forbidden = withSeats([seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', same)]);
   const cs = claimStatus(forbidden);
-  // IMPL-1100:ng(違反の入力: 兼務を禁止した組の2席の担い手が同じ専用のアカウントを申告)
+  // IMPL-0521:ng(違反の入力: 兼務を禁止した組の2席の担い手が同じ専用のアカウントを申告)
   check('認証情報(i): 禁止の組の同じ専用のアカウントは、列挙に無い離脱1件・適用の表明', cs.unlisted.filter((d) => d.derived === 'performer-credential-shared').length === 1 && cs.name === '適用の表明', JSON.stringify(cs.unlisted));
   check('認証情報(i): 契約検査は拒否せず、注記を1行出す', performerAccountProblems(forbidden).problems.length === 0 && performerAccountProblems(forbidden).notes.some((n) => /兼務を禁止した組/.test(n)), JSON.stringify(performerAccountProblems(forbidden)));
-  // IMPL-1100:ok(適合の入力: 禁止でない組、または異なる識別子)
+  // IMPL-0521:ok(適合の入力: 禁止でない組、または異なる識別子)
   const notForbidden = withSeats([seat('dev-verifier', '開発者', same), seat('value-owner', '価値責任者', same)]);
   check('認証情報(ii): 禁止でない組の同じアカウントは数えない(人が確かめる)', !claimStatus(notForbidden).unlisted.some((d) => d.derived === 'performer-credential-shared') && performerAccountProblems(notForbidden).notes.length === 0);
   const diff = withSeats([seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', { login: 'pit-bot-2', id: 4343 })]);
