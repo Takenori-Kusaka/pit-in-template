@@ -170,6 +170,30 @@ for (const [way, fn] of Object.entries(WAYS)) {
   check('T-2 識別子は追加の行を語の境界で照合する(ハンクの見出しの数字や SE-10 の部分一致で偽の失敗にしない)', r7.code === 0 && r7.rec?.residual === 0, r7.err);
 }
 
+// 識別子の境界は英数字だけ。- と _ は境界に数える(ファイル名・変数名に含めた識別子を拾う)
+for (const [name, file, want] of [['SE-1-fix.js', 'SE-1-fix.js', 1], ['inject_SE-1', 'inject_SE-1', 1], ['SE-10 は SE-1 として拾わない', 'SE-10.js', 0]]) {
+  const d = mkRepo();
+  commit(d, 'g.txt', `seeded/${file}\n`, 'feat: add');
+  git(d, 'tag', 'v2');
+  const led = path.join(tmpRoot, `ledger-b${n}.json`);
+  fs.writeFileSync(led, JSON.stringify([{ id: 'SE-1', expiresAt: '2999-01-01' }]));
+  const r = runScan(d, SCAN, ['--ledger', led]);
+  check(`T-2 識別子の境界: ${name}`, want ? r.code === 1 && r.rec?.ledgerFindings?.length >= 1 : r.code === 0 && r.rec?.ledgerFindings?.length === 0, `code=${r.code} ${r.err}`);
+}
+
+// 浅い clone では走査を成立させず失敗する(ng)
+{
+  const d = mkRepo();
+  commit(d, 'f.txt', 'f\n', 'feat: a');
+  commit(d, 'g.txt', 'g\n', 'feat: b');
+  git(d, 'tag', 'v2');
+  const sh = path.join(tmpRoot, `shallow${n}`);
+  git(tmpRoot, 'clone', '-q', '--depth', '1', 'file://' + d.replace(/\\/g, '/'), sh);
+  git(sh, 'fetch', '-q', '--depth=1', 'origin', 'refs/tags/v1:refs/tags/v1', 'refs/tags/v2:refs/tags/v2');
+  const r = runScan(sh, SCAN);
+  check('T-4 浅い clone は走査を成立させず失敗する(scanRun false・failures あり)(ng)', r.code === 1 && r.rec?.scanRun === false && r.rec?.failures?.length > 0 && /浅い clone/.test(r.err), `code=${r.code} ${r.err}`);
+}
+
 // 壊して確かめる(1): 標識の照合を外した版では、4通りの ng が通ってしまう
 {
   const src = fs.readFileSync(SCAN, 'utf8');

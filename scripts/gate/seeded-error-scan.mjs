@@ -8,10 +8,10 @@
 //   2. 台帳を渡したときだけ、キー id・expiresAt・reclaimedAt の3つを読む。未回収の識別子が範囲の差分にある、または
 //      期限を超えた未回収がある場合に失敗。台帳はリポジトリの外に置く(リポジトリの中の台帳は識別子が流出する)。
 //      渡さなければ「台帳と照合していない」と記録に出す(失敗にしない)
-//   3. 記録 evidence/seeded-error-scan.json を、失敗のときも書く。集約(aggregate-evidence.mjs)がこれを読み、欠落・scanRun が true でない・
+//   3. 記録 evidence/seeded-error-scan.json を、失敗のときも書く。集約(aggregate-evidence.mjs)がこれを読み、欠落・scanRun が true でない・failures がある・
 //      residual が 0 でない・範囲が合わない、のいずれかで出荷を失敗させる
 //
-// 限界(記録にも書く): 標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash は、
+// 限界(記録にも書く): 標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash・リポジトリの squash の既定の文の設定(PR の題だけ等)は、
 // この走査では拾えない。「流出がない」とは記録しない(標準 5.6.2: 4層あっても流出しないとは記録してはならない)。
 // 標識の文字列は下の定数1か所に置く。標識の形が変わるとき(標識の可視性と秘匿の審議。#356 B)は、ここだけを直す。
 
@@ -72,7 +72,7 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
     failures: [],
     statement: null,
     ledgerNote: LEDGER_OFF,
-    limits: '標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash は拾えない。流出がないとは記録しない',
+    limits: '標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash・リポジトリの squash の既定の文の設定(PR の題だけ等)で標識が消える経路は拾えない。台帳を渡したのに読めない・浅い clone のときは走査を成立させず(scanRun false・failures)、集約が失敗にする。流出がないとは記録しない',
   };
   if (!toSha) {
     problems.push(`終点 ${toRef} を読めません`);
@@ -124,7 +124,7 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
             record.ledgerFindings.push({ id: '', reason: '識別子が空の未回収の行' });
             continue;
           }
-          if (new RegExp(`(?<![A-Za-z0-9_-])${e.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(added)) record.ledgerFindings.push({ id: e.id, reason: '未回収の識別子が範囲の差分にある' });
+          if (new RegExp(`(?<![A-Za-z0-9])${e.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`).test(added)) record.ledgerFindings.push({ id: e.id, reason: '未回収の識別子が範囲の差分にある' });
           const exp = String(e.expiresAt ?? '').slice(0, 10);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) record.ledgerFindings.push({ id: e.id, reason: 'expiresAt が日付でない未回収の行' });
           else if (exp < today) record.ledgerFindings.push({ id: e.id, reason: `期限(${exp})を超えた未回収` });
