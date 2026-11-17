@@ -3835,6 +3835,17 @@ export function renderProfileMd(config, result) {
   L.push('ゲート名は標準の該当節へのリンクです。**構成の根拠は標準にあります**。');
   L.push('');
 
+  // --- AI 生成箇所の追跡(CL1 以上・規制業。IMPL-0760・IMPL-0839) ---
+  {
+    const traceText = traceabilityText(config.answers);
+    if (traceText) {
+      L.push('## AI 生成箇所の追跡');
+      L.push('');
+      L.push(`${traceText}。`);
+      L.push('');
+    }
+  }
+
   // --- ブロック2.5: ロールと担ってはならない工程 ---
   if (config.roles?.length) {
     L.push('## ロールの構成');
@@ -4316,6 +4327,35 @@ export function outsourcingPointer(config) {
   );
 }
 
+/**
+ * AI 生成箇所の追跡(practice: traceability)が必須かと、必須にした規則。
+ * CL1 以上(規則 r-e-cl1)と規制業(規則 r-c-regulated)は、どこを AI が生成し誰が承認したかを辿れるようにする(標準 第8章 軸C・軸E)。
+ * 構成の回答から規則データで導く。箇所の単位の照合は機械で確かめない(人が確かめる。IMPL-0760・IMPL-0839)。必須でなければ null
+ */
+export function traceabilityRequirement(answers) {
+  let result;
+  try {
+    result = evaluate(KB, answers ?? {});
+  } catch {
+    return null;
+  }
+  if (result.profile?.['practice:traceability']?.params?.required !== true) return null;
+  const setsIt = (r) => (r.adjustments ?? []).some((x) => x.target?.type === 'practice' && x.target?.id === 'traceability' && x.param === 'required' && x.value === true);
+  const ids = (result.matchedRuleIds ?? []).filter((id) => (KB.rules ?? []).some((r) => r.id === id && setsIt(r)));
+  return { ruleIds: ids };
+}
+
+/** AI 生成箇所の追跡の文。PROCESS-PROFILE.md と CLAUDE.md の構成依存部分に同じ文を出す。必須でなければ null */
+export function traceabilityText(answers) {
+  const t = traceabilityRequirement(answers);
+  if (!t) return null;
+  return (
+    '**AI 生成箇所の追跡**: AI が生成した箇所を、どこを生成し誰が承認したかで辿れるようにする' +
+    (t.ruleIds.length ? `(規則 ${t.ruleIds.join(' / ')})` : '') +
+    '。箇所の単位の照合は機械で確かめない。人が確かめる'
+  );
+}
+
 export function renderProcessRules(config) {
   if (config.configured === false) {
     return `## このプロジェクトの構成(自動生成)
@@ -4411,6 +4451,9 @@ export function renderProcessRules(config) {
   // 委託・受託の構成だけ、判定の結果を受け取る者の所在を常駐させる。値は構成へ写さない(正本は様式 08 の1か所。process-compass #317 / ADR-0087 決定3)
   const outsourcing = outsourcingPointer(config);
   if (outsourcing) L.push(`- ${outsourcing}`);
+  // CL1 以上・規制業の AI 生成箇所の追跡(IMPL-0760・IMPL-0839。process-compass #448・#446)
+  const traceText = traceabilityText(config.answers);
+  if (traceText) L.push(`- ${traceText}`);
   const filled = seats.filter((s) => s.accountable).length;
   L.push(`- 席の責任者: ${filled} / ${seats.length} 席が記入済み${filled < seats.length ? '。**未記入の席の任免は人が行う**(氏名を推測で埋めない)' : ''}`);
   L.push('');

@@ -485,6 +485,23 @@ ${factsLineOf(c1.__full.report)}`);
   }
 }
 
+// ---------------------------------------------------------------- AI 生成箇所の追跡(IMPL-0760・IMPL-0839。process-compass #448・#446)
+{
+  const built = (answers) => quiet(() => buildConfig({ ...COMMON, 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', ...answers }, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS3 }));
+  const shown = (b) => ({ profile: renderProfileMd(b.config, b.result), rules: renderProcessRules(b.config) });
+  const TRACE = /AI 生成箇所の追跡/;
+  const cl1 = shown(built({ 'q-criticality': 'cl1' }));
+  const reg = shown(built({ 'q-quality': 'quality-regulated' }));
+  const none = shown(built({}));
+  // IMPL-0760:ng IMPL-0839:ng(違反の入力: CL1 以上または規制業なのに、追跡の文が出ない構成は、適合の側の試験が落とす)
+  check('追跡: CL1 の構成は、PROCESS-PROFILE.md に規則 r-e-cl1 の追跡の文を出す', TRACE.test(cl1.profile) && /r-e-cl1/.test(cl1.profile), cl1.profile.slice(0, 200));
+  check('追跡: CL1 の構成は、CLAUDE.md の構成依存部分に同じ文を出す', TRACE.test(cl1.rules) && /r-e-cl1/.test(cl1.rules));
+  check('追跡: 規制業の構成は、PROCESS-PROFILE.md と構成依存部分に規則 r-c-regulated の追跡の文を出す', TRACE.test(reg.profile) && TRACE.test(reg.rules) && /r-c-regulated/.test(reg.profile) && /r-c-regulated/.test(reg.rules));
+  check('追跡: 箇所の単位の照合は機械で確かめない旨を、文に書く', /人が確かめる/.test(cl1.rules));
+  // IMPL-0760:ok IMPL-0839:ok(適合の入力: CL0 の標準品質の構成は、追跡の文を出さない)
+  check('追跡: CL0・標準品質の構成は、追跡の文を出さない', !TRACE.test(none.profile) && !TRACE.test(none.rules));
+}
+
 console.log('');
 if (failures) {
   console.log(`版・適用の終了・適用の開始の境の試験: ${failures} 件が期待と一致しません`);
