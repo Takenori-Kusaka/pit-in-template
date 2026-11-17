@@ -133,6 +133,7 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
 } from './config.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions } from './exception-expiry.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -1275,6 +1276,14 @@ if (isMain) {
   // (G-5 の PR の検査と共通。標準 第6章 テンプレ3)
   const readLedger = () => (exists(debtFile) ? parseLedger(fs.readFileSync(path.join(ROOT, debtFile), 'utf8')) : null);
   const ledgerRows = readLedger();
+  // 例外承認の回収の期限と比べる突合の日(第7章 7.3。#353)。引数 --exception-day で渡す(実行の時計に依らない)。
+  // 無ければ範囲の終点のコミットの日(判定の日と同じ)。引数が日付として読めなければ、使わず記録の欠落に出す
+  const exceptionDayArg = arg('--exception-day', null);
+  const exceptionDay = validDay(exceptionDayArg)
+    ? exceptionDayArg
+    : (period?.to && validDay(period.to) ? period.to : null) || git(['log', '-1', '--format=%cs', to]) || new Date().toISOString().slice(0, 10);
+  // 独立した人の確認を経ず、例外承認の記録が対応づいて出荷した変更の数(PR と PR を経ないコミット。#353 / IMPL-0573)
+  let exceptionShipments = 0;
 
   // ゲート判定記録の、様式(テンプレ4)に依る欄。対象・判定者・結果・挙動要約・出荷判定者の異議を読む。
   // 様式の説明文と記入例を残したままの欄は、未記入として扱う
@@ -2594,6 +2603,8 @@ if (isMain) {
       if (!ACTIVE_EXCEPTION_STATES.includes(r.state.replace(/\*/g, '').normalize('NFKC').trim())) {
         why.push(`状態が有効を示す値(${ACTIVE_EXCEPTION_STATES.join(' / ')})でない(${r.state || '未記入'})`);
       }
+      if (exceptionStanding(r, exceptionDay) === 'overdue') why.push(`回収の期限(${r.due})を突合の日(${exceptionDay})が過ぎ、効力を失っている(第7章 7.3)`);
+      if (exceptionStanding(r, exceptionDay) === 'lapsed') why.push('状態が失効で、効力を失っている(第7章 7.3)');
       if (!filled(r.approver)) why.push('承認した者が未記入');
       if (!filled(r.content) || (r.reason !== null && !filled(r.reason))) why.push('理由(内容・受容した理由)が未記入');
       if (!filled(r.due) || !dueDayOf(r.due)) why.push(`期限(返却の目安)が未記入、または日付として解釈できない(${r.due || '未記入'})`);
@@ -2633,6 +2644,8 @@ if (isMain) {
     const t = gateExceptionTarget(r.target);
     if (!t) continue;
     if (!ACTIVE_EXCEPTION_STATES.includes(r.state.replace(/\*/g, '').normalize('NFKC').trim())) continue;
+    // 回収の期限を過ぎた行は成立させない。記録の欠落は、下の lapsedExceptions が台帳全体で数える
+    if (exceptionStanding(r, exceptionDay) === 'overdue') continue;
     const why = [];
     if (!filled(r.approver)) why.push('承認した者が未記入');
     else {
@@ -2685,6 +2698,12 @@ if (isMain) {
     const pf = preflightRecordProblem(initFound.config, { root: ROOT, initHash: initFound.hash });
     if (pf) gaps.push(`適用の開始(${initFound.hash.slice(0, 12)}): ${pf}。記録の欠落です(第1章 1.10.1 の要求事項1〜3)`);
   }
+  if (exceptionDayArg !== null && !validDay(exceptionDayArg)) {
+    gaps.push(`--exception-day の値 "${exceptionDayArg}" が実在する日付(YYYY-MM-DD)として読めません。回収の期限との比較に使わず、範囲の終点の日(${exceptionDay})で比べました`);
+  }
+  // 回収の期限を過ぎた例外承認(有効のまま期限を過ぎた行と失効の行)。台帳全体で数える。対象が出荷の範囲の外の行、
+  // ゲートの判定を対象とする行も含む。新しい行で承認し直された元の行は数えない(第7章 7.3。#353 / IMPL-0574)
+  for (const x of lapsedExceptions(ledgerRows, exceptionDay)) gaps.push(lapsedGapText(x, exceptionDay));
   for (const x of gateExceptions.rejected) {
     gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);
   }
@@ -2713,6 +2732,7 @@ if (isMain) {
     const ex = needs ? exceptionMatch((text) => refersToPr(text, p.number), { known: new Map(p.g6.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: p.g6.independent.unresolvedInstructors }, p.material) : { matched: [], rejected: [] };
     p.exceptionRecords = ex.matched;
     p.exceptionRejected = ex.rejected;
+    if (needs && ex.matched.length) exceptionShipments++;
     if (!needs || ex.matched.length) continue;
     const rejected = ex.rejected.length ? `対応づけなかった例外の行: ${ex.rejected.join(' / ')}。` : '';
     if (g6Applied && !outOfScope) {
@@ -2997,6 +3017,7 @@ if (isMain) {
     const ex = needs ? exceptionMatch(commitRefers(d.hash), { known: new Map(d.independent.instructors.map((n) => [personKey(config, n), n])), unresolved: d.independent.unresolvedInstructors }) : { matched: [], rejected: [] };
     d.exceptionRecords = ex.matched;
     d.exceptionRejected = ex.rejected;
+    if (needs && ex.matched.length) exceptionShipments++;
     if (!needs || ex.matched.length) continue;
     const rejected = ex.rejected.length ? `対応づけなかった例外の行: ${ex.rejected.join(' / ')}。` : '';
     gaps.push(
@@ -5392,6 +5413,15 @@ if (isMain) {
     unlistedDepartures: [...claimBase.unlisted.map((d) => d.label), ...recordDepartures.map((d) => d.label)],
     // 記録から数えられなかった項目(名は下げない。出荷判定者が確かめる)
     unverifiable: recordUnverifiable,
+    // 範囲の第7章の例外承認の件数(第1章 1.10.2 の併記する事項。#353 / IMPL-0573)。claimStatus と閉じた列挙は変えない(例外承認は逸脱でない)。
+    // 台帳の始点は範囲の始点のコミット、終点は範囲の終点のコミット(上の記録と同じ読み方)。数えた日は突合の日
+    exceptions: countRangeExceptions({
+      startText: from ? gitText(['show', `${from}:${debtFile}`]) || null : null,
+      endText: recordAt(debtFile),
+      day: exceptionDay,
+      ledger: debtFile,
+      withoutIndependentConfirmation: exceptionShipments,
+    }),
     blockers: [
       ...(straddles ? [`この範囲は版の切り替えをまたぎます(${editionsInRange.join(' → ')})。範囲を版ごとに分けて集約してください(第1章 1.10.2)`] : []),
       ...claimBase.blockers,
@@ -6138,6 +6168,14 @@ if (isMain) {
         (evidence.claim.blockers.length ? `。理由: ${evidence.claim.blockers.join(' / ')}` : '') +
         (evidence.claim.listedDeviations.length ? `。列挙する逸脱: ${evidence.claim.listedDeviations.join(' / ')}` : '')
     );
+    {
+      // 適用の表明・適合の主張に併記する、範囲の第7章の例外承認の件数(第1章 1.10.2)。0 件も書く。表明する者がこの句を転記して確かめる
+      const x = evidence.claim.exceptions;
+      R.push(
+        `- 範囲の第7章の例外承認の件数(第1章 1.10.2 の併記する事項): ${x.inRange} 件(未回収 ${x.uncollected} 件、うち回収の期限を過ぎた ${x.overdue} 件。独立した人の確認を経ない出荷 ${x.withoutIndependentConfirmation} 件)。` +
+          `${x.day} 時点。台帳は ${x.ledger}` + (x.undatedDue ? `。期限が日付として読めない有効の行が ${x.undatedDue} 件あり、期限超過に数えていない` : '')
+      );
+    }
     // 組織の外へ渡す形では、台帳の自由記述(内容)を出さない。行の ID と件数で出す
     const idsOnly = (v) => (Array.isArray(v) ? v.map((x) => String(x).split(' ')[0]) : v);
     R.push(`- 未回収の例外(技術負債台帳): ${listOr(external ? idsOnly(A.residual.openExceptions) : A.residual.openExceptions)}`);

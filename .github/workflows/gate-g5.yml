@@ -160,6 +160,8 @@ jobs:
       - run: node scripts/gate/test-roster-ids.mjs
       # AI の担い手の名義(seats[].performerAccount)の契約検査・G-6 の数え方・効力を持つ記録の帰属・env-check の照合(process-compass #430 / ADR-0107)
       - run: node scripts/gate/test-performer-account.mjs
+      # 例外承認の回収の期限(期限を過ぎた行と失効の行を記録の欠落に数える)と、範囲の件数(process-compass #353 / ADR-0134。IMPL-0573・IMPL-0574)
+      - run: node scripts/gate/test-exception-expiry.mjs
       # ホスティングへの書き込みの操作の遮断(.claude/hooks/guard-bash.mjs。process-compass #429 / IMPL-0418)
       - run: node scripts/gate/test-guard-bash.mjs
       # 書き込みの遮断(.claude/hooks/guard-write.mjs)。強制層への書き込みと、自己修正のロック中のテストへの書き込みの遮断と、

@@ -41,6 +41,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { overdueExceptionNote } from './exception-expiry.mjs';
 import { ROOT, resolveSigner, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
@@ -832,7 +833,7 @@ export function outsourcingReceiverNote(config, slaText) {
  * fetch: 記録用ブランチが手元に無いときに origin から 1 回 fetch するか。network: 写しの PR 本文を gh api で補うか。
  * --brief(セッションの開始時)と --offline では、どちらも行わない
  */
-export function computeNext({ fetch = true, network = true } = {}) {
+export function computeNext({ fetch = true, network = true, today = localDay() } = {}) {
   const result = { generatedAt: new Date().toISOString(), configured: null, summary: null, records: null, project: [], features: [], ship: [], notes: [], notSeen: [] };
   const cfgPath = path.join(ROOT, 'process.config.json');
   let config;
@@ -948,6 +949,14 @@ export function computeNext({ fetch = true, network = true } = {}) {
         result.notes.push(`安全重要度の判定の確認: ${clJudgmentText(cl)}。確認者は判定者と別の自然人(チームの外の人は名簿へ外部の確認者として載せる)。AI が確認者を書かない`);
       }
     }
+  }
+  // 期限を過ぎた未返却の例外承認(第7章 7.3。#353 / IMPL-0574)。段階を止めない。出荷の直前まで気づけない状態を作らない
+  try {
+    const ledger = path.join(ROOT, 'docs/debt-ledger.md');
+    const note = overdueExceptionNote({ ledgerText: fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8') : null, today });
+    if (note) result.notes.push(note);
+  } catch {
+    // 読めなければ出さない(次の一手は止めない)
   }
   // D-0 節3 の手で書く行の空欄。段階を止めない(A-O1 の観測の材料であり、例外承認の決定者を引く表でもある)
   if (fs.existsSync(d0)) {
@@ -1706,7 +1715,9 @@ function main() {
     console.log(renderPickup(c));
     process.exit(PICKUP_EXIT[c.decision]);
   }
-  const r = computeNext({ fetch: !local, network: !local });
+  // --today YYYY-MM-DD: 期限との比較に使う日(試験用。無ければ手元の今日)
+  const ti = argv.indexOf('--today');
+  const r = computeNext({ fetch: !local, network: !local, ...(ti >= 0 && argv[ti + 1] ? { today: argv[ti + 1] } : {}) });
   const ri = argv.indexOf('--role');
   if (ri >= 0) {
     const roleId = argv[ri + 1];
