@@ -156,3 +156,21 @@ export function overdueExceptionNote({ ledgerText, today }) {
     '権限を持つ者が新しい行で承認し直す(期限の書き換えは承認のし直しでない)。AI が承認し直さない'
   );
 }
+
+/**
+ * ゲートの判定を対象とする例外承認の行のうち、判定を行わないまま 7.3 で進めるものを選ぶ(IMPL-0996 / ADR-0153 決定2)。
+ *   G-4: 当該の機能仕様の G-4 の判定記録が無い行(judged(subject) が偽)。判定を行った証跡を見る
+ *   G-5: 常に。準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
+ *   それ以外のゲートは変えない。rows は { label, t: { gate, subject } } の配列。戻りは { label, text } の配列
+ */
+export function unjudgedGateExceptions(rows, judged) {
+  const out = [];
+  for (const { label, t } of rows) {
+    if (t.gate === 'G-4' && !judged(t.subject)) {
+      out.push({ label, text: `ゲートの判定を対象とする例外承認 ${label}: 当該の機能仕様の G-4 の判定記録(様式、または判定者本人のレビューの宣言行)が無い。判定を行わないまま 7.3 で進めることはできない(第7章 7.3・7.4、ADR-0153 決定2)。G-4 を判定してから記録し直すか、状態を「取り下げ」にする` });
+    } else if (t.gate === 'G-5') {
+      out.push({ label, text: `ゲートの判定を対象とする例外承認 ${label}: 準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かない。台帳の行を当該の集約の結果へ機械は結べない(第7章 7.3、ADR-0153 決定2)。状態を「取り下げ」にする` });
+    }
+  }
+  return out;
+}

@@ -14,9 +14,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, sealChangeLog, parseLedger } from './config.mjs';
+import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -262,6 +262,106 @@ ${JSON.stringify(ev3.claim.exceptions)}`);
   check('通し(変更): 期限を過ぎた例外承認は変更へ対応づかず、期限超過の理由が出る', /効力を失って/.test(gapFor(late) ?? '') && late.claim.exceptions.withoutIndependentConfirmation === 0 && late.claim.exceptions.overdue === 1, `${gapFor(late)}
 ${JSON.stringify(late.claim.exceptions)}`);
   w2.done();
+}
+
+// ---- ゲートの判定を対象とする例外承認の照合(G-4・G-5。IMPL-0996 / ADR-0153 決定2)。G-4 は当該の機能仕様の判定記録が無ければ、G-5 は常に、成立させない
+// 関数の試験(時計・ホスティングに依らない)
+{
+  const rowsOf2 = (...targets) => targets.map((t, i) => ({ label: `D-00${i + 1}(${t})`, t: gateExceptionTarget(t) }));
+  const judgedOnly = (...specs) => (s) => specs.includes(s);
+  // IMPL-0996:ng(違反の入力。G-4 の判定記録が無い G-4 の行)
+  const ng1 = unjudgedGateExceptions(rowsOf2('G-4 F-001'), judgedOnly());
+  check('IMPL-0996:ng G-4 の判定記録が無い G-4 の行は、成立させず、欠落の文を返す', ng1.length === 1 && /G-4 の判定記録.*無い/.test(ng1[0].text), JSON.stringify(ng1));
+  // IMPL-0996:ng(別の行・別の場面。G-5 の行)
+  const ng2 = unjudgedGateExceptions(rowsOf2('G-5 P-001'), judgedOnly('F-001', 'P-001'));
+  check('IMPL-0996:ng G-5 の行は、判定の記録の有無に依らず常に成立させない', ng2.length === 1 && /gate-g5/.test(ng2[0].text), JSON.stringify(ng2));
+  const ng3 = unjudgedGateExceptions(rowsOf2('G-4 F-001'), judgedOnly('F-002'));
+  check('IMPL-0996:ng 他の機能(F-002)の G-4 の記録だけでは、G-4 F-001 の行は成立しない(ADR-0153 決定2)', ng3.length === 1, JSON.stringify(ng3));
+  // IMPL-0996:ok(適合の入力。当該の G-4 の判定記録がある行)
+  const ok1 = unjudgedGateExceptions(rowsOf2('G-4 F-001'), judgedOnly('F-001'));
+  check('IMPL-0996:ok 当該の G-4 の判定記録がある G-4 の行は、成立させる(欠落の文を返さない)', ok1.length === 0, JSON.stringify(ok1));
+  // 回帰(目印なし): 他のゲートの行は変えない
+  const reg = unjudgedGateExceptions(rowsOf2('G-2 F-001', 'G-1 P-001', 'G-7 v1.0.0', 'SG P-001', 'G-3 ADR-0001'), judgedOnly());
+  check('回帰: G-4・G-5 以外のゲートの行は、判定の記録の有無に依らず従来どおり(返さない)', reg.length === 0, JSON.stringify(reg));
+}
+// 集約の通し(模擬の gh を PATH の先頭に置く。Windows では置き方が異なるため省く。CI は Linux で走る)。台帳の行の帰属を裏づけて、ゲートの判定の行を成立させたうえで確かめる
+if (process.platform === 'win32') {
+  console.log('---- 集約の通し(ゲートの判定の行。模擬の gh): Windows では省きます(CI で確かめる)');
+} else {
+  const R = 'example/exc';
+  const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-fake-gh-exc-'));
+  fs.writeFileSync(
+    path.join(BIN, 'gh'),
+    [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'const args = process.argv.slice(2);',
+      "const map = JSON.parse(fs.readFileSync(process.env.FAKE_GH_MAP, 'utf8'));",
+      "const target = args.find((a) => a.startsWith('repos/')) ?? '';",
+      "if (args[0] === 'api' && Object.prototype.hasOwnProperty.call(map, target)) { process.stdout.write(JSON.stringify(map[target])); process.exit(0); }",
+      "if (args[0] === 'api' && /\\/(pulls|reviews|commits)$/.test(target)) { process.stdout.write('[]'); process.exit(0); }",
+      'process.exit(1);',
+      '',
+    ].join('\n')
+  );
+  fs.chmodSync(path.join(BIN, 'gh'), 0o755);
+  const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-biz-phase': 'growth', 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' };
+  const PEOPLE = Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊己'[i]}`, accounts: [{ login: `acc${i}`, id: 3000 + i }] }));
+  const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
+  const log = console.log;
+  console.log = () => {};
+  let cfg;
+  try {
+    cfg = buildConfig(COMMON, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config;
+  } finally {
+    console.log = log;
+  }
+  const w = workspace();
+  w.commit('chore: template');
+  fs.writeFileSync(path.join(w.dir, 'process.config.json'), JSON.stringify(sealChangeLog(JSON.parse(JSON.stringify(cfg))), null, 2) + '\n');
+  const from = w.commit('chore: init');
+  const form = (gate, target, result) =>
+    `# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | ${target} |\n| 判定者 | 名簿 甲 |\n| 判定日時 | 2026-11-10 10:00 |\n| 結果 | ${result} |\n| 確定の形態 | 人確定 |\n`;
+  const user = (login) => ({ login, id: PEOPLE.flatMap((p) => p.accounts).find((a) => a.login === login)?.id ?? null });
+  const map = {};
+  let prNo = 100;
+  const scene = (targets, forms) => {
+    prNo += 1;
+    fs.rmSync(path.join(w.dir, 'docs/gates'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(w.dir, 'docs/gates'), { recursive: true });
+    for (const [f, t] of Object.entries(forms)) fs.writeFileSync(path.join(w.dir, 'docs/gates', f), t);
+    fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(w.dir, 'docs/debt-ledger.md'), ledger(...targets.map((t, i) => row(`D-${prNo}${i}`, t, '2026-12-31', '未返却', '基準を満たさない'))));
+    const to = w.commit(`docs: 場面 ${prNo}\n\nRisk: R3\nVerification: 手元で試験を実行した`);
+    // 台帳の行を入れた PR: 作成者は記録者(名簿 甲)、承認した者本人(名簿 乙 acc1)が承認する
+    map[`repos/${R}/commits/${to}/pulls`] = [{ number: prNo, merged_at: '2026-11-01T00:00:00Z', merge_commit_sha: to, head: { sha: `head-${prNo}` }, user: user('acc0') }];
+    map[`repos/${R}/pulls/${prNo}/reviews`] = ['acc1', 'acc3'].map((l, i) => ({ id: 800 + i, user: { ...user(l), type: 'User' }, state: 'APPROVED', commit_id: `head-${prNo}`, body: '' }));
+    map[`repos/${R}/pulls/${prNo}/commits`] = [{ author: user('acc0') }];
+    const mapFile = path.join(BIN, `map-${prNo}.json`);
+    fs.writeFileSync(mapFile, JSON.stringify(map));
+    const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs', '--from', from, '--to', to, '--exception-day', DAY], { cwd: w.dir, encoding: 'utf8', env: { ...process.env, PATH: `${BIN}${path.delimiter}${process.env.PATH}`, FAKE_GH_MAP: mapFile, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: R, GH_TOKEN: '', GITHUB_TOKEN: '' } });
+    let ev = null;
+    try {
+      ev = JSON.parse(fs.readFileSync(path.join(w.dir, 'evidence/evidence.json'), 'utf8'));
+    } catch {
+      // 読めなければ null
+    }
+    return { r: { out: `${r.stdout ?? ''}${r.stderr ?? ''}` }, ev, id: (i) => `D-${prNo}${i}` };
+  };
+  const gapOf = (ev, re) => (ev?.gaps ?? []).filter((g) => re.test(g));
+  const shows = (ev, label) => JSON.stringify({ ...ev, gaps: undefined }).includes(label);
+  // 前提: 帰属を裏づけた G-2 の行は成立する(以下の場面の対照)
+  const base = scene(['G-2 F-001'], {});
+  check('集約(模擬の gh)の前提: 帰属を裏づけた G-2 F-001 の行は成立する', base.ev !== null && shows(base.ev, `${base.id(0)}(G-2 F-001)`) && gapOf(base.ev, /ゲートの判定を対象とする例外承認/).length === 0, base.r.out.slice(-800) + JSON.stringify(base.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  const a = scene(['G-4 F-001'], {});
+  check('集約 IMPL-0996:ng G-4 の判定記録が無い G-4 の行は、欠落に出て、例外承認として数えない', gapOf(a.ev, new RegExp(`${a.id(0)}\\(G-4 F-001\\).*G-4 の判定記録.*無い`)).length === 1 && !shows(a.ev, `${a.id(0)}(G-4 F-001)`), JSON.stringify(a.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  const b = scene(['G-5 P-001'], { 'g5.md': form('G-5 品質ゲート', 'P-001', '通過') });
+  check('集約 IMPL-0996:ng G-5 の行は、記録があっても常に成立させない', gapOf(b.ev, new RegExp(`${b.id(0)}\\(G-5 P-001\\).*gate-g5`)).length === 1 && !shows(b.ev, `${b.id(0)}(G-5 P-001)`), JSON.stringify(b.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  const c = scene(['G-4 F-001'], { 'g4-f002.md': form('G-4 機能仕様承認', 'F-002 / 1a2b3c4', '通過') });
+  check('集約 IMPL-0996:ng 他の機能(F-002)の記録だけでは、G-4 F-001 の行は成立しない', gapOf(c.ev, new RegExp(`${c.id(0)}\\(G-4 F-001\\).*G-4 の判定記録.*無い`)).length === 1, JSON.stringify(c.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  const d = scene(['G-4 F-001'], { 'g4-f001.md': form('G-4 機能仕様承認', 'F-001 / 1a2b3c4', '差し戻し') });
+  check('集約 IMPL-0996:ok G-4 F-001 の判定記録(差し戻し)がある行は、欠落に出ず、例外承認として数える', gapOf(d.ev, new RegExp(`${d.id(0)}\\(G-4 F-001\\)`)).length === 0 && shows(d.ev, `${d.id(0)}(G-4 F-001)`), JSON.stringify(d.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  w.done();
 }
 
 console.log(`\n${checks - failures}/${checks} 合格`);

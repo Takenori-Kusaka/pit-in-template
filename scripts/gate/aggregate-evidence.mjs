@@ -134,7 +134,7 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions } from './exception-expiry.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -2670,7 +2670,9 @@ if (isMain) {
   // 有効を示す状態の行だけを見て、7.3 の記録の事項(承認した者・理由・期限)が記入され、承認した者が名簿の人で
   // AI の名義でないことを確かめる。成立しない行は欠落にする(記録として例外承認の成立を示さないため)。
   // どの基準を欠いた判定か、承認した者が成果物の作成者と別の人か、権限を持つ者かは、機械では確かめない
+  // G-4・G-5 の行の照合は g4Passes の後で行う(IMPL-0996)
   const gateExceptions = { matched: [], rejected: [] };
+  const gateExceptionRows = [];
   for (const r of exceptionRows ?? []) {
     if (r.kind !== '例外') continue;
     const t = gateExceptionTarget(r.target);
@@ -2692,7 +2694,10 @@ if (isMain) {
     }
     const label = `${r.id}(${t.gate} ${t.subject})`;
     if (why.length) gateExceptions.rejected.push(`${label}: ${why.join('、')}`);
-    else gateExceptions.matched.push(label);
+    else {
+      gateExceptions.matched.push(label);
+      gateExceptionRows.push({ label, t });
+    }
   }
 
   // --- 突合と gaps -----------------------------------------------------------
@@ -3207,6 +3212,17 @@ if (isMain) {
       .map((j) => ({ kind: 'review', j, effective: !reviewSupersededByLater(j, reviewJudgements, spec) })),
   ];
   const g4Approved = (spec) => g4Passes(spec).some((p) => p.effective);
+  // ゲートの判定を対象とする例外承認の行のうち、判定を行わないまま 7.3 で進めるものを成立させない(IMPL-0996 / ADR-0153 決定2)。
+  //   G-4: 当該の機能仕様の G-4 の判定記録(様式、または判定者本人のレビューの宣言行)が無い行。結果は通過か差し戻しの語を数える
+  //        (判定を行った証跡を見る。版の一致は G-4 の通過の側の検査が持つため、headMatch は問わない)。出所は g4Passes と同じ
+  //   G-5: 常に成立させない。準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
+  const g4Judged = (spec) =>
+    gateDetails.some((g) => /G-4/.test(g.gate ?? '') && ['通過', '差し戻し'].includes(resultWord(g.result)) && specRe(spec).test(String(g.target ?? ''))) ||
+    reviewJudgements.some((j) => j.gate === 'G-4' && ['通過', '差し戻し'].includes(resultWord(j.result)) && j.judgeOk !== false && j.specs.includes(spec));
+  for (const { label, text } of unjudgedGateExceptions(gateExceptionRows, g4Judged)) {
+    gateExceptions.matched = gateExceptions.matched.filter((x) => x !== label);
+    gaps.push(text);
+  }
   const specsWithoutG4 = isActive('g4') ? [...new Set(specChanges.flatMap((c) => c.specs))].filter((s) => !g4Approved(s)) : [];
   for (const s of specsWithoutG4) {
     gaps.push(
