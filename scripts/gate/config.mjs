@@ -1948,12 +1948,15 @@ export function headcountProblems(config, { requireRoster = true } = {}) {
     );
   }
   // 3名以上の回答で、D-0 を作成済み(追随する版を取得済み)なのに、名簿の体制の内の人が0名。名簿が空だと、兼務の禁止・分離の検査が
-  // 空振りする(IMPL-0278。process-compass #351 の H-2)。数え方は変えない: 存在だけを見る。D-0 の作成前(d0Version が無い構成)は、
-  // 初期化の途中として出さない
+  // 空振りする(IMPL-0278。process-compass #351 の H-2)。数え方は変えない: 存在だけを見る。初期化の途中として出さない段は2つ:
+  // D-0 の作成前(d0Version が無い構成)と、D-0 の版を取得しただけの段(変更履歴が init だけ)。名簿は D-0 表5-2 を記入した後に
+  // /process-change で取り込む(変化点を経て入る)ため、版の取得の直後は名簿が空であるのが正常な途中である。変化点が1つでも
+  // 受け付けられた後も名簿が空なら出す
+  const pastInit = (Array.isArray(config.changeLog) ? config.changeLog : []).some((e) => e?.kind && e.kind !== 'init');
   // requireRoster=false は、名簿を埋める変化点そのものの受け付け(席・名簿を足す途中の段階を止めない)
-  if (requireRoster && size && size !== 'size-1-2' && rosterInsiders === 0 && config.d0Version != null && config.d0Version !== '') {
+  if (requireRoster && size && size !== 'size-1-2' && rosterInsiders === 0 && config.d0Version != null && config.d0Version !== '' && pastInit) {
     out.push(
-      `チーム規模の回答は 3名以上ですが、人の名簿に体制の内の人が1名もいません(D-0 の版 ${config.d0Version} に追随済み)。名簿が空だと、兼務の禁止と分離の検査が働きません(answers の q-team-size を改めるか、D-0 体制図の表5-2 へ体制の内の人を記入し、/process-change で反映します)`
+      `チーム規模の回答は 3名以上ですが、人の名簿に体制の内の人が1名もいません(D-0 の版 ${config.d0Version} に追随済みで、変化点も受け付け済み)。名簿が空だと、兼務の禁止と分離の検査が働きません(answers の q-team-size を改めるか、D-0 体制図の表5-2 へ体制の内の人を記入し、/process-change で反映します)`
     );
   }
   if (size && size !== 'size-1-2' && rosterInsiders > 0 && rosterInsiders < 3) {
