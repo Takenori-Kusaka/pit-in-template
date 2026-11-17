@@ -186,7 +186,7 @@ fieldCase('限界: 兆候「TBD」は通る', withImpact({ signs: 'TBD' }), fals
 fieldCase('限界: 「なし(自動で戻せるため)」は通る', withImpact({ signs: 'なし(自動で戻せるため)' }), false);
 fieldCase('開示した偽の失敗: 回復「2026-11-20 まで」は単一の値として落ちる', withImpact({ recovery: '2026-11-20 まで' }), true, /単一の値/);
 fieldCase('限界: 初期の文を1字書き換えた記載は通る', withImpact({ users: 'この選択が裏目に出たとき、誰の何が止まるのか' }), false);
-// 開示した偽の失敗(目印なし。幅でも単一の値として落ちる。EV-0283)
+// 開示した偽の失敗(目印なし。幅でも単一の値として落ちる。EV-0290)
 fieldCase('開示した偽の失敗: 回復「1日(最悪で3日)」は落ちる', withImpact({ recovery: '1日(最悪で3日)' }), true, /単一の値/);
 fieldCase('開示した偽の失敗: 取り消し「人手で戻せる(一部は自動で戻せる)」は落ちる', withImpact({ revocable: '人手で戻せる(一部は自動で戻せる)' }), true, /選択肢が2つ残っている/);
 // 静的確認: gate-g5.yml が検査の手順を結線している
