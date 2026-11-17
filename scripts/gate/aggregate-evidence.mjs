@@ -3527,6 +3527,8 @@ if (isMain) {
     label: u.label ?? u.gate,
     reason: u.reason,
     compensation: u.compensation ?? [],
+    // 較正で代償措置の下限(90)を下回る場合の旨(値の事実。#337 項目5)。表示と実態を食い違わせない
+    compensationNote: typeof u.compensationNote === 'string' && u.compensationNote ? u.compensationNote : null,
     reviewSourcing: u.reviewSourcing ?? null,
   }));
 
@@ -4041,6 +4043,28 @@ if (isMain) {
       state: `一時緩和(期限 ${config.guard.reviewBy ?? '未記入'})`,
       why: [config.guard.reason ?? '理由は未記入'],
     });
+  }
+  // 指示資産の分量の上限(G-5 基準6)が未設定の間は、宣言の表に1行を出す(#337 項目4)。gaps には入れない:
+  // 入れると上限を置いていない全採用者の G-7 が落ちる(ADR-0126 が G-5 で避けた帰結)。数えるかは未決(IMPL-1001)
+  {
+    let rawLimit;
+    try {
+      rawLimit = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/guard.json'), 'utf8'))?.instructionAssetLimit?.maxLinesPerFile;
+    } catch {
+      rawLimit = undefined;
+    }
+    const valid = Number.isInteger(rawLimit) && rawLimit > 0;
+    if (!valid) {
+      const unset = rawLimit === null || rawLimit === undefined;
+      tailoring.push({
+        label: '指示資産の分量の上限(G-5 基準6)',
+        state: unset ? '未設定(組織が定める値)' : '不正(check-pr が失敗させる)',
+        why: [
+          '未設定の間、基準6 の分量の項を満たしたと記録しない。未設定を G-5 の失敗にしない(ADR-0126)',
+          '第1章 1.7.7 では記録の無い値はテーラリングの宣言の欠落に当たる。準拠テンプレートの集約は、欠落の件数に数えていない(IMPL-1001)',
+        ],
+      });
+    }
   }
 
   // 3. リスク区分ごとの変更の件数と、確定の形態の内訳
@@ -5583,7 +5607,8 @@ if (isMain) {
     R.push('| ゲート | 理由 | 代償措置 | 確認者の調達先 |');
     R.push('| --- | --- | --- | --- |');
     for (const u of unmet) {
-      R.push(`| ${u.label} | ${u.reason} | ${u.compensation.join(' / ') || '—'} | ${u.reviewSourcing ?? '**未記入**'} |`);
+      const compText = u.compensation.map((c) => (c === 'ci-strict' && u.compensationNote ? `ci-strict(${u.compensationNote})` : c)).join(' / ') || '—';
+      R.push(`| ${u.label} | ${u.reason} | ${compText} | ${u.reviewSourcing ?? '**未記入**'} |`);
     }
     R.push('');
   }

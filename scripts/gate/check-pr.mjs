@@ -2580,7 +2580,7 @@ export function renderG6Material(r) {
   const ia = r.instructionAssets;
   if (ia && ia.changed.length) {
     L.push('### 指示資産の変更(標準 第3章 3.11.5。木の図の検出は合否に使わない)', '');
-    L.push(`- 上限: ${ia.maxLines === null ? '**上限未設定**(`.claude/guard.json` の `instructionAssetLimit.maxLinesPerFile`。値は組織が定める。未設定の間は判定せず、上限内とは記録しない)' : `1ファイル ${ia.maxLines} 行`}`);
+    L.push(`- 上限: ${ia.maxLines === null ? '**上限未設定**(`.claude/guard.json` の `instructionAssetLimit.maxLinesPerFile`。値は組織が定める。未設定の間は判定せず、G-5 基準6 の分量の項を満たしたと記録しない)' : `1ファイル ${ia.maxLines} 行`}`);
     for (const s of ia.sizes) L.push(`  - \`${esc(s.file)}\`: ${s.lines} 行・${s.chars} 文字${ia.maxLines !== null && s.lines > ia.maxLines ? ' — **上限を超える**' : ''}`);
     L.push(`- ディレクトリの木の図の形: ${ia.treeForms.length} 件`);
     for (const t of ia.treeForms.slice(0, 20)) L.push(`  - \`${esc(t.file)}:${t.line}\` \`${esc(t.text)}\``);

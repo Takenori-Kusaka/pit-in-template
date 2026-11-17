@@ -42,7 +42,7 @@ const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿
 const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
 
 /** 構成を書き換えて集約を実行し、品質レポートと集約の出力を返す */
-function run(edit = (c) => c) {
+function run(edit = (c) => c, prep = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-tailoring-declaration-'));
   for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
     if (SKIP.has(e.name)) continue;
@@ -50,6 +50,7 @@ function run(edit = (c) => c) {
   }
   const config = edit(quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config));
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
+  if (prep) prep(dir);
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');
@@ -119,6 +120,41 @@ const gapLines = (r) => `${r.report}\n${r.out}`.split('\n').filter((l) => /未�
 {
   const r = run((c) => ({ ...c, gates: { ...c.gates, g6: { ...c.gates.g6, params: { ...c.gates.g6.params, scope: 'all' } } } }));
   check('G-6 を全変更に適用する構成は、項目2 に G-6 の行を出さない', !item2(r.report).some((l) => /^\| G-6 /.test(l)), item2(r.report).join('\n'));
+}
+
+// ---------------------------------------------------------------- 未達の表の代償措置: 較正で下限が代償措置の 90 を下回る旨(#337 項目5)
+{
+  const unmetRow = (note) => (c) => ({
+    ...c,
+    unmet: [{ gate: 'g6', label: 'G-6 独立レビュー', reason: '試験の材料', compensation: ['ci-strict', 'post-release-audit'], reviewSourcing: '試験の調達先', ...(note ? { compensationNote: note } : {}) }],
+  });
+  const unmetLines = (r) => r.report.split('\n').filter((l) => /^\| G-6 独立レビュー \| 試験の材料 \|/.test(l));
+  const NOTE = 'ci-strict の導出値はカバレッジ下限 90% だが、較正により 85% を適用している';
+  let r = run(unmetRow(NOTE));
+  check('未達の表: 較正で 90 を下回る構成は、代償措置のセルに「較正により 85% を適用」を添える', unmetLines(r).some((l) => l.includes(`ci-strict(${NOTE})`) && l.includes('post-release-audit')), unmetLines(r).join('\n') || r.out.slice(-800));
+  r = run(unmetRow(null));
+  check('未達の表: 注記が無ければ ci-strict のままで、括弧を足さない', unmetLines(r).some((l) => /\| ci-strict \/ post-release-audit \|/.test(l)), unmetLines(r).join('\n') || r.out.slice(-800));
+}
+
+// ---------------------------------------------------------------- 指示資産の分量の上限の未設定: 宣言の表に出し、欠落に数えない(#337 項目4)
+{
+  const withLimit = (v, drop = false) => (dir) => {
+    const p = path.join(dir, '.claude/guard.json');
+    const g = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (drop) delete g.instructionAssetLimit;
+    else g.instructionAssetLimit = { ...g.instructionAssetLimit, maxLinesPerFile: v };
+    fs.writeFileSync(p, JSON.stringify(g, null, 2) + '\n');
+  };
+  const limitRow = (r) => item2(r.report).find((l) => /^\| 指示資産の分量の上限/.test(l)) ?? '';
+  const gaps = (r) => `${r.report}\n${r.out}`.split('\n').filter((l) => /指示資産の分量の上限/.test(l) && /欠落として数える|::error::/.test(l)).length;
+  const base = run();
+  check('上限が null の間は、項目2 に「未設定(組織が定める値)」の行を出す', /未設定\(組織が定める値\)/.test(limitRow(base)), item2(base.report).join('\n'));
+  check('上限の行は、欠落に数えない', gaps(base) === 0, base.out.slice(-600));
+  const set = run((c) => c, withLimit(200));
+  check('上限が正の整数なら、行を出さない', limitRow(set) === '', limitRow(set));
+  const dropped = run((c) => c, withLimit(null, true));
+  check('上限の欄が欠落していても、行を出す', /未設定\(組織が定める値\)/.test(limitRow(dropped)), item2(dropped.report).join('\n'));
+  check('上限の有無で、欠落の件数は変わらない', gaps(set) === gaps(base) && gaps(dropped) === gaps(base));
 }
 
 // ---------------------------------------------------------------- G-6 の範囲(コア機能)を集約が読む(process-compass #435)
