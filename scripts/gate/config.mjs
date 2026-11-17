@@ -2136,6 +2136,11 @@ export function detectionFilled(basis) {
   return CHANGE_TYPE_DETECTION.map(([k]) => k).filter((k) => typeof d[k] === 'string' && isFilledValue(d[k]));
 }
 
+/** 登録の根拠の detection が、全ての検知条件で記入済みか(登録の検査を通る条件。拒否される構成では表示を出さないために使う) */
+export function detectionComplete(basis) {
+  return detectionFilled(basis).length === CHANGE_TYPE_DETECTION.length;
+}
+
 /** 登録の根拠のうち、記入が無いものを [キー, 名前] の配列で返す */
 function missingBasis(basis) {
   const out = [];

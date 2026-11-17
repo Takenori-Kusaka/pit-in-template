@@ -143,6 +143,7 @@ import {
   PERFORMER_ACCOUNT_LABEL,
   canonicalJson as canonicalJsonOf,
   detectionFilled,
+  detectionComplete,
 } from '../gate/config.mjs';
 
 const normName = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -3178,7 +3179,7 @@ export function renderAutonomyTable(config, blank = false) {
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
     const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
-      ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)}。${DETECTION_UNVERIFIED})`
+      ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)}。${detectionComplete(t.basis) ? DETECTION_UNVERIFIED : '登録は拒否される(他の検知条件が未記入)'})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
     L.push(
       `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`

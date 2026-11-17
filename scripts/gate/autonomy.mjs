@@ -65,7 +65,8 @@ export const DETECTION_UNVERIFIED = '記入の有無は機械が確かめた。�
 /** 登録の根拠の記入の表示。記入のある検知条件だけを名指す。内容の確認の結果を含まないことを内外とも同じ文で出す */
 export function detectionBasisText(type) {
   const keys = type?.detectionFilled ?? [];
-  if (!keys.length) return '';
+  // 検知条件に未記入がある構成は登録の検査が拒否する。拒否される登録について「確かめた」と出さない
+  if (!keys.length || keys.length < CHANGE_TYPE_DETECTION.length) return '';
   const names = CHANGE_TYPE_DETECTION.filter(([k]) => keys.includes(k)).map(([k, label]) => `${label} ${k}`).join('・');
   return `登録の根拠(basis.detection の算出の所在: ${names}): ${DETECTION_UNVERIFIED}。内容は登録する者が登録の時に判定する。適用中のレベルが計測する手段に裏づけられているかの確認は標準の内部監査の観点23 に委ね、この出力はその結果を含まない`;
 }

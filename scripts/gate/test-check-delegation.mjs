@@ -545,6 +545,15 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes('手戻り率 reworkRate') && !renderAutonomyTable(ng.config).join(' ').includes(DETECTION_UNVERIFIED));
   }
   {
+    // 拒否される構成(rejectionRate 未記入)では、reworkRate が記入済みでも「確かめた」と出さない
+    const rj = base();
+    delete rj.config.delegation.changeTypes[0].basis.detection.rejectionRate;
+    const j = judgeDelegatedMerge(rj);
+    const t = autonomyState(rj.config, rj.records).types[0];
+    check('IMPL-0983 ng: rejectionRate が未記入(登録は拒否される)なら、reworkRate が記入済みでも reworkText と D-0 の表は「確かめた」と出さない',
+      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes(DETECTION_UNVERIFIED) && !renderAutonomyTable(rj.config).join(' ').includes(DETECTION_UNVERIFIED));
+  }
+  {
     const num = base();
     num.config.delegation.changeTypes[0].basis.detection.reworkRate = 1;
     const j = judgeDelegatedMerge(num);
