@@ -549,7 +549,10 @@ export function sraResidualProblems(text) {
     }
     if (!sepSeen) {
       sepSeen = /^[\s|:-]+$/.test(line);
-      if (!sepSeen) head = cells;
+      if (!sepSeen) {
+        head = cells;
+        kind = kindOf(head);
+      }
       continue;
     }
     if (kind === null) continue;

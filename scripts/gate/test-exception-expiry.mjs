@@ -358,7 +358,7 @@ if (process.platform === 'win32') {
   const b = scene(['G-5 P-001'], { 'g5.md': form('G-5 品質ゲート', 'P-001', '通過') });
   check('集約 IMPL-0996:ng G-5 の行は、記録があっても常に成立させない', gapOf(b.ev, new RegExp(`${b.id(0)}\\(G-5 P-001\\).*gate-g5`)).length === 1 && !shows(b.ev, `${b.id(0)}(G-5 P-001)`), JSON.stringify(b.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   const c = scene(['G-4 F-001'], { 'g4-f002.md': form('G-4 機能仕様承認', 'F-002 / 1a2b3c4', '通過') });
-  check('集約 IMPL-0996:ng 他の機能(F-002)の記録だけでは、G-4 F-001 の行は成立しない', gapOf(c.ev, new RegExp(`${c.id(0)}\\(G-4 F-001\\).*G-4 の判定記録.*無い`)).length === 1, JSON.stringify(c.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  check('集約 IMPL-0996:ng 他の機能(F-002)の記録だけでは、G-4 F-001 の行は成立しない', gapOf(c.ev, new RegExp(`${c.id(0)}\\(G-4 F-001\\).*G-4 の判定記録.*無い`)).length === 1 && !shows(c.ev, `${c.id(0)}(G-4 F-001)`), JSON.stringify(c.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   const d = scene(['G-4 F-001'], { 'g4-f001.md': form('G-4 機能仕様承認', 'F-001 / 1a2b3c4', '差し戻し') });
   check('集約 IMPL-0996:ok G-4 F-001 の判定記録(差し戻し)がある行は、欠落に出ず、例外承認として数える', gapOf(d.ev, new RegExp(`${d.id(0)}\\(G-4 F-001\\)`)).length === 0 && shows(d.ev, `${d.id(0)}(G-4 F-001)`), JSON.stringify(d.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   w.done();
