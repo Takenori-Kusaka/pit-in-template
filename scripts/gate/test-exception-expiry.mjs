@@ -34,8 +34,10 @@ const rowsOf = (text) => parseLedger(text);
 const ids = (text, day = DAY) => lapsedExceptions(rowsOf(text), day).map((x) => x.id);
 
 // ---- 期限の比較(期限内・期限の日の当日・超過・失効)
+// IMPL-0574:ok(適合の入力。期限内の有効の行は欠落に数えない)
 check('期限内の有効の行は、効力がある', ids(ledger(row('D-001', 'PR #12', '2026-11-30 まで', '未返却'))).length === 0);
 check('期限の日の当日は、効力がある(期限の翌日から失効)', exceptionStanding(rowsOf(ledger(row('D-001', 'PR #12', '2026-11-20 まで', '未返却')))[0], DAY) === 'active');
+// IMPL-0574:ng(違反の入力。期限を過ぎた有効の行・失効の行を欠落に数える)
 check('期限の翌日は、有効のままでも効力を失う', ids(ledger(row('D-001', 'PR #12', '2026-11-19 まで', '未返却'))).join() === 'D-001');
 check('状態が失効の行は、期限内でも欠落に数える', ids(ledger(row('D-001', 'PR #12', '2026-12-31', '失効'))).join() === 'D-001');
 check('返却済み・取り下げの行は数えない', ids(ledger(row('D-001', 'PR #12', '2026-01-01', '返却済み(2026-02-01)'), row('D-002', 'PR #13', '2026-01-01', '取り下げ'))).length === 0);
