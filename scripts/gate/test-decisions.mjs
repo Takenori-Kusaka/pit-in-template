@@ -5,6 +5,7 @@
 // 標準 第6章 テンプレ2「置き換えと廃止」と、第4章 G-3「記載の検査」の両側の参照の行を固定する。
 // 通る場面(誤検出の候補)と落ちる場面の両方を置く。
 
+import * as DR from './decision-recheck.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -193,6 +194,26 @@ fieldCase('開示した偽の失敗: 取り消し「人手で戻せる(一部は
 {
   const yml = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
   check('gate-g5.yml が check-decisions.mjs と test-decisions.mjs を手順に持つ', /run: node scripts\/gate\/check-decisions\.mjs/.test(yml) && /run: node scripts\/gate\/test-decisions\.mjs/.test(yml));
+}
+
+// 判断記録の再検査(IMPL-0523。束 B20)。G-3 の判定した版と範囲の先端の本文を、状態の行だけを除いた文字列で比べる(3 値)
+{
+  const adr = (state, decision = '一次の決定') => `# ADR-0001: 決定\n\n- 状態: ${state}\n- 置き換える決定: なし\n\n## 決定\n\n${decision}\n`;
+  const pass = (text, source = 'docs/gates/g3.md') => ({ source, text, unresolved: text === null ? '版を取得できない' : null });
+  // IMPL-0523:ng(違反の入力。G-3 の版の後に「決定」の文を変えた。G-3 の通過の無い置き換え)
+  const changed = DR.decisionRecheck({ decisions: [{ id: 'ADR-0001', tipText: adr('採用', '変えた決定'), passes: [pass(adr('採用'))] }] });
+  check('IMPL-0523:ng G-3 で判定した版から「決定」の文が変わった判断記録を不一致にし、欠落の文に解く道を書く', changed[0]?.result === 'mismatch' && /置き換える判断記録/.test(DR.decisionRecheckGapText(changed[0])), JSON.stringify(changed));
+  const noG3 = DR.replacementWithoutG3({ decisions: [{ id: 'ADR-0002', replaces: ['ADR-0001'], hasG3: false }, { id: 'ADR-0003', replaces: ['ADR-0001'], hasG3: true }, { id: 'ADR-0004', replaces: [], hasG3: false }] });
+  check('IMPL-0523:ng 置き換える決定を持つのに G-3 の通過が無い判断記録だけを返す', noG3.length === 1 && noG3[0] === 'ADR-0002', JSON.stringify(noG3));
+  // IMPL-0523:ok(適合の入力。状態の行だけの変更。改行・行末の空白だけの差。版を読めない記録は未確認)
+  const stateOnly = DR.decisionRecheck({ decisions: [{ id: 'ADR-0001', tipText: adr('置き換え済み(ADR-0009)'), passes: [pass(adr('採用'))] }] });
+  check('IMPL-0523:ok 状態の行だけを変えた判断記録は一致', stateOnly[0]?.result === 'match', JSON.stringify(stateOnly));
+  const ws = DR.decisionRecheck({ decisions: [{ id: 'ADR-0001', tipText: adr('採用').replace(/\n/g, '  \r\n') + '\n\n', passes: [pass(adr('採用'))] }] });
+  check('IMPL-0523:ok 改行・行末の空白・端の空行だけの差は一致', ws[0]?.result === 'match', JSON.stringify(ws));
+  const legacy = DR.decisionRecheck({ decisions: [{ id: 'ADR-0001', tipText: '# ADR-0001: 旧\n\n## ステータス\n\n置き換え済み\n\n## 決定\n\n本文\n', passes: [pass('# ADR-0001: 旧\n\n## ステータス\n\n採用\n\n## 決定\n\n本文\n')] }] });
+  check('IMPL-0523:ok 旧い様式の「## ステータス」の節の最初の行も状態の行として除く', legacy[0]?.result === 'match', JSON.stringify(legacy));
+  const unr = DR.decisionRecheck({ decisions: [{ id: 'ADR-0001', tipText: adr('採用'), passes: [pass(null)] }, { id: 'ADR-0005', tipText: adr('採用'), passes: [] }] });
+  check('IMPL-0523:ok 版を読めない記録・通過の記録が無いものは未確認で、欠落にしない', unr.length === 2 && unr.every((x) => x.result === 'unconfirmed') && DR.decisionRecheckSummary(unr).mismatch === 0, JSON.stringify(unr));
 }
 
 if (failures) {

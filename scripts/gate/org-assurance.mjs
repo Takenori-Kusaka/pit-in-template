@@ -33,7 +33,7 @@ export const BRIEF_FILE = 'docs/project-brief.md';
 export const D0_FILE = 'docs/D-0-governance.md';
 export const HANDOVER_FILE = 'docs/handover.md';
 export const EXIT_REHEARSAL_FILE = 'docs/exit-rehearsal.json';
-import { modelAdoptionState, rehearsalJudgeFindings } from './model-adoption.mjs';
+import { modelAdoptionState, rehearsalJudgeFindings, separationItems } from './model-adoption.mjs';
 
 const readText = (rel, root = ROOT) => {
   const p = path.join(root, rel);
@@ -577,7 +577,7 @@ const JUDGE_SEATS = [
   ['独立レビュア', 'independent-reviewer'],
   ['出荷判定者', 'qa-gatekeeper'],
 ];
-export const CONTINUITY_STATES = ['代替の無い依存先', '退出を試していない依存先', '縮退を確かめていない業務', '止める席', '後継不在の席', 'コア理解の保持者が1名以下', '自組織に無い資産', '通知の期間またはデータが空欄の依存先'];
+export const CONTINUITY_STATES = ['代替の無い依存先', '退出を試していない依存先', '縮退を確かめていない業務', '止める席', '後継不在の席', 'コア理解の保持者が1名以下', '自組織に無い資産', '通知の期間またはデータが空欄の依存先', '基準集合の確定者と導入承認者が同一人物'];
 const AUTHORITY_OF_STATE = {
   代替の無い依存先: /代替の無い依存先/,
   通知の期間またはデータが空欄の依存先: /代替の無い依存先/,
@@ -587,6 +587,8 @@ const AUTHORITY_OF_STATE = {
   後継不在の席: /後継のいない|理解の保持者/,
   コア理解の保持者が1名以下: /後継のいない|理解の保持者/,
   自組織に無い資産: /自組織に無い資産/,
+  // 層1 の受容の権限の段階に専用の行は無い。品質の残存リスクの受容者の行で受ける(IMPL-0710。ADR-0217)
+  基準集合の確定者と導入承認者が同一人物: /品質の残存リスク/,
 };
 const normKey = (s) => nfkc(s).toLowerCase().replace(/[\s()]/g, '');
 
@@ -959,6 +961,7 @@ export function continuityState(config, policy, { root = ROOT, day = null, accep
     if (!g.measured) spof.push({ state: '縮退を確かめていない業務', subject: g.seat, detail: `人へ戻したときに処理できる量: ${g.quantity}` });
   }
   for (const s of successors) if (s.vacant) spof.push({ state: '後継不在の席', subject: s.seat, detail: s.reason });
+  for (const x of separationItems(adoption)) spof.push(x);
   if (!handover) spof.push({ state: 'コア理解の保持者が1名以下', subject: 'コア機能', detail: `${HANDOVER_FILE} が無く、理解保持者を確かめられない` });
   else if (!core.length) spof.push({ state: 'コア理解の保持者が1名以下', subject: 'コア機能', detail: `${HANDOVER_FILE} の節2 にコア機能の記載が無い` });
   for (const c of core) {

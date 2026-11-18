@@ -108,8 +108,19 @@ export function answersFindings(config, catalog, { approvedBy = null } = {}) {
   }
   const blind = catalog.blindConfirmation;
   if (blind === undefined || blind === null) why.push('盲検の確定の記録(blindConfirmation: { count, agreement } または "なし")が無い');
-  if (separation) notes.push(`確定した者と導入を承認した AI運用担当者が同一人物の事例 ${separation} 件(分離が成り立たない。層1 の権限者の期限つきの受容が要る)`);
-  return { confirmed, unconfirmed, why, notes };
+  if (separation) notes.push(`確定した者と導入を承認した AI運用担当者が同一人物の事例 ${separation} 件(分離が成り立たない。層1 の権限者の期限つきの受容が要る。同一の判定は名簿の識別の一致までで、別名義の同一人物は閉じない)`);
+  return { confirmed, unconfirmed, why, notes, separation };
+}
+
+/** 確定した者と導入を承認した者が同一人物の導入を、単一障害点の項目(受容の対象)として返す(IMPL-0710)。期限つきの受容は D-0 節15 が受ける */
+export function separationItems(state) {
+  return (state?.adoptions ?? [])
+    .filter((a) => (a.answers?.separation ?? 0) > 0)
+    .map((a) => ({
+      state: '基準集合の確定者と導入承認者が同一人物',
+      subject: a.model,
+      detail: `確定した者と導入を承認した AI運用担当者が同一人物の事例 ${a.answers.separation} 件。分離が成り立たない(第3章 3.12.3 要求事項12)。同一の判定は名簿の識別の一致までで、別名義は閉じない`,
+    }));
 }
 
 /** 導入の記録を読み、モデルごとの状態を返す。day は判定の日 */

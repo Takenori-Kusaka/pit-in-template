@@ -135,6 +135,7 @@ import {
   enforcedApprovalFindings,
 } from './config.mjs';
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
+import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -181,7 +182,8 @@ import {
   lastCommitOfLine,
   controlApprovalBacking,
 } from './material-attribution.mjs';
-import { loadDecisions, checkDecisions, countsLine, fieldProblems } from './check-decisions.mjs';
+import { loadDecisions, checkDecisions, countsLine, fieldProblems, replacesOf, DECISIONS_DIR, ARCHIVE_DIR } from './check-decisions.mjs';
+import { decisionRecheck, decisionRecheckGapText, decisionRecheckSummary, replacementWithoutG3, replacementWithoutG3GapText } from './decision-recheck.mjs';
 import { handoverItems, handoverGapText, handoverResultText } from './handover-items.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
@@ -3363,6 +3365,56 @@ if (isMain) {
   for (const it of specRecheckItems) if (it.result === 'mismatch') gaps.push(specRecheckGapText(it));
   const specRecheckInfo = { ...specRecheckSummary(specRecheckItems), items: specRecheckItems };
 
+  // 判断記録の再検査(IMPL-0523。束 B20)。出荷の範囲で変わった判断記録について、G-3 で判定した版と先端の本文を、状態の行だけを除いた
+  // 文字列で比べる(3 値。ADR-0136 と同じ)。不一致と、G-3 の通過の無い「置き換える決定」を記載の欠落にする。範囲の外の履歴は見ない
+  const LF_RE = /\r?\n/;
+  const decisionRecheckInfo = (() => {
+    if (!isActive('g3') || !from) return { match: 0, mismatch: 0, unconfirmed: 0, items: [] };
+    const diff = gitText(['diff', '--name-status', '-M', `${from}..${to}`, '--', DECISIONS_DIR, ARCHIVE_DIR]) ?? '';
+    const changed = diff
+      .split(LF_RE)
+      .map((l) => l.split('\t'))
+      .filter((c) => /^[AMR]/.test(c[0] ?? '') && /\.md$/.test(c.at(-1) ?? ''))
+      .map((c) => c.at(-1));
+    const idOf = (f) => {
+      const m = /(?:^|\/)(\d{1,5})-[^/]*\.md$/.exec(f);
+      return m ? `ADR-${m[1].padStart(4, '0')}` : null;
+    };
+    const g3Passes = new Map();
+    for (const r of gateRecordList) {
+      if (!/G-?3/.test(String(r.gate ?? '').normalize('NFKC')) || resultWord(r.result) !== '通過') continue;
+      const text = fs.readFileSync(path.join(ROOT, r.file), 'utf8');
+      const cell = String(rowValue(text, '判定した判断記録', false) ?? '').normalize('NFKC');
+      const id = /ADR-(\d{1,5})/.exec(cell)?.[1];
+      if (!id) continue;
+      const key = `ADR-${id.padStart(4, '0')}`;
+      const ver = /版\s*[::]\s*([0-9a-f]{7,40})/i.exec(cell)?.[1] ?? null;
+      (g3Passes.get(key) ?? g3Passes.set(key, []).get(key)).push({ source: r.file, ver });
+    }
+    const readAt = (ref, id) => {
+      const files = (gitText(['ls-tree', '-r', '--name-only', ref, '--', DECISIONS_DIR, ARCHIVE_DIR]) ?? '').split(LF_RE).filter(Boolean);
+      const f = files.find((x) => idOf(x) === id);
+      return f ? gitText(['show', `${ref}:${f}`]) : null;
+    };
+    const decisions = [];
+    const repl = [];
+    for (const f of changed) {
+      const id = idOf(f);
+      if (!id) continue;
+      const tipText = gitText(['show', `${to}:${f}`]);
+      const passes = (g3Passes.get(id) ?? []).map((p) => {
+        const text = p.ver ? readAt(p.ver, id) : null;
+        return { source: p.source, text, unresolved: text === null ? (p.ver ? `判定の版 ${p.ver.slice(0, 7)} のオブジェクトを取得できない` : '様式の「判定した判断記録」に版が無い') : null };
+      });
+      decisions.push({ id, tipText, passes });
+      repl.push({ id, replaces: tipText ? (replacesOf(tipText) ?? []).map((x) => x.id) : [], hasG3: (g3Passes.get(id) ?? []).length > 0 });
+    }
+    const items = decisionRecheck({ decisions });
+    for (const it of items) if (it.result === 'mismatch') gaps.push(decisionRecheckGapText(it));
+    for (const id of replacementWithoutG3({ decisions: repl })) gaps.push(replacementWithoutG3GapText(id));
+    return { ...decisionRecheckSummary(items), items };
+  })();
+
   // 判定者本人のレビューで記録した G-2・G-3・G-4 のうち、対象の版がマージ時の head と一致しない判定を欠落に数える(IMPL-0129)
   gaps.push(...unconfirmedVersionGaps(reviewJudgements));
 
@@ -4659,6 +4711,41 @@ if (isMain) {
     if (blank.length) gaps.push(`${g.file}: 「到達の見込み」に空欄の欄があります(${blank.join(' / ')})。到達の見込みの記録が欠けた判定は、必達基準2 を満たしません。記載の欠落です(第7章 7.7.3)`);
   }
 
+  // 判定記録の回数・点検・併記(IMPL-0667・IMPL-0622・IMPL-0638。束 B20)。回数は人が書いた欄ではなく、記録の区分と判定から数える
+  const judgementRecords = (() => {
+    const reachRecs = gateRecordList
+      .filter((r) => /必達基準の判定/.test(String(r.gate ?? '').normalize('NFKC')))
+      .map((r) => reachRecordOf({ file: r.file, text: fs.readFileSync(path.join(ROOT, r.file), 'utf8'), judgedAt: r.judgedAt, inRange: !recordsInRange || recordsInRange.has(r.file) }));
+    const reach = reachCounts(reachRecs);
+    for (const g of reach.gaps) gaps.push(g);
+    const stage = stageOf(config);
+    const inventory = inventoryNotice({ records: gateRecordList, stage, day: releaseDay });
+    const d0Text = exists('docs/D-0-governance.md') ? fs.readFileSync(path.join(ROOT, 'docs/D-0-governance.md'), 'utf8') : '';
+    const roleByLabel = (label) => (config.roles ?? []).find((r) => r.name === label || r.id === label) ?? null;
+    const holderOf = (label) => {
+      const role = roleByLabel(label);
+      const seat = role ? (config.seats ?? []).find((s) => s.role === role.id) : null;
+      return seat?.accountable ? personKey(config, seat.accountable) : null;
+    };
+    const roleOfGate = (gate) => {
+      const key = /G-?(\d)/.exec(gate)?.[1];
+      const role = key ? (config.roles ?? []).find((r) => (r.gatesOwned ?? []).includes('g' + key)) : null;
+      return role ? [role.name, role.id].filter(Boolean) : [];
+    };
+    const provisional = provisionalGaps({
+      d0Text,
+      records: gateRecordList.map((r) => {
+        const text = fs.readFileSync(path.join(ROOT, r.file), 'utf8');
+        return { file: r.file, gate: r.gate, judge: rowValue(text, '判定者'), judgedAt: r.judgedAt, coSign: rowValue(text, '確認済みの者の併記', false) };
+      }),
+      resolve: (n) => resolveSigner(config, n)?.id ?? null,
+      isAi: (n) => aiNameBlocked(config, n),
+      holderOf,
+      roleOfGate,
+    });
+    return { reach: { text: reachCountsText(reach), total: reach.total, unreadable: reach.unreadable.length }, inventory, provisional: { text: provisionalUnmetText(provisional), unmet: provisional.unmet.length, checked: provisional.checked, unconfirmed: provisional.unconfirmed } };
+  })();
+
   // 測定の記録(docs/adoption-trial/seeded-errors.json、または evidence/seeded-errors.json)は、human / ai のキーを持てば層ごとに読む。
   // 持たない場合は、全体を人の層の記録として扱う
   const seededHumanRaw = seeded ? (seeded.human ?? (seeded.ai === undefined ? seeded : null)) : null;
@@ -5088,6 +5175,7 @@ if (isMain) {
     sizeObservation,
     generation,
     exceptionUse,
+    judgementRecords,
     drift,
     // AI を用いない実施(第5章 5.4.7。IMPL-1021・1022)。項目7 に出す。止めない。組織継続の側の状態にも記載の欠落にも入れない。
     // 基準日は releaseDay(範囲の終点の日。取れないときは実行した日の時計)。照らした基準日を併記して開示する
@@ -5513,6 +5601,7 @@ if (isMain) {
       machine: 'partial',
       result:
         `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件。` +
+        `判断記録の再検査(範囲で変わった判断記録。G-3 で判定した版との比較): 一致 ${decisionRecheckInfo.match} / 不一致 ${decisionRecheckInfo.mismatch} / 未確認 ${decisionRecheckInfo.unconfirmed}(文字列の一致までで、意味の変更かは確かめない。実証なし)。` +
         `確定した版の再確認(範囲で変わった機能仕様): 一致 ${specRecheckInfo.match} / 不一致 ${specRecheckInfo.mismatch} / 未確認 ${specRecheckInfo.unconfirmed}(未確認は欠落に数えない。出荷判定者が判定記録の版と突合する)。` +
         `当該${period ? '期間' : '出荷の範囲'}の判定記録の件数: ${gatesInRange.map((g) => `${g.label} ${g.records}`).join(' / ') || 'なし'}`,
       humanReconcile: '適用するゲートごとの判定記録の件数が、当該の出荷に対応しているか(G-1〜G-3・G-7・G-8 の、出荷に対応する件数は機械で決められない)',
@@ -5668,6 +5757,7 @@ if (isMain) {
     specsWithoutG4,
     // 確定した版の再確認(IMPL-0241)。機能ごとの3値と未確認の理由
     specRecheck: specRecheckInfo,
+    decisionRecheck: decisionRecheckInfo,
     // G-6 を事後へ移した変更ごとの、事後の抜き取りの記録
     sampling,
     generatedAt: new Date().toISOString(),
@@ -5952,6 +6042,10 @@ if (isMain) {
     R.push(...renderClaim(A.claim));
     R.push('### 1. 体制と独立性の成立状況');
     R.push('');
+    if (A.judgementRecords.provisional.text) {
+      R.push(`- ${A.judgementRecords.provisional.text}`);
+      R.push('');
+    }
     const ch = A.independence.changes;
     const un = ch.unconfirmed;
     const prevUn = (key) => prev((p) => p.independence.changes.unconfirmed?.[key]);
@@ -6400,6 +6494,10 @@ if (isMain) {
     R.push('### 5. 残存リスク、既知の不具合、未回収の例外');
     R.push('');
     R.push(`- 未達のゲート: ${listOr(A.residual.unmet)}`);
+    {
+      const sep = (A.continuity?.spof ?? []).filter((x) => x.state === '基準集合の確定者と導入承認者が同一人物');
+      if (sep.length) R.push(`- 基準集合の正解の確定者と導入の承認者が同一人物のモデル(第3章 3.12.3 要求事項12。分離が成り立たない。層1 の権限者の期限つきの受容が要る): ${sep.map((x) => `${x.subject}(${x.acceptance?.status === 'accepted' ? `受容あり、期限 ${x.acceptance.until}` : x.acceptance?.status === 'expired' ? '受容の期限切れ。記載の欠落' : '受容なし'})`).join(' / ')}`);
+    }
     R.push(`- 逸脱と列挙に無い離脱(構成の deviations[]。閉じた列挙の逸脱と、1〜2名の体制の兼務): ${listOr(A.residual.deviations)}`);
     R.push(
       `- この範囲で述べられる名(第1章 1.10.2): ${evidence.claim.name ?? '表明・主張を述べられない'}(従う版: ${evidence.claim.edition})` +
@@ -6552,6 +6650,8 @@ if (isMain) {
     R.push(`- ${A.exceptionUse.fastTrack}`);
     R.push(`- 制限された状態での例外決裁(7.9.4)の行: ${A.exceptionUse.restricted.count} 件(うち印の無い行 ${A.exceptionUse.restricted.unmarked.length} 件${A.exceptionUse.restricted.unmarked.length ? ': ' + A.exceptionUse.restricted.unmarked.join(', ') : ''}。印の無い行は欠落にしない)${A.exceptionUse.restricted.unconfirmed.length ? ` / 承認した者が B-2 の決定者かを確認できない ${A.exceptionUse.restricted.unconfirmed.join(', ')}` : ''}`);
     R.push(`- ${A.exceptionUse.quota}`);
+    R.push(`- ${A.judgementRecords.reach.text}`);
+    R.push(`- ${A.judgementRecords.inventory.text}`);
     R.push(`- 指示資産(CLAUDE.md・.claude)の最終変更: ${A.generation.instructionAssets}`);
     if (!A.generation.changeLogPresent) {
       R.push(`- 期間中の体制の変化点: ${NO_RECORD}(構成に changeLog がない)`);

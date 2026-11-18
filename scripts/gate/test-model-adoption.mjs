@@ -3,6 +3,7 @@
 //
 //   node scripts/gate/test-model-adoption.mjs
 
+import * as MA from './model-adoption.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -133,6 +134,20 @@ check('退出の予行: AI の採点で較正の記録の無い予行を未測�
 // IMPL-0411:ok(違反と適合の対。標準の実装マーク。process-compass #314)
 r = rehearsalJudgeFindings(config, [{ model: 'model-a', alternative: { model: 'model-b' }, at: '2026-10-03', grading: 'ai', judge: goodJudge() }, { model: 'x', at: '2026-10-01' }]);
 check('退出の予行: 較正の記録のそろった予行と、AI の採点を用いない予行は出さない', r.length === 0, JSON.stringify(r));
+
+// ---------------------------------------------------------------- 確定した者と導入を承認した者の同一(IMPL-0710)
+{
+  const caseOf = (confirmedBy) => ({ id: 'C-9', kind: 'verdict', source: 'new', seat: 'ai-ops', confirmedBy, at: '2026-10-02', draft: null });
+  // IMPL-0710:ng(違反の入力。確定した者と導入を承認した者が同一人物。単一障害点の項目に出ない)
+  const same1 = answersFindings(config, { cases: [caseOf('鈴木 一郎')], blindConfirmation: 'なし' }, { approvedBy: '鈴木 一郎' });
+  const items = MA.separationItems?.({ adoptions: [{ model: 'model-b', answers: same1 }] }) ?? [];
+  check('IMPL-0710:ng 確定した者と導入を承認した者が同一人物の事例を数え、受容の対象の項目として返す', same1.separation === 1 && items.length === 1 && items[0].state === '基準集合の確定者と導入承認者が同一人物' && items[0].subject === 'model-b', JSON.stringify({ same1, items }));
+  // IMPL-0710:ok(適合の入力。別の人なら項目にしない。別名義の同一人物は閉じないと note に書く)
+  const diff1 = answersFindings(config, { cases: [caseOf('鈴木 一郎')], blindConfirmation: 'なし' }, { approvedBy: '山田 太郎' });
+  check('IMPL-0710:ok 確定した者と承認した者が別の人なら項目にしない', diff1.separation === 0 && (MA.separationItems?.({ adoptions: [{ model: 'model-b', answers: diff1 }] }) ?? ['x']).length === 0, JSON.stringify(diff1));
+  check('IMPL-0710:ok 同一の判定は名簿の識別の一致までで、別名義は閉じないと注記に書く', /別名義/.test(same1.notes.join('')), same1.notes.join('|'));
+}
+
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('');

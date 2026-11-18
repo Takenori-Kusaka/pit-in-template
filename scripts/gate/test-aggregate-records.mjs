@@ -14,6 +14,7 @@
 //   - 既定ブランチ以外へ取り込んだマージの、写しの base.ref による検出(process-compass #360 H-4 / IMPL-0248)
 // 記録用ブランチの git からの読み取りそのものは test-records.mjs が確かめます。GitHub へ問い合わせません。
 
+import * as JR from './judgement-records.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -596,6 +597,70 @@ const config = {
   check('IMPL-0669:ng 枠 2・行使 3 で「残り -1(超過)」を出し、止めない旨を添える', /枠 2・行使 3・残り -1\(超過\).*止めない/.test(exceptionQuotaText({ briefText: brief, used: 3 })), exceptionQuotaText({ briefText: brief, used: 3 }));
   // IMPL-0669:ok(適合の入力。枠が読めない・累計が読めないときは「確認できない」)
   check('IMPL-0669:ok 枠が件数として読めない、またはステージの累計を読めないとき、確認できないと出す', /枠: 確認できない/.test(exceptionQuotaText({ briefText: '| 例外の枠(事業ステージあたり) | <件数> |', used: 1 })) && /累計を確認できない/.test(exceptionQuotaText({ briefText: brief, used: 0, usedReadable: false })));
+}
+
+// ---------------------------------------------------------------- 判定記録(IMPL-0667・IMPL-0622・IMPL-0638)
+{
+  const rec = (file, judgedAt, cls, verdict, declared = null, inRange = true) => ({ file, judgedAt, cls, verdict, declared, inRange, readable: true });
+  // IMPL-0667:ng(違反の入力。乙の継続が 4 件目。先行の計数 3 件なのに欄が「通算 1 回」)
+  const four = [rec('a', '2026-01-01 10:00', '乙', '継続', null, false), rec('b', '2026-02-01 10:00', '丙', '保留', null, false), rec('c', '2026-03-01 10:00', '乙', '継続', null, false), rec('d', '2026-04-01 10:00', '乙', '継続')];
+  const r4 = JR.reachCounts(four);
+  check('IMPL-0667:ng 乙・丙の継続・保留が 4 件目の記録(範囲の中)を欠落にする', r4.gaps.length === 1 && /d/.test(r4.gaps[0]) && /4 回目/.test(r4.gaps[0]), JSON.stringify(r4.gaps));
+  const low = JR.reachCounts([...four.slice(0, 2), rec('c', '2026-03-01 10:00', '乙', '継続', 1)]);
+  check('IMPL-0667:ng 欄の「通算 1 回」が数えた回数 3 より小さい記録を欠落にする(人が書いた回数を下げる向きに使えない)', low.gaps.length === 1 && /通算 1 回/.test(low.gaps[0]), JSON.stringify(low.gaps));
+  // IMPL-0667:ok(適合の入力。3 件目の継続。甲へ戻した継続・中止は数えない。欄が大きければ欄を使う。読めない判定は件数に出す)
+  const three = JR.reachCounts(four.slice(0, 3).map((r) => ({ ...r, inRange: true })));
+  check('IMPL-0667:ok 3 件目の継続は欠落にならない', three.gaps.length === 0 && three.total === 3, JSON.stringify(three));
+  const mixed = JR.reachCounts([rec('a', '2026-01-01 10:00', '乙', '継続'), rec('b', '2026-02-01 10:00', '甲', '継続'), rec('c', '2026-03-01 10:00', '丙', '中止'), rec('d', '2026-04-01 10:00', '乙', '保留'), rec('e', '2026-05-01 10:00', '乙', '継続')]);
+  check('IMPL-0667:ok 甲の継続と中止は数えない(乙・丙の継続・保留の 3 件)', mixed.total === 3 && mixed.gaps.length === 0, JSON.stringify(mixed));
+  const carry = JR.reachCounts([rec('a', '2026-01-01 10:00', '乙', '継続', 2), rec('b', '2026-02-01 10:00', '乙', '継続'), rec('c', '2026-03-01 10:00', '乙', '継続')]);
+  check('IMPL-0667:ok 欄の値が数えた回数より大きければ欄の値から続けて数える(欄「通算 2 回」の次の 2 件で 4 回目)', carry.gaps.length === 1 && /c/.test(carry.gaps[0]), JSON.stringify(carry.gaps));
+  const unread = JR.reachCounts([{ file: 'x', judgedAt: '2026-01-01 10:00', cls: null, verdict: null, declared: null, inRange: true, readable: false }]);
+  check('IMPL-0667:ok 判定の欄が読めない記録は未確認として件数に出し、欠落にしない', unread.unreadable.length === 1 && unread.gaps.length === 0 && /未確認 1 件/.test(JR.reachCountsText(unread)), JR.reachCountsText(unread));
+  const parsed = JR.reachRecordOf({ file: 'docs/gates/p.md', judgedAt: '2026-03-01 10:00', inRange: true, text: '| 判定 | 継続 |\n| 7.7.5 の回数 | 通算 2 回。丙のまま |\n\n## 到達の見込み\n\n| 区分 | 期間 丙 / 案件 乙 |\n' });
+  check('IMPL-0667:ok 判定記録の本文から、案件の区分・判定・欄の「通算 N 回」を読む', parsed?.cls === '乙' && parsed.verdict === '継続' && parsed.declared === 2, JSON.stringify(parsed));
+  // IMPL-0622:ng(違反の入力。S1 で記録なしなのに注意が出ない)
+  const none = JR.inventoryNotice({ records: [{ gate: '必達基準の判定(ステージの途中)', judgedAt: '2026-01-01 10:00' }], stage: 'S1', day: '2026-11-18' });
+  check('IMPL-0622:ng S1 以降で棚卸しの判定記録が無いとき、注意を出す(止めない)', none.level === 'attention' && /記録なし/.test(none.text) && /止めない/.test(none.text), JSON.stringify(none));
+  const old = JR.inventoryNotice({ records: [{ gate: '棚卸し', judgedAt: '2025-10-01 10:00' }], stage: 'S2', day: '2026-11-18' });
+  check('IMPL-0622:ng 最終の棚卸しから 365 日を超えたとき、経過日数とともに注意を出す', old.level === 'attention' && /最終 2025-10-01/.test(old.text) && /413 日/.test(old.text), JSON.stringify(old));
+  // IMPL-0622:ok(適合の入力。最終 2026-03-01、経過 262 日。S0 は対象外)
+  const okN = JR.inventoryNotice({ records: [{ gate: '棚卸し', judgedAt: '2026-03-01 10:00' }, { gate: '棚卸し', judgedAt: '2025-01-01 10:00' }], stage: 'S1', day: '2026-11-18' });
+  check('IMPL-0622:ok 最終 2026-03-01、経過 262 日と出る。注意にしない', okN.level === 'ok' && /最終 2026-03-01/.test(okN.text) && /262 日/.test(okN.text), JSON.stringify(okN));
+  check('IMPL-0622:ok S0 は対象外と出す(S1 以降の規定)', JR.inventoryNotice({ records: [], stage: 'S0', day: '2026-11-18' }).level === 'na');
+  // IMPL-0638:ng(違反の入力。暫定任命の期間内の G-3 に併記が無い。AI の名義・判定者本人・名簿の人でない)
+  const d0 = [
+    '## 9. 代行者(代理者)と後継', '',
+    '| 役割 | 代行者(後継候補) | 代行できる範囲 | 代理者の確認の状態 | 確認日 |', '| --- | --- | --- | --- | --- |', '| 技術判断者 | 名簿 戊 | 全て | 暫定任命 | |', '',
+    '**暫定任命の期間(標準 第3章 3.4.1)**', '',
+    '| 役割 | 暫定任命の対象(責任者 / 代理者) | 暫定任命の期間(開始日〜満了日) | 満了時の扱い | 延長の決裁 |', '| --- | --- | --- | --- | --- |',
+    '| 技術判断者 | 責任者 | 2026-10-01〜2026-12-31 | 任命を解く | |', '| 価値責任者 | 責任者 | いつか | 任命を解く | |', '',
+  ].join('\n');
+  const ids = new Map([['名簿 甲', 'p1'], ['名簿 乙', 'p2'], ['名簿 戊', 'p5'], ['AI 担い手', 'ai']]);
+  const resolve = (n) => ids.get(String(n ?? '').trim()) ?? null;
+  const isAi = (n) => /AI/.test(String(n));
+  const holderOf = (role) => (role === '技術判断者' ? 'p1' : role === '価値責任者' ? 'p2' : null);
+  const roleOfGate = (gate) => (/G-?3/.test(gate) ? ['技術判断者'] : /G-?6/.test(gate) ? ['独立レビュア'] : []);
+  const rs = [
+    { file: 'g3-nocosign', gate: 'G-3 判断記録', judge: '名簿 甲', judgedAt: '2026-11-01 10:00', coSign: '' },
+    { file: 'g3-ai', gate: 'G-3', judge: '名簿 甲', judgedAt: '2026-11-02 10:00', coSign: 'AI 担い手' },
+    { file: 'g3-self', gate: 'G-3', judge: '名簿 甲', judgedAt: '2026-11-03 10:00', coSign: '名簿 甲' },
+    { file: 'g3-notroster', gate: 'G-3', judge: '名簿 甲', judgedAt: '2026-11-04 10:00', coSign: '外部 某' },
+  ];
+  const bad = JR.provisionalGaps({ d0Text: d0, records: rs, resolve, isAi, holderOf, roleOfGate });
+  check('IMPL-0638:ng 暫定任命の期間内の判定で、併記が無い・AI の名義・判定者本人・名簿の人でないものを未達として出す', bad.unmet.length === 4 && ['g3-nocosign', 'g3-ai', 'g3-self', 'g3-notroster'].every((f) => bad.unmet.some((u) => u.file === f)), JSON.stringify(bad.unmet));
+  // IMPL-0638:ok(適合の入力。併記あり・期間の外・G-6 は対象外・読めない期間は確認できない)
+  const good = JR.provisionalGaps({
+    d0Text: d0,
+    records: [
+      { file: 'ok', gate: 'G-3', judge: '名簿 甲', judgedAt: '2026-11-01 10:00', coSign: '名簿 乙' },
+      { file: 'outside', gate: 'G-3', judge: '名簿 甲', judgedAt: '2027-01-02 10:00', coSign: '' },
+      { file: 'g6', gate: 'G-6', judge: '名簿 甲', judgedAt: '2026-11-01 10:00', coSign: '' },
+    ],
+    resolve, isAi, holderOf, roleOfGate,
+  });
+  check('IMPL-0638:ok 併記あり・期間の外・G-6 は未達にしない', good.unmet.length === 0 && good.checked === 1, JSON.stringify(good));
+  check('IMPL-0638:ok 期間が日付として読めない行は「確認できない」と出し、未達にしない', good.unconfirmed.some((u) => /価値責任者/.test(u)) && good.unmet.length === 0, JSON.stringify(good.unconfirmed));
 }
 
 console.log('');
