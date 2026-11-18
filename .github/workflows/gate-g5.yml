@@ -231,6 +231,13 @@ jobs:
       # 既定ブランチへの push の契機の形(gate-g5-push.yml が既定ブランチに限って gate-g5.yml を呼ぶ。名が gate-g5 のジョブを
       # ほかの契機に置かない)と、/pit の既定ブランチの読み方(既定ブランチの名は main に限らない。process-compass #362 / ADR-0123)
       - run: node scripts/gate/test-push-trigger.mjs
+      # レビュー待ち・流れの観測・事前レビュー・指名の並び・強制の棚卸しの試験(process-compass #445・#325・#443・#326)。
+      # 実物の GitHub での動作(権限・API の応答)は、この試験では確かめない
+      - run: node scripts/gate/test-review-queue.mjs
+      - run: node scripts/gate/test-flow-observation.mjs
+      - run: node scripts/gate/test-pre-review.mjs
+      - run: node scripts/gate/test-review-order.mjs
+      - run: node scripts/gate/test-enforcement-inventory.mjs
 
   # 基準1 全テスト GREEN / 基準3 カバレッジ
   test:

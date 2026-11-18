@@ -184,7 +184,7 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
     list.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.pr - b.pr);
     list.slice(loadLimit).forEach((h) => {
       const pr = open.find((p) => p.number === h.pr);
-      push(pr, `load:${h.login.toLowerCase()}`, `@${h.login} への未応答の指名が ${list.length} 件あり、同時保有の上限(${loadLimit})を超えています。指名先を確保できないときは、起案者へ差し戻します。指名は外していません。${hn}`);
+      push(pr, `load:${h.login.toLowerCase()}`, `@${h.login} への未応答の指名が ${list.length} 件あり、同時保有の上限(${loadLimit})を超えています。指名先を確保できないときは、起案者へ差し戻します(/gate の手引き)。指名は外していません。${hn}`);
     });
   }
 
