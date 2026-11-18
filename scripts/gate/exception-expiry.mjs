@@ -93,6 +93,69 @@ export function lapsedExceptions(rows, day, startIds = null) {
     .map((r) => ({ id: r.id, unclosed: isUnclosedState(r), target: String(r.target ?? '').trim() || '(対象の欄なし)', due: String(r.due ?? '').trim(), state: stateOf(r) || '(未記入)', standing: exceptionStanding(r, day) }));
 }
 
+/**
+ * 範囲の中で返却の目安(期限)を延ばした行(IMPL-0787。第7章 7.3「期限の書き換えは承認のし直しでない」)。
+ * 区分「例外」「類似検知」の行を、始点と終点の台帳で識別が同じものについて比べ、次を返す。
+ *   終点の期限が始点の期限より後の日付である行 / 始点が日付で、終点が日付として読めない行
+ * 期限を早める向き、状態だけの変更、始点に無い行(範囲で足された行)は返さない。
+ * 始点の台帳が無い・読めないときは比べられないため { unverifiable: true, extended: [] } を返し、欠落にしない。
+ * 範囲の外の履歴の書き換え、行の消去(未回収に数える)は、この関数で見ない
+ */
+export function extendedDueRows({ startText, endText }) {
+  if (!startText || !String(startText).trim()) return { unverifiable: true, extended: [] };
+  const kinds = ['例外', '類似検知'];
+  const start = ledgerOf(startText).filter((r) => kinds.includes(r.kind));
+  const endById = new Map(ledgerOf(endText).filter((r) => kinds.includes(r.kind)).map((r) => [r.id, r]));
+  const extended = [];
+  for (const s of start) {
+    const e = endById.get(s.id);
+    if (!e) continue;
+    const a = dueDayOf(s.due);
+    if (!a) continue;
+    const b = dueDayOf(e.due);
+    if (!b || b > a) extended.push({ id: s.id, kind: e.kind, from: String(s.due ?? '').trim(), to: String(e.due ?? '').trim() || '(未記入)' });
+  }
+  return { unverifiable: false, extended };
+}
+
+/** 期限を延ばした行の欠落の文 */
+export function extendedDueGapText(x) {
+  return (
+    `返却目安の書き換え ${x.id}(区分「${x.kind}」): 範囲の始点の台帳で「${x.from}」だった返却の目安が、終点で「${x.to}」に変わっています。` +
+    '期限を延ばす書き換えは承認のし直しではなく、記録の欠落です(第7章 7.3)。元の行は書き換えず、権限を持つ者が新しい行で承認し直し、元の行にその行の識別を書いてください'
+  );
+}
+
+/**
+ * 区分「類似検知」の行のうち、返却の目安が過ぎた未返却の行と、期限が日付として読めない未返却の行(IMPL-1008。G-7 基準8)。
+ * 有効な延長の行(区分「例外」で、対象に当該の行の識別を書いたもの)が成立していれば数えない。
+ * 成立の判定(IMPL-0786 と同じ条件)は呼び出し側から isValidExtension(similarRow, exceptionRow) で渡す。
+ * 区分「例外」の行は lapsedExceptions が数えるので、ここでは数えない(countRangeExceptions の件数も変えない)
+ */
+export function lapsedSimilarRows(rows, day, isValidExtension = () => false) {
+  const all = rows ?? [];
+  const ex = all.filter((r) => r.kind === '例外');
+  const out = [];
+  for (const r of all.filter((x) => x.kind === '類似検知')) {
+    if (isClosedState(r) || stateOf(r).startsWith('失効')) continue;
+    const due = dueDayOf(r.due);
+    if (due && due >= day) continue;
+    const idRe = new RegExp(`(^|[^\\d])${r.id}(?!\\d)`);
+    if (ex.some((e) => idRe.test(String(e.target ?? '').normalize('NFKC')) && isValidExtension(r, e))) continue;
+    out.push({ id: r.id, target: String(r.target ?? '').trim() || '(対象の欄なし)', due: String(r.due ?? '').trim() || '(未記入)', readable: !!due });
+  }
+  return out;
+}
+
+/** 期限を過ぎた類似検知の行の欠落の文 */
+export function lapsedSimilarGapText(x, day) {
+  const why = x.readable ? `返却の目安(${x.due})を突合の日(${day})が過ぎ、未返却のままです` : `返却の目安(${x.due})が日付として読めず、期限を比べられません。期限のない記録は認めません`;
+  return (
+    `類似検知 ${x.id}(検知した変更 ${x.target}): ${why}。` +
+    `期限を過ぎた未処理項目が残る出荷は止めます(第4章 G-7 基準8)。処理を完了して状態を「返却済み」にするか、有効な区分「例外」の行(対象に ${x.id} を書く)で延長してください`
+  );
+}
+
 /** 記録の欠落の文(集約の gaps へ出す) */
 export function lapsedGapText(x, day) {
   const why = x.standing === 'lapsed' ? `状態が失効です` : x.unclosed ? `状態が「${x.state}」で、閉じた値(「返却済み」で始まる値・「取り下げ」)でなく、未回収のまま回収の期限(${x.due})を突合の日(${day})が過ぎています` : `状態が有効のまま、回収の期限(${x.due})を突合の日(${day})が過ぎています`;

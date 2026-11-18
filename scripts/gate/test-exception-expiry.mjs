@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -116,6 +116,37 @@ check('出荷の範囲の外の行(対象が過去のコミット)も数える',
   check('次の一手: 期限を過ぎた未返却の行を注記に出す(1件のみ)', /1 件/.test(note ?? '') && /D-002/.test(note) && !/D-001/.test(note), note);
   check('次の一手: 該当が無ければ注記を出さない', overdueExceptionNote({ ledgerText: ledger(row('D-001', 'PR #12', '2026-11-30', '未返却')), today: DAY }) === null);
   check('次の一手: 同じ台帳でも日付が進めば期限超過になる(日付は引数)', overdueExceptionNote({ ledgerText: ledger(row('D-001', 'PR #12', '2026-11-30', '未返却')), today: '2026-12-01' }) !== null);
+}
+
+// ---- 返却目安の延長(IMPL-0787)と区分「類似検知」の期限超過(IMPL-1008)
+const simRow = (id, target, due, state) => `| ${id} | 類似検知 | ${target} | 類似の疑い | 当該の変更単位で処理できない | 不具合 | ${due} | ${state} | 名簿 甲 | — |\n`;
+{
+  const s0 = ledger(row('D-070', 'PR #70', '2026-10-01', '未返却'), row('D-071', 'PR #71', '2026-12-31', '未返却'), row('D-072', 'PR #72', '2026-12-31', '未返却'), row('D-073', 'PR #73', '2026-12-31', '未返却'));
+  // IMPL-0787:ng(違反の入力。期限を延ばす・日付を読めない値へ変える書き換えを返す)
+  const e1 = ledger(row('D-070', 'PR #70', '2027-03-01', '未返却'), row('D-071', 'PR #71', '2026-12-31', '未返却'), row('D-072', 'PR #72', 'S2 移行時', '未返却'), row('D-073', 'PR #73', '2026-12-31', '未返却'));
+  check('IMPL-0787:ng 返却の目安を後の日付へ変えた行と、日付を読めない値へ変えた行を返す', extendedDueRows({ startText: s0, endText: e1 }).extended.map((x) => x.id).join() === 'D-070,D-072', JSON.stringify(extendedDueRows({ startText: s0, endText: e1 })));
+  // IMPL-0787:ok(適合の入力。目安は同じで状態だけ返却済み、または目安を早める)
+  const e2 = ledger(row('D-070', 'PR #70', '2026-10-01', '未返却'), row('D-071', 'PR #71', '2026-12-01', '未返却'), row('D-072', 'PR #72', '2026-12-31', '返却済み(2026-11-10)'), row('D-073', 'PR #73', '2026-12-31', '未返却'));
+  check('IMPL-0787:ok 目安が同じで状態だけ変わった行、目安を早めた行は返さない', extendedDueRows({ startText: s0, endText: e2 }).extended.length === 0);
+  const u = extendedDueRows({ startText: null, endText: e1 });
+  check('IMPL-0787:ok 始点の台帳が読めないときは比べず、欠落にしない(unverifiable)', u.unverifiable === true && u.extended.length === 0);
+  check('IMPL-0787:ok 範囲で足された行(始点に無い行)は返さない', extendedDueRows({ startText: s0, endText: e1 + row('D-099', 'PR #99', '2030-01-01', '未返却') }).extended.every((x) => x.id !== 'D-099'));
+  // 区分「類似検知」(IMPL-1008)
+  const ext = (target, due, state = '未返却', approver = '名簿 乙') => `| D-082 | 例外 | ${target} | 類似検知の延長 | 処理に日数が要る | 不具合 | ${due} | ${state} | 名簿 甲 | ${approver} |\n`;
+  const sim = ledger(simRow('D-080', 'PR #80', '2026-11-01', '未返却'), simRow('D-081', 'PR #81', '2026-11-01', '未返却'), simRow('D-083', 'PR #83', '未定', '未返却'), simRow('D-084', 'PR #84', '2026-12-31', '未返却'), simRow('D-085', 'PR #85', '2026-11-01', '返却済み(2026-11-02)'));
+  const okExt = (_s, e) => e.approver === '名簿 乙' && stateOf0(e) === '未返却' && exceptionStanding(e, DAY) === 'active';
+  // IMPL-1008:ng(違反の入力。期限超過で未返却・延長の行なし・目安が日付として読めない行を返す)
+  check('IMPL-1008:ng 期限超過で未返却の行と、目安が日付として読めない行を返す(延長なし)', lapsedSimilarRows(rowsOf(sim), DAY, okExt).map((x) => x.id).join() === 'D-080,D-081,D-083', lapsedSimilarRows(rowsOf(sim), DAY, okExt).map((x) => x.id).join());
+  // IMPL-1008:ok(適合の入力。有効な延長の行がある・期限内・返却済みは返さない)
+  const withExt = sim + ext('D-081', '2026-12-31');
+  check('IMPL-1008:ok 対象に当該の行の識別を書いた有効な区分「例外」の行がある類似検知は返さない。期限内・返却済みも返さない', lapsedSimilarRows(rowsOf(withExt), DAY, okExt).map((x) => x.id).join() === 'D-080,D-083', lapsedSimilarRows(rowsOf(withExt), DAY, okExt).map((x) => x.id).join());
+  const badExt = sim + ext('D-081', '2026-12-31', '未返却', '名簿 甲');
+  check('IMPL-1008:ng 延長の行が成立しない(呼び出し側の条件を満たさない)とき、類似検知を返す', lapsedSimilarRows(rowsOf(badExt), DAY, okExt).some((x) => x.id === 'D-081'));
+  const cnt = (t) => JSON.stringify(countRangeExceptions({ startText: null, endText: t, day: DAY, ledger: 'x' }));
+  check('IMPL-1008:fix 区分「類似検知」の行の有無で、範囲の例外承認の件数は変わらない', cnt(ext('PR #1', '2026-12-31')) === cnt(ext('PR #1', '2026-12-31') + sim.split('\n').filter((l) => /類似検知/.test(l) && /^\| D-0/.test(l)).join('\n') + '\n'));
+}
+function stateOf0(e) {
+  return String(e.state ?? '').replace(/\*/g, '').normalize('NFKC').trim();
 }
 
 // ---- 集約の通し(一時の置き場。日付は --exception-day で固定)
@@ -235,6 +266,27 @@ function workspace() {
   check('通し(承認し直し): 相互の名指しで両方を外さず、付け足しの名指しで期限超過の行を外さない', gapIdsOf(ev3).join() === 'D-023' && ev3.claim.exceptions.uncollected === 4, `${r3.out.slice(-200)}
 ${gapIdsOf(ev3).join()}
 ${JSON.stringify(ev3.claim.exceptions)}`);
+  // 返却目安の延長・類似検知の期限超過を、集約の通しで固定する(IMPL-0787・IMPL-1008)
+  {
+    const s0 = ledger(row('D-070', 'PR #70', '2026-10-01', '未返却'), row('D-071', 'PR #71', '2026-12-31', '未返却'), row('D-072', 'PR #72', '2026-12-31', '未返却'), row('D-073', 'PR #73', '2026-12-31', '未返却'));
+    fs.writeFileSync(path.join(w.dir, 'docs/debt-ledger.md'), s0);
+    const from4 = w.commit('docs: 台帳(延長の場面の始点)');
+    const e1 =
+      ledger(row('D-070', 'PR #70', '2027-03-01', '未返却'), row('D-071', 'PR #71', '2026-12-01', '未返却'), row('D-072', 'PR #72', 'S2 移行時', '未返却'), row('D-073', 'PR #73', '2026-12-31', '返却済み(2026-11-10)')) +
+      simRow('D-080', 'PR #80', '2026-11-01', '未返却') +
+      simRow('D-081', 'PR #81', '2026-11-01', '未返却') +
+      row('D-082', 'D-081', '2026-12-31', '未返却') +
+      simRow('D-083', 'PR #83', '未定', '未返却') +
+      simRow('D-084', 'PR #84', '2026-12-31', '未返却');
+    fs.writeFileSync(path.join(w.dir, 'docs/debt-ledger.md'), e1);
+    const to4 = w.commit('docs: 台帳(延長の場面の終点)');
+    const r4 = w.node('scripts/gate/aggregate-evidence.mjs', '--from', from4, '--to', to4, '--exception-day', DAY);
+    const ev4 = JSON.parse(fs.readFileSync(path.join(w.dir, 'evidence/evidence.json'), 'utf8'));
+    const g4 = (re) => (ev4.gaps ?? []).filter((g) => re.test(g)).map((g) => g.match(/(D-\d+)/)[1]).sort().join();
+    check('通し IMPL-0787:ng 目安を延ばした行(D-070)と日付を読めない値へ変えた行(D-072)が欠落に出る。早めた行(D-071)・返却済みにした行(D-073)は出ない', g4(/^返却目安の書き換え/) === 'D-070,D-072', `${r4.out.slice(-200)}\n${g4(/^返却目安の書き換え/)}`);
+    check('通し IMPL-1008:ng 期限超過の類似検知(D-080)・目安が読めない行(D-083)が欠落に出る。有効な延長のある D-081、期限内の D-084 は出ない', g4(/^類似検知 D-/) === 'D-080,D-083', g4(/^類似検知 D-/));
+    check('通し IMPL-1008:fix 区分「類似検知」の行は、例外承認の件数(範囲の件数)に数えない', ev4.claim.exceptions.inRange <= 6, JSON.stringify(ev4.claim.exceptions));
+  }
   w.done();
   // 変更の例外承認の対応づけ(PR を経ないコミット。作成を指示した者は Author)。期限内なら対応づき、期限を過ぎれば対応づかない
   const w2 = workspace();

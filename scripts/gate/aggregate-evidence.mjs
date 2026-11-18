@@ -134,7 +134,7 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText } from './exception-expiry.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -2794,6 +2794,21 @@ if (isMain) {
   // 回収の期限を過ぎた例外承認(有効のまま期限を過ぎた行と失効の行)。台帳全体で数える。対象が出荷の範囲の外の行、
   // ゲートの判定を対象とする行も含む。新しい行で承認し直された元の行は数えない(第7章 7.3。#353 / IMPL-0574)
   for (const x of lapsedExceptions(exceptionRows, exceptionDay, exceptionStartIds)) gaps.push(lapsedGapText(x, exceptionDay));
+  // 返却の目安を延ばした書き換え(IMPL-0787)。始点の台帳が読めないときは比べず、欠落にしない
+  {
+    const startLedgerText = from ? git(['show', `${from}:${debtFile}`]) : '';
+    const endLedgerText = git(['show', `${to}:${debtFile}`]);
+    for (const x of extendedDueRows({ startText: startLedgerText, endText: endLedgerText }).extended) gaps.push(extendedDueGapText(x));
+  }
+  // 区分「類似検知」の返却の目安の超過(IMPL-1008。G-7 基準8)。延長の行の成立は IMPL-0786 と同じ条件
+  // (有効・期限内、承認した者が名簿の人で AI の名義でない、理由と期限が記入されている)で渡す
+  for (const x of lapsedSimilarRows(exceptionRows, exceptionDay, (_sim, e) => {
+    if (!ACTIVE_EXCEPTION_STATES.includes(e.state.replace(/\*/g, '').normalize('NFKC').trim())) return false;
+    if (exceptionStanding(e, exceptionDay) !== 'active') return false;
+    if (!filled(e.approver) || aiNameBlocked(config, e.approver) || !resolveSigner(config, e.approver)) return false;
+    if (!filled(e.content) || (e.reason !== null && !filled(e.reason))) return false;
+    return !!dueDayOf(e.due);
+  })) gaps.push(lapsedSimilarGapText(x, exceptionDay));
   for (const x of gateExceptions.rejected) {
     gaps.push(`ゲートの判定を対象とする例外承認 ${x}。例外承認の記録として成立していません(第7章 7.3)。記入を補うか、状態を「取り下げ」にして、そのゲートを判定基準どおりに判定し直す`);
   }
