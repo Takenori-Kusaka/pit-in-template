@@ -1231,7 +1231,7 @@ export function aiFreePracticeState(config, policy, { root = ROOT, day = null, s
   if (!ids.length || policy?.present === false) return empty;
   const cycle = policy?.cycle ?? NO_CYCLE;
   const d0 = readText(D0_FILE, root);
-  const t = tableWithHeader(sectionLines(d0, /12\.\s*担い手と運用形態/), { after: /^###\s*AI を用いない実施の記録/ });
+  const t = tableWithHeader(sectionLines(d0, /12\.\s*担い手と運用形態/), { after: /^\*\*AI を用いない実施の記録/ });
   const iDay = colOf(t.header, /実施した日/);
   const iArea = colOf(t.header, /対象領域/);
   const iBy = colOf(t.header, /実施者/);

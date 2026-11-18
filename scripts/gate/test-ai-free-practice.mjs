@@ -50,7 +50,7 @@ const cfgOf = (over = {}) => ({
   delegation: { allowed: true, changeTypes: [{ id: 'docs-typo', basis: BASIS }] },
   ...over,
 });
-const D0_HEAD = '# D-0\n\n## 12. 担い手と運用形態\n\n### AI を用いない実施の記録(標準 第5章 5.4.7)\n\n| 実施した日 | 対象領域(AI自律レベルの適用の範囲の名) | 実施者(節1 の人の名簿の人) |\n| --- | --- | --- |\n';
+const D0_HEAD = '# D-0\n\n## 12. 担い手と運用形態\n\n**AI を用いない実施の記録(標準 第5章 5.4.7)**\n\n| 実施した日 | 対象領域(AI自律レベルの適用の範囲の名) | 実施者(節1 の人の名簿の人) |\n| --- | --- | --- |\n';
 const root = (rows) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-aifree-'));
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
@@ -194,7 +194,7 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
     config.delegation = { ...(config.delegation ?? {}), allowed: true, changeTypes: [{ id: 'docs-typo', basis: BASIS }] };
     fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
     let d0 = fs.readFileSync(path.join(dir, 'templates/00-d0-governance.md'), 'utf8').replace(/\r\n/g, '\n');
-    d0 = d0.replace(/(### AI を用いない実施の記録[\s\S]*?\| --- \| --- \| --- \|\n)\| \| \| \|/, `$1${rows}`);
+    d0 = d0.replace(/(\*\*AI を用いない実施の記録[\s\S]*?\| --- \| --- \| --- \|\n)\| \| \| \|/, `$1${rows}`);
     fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), d0);
     const qa = fs.readFileSync(path.join(dir, 'templates/11-quality-assurance-policy.md'), 'utf8').split('\r\n').join('\n').replace('<例: 四半期に1回>', freq);
