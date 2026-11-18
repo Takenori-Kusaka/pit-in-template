@@ -7,6 +7,7 @@
 // (scripts/gate/check-g1.mjs としてコピーして使用してください)
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, warn, isFilledValue, readGateRecords, resolveSigner, aiNameBlocked } from './config.mjs';
 import { readBriefQuality } from './verification-trace.mjs';
@@ -14,7 +15,7 @@ import { BRIEF_SCOPE_ROW, briefScopeRowState, BRIEF_SCOPE_GAP_TEXT, BRIEF_BASELI
 import { briefThresholdProblems, briefThresholdMessage, briefStopConditionState, briefStopConditionMessages } from './brief-thresholds.mjs';
 import { g1EstimateBlank, briefVersionOf, g1EstimateChanges, fileAtVersion } from './brief-estimates.mjs';
 import { briefEvidenceProblems } from './customer-voice.mjs';
-import { sraApprovalProblems, sraResidualProblems } from './cl-judgment.mjs';
+import { sraApprovalProblems, sraResidualProblems, parseClRecord, dateOnly } from './cl-judgment.mjs';
 import { g1PassState } from './records.mjs';
 
 const config = loadConfig();
@@ -226,6 +227,133 @@ const generalEmpty = lines
   .filter((l) => /^\|/.test(l) && !/^[|:-]+$/.test(l) && /\|\s*(TBD|未定|\?\?\?)\s*\|/i.test(l));
 if (generalEmpty.length) {
   problems.push(`企画書本文に未記入の欄が ${generalEmpty.length} 件あります(TBD / 未定 / ???)`);
+}
+
+// 禁止した一般語のみの欄と、前案件の企画書との同一(標準 第6章 テンプレ6。IMPL-0801・IMPL-0878)。
+// 見るのは形式だけ: 欄の値を NFKC にし、空白・句読点・括弧を除いた文字列が様式の名指す語と完全に一致するか、前案件の同じ欄と完全に一致するか。
+// 意味は読まない。ほかの一般語のみの記述は G-1 の判定者が確かめる。同一は警告で、承認可否に使わない(同じ組織で目標が同じことがある)
+{
+  const squash = (s) => String(s ?? '').replace(/\*/g, '').normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '');
+  const cellsOf = (l) => l.split('|').slice(1, -1).map((c) => c.replace(/\*/g, '').trim());
+  const dataRows = (ls) => ls.filter((l) => /^\|/.test(l) && !/^[|:\-\s]+$/.test(l)).map(cellsOf).filter((c) => c.length >= 2);
+  const viewsOf = (all) => {
+    const v = { 1: [], 2: [] };
+    let cur = 0;
+    for (const l of all) {
+      if (/^##\s+.*観点1/.test(l)) cur = 1;
+      else if (/^##\s+.*観点2/.test(l)) cur = 2;
+      else if (/^##\s+/.test(l)) cur = 0;
+      else if (cur) v[cur].push(l);
+    }
+    return v;
+  };
+  const GOAL = '対応する戦略目標';
+  const ALT = '現在の代替手段';
+  const v = viewsOf(lines);
+  const goalRow = dataRows(v[1]).find((c) => c[0] === GOAL);
+  if (goalRow && squash(goalRow[1]) === '成長') problems.push(`観点1「${GOAL}」が一般語「成長」のみです。組織が定めた目標を識別できる形で書いてください(標準 第6章 テンプレ6。一般語は様式が名指す語に限って検査します)`);
+  for (const c of dataRows(v[2])) {
+    if (c[0] === ALT || c[0] === '項目') continue;
+    for (const cell of c.slice(1)) {
+      if (['知見がある', '実績がある'].includes(squash(cell))) problems.push(`観点2「${c[0]}」が一般語「${squash(cell)}」のみです。何の知見・何の実績かを書いてください(標準 第6章 テンプレ6)`);
+    }
+  }
+  const altRow = lines.map((l) => (/^\|/.test(l) ? cellsOf(l) : [])).find((c) => c[0] === ALT);
+  if (altRow && ['ない', 'なし', '無い', '無し'].includes(squash(altRow[1]))) problems.push(`「${ALT}」が「ない」のみです。手作業でも代替手段です。何で代替しているかを書いてください(標準 第6章 テンプレ6)`);
+
+  // 前案件の企画書は採用者が環境変数 PREVIOUS_BRIEF で与える(リポジトリの中のパス、または git show で読める <ref>:<path>)
+  const prevSpec = (process.env.PREVIOUS_BRIEF ?? '').trim();
+  if (!prevSpec) {
+    notice('前案件の企画書(環境変数 PREVIOUS_BRIEF)を与えていないため、前案件の記述との同一の確認をしていません');
+  } else {
+    let prev = null;
+    try {
+      const abs = path.resolve(ROOT, prevSpec);
+      if (abs.startsWith(ROOT) && fs.existsSync(abs) && fs.statSync(abs).isFile()) prev = fs.readFileSync(abs, 'utf8');
+      else prev = execFileSync('git', ['show', prevSpec], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      prev = null;
+    }
+    if (prev === null) warn(`PREVIOUS_BRIEF(${prevSpec})を読めないため、前案件の記述との同一の確認をしていません`);
+    else {
+      const pl = prev.split(/\r?\n/);
+      const pv = viewsOf(pl);
+      const fieldsOf = (ls, vs) => {
+        const map = new Map();
+        for (const c of [...dataRows(vs[1]), ...dataRows(vs[2]), ...ls.filter((l) => /^\|/.test(l)).map(cellsOf).filter((c) => c[0] === ALT)]) {
+          if (c[0] !== '項目' && c.length >= 2) map.set(c[0], squash(c[1]));
+        }
+        return map;
+      };
+      const cur = fieldsOf(lines, v);
+      const old = fieldsOf(pl, pv);
+      for (const [k, val] of cur) {
+        if (val && isFilledValue(val) && old.get(k) === val) warn(`欄「${k}」が前案件の企画書(${prevSpec})と同一です。写しのまま判定を受けていないか確かめてください(同一を承認可否に使いません)`);
+      }
+    }
+  }
+}
+
+// 立ち上げの順序(標準 第2章 2.8・第5章 5.7 案件の立ち上げ手順。IMPL-0884)。日付の前後だけを見る:
+// (a) D-0 の承認日 ≤ (b) 節16 の判定日 ≤ (c) 様式 09 の承認日(表を置いた案件だけ) ≤ (d) G-1 で判定する企画書の版のコミットの日付。
+// 読めない日付は「確認できない」と注意に出し、失敗にしない(欠落は check-d0 などが別に落とす)。案件の登録(組織の台帳)はリポジトリの外で確かめない。
+// G-1 を通過済みの案件は、D-0 や判定の記録が変化点で改められた日付が企画書より後になり得るため、遡って失敗させず注意にする
+{
+  const day = (s) => dateOnly(String(s ?? '').trim().replace(/^["']|["']$/g, ''));
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const seq = [];
+  const unknown = [];
+  const push = (label, d) => (d ? seq.push([label, d]) : unknown.push(label));
+  const d0Path = path.join(ROOT, 'docs/D-0-governance.md');
+  if (fs.existsSync(d0Path)) {
+    const d0 = fs.readFileSync(d0Path, 'utf8');
+    push('D-0 の承認日(節11。frontmatter の approved_at)', day(d0.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1]?.match(/^approved_at:\s*(.*)$/m)?.[1]));
+    push('安全重要度の判定の記録の判定日(D-0 節16)', day(parseClRecord(d0).values.judgedAt));
+  } else {
+    unknown.push('D-0 の承認日(節11)', '安全重要度の判定の記録の判定日(D-0 節16)');
+  }
+  const sraPath = path.join(ROOT, 'docs/safety-risk-assessment.md');
+  if (fs.existsSync(sraPath)) {
+    // sraApprovalProblems と同じ読み方: 節「承認」の表の、記入のあるデータ行の3列目
+    const sl = fs.readFileSync(sraPath, 'utf8').split(/\r?\n/);
+    const st = sl.findIndex((l) => /^##\s+承認\s*$/.test(l));
+    let approvedAt = null;
+    for (let i = st + 1; st >= 0 && i < sl.length; i++) {
+      if (/^##\s/.test(sl[i])) break;
+      if (!/^\|/.test(sl[i]) || /^\|[\s|:-]+\|?\s*$/.test(sl[i])) continue;
+      const c = sl[i].split('|').slice(1, -1).map((x) => x.trim());
+      if (c[0] !== '作成者' && c.some((x) => isFilledValue(x))) {
+        approvedAt = c[2];
+        break;
+      }
+    }
+    push('安全リスクアセスメント表の承認日(様式 09)', day(approvedAt));
+  }
+  const latestG1 = gateRecs.filter((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過').sort((a, b) => String(b.judgedAt ?? '').localeCompare(String(a.judgedAt ?? '')))[0];
+  let ver = null;
+  if (latestG1) {
+    try {
+      ver = briefVersionOf(latestG1.text ?? fs.readFileSync(path.join(ROOT, latestG1.file), 'utf8'));
+    } catch {
+      ver = null;
+    }
+  }
+  const iso = ver ? git(['log', '-1', '--format=%cI', ver]) : git(['log', '-1', '--format=%cI', '--', 'docs/project-brief.md']);
+  push(ver ? `G-1 で判定する企画書の版(${ver})のコミットの日付` : '企画書(docs/project-brief.md)の最後のコミットの日付', day(String(iso ?? '').slice(0, 10)));
+  if (unknown.length) notice(`立ち上げの順序のうち、確認できない日付があります(${unknown.join(' / ')})。読めた日付の間だけ前後を確かめました`);
+  for (let i = 1; i < seq.length; i++) {
+    if (seq[i - 1][1] > seq[i][1]) {
+      const msg = `立ち上げの順序が逆です: ${seq[i - 1][0]} ${seq[i - 1][1]} が ${seq[i][0]} ${seq[i][1]} より後です。D-0 の承認 → 安全重要度の判定 → 安全リスクアセスメント → 企画書の順に進めます(標準 第2章 2.8・第5章 5.7)`;
+      if (g1.passed === true) warn(`${msg}(G-1 を通過済みのため、遡って失敗させません)`);
+      else g1Dependent(msg);
+    }
+  }
 }
 
 // テンプレ9(安全リスクアセスメント表)の承認の欄(標準 第6章、第2章 2.8 の手順3b。process-compass #373 突合 X-8 / IMPL-0453)。

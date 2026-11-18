@@ -63,7 +63,10 @@ jobs:
     name: g1-check
     runs-on: ubuntu-latest
     steps:
+      # 立ち上げの順序(D-0・安全の判定・企画書のコミットの日付)を履歴から読むため、履歴をすべて取得する(IMPL-0884)
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
       # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
       - uses: actions/setup-node@v4

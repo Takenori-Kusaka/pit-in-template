@@ -103,5 +103,114 @@ const g1Record = (ver) => ['# ゲート判定記録', '', '| 項目 | 値 |', '|
   check('IMPL-0374:ok 単位期間の長さを日数へ読む(2週間=14、3日=3)。読めない書き方は null', unitPeriodDaysOf(row('x')) === 14 && unitPeriodDaysOf('- 単位期間の長さ: 3日') === 3 && unitPeriodDaysOf('- 単位期間の長さ: 隔週') === null);
 }
 
+// IMPL-0801・IMPL-0878・IMPL-0884: 企画書の一般語のみの欄、前案件との同一、立ち上げの順序(入口 check-g1 を一時の git で通す)
+{
+  const view = (goal, win, alt) => `## 戦略整合(観点1)
+
+| 項目 | 記載 |
+| --- | --- |
+| 対応する戦略目標 | ${goal} |
+| 対応が成立しなくなる条件 | 前提が変わる |
+
+## 自社が勝てる理由(観点2)
+
+| 項目 | 内容 |
+| --- | --- |
+| 資産・能力 | ${win} |
+| 現在の代替手段 | ${alt} |
+
+`;
+  const brief2 = (goal, win, alt) => `---
+project_id: P-001
+version: v1
+approver: 承認 花子
+status: 承認待ち
+---
+
+# 企画書
+
+${view(goal, win, alt)}${costTable({})}`;
+  const GOOD = ['成長(中期経営計画 2027 の目標 G3)', '決済基盤の運用実績(2019 年から)', '手作業の表計算'];
+  const W = workspace();
+  const run = (env = {}) => {
+    const r = spawnSync(process.execPath, ['scripts/gate/check-g1.mjs'], { cwd: W.dir, encoding: 'utf8', env: { ...process.env, ...env } });
+    return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  // IMPL-0801
+  W.write('docs/project-brief.md', brief2('成長', GOOD[1], GOOD[2]));
+  let r = run();
+  check('IMPL-0801:ng 戦略目標が「成長」のみなら失敗する', !r.ok && r.out.includes('一般語「成長」のみ'), r.out);
+  W.write('docs/project-brief.md', brief2(GOOD[0], '知見がある', GOOD[2]));
+  r = run();
+  check('IMPL-0801:ng 観点2が「知見がある」のみなら失敗する', !r.ok && r.out.includes('一般語「知見がある」のみ'), r.out);
+  W.write('docs/project-brief.md', brief2(GOOD[0], GOOD[1], 'ない'));
+  r = run();
+  check('IMPL-0801:ng 代替手段が「ない」のみなら失敗する', !r.ok && r.out.includes('「ない」のみ'), r.out);
+  W.write('docs/project-brief.md', brief2('「成長」。', GOOD[1], '（無し）'));
+  r = run();
+  check('IMPL-0801:ng 句読点・括弧・全角を除いて一致すれば同じ扱い', !r.ok && r.out.includes('「成長」のみ') && r.out.includes('「ない」のみ'), r.out);
+  W.write('docs/project-brief.md', brief2(...GOOD));
+  r = run();
+  check('IMPL-0801:ok 具体を書いた欄は通る(一般語の検査で止めない)', !r.out.includes('のみです'), r.out);
+  const ver0 = W.commit('docs: 企画書');
+  // IMPL-0878
+  check('IMPL-0878:ok 前案件を与えないときは、確認していない旨を出す', r.out.includes('PREVIOUS_BRIEF') && r.out.includes('確認をしていません'), r.out);
+  fs.mkdirSync(path.join(W.dir, 'prev'), { recursive: true });
+  W.write('prev/brief.md', brief2('別の戦略目標', '別の資産', '別の手段'));
+  r = run({ PREVIOUS_BRIEF: 'prev/brief.md' });
+  check('IMPL-0878:ok 異なる文の欄は同一として出さない', !r.out.includes('欄「対応する戦略目標」が前案件') && !r.out.includes('欄「資産・能力」が前案件') && !r.out.includes('欄「現在の代替手段」が前案件'), r.out);
+  W.write('prev/brief.md', brief2(GOOD[0], GOOD[1], '別の手段'));
+  r = run({ PREVIOUS_BRIEF: 'prev/brief.md' });
+  check('IMPL-0878:ng 前案件と同じ文の欄は警告に出し、失敗にはしない', r.out.includes('欄「対応する戦略目標」が前案件の企画書') && r.out.includes('欄「資産・能力」が前案件の企画書') && !r.out.includes('欄「現在の代替手段」が前案件'), r.out);
+  W.commit('docs: 前案件');
+  r = run({ PREVIOUS_BRIEF: `${ver0}:docs/project-brief.md` });
+  check('IMPL-0878:ng git の版(<ref>:<path>)でも読める', r.out.includes('欄「現在の代替手段」が前案件の企画書'), r.out);
+  r = run({ PREVIOUS_BRIEF: 'prev/ない.md' });
+  check('IMPL-0878:ng 読めない所在は、確認していない旨を出す', r.out.includes('読めないため'), r.out);
+  // IMPL-0884
+  const d0 = (approved) => `---
+project_id: P-001
+version: v1
+approver: 承認 花子
+approved_at: ${approved}
+approval_scope: x
+next_review: 2027-05-01
+---
+
+# D-0
+
+## 16. 安全重要度の判定の記録
+
+| 項目 | 値 |
+| --- | --- |
+| 判定日 | 2999-01-01 |
+`;
+  // 企画書の最後のコミットの日付(今日)より後の判定日を持つ D-0: 逆
+  W.write('docs/D-0-governance.md', d0('2026-01-01'));
+  W.write('docs/project-brief.md', brief2(...GOOD));
+  W.commit('docs: D-0');
+  r = run();
+  check('IMPL-0884:ng 節16 の判定日が企画書のコミットの日付より後なら失敗する', !r.ok && r.out.includes('立ち上げの順序が逆です') && r.out.includes('2999-01-01'), r.out);
+  W.write('docs/D-0-governance.md', d0('2026-01-01').replace('2999-01-01', '2026-01-02'));
+  W.commit('docs: D-0 の判定日を直す');
+  r = run();
+  check('IMPL-0884:ok 承認日 ≤ 判定日 ≤ 企画書のコミットの日付なら順序で止めない', !r.out.includes('立ち上げの順序が逆です'), r.out);
+  W.write('docs/D-0-governance.md', d0('2026-03-01').replace('2999-01-01', '2026-01-02'));
+  W.commit('docs: D-0 の承認日を後ろへ');
+  r = run();
+  check('IMPL-0884:ng D-0 の承認日が節16 の判定日より後なら失敗する', !r.ok && r.out.includes('立ち上げの順序が逆です') && r.out.includes('2026-03-01'), r.out);
+  W.write('docs/D-0-governance.md', d0('日付ではない').replace('2999-01-01', '日付ではない'));
+  r = run();
+  check('IMPL-0884:ok 読めない日付は確認できないと出し、失敗にしない', !r.out.includes('立ち上げの順序が逆です') && r.out.includes('確認できない日付があります'), r.out);
+  // G-1 を通過済み: 遡って失敗させず注意にする
+  const verG = W.commit('docs: 企画書の版');
+  W.write('docs/gates/g1.md', g1Record(verG));
+  W.write('docs/D-0-governance.md', d0('2026-03-01').replace('2999-01-01', '2026-01-02'));
+  W.commit('docs: G-1 と、変化点で承認日を改めた D-0');
+  r = run();
+  check('IMPL-0884:ok G-1 を通過済みなら、順序の逆は遡って失敗させず注意にする', r.out.includes('::warning::立ち上げの順序が逆です') && !r.out.includes('::error::立ち上げの順序が逆です'), r.out);
+  fs.rmSync(W.dir, { recursive: true, force: true });
+}
+
 console.log(`test-brief-estimates: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
