@@ -122,7 +122,7 @@ export function capFromAnswers(answers, kb = null) {
  */
 export function capReason(level) {
   if (level === 'L2') {
-    return 'テーラリングの規則の上限 L2(CL2)は安全関連部の上限である。準拠テンプレートの構成は安全関連部の範囲を持たないため、案件の全体へ掛ける';
+    return 'テーラリングの規則の上限 L2(CL2)は案件の上限である。安全関連部は附属書F F.3 により L1 固定で、準拠テンプレートは範囲を持たないため、登録を適用しない';
   }
   if (level === 'L1') return 'テーラリングの規則の上限 L1(CL3。引き上げの対象にしない)';
   return null;

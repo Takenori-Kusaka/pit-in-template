@@ -84,6 +84,31 @@ export function parseClRecord(text) {
   return { present: true, values, missingRows };
 }
 
+/**
+ * D-0 節16 の「構成要素ごとの判定」の表(### 見出しの下)を読む。行は { n, name, raw, cls, worst }。
+ * 区分(低減の後)を読めない行は cls が null。見出しが無ければ present: false
+ */
+export function componentClasses(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const s = lines.findIndex((l) => CL_SECTION_HEADING.test(l));
+  if (s < 0) return { present: false, rows: [] };
+  let i = lines.findIndex((l, k) => k > s && /^###\s+構成要素ごとの判定/.test(l));
+  if (i < 0) return { present: false, rows: [] };
+  const rows = [];
+  let header = false;
+  for (i++; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^#{1,3}\s/.test(l)) break;
+    if (!/^\s*\|/.test(l)) continue;
+    const c = l.trim().replace(/^\|/, '').replace(/\|\s*$/, '').split('|').map((x) => clean(x));
+    if (c.every((x) => /^:?-+:?$/.test(x))) continue;
+    if (!header && c[0] === '構成要素') { header = true; continue; }
+    if (c.every((x) => !x)) continue;
+    rows.push({ n: rows.length + 1, name: c[0], raw: c[1] ?? '', cls: classOf(c[1]), worst: c[2] ?? '' });
+  }
+  return { present: true, rows };
+}
+
 /** 区分の欄から cl0〜cl3 を1つだけ読む。複数・無しは null */
 export function classOf(value) {
   const hits = [...new Set([...String(value ?? '').normalize('NFKC').matchAll(/CL\s*([0-3])/gi)].map((m) => `cl${m[1]}`))];
@@ -297,6 +322,28 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
       '区分を変えるなら /process-change(種別 axis)で構成へ反映し、記録を改めます。区分を下げる場合は、記録の「区分の引き下げの根拠」を先に書きます';
     if (CL_ORDER.indexOf(answer) < CL_ORDER.indexOf(cls)) recordProblems.push(text);
     else notes.push(`${text}(構成が記録より厳しい区分で動いているため止めません)`);
+  }
+  // 構成要素ごとの判定(IMPL-0759。ADR-0221)。全 CL に求める(1行で足りる)。表の最も高い区分を判定した区分とする。
+  // 判定 < 表の最大は記録の不備、判定 > 表の最大は注意(cl-judgment の区分の食い違いと同じ向き)。列挙の十分さは機械で閉じない(確かめる者: 判定の確認者)
+  if (parsed.present && text !== null) {
+    const comp = componentClasses(text);
+    const name = '「構成要素ごとの判定」の表';
+    if (!comp.present) recordProblems.push(`安全重要度の判定の記録に${name}がありません。templates/00-d0-governance.md の節16 から写し、構成要素ごとに区分(低減の後)を書きます(1行で足ります。単一なら「システム全体」)。既存の案件は、この表を足すまで記録の不備になります`);
+    else if (!comp.rows.length) recordProblems.push(`${name}に行がありません(単一の構成要素なら「システム全体」の1行を書く)`);
+    else {
+      for (const r of comp.rows) {
+        if (!r.cls) recordProblems.push(`${name}の${r.n}行目(${r.name || '名称なし'})の区分「${r.raw}」を CL0〜CL3 のどれか1つとして読めません`);
+      }
+      const read = comp.rows.filter((r) => r.cls);
+      if (read.length === comp.rows.length && cls) {
+        const maxCls = read.map((r) => r.cls).sort((a, b) => CL_ORDER.indexOf(b) - CL_ORDER.indexOf(a))[0];
+        if (CL_ORDER.indexOf(cls) < CL_ORDER.indexOf(maxCls)) {
+          recordProblems.push(`判定した区分(${CL_LABEL[cls]})が、${name}の最も高い区分(${CL_LABEL[maxCls]})より低い。表の最も高い区分を判定した区分とします`);
+        } else if (CL_ORDER.indexOf(cls) > CL_ORDER.indexOf(maxCls)) {
+          notes.push(`判定した区分(${CL_LABEL[cls]})が、${name}の最も高い区分(${CL_LABEL[maxCls]})より高いです(安全側の判定のため止めません。表の列挙が十分かは判定の確認者が確かめます)`);
+        }
+      }
+    }
   }
   const f2q1 = parsed.present && isFilledValue(v.f2) ? f2Q1Of(v.f2) : null;
   if (parsed.present && isFilledValue(v.f2) && f2q1 === null) recordProblems.push(`安全重要度の判定の記録の「附属書F F.2 の回答」を、Q1 の答え(はい / いいえ)で始めてください(${v.f2.slice(0, 40)})`);

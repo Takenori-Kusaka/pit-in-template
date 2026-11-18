@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "c516ffae13530c44fd2bd7aaf7cb6ba6d25ec045",
+    "commit": "7fce0ddd08f86cb393c89b416bb87a2a34ebb8b2",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -494,7 +494,7 @@
           "action": "set",
           "param": "maxAutonomyLevel",
           "value": "L2",
-          "note": "安全関連部のAI自律レベルはL2を上限とする"
+          "note": "案件のAI自律レベルの上限はL2とする。安全関連部は附属書F F.3によりL1固定"
         },
         {
           "target": {

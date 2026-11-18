@@ -220,6 +220,8 @@ jobs:
       # 安全重要度の判定の記録と確認(D-0 節16): 判定の記録の欄と判定者の記名で G-1 を止めること、確認者の記名と段、
       # 区分を下げる変化点の引き下げの根拠、出荷の証跡の集約の未達と欠落(標準 第8章 軸E。process-compass #373 / ADR-0113)
       - run: node scripts/gate/test-cl-judgment.mjs
+      # 安全関連部の検証の記録(附属書F F.7)の記載の欠落の検査: 6項目・環境と結果の形・手法の表(G-7 基準7。ADR-0221)
+      - run: node scripts/gate/test-safety-record.mjs
       # 既存のリポジトリへの持ち込み: 適用の開始の境(第1親の連鎖)、開始より前の履歴の扱い、事前点検、フックの登録・@OWNER、
       # 構成の形式の版と移行、取り込んだテンプレートの記録(標準 第1章 1.10.1・1.10.3。process-compass #315 / ADR-0085)
       - run: node scripts/gate/test-adoption.mjs

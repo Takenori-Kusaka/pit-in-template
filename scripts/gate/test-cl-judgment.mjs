@@ -69,12 +69,21 @@ const FILLED = {
   確認日: '2026-10-02',
   区分の引き下げの根拠: '該当なし',
 };
-const d0 = (rows = {}, { drop = [] } = {}) => {
+// comp: 構成要素ごとの判定の表の行 [[構成要素, 区分, 最悪の帰結]]。省略時は判定した区分1行、null は表なし(IMPL-0759)
+const d0 = (rows = {}, { drop = [], comp } = {}) => {
   const v = { ...FILLED, ...rows };
+  const compRows = comp === undefined ? [['システム全体', (String(v.判定した区分).match(/CL[0-3]/) ?? ['CL0'])[0], '集計の誤りで業務が半日止まる']] : comp;
+  const compText = compRows === null ? '' : `
+### 構成要素ごとの判定
+
+| 構成要素 | 区分(低減の後) | 対策を入れる前の最悪の帰結 |
+| --- | --- | --- |
+${compRows.map((r) => `| ${r.join(' | ')} |`).join('\n')}
+`;
   const lines = Object.entries(v)
     .filter(([k]) => !drop.includes(k))
     .map(([k, val]) => `| ${k} | ${val} |`);
-  return `# D-0\n\n## 15. 組織継続の状態の受容\n\n本文\n\n## 16. 安全重要度の判定の記録\n\n| 項目 | 記載 |\n| --- | --- |\n${lines.join('\n')}\n\n- 注記\n`;
+  return `# D-0\n\n## 15. 組織継続の状態の受容\n\n本文\n\n## 16. 安全重要度の判定の記録\n\n| 項目 | 記載 |\n| --- | --- |\n${lines.join('\n')}\n${compText}\n- 注記\n`;
 };
 // 判定の記録を求める前に G-1 を通過した旧い構成と、境界の後に通過した構成。境界は試験で差し替える(since。突合 X-15)。
 // 境界の後の fixture も過去の日付にする(2026-09-15 の境界に対して 2026-09-20)。addedAt は判定記録を入れたコミットの時刻
@@ -562,6 +571,28 @@ try {
   check('集約: 旧い構成でも CL1 なら、判定者の記名の欠落を欠落に数える(記録を消して出荷の止めを外す経路を塞ぐ)', clGap(a.out), `${clRow(a.report)}\n${a.out.slice(-800)}`);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+// --- IMPL-0759: 構成要素ごとの判定(最も高い区分を判定した区分とする。ADR-0221) ---
+{
+  const config = configOf();
+  const tableProblems = (s) => s.recordProblems.filter((p) => /構成要素ごとの判定/.test(p));
+  const st = (rows, opts) => clJudgmentState(config, { text: d0(rows, opts) });
+  // IMPL-0759:ng
+  check('構成要素: 判定が表の最大より低い(判定 CL0・表 CL1 と CL0)は記録の不備', tableProblems(st({}, { comp: [['制御部', 'CL1', '誤作動'], ['集計部', 'CL0', '誤集計']] })).some((p) => /最も高い区分/.test(p)));
+  check('構成要素: 表が無い(CL1)は記録の不備', tableProblems(st({ 判定した区分: 'CL1' }, { comp: null })).length > 0);
+  check('構成要素: 表が無い(CL0)も記録の不備(全 CL に求める)', tableProblems(st({}, { comp: null })).length > 0);
+  check('構成要素: 行が 0 件は記録の不備', tableProblems(st({ 判定した区分: 'CL1' }, { comp: [] })).length > 0);
+  check('構成要素: 「CL1 または CL2」のように区分を1つに読めない行は記録の不備', tableProblems(st({ 判定した区分: 'CL1' }, { comp: [['制御部', 'CL1 または CL2', '誤作動']] })).some((p) => /読めません/.test(p)));
+  check('構成要素: 様式のまま(区分が <…>)は記録の不備', tableProblems(st({}, { comp: [['<構成要素>', '<CL0 / CL1 / CL2 / CL3>', '<帰結>']] })).length > 0);
+  // IMPL-0759:ok
+  check('構成要素: 判定 CL1・表 CL1 と CL0 は通る', tableProblems(st({ 判定した区分: 'CL1', 確認者の段: '段2' }, { comp: [['制御部', 'CL1', '誤作動'], ['集計部', 'CL0', '誤集計']] })).length === 0);
+  check('構成要素: 判定 CL0・1行 CL0 は通る(1行で足りる)', tableProblems(st({}, { comp: [['システム全体', 'CL0', '業務が止まる']] })).length === 0);
+  {
+    const s = st({ 判定した区分: 'CL2', 確認者の段: '段3' }, { comp: [['制御部', 'CL1', '誤作動'], ['集計部', 'CL0', '誤集計']] });
+    check('構成要素: 判定 CL2・表の最大 CL1(判定が高い)は不備にせず注意に出す', tableProblems(s).length === 0 && s.notes.some((n) => /構成要素ごとの判定/.test(n)));
+  }
+  check('構成要素: 低減の後の区分(CL1)で判定 CL1 は通る', tableProblems(st({ 判定した区分: 'CL1', 確認者の段: '段2' }, { comp: [['制御部(低減の後)', 'CL1', '低減の前は CL2 相当の誤作動']] })).length === 0);
 }
 
 console.log('');

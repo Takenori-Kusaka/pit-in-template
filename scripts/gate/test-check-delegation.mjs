@@ -459,7 +459,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   // 上限の理由(突合 X-16)
   const capNoQ = autonomyCap({ configured: true, answers: {} });
   check('上限: 回答に安全重要度の無い構成は L1 とし、理由を出す', capNoQ.level === 'L1' && /q-criticality/.test(capNoQ.reason));
-  check('上限: CL2 の L2 は、安全関連部の範囲を持たないため案件の全体へ掛ける旨を出す', /案件の全体/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? ''));
+  check('上限: CL2 の L2 は案件の上限で、安全関連部は F.3 により L1 固定、準拠テンプレートは範囲を持たないため登録を適用しない旨を出す', /案件の上限/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? '') && /L1 固定/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? ''));
 }
 
 // 手戻り率(標準 第5章 5.4.6。process-compass #348)。母数は窓の中に種別の範囲の取り込みを持つタスク。分子はトレーラの取り込み2回以上と
