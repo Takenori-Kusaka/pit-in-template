@@ -201,6 +201,7 @@ export const NON_PRODUCT = [
   'evidence/**',
   'profiles/**',
   '.claude/**',
+  '.githooks/**',
   '.github/**',
   'scripts/gate/**',
   'scripts/init/**',

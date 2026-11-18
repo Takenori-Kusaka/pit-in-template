@@ -5,3 +5,6 @@
 records/** -text
 docs/records/** -text
 docs/gates/** -text
+
+# git のフック(sh)は LF のまま保つ。CRLF にすると commit-msg が走らない(IMPL-0207)
+.githooks/* text eol=lf

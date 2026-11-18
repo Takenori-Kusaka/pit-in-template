@@ -2095,6 +2095,7 @@ export const NEVER_DELEGATED = [
   'AGENTS.md',
   'CODEOWNERS',
   '.claude/**',
+  '.githooks/**',
   '.github/**',
   'adapters/**',
   'scripts/gate/**',

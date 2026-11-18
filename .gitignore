@@ -53,3 +53,6 @@ CLAUDE.local.md
 **/CLAUDE.local.md
 .claude/settings.local.json
 **/.claude/settings.local.json
+
+# 実行の記録(SessionStart が書く。コミットに入れない。IMPL-1019)
+.claude/agent-runs/

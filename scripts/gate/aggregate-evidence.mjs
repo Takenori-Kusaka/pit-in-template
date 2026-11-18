@@ -48,7 +48,8 @@
 // 照合して、裏づけの無いものを記載の欠落にします(material-attribution.mjs)。
 
 import { effectiveAllowedLicenses } from './license-allowlist.mjs';
-import { execFileSync } from 'node:child_process';
+import { summarizeAgentCommits, switchedPeriodCommits } from './agent-run-record.mjs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1569,13 +1570,13 @@ if (isMain) {
   // --- コミットのトレーラ ------------------------------------------------------
 
   const trailerFormat =
-    '%H%x09%an%x09%ae%x09%(trailers:key=Delegated,valueonly,separator=%x2C)%x09%(trailers:key=Co-Authored-By,valueonly,separator=%x2C)%x09%(trailers:key=Risk,valueonly,separator=%x2C)%x09%(trailers:key=Verification,valueonly,separator=%x2C)%x09%(trailers:key=Spec,valueonly,separator=%x2C)';
+    '%H%x09%an%x09%ae%x09%(trailers:key=Delegated,valueonly,separator=%x2C)%x09%(trailers:key=Co-Authored-By,valueonly,separator=%x2C)%x09%(trailers:key=Risk,valueonly,separator=%x2C)%x09%(trailers:key=Verification,valueonly,separator=%x2C)%x09%(trailers:key=Spec,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Run,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Assets,valueonly,separator=%x2C)%x09%cs';
   const trailerOf = new Map(
     git(['log', `--format=${trailerFormat}`, ...logRange])
       .split('\n')
       .filter(Boolean)
       .map((l) => {
-        const [hash, authorName, authorEmail, delegated, coAuthors, risk, verification, spec] = l.split('\t');
+        const [hash, authorName, authorEmail, delegated, coAuthors, risk, verification, spec, agentRun, agentAssets, commitDay] = l.split('\t');
         return [
           hash,
           {
@@ -1587,6 +1588,10 @@ if (isMain) {
             verification: (verification ?? '').trim() || null,
             // 仕様の識別子(F-NNN)。様式の例(F-xxx)は数えない
             specs: [...new Set(((spec ?? '').match(/F-\d+/g) ?? []))],
+            // 実行の記録のトレーラ(agent-run-record.mjs。IMPL-0207・IMPL-1019)と、コミットの日(切り替えの期間との突合に使う)
+            agentRun: (agentRun ?? '').split(',')[0].trim() || null,
+            agentAssets: (agentAssets ?? '').split(',')[0].trim() || null,
+            day: (commitDay ?? '').trim() || null,
           },
         ];
       })
@@ -5051,7 +5056,18 @@ if (isMain) {
       ? { required: true, to: n.to, at: String(n.at).slice(0, 10), self: n.self === true, also: Array.isArray(n.also) ? n.also.map((a) => ({ to: a?.to ?? null, role: a?.role ?? null })) : [] }
       : { required: true, to: null, at: null, self: false, also: [] };
   };
+  // 実行の記録(IMPL-0743・IMPL-0828。ADR-0222)。AI の印(Co-Authored-By または実行の識別子のトレーラ)のあるコミットを、指示資産の版の特定の可否で 5 区分に分ける。
+  // 外す対象の一覧を出すだけで、外すのは監査人(消さない)。印の無いコミットが AI の出力かは機械では判別できない。導入の境は .githooks/commit-msg を入れたコミットの祖先かで決める(日付で決めない)
+  const agentRecord = (() => {
+    const intro = (git(['log', '--diff-filter=A', '--format=%H', '--', '.githooks/commit-msg']) ?? '').split('\n').filter(Boolean).pop() ?? null;
+    const after = (hash) => Boolean(intro) && spawnSync('git', ['merge-base', '--is-ancestor', intro, hash], { cwd: ROOT }).status === 0;
+    const list = trailers.map((c) => ({ hash: c.hash, day: c.day, aiMarked: c.coAuthors.length > 0 || Boolean(c.agentRun), assets: c.agentAssets, afterHook: after(c.hash) }));
+    const sum = summarizeAgentCommits(list);
+    const sw = switchedPeriodCommits(list, outagePeriods(config));
+    return { hookIntroduced: Boolean(intro), counts: sum.counts, total: sum.total, excludeCandidates: sum.excludeCandidates.map((x) => ({ hash: x.hash.slice(0, 10), class: x.class })), switched: { periods: sw.periods, commits: sw.commits.map((c) => c.hash.slice(0, 10)) } };
+  })();
   const generation = {
+    agentRecord,
     declaredPerformers: declaredPerformers.length ? declaredPerformers : '宣言なし',
     observedCoAuthors: observedCoAuthors.length ? observedCoAuthors : NO_RECORD,
     instructionAssets: git(['log', '-1', '--format=%h %cs', to, '--', 'CLAUDE.md', '.claude']) || NO_RECORD,
@@ -6753,6 +6769,15 @@ if (isMain) {
       R.push(`- 宣言した担い手: ${A.generation.declaredPerformers}`);
     }
     R.push(`- コミットに記録された共著者: ${listOr(A.generation.observedCoAuthors)}`);
+    {
+      // 実行の記録(トレーラ Agent-Run・Agent-Assets。ADR-0222)。AI の印のあるコミットの、指示資産の版の特定の可否。外すのは監査人(機械は一覧を出すだけ)
+      const g = A.generation.agentRecord;
+      const c = g.counts;
+      R.push(`- AI の印のあるコミットの指示資産の版(トレーラ Agent-Assets。AI の印 ${g.total} 件): 版を特定できる ${c.clean + c.dirty} 件(うち指示資産にコミットに無い変更あり ${c.dirty} 件)/ 特定できない ${c.unknown + c['no-trailer']} 件(記録なし・読めない ${c.unknown} 件、トレーラなし ${c['no-trailer']} 件)/ フックの導入前 ${c['pre-hook']} 件${g.hookIntroduced ? '' : '(.githooks/commit-msg の導入の記録なし。全て導入前に数えた)'}`);
+      if (g.excludeCandidates.length) R.push(`  - 監査の抽出から外す対象(版を特定できないコミット。外すのは監査人。消さない): ${g.excludeCandidates.slice(0, 20).map((x) => `${x.hash}(${x.class === 'unknown' ? '記録なし・読めない' : 'トレーラなし'})`).join(', ')}${g.excludeCandidates.length > 20 ? ` ほか ${g.excludeCandidates.length - 20} 件` : ''}`);
+      if (g.switched.periods) R.push(`- 切り替えの期間(${g.switched.periods} 件)に生成された、AI の印のあるコミット ${g.switched.commits.length} 件: ${g.switched.commits.length ? g.switched.commits.slice(0, 20).join(', ') + (g.switched.commits.length > 20 ? ` ほか ${g.switched.commits.length - 20} 件` : '') : 'なし'}`);
+      R.push('  - 見えないもの: git commit --no-verify、別の core.hooksPath、AI の印も付かないコミット。別のセッションの amend は元の識別子が残る。利用者の範囲の指示は版を記録できない(user-scope=unrecorded)');
+    }
     R.push(`- ${A.exceptionUse.fastTrack}`);
     R.push(`- 制限された状態での例外決裁(7.9.4)の行: ${A.exceptionUse.restricted.count} 件(うち印の無い行 ${A.exceptionUse.restricted.unmarked.length} 件${A.exceptionUse.restricted.unmarked.length ? ': ' + A.exceptionUse.restricted.unmarked.join(', ') : ''}。印の無い行は欠落にしない)${A.exceptionUse.restricted.unconfirmed.length ? ` / 承認した者が B-2 の決定者かを確認できない ${A.exceptionUse.restricted.unconfirmed.join(', ')}` : ''}`);
     R.push(`- ${A.exceptionUse.quota}`);

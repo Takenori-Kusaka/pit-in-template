@@ -572,6 +572,75 @@ const config = {
   check('IMPL-0687:ok 入力を欠いた出力でも、保証の主張の成立判定の見出しが本文つきで出る', /### 保証の主張の成立判定\n+\S/.test(report));
 }
 
+// ---------------------------------------------------------------- 実行の記録の集計(IMPL-0828・IMPL-0743・IMPL-1019。ADR-0222)
+// AI の印のあるコミットを、指示資産の版の特定の可否で 5 区分に分けて件数を出し、外す対象の一覧と切り替えの期間のコミットの一覧を出す。
+// 実物の集約を、トレーラ付きのコミットを持つ一時の置き場で動かす
+{
+  const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-agg-run-'));
+  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
+    if (SKIP.has(e.name)) continue;
+    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
+  }
+  const co = path.join(dir, '.github/CODEOWNERS');
+  fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
+  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@example.com');
+  git('config', 'user.name', 'tester');
+  git('config', 'core.autocrlf', 'false');
+  const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-biz-phase': 'growth', 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' };
+  const PEOPLE = Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊己'[i]}`, accounts: [`acc${i}`] }));
+  const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
+  const log = console.log;
+  console.log = () => {};
+  let cfg;
+  try {
+    cfg = buildConfig(COMMON, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config;
+  } finally {
+    console.log = log;
+  }
+  fs.rmSync(path.join(dir, 'docs/D-0-governance.md'), { force: true });
+  const cfgPath = path.join(dir, 'process.config.json');
+  cfg = JSON.parse(JSON.stringify(sealChangeLog(JSON.parse(JSON.stringify(cfg)))));
+  cfg.changeLog = [...(Array.isArray(cfg.changeLog) ? cfg.changeLog : []), { kind: 'outage', date: '2026-11-01', summary: '切り替え', result: 'no-change', outage: { from: '2000-01-01', handling: 'human', switched: true } }];
+  fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(JSON.parse(JSON.stringify(cfg))), null, 2) + '\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: init');
+  const SHA = 'a'.repeat(64);
+  const mk = (name, msg) => {
+    fs.writeFileSync(path.join(dir, name), name + '\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', msg);
+  };
+  mk('c1.txt', 'feat: clean\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nAgent-Run: r1\nAgent-Assets: sha256:' + SHA + '; base=' + 'b'.repeat(40) + '; assets=clean; user-scope=unrecorded');
+  mk('c2.txt', 'feat: dirty\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nAgent-Run: r2\nAgent-Assets: sha256:' + SHA + '; base=' + 'b'.repeat(40) + '; assets=dirty; user-scope=unrecorded');
+  mk('c3.txt', 'feat: unknown\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nAgent-Run: r3\nAgent-Assets: unknown(no-run-record)');
+  mk('c4.txt', 'feat: no trailer\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>');
+  mk('c5.txt', 'fix: human');
+  const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs', '--exception-day', '2026-11-20'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' } });
+  let report = '';
+  try {
+    const rf = ['evidence/report.md', 'evidence/quality-report.md'].map((f2) => path.join(dir, f2)).find((f2) => fs.existsSync(f2));
+    report = rf ? fs.readFileSync(rf, 'utf8') : '';
+  } catch {
+    // 読めなければ空
+  }
+  const hashes = git('log', '--format=%h %s').split('\n');
+  const short = (subj) => (hashes.find((l) => l.endsWith(' ' + subj)) ?? '').slice(0, 7);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const line = (report.split('\n').find((l) => l.includes('AI の印のあるコミットの指示資産の版')) ?? '');
+  // IMPL-0828:ng(切り替えの期間があるのに一覧が出ない)
+  const sw = (report.split('\n').find((l) => l.includes('切り替えの期間(1 件)に生成された')) ?? '');
+  check('IMPL-0828:ng 切り替えの期間があれば、AI の印のあるコミットの一覧を出す(4 件)', /AI の印のあるコミット 4 件/.test(sw) && sw.includes(short('feat: no trailer')), sw || (r.stdout + r.stderr).slice(-300));
+  // IMPL-0828:ok(期間の件数と一覧)
+  check('IMPL-0828:ok 人のコミットは切り替えの期間の一覧に入らない', sw !== '' && !sw.includes(short('fix: human')), sw);
+  check('IMPL-1019:ok 5 区分の件数を出す(特定できる 2 件・うち変更あり 1 件・特定できない 2 件)', /AI の印 4 件\): 版を特定できる 2 件\(うち指示資産にコミットに無い変更あり 1 件\)\/ 特定できない 2 件\(記録なし・読めない 1 件、トレーラなし 1 件\)/.test(line), line);
+  // IMPL-0743:ng の入力(unknown が外す対象の一覧に出ない)を見る
+  const ex = (report.split('\n').find((l) => l.includes('監査の抽出から外す対象')) ?? '');
+  check('IMPL-0743 の入力: unknown とトレーラなしが外す対象の一覧に出て、版を特定できるものは出ない', ex.includes(short('feat: unknown')) && ex.includes(short('feat: no trailer')) && !ex.includes(short('feat: clean')) && !ex.includes(short('feat: dirty')), ex);
+}
+
 // ---------------------------------------------------------------- 第7章の行使(IMPL-0612・IMPL-0628・IMPL-0669)
 {
   const ex = (id, target, content, state = '未返却', due = '2026-12-31 まで。回収責任者 名簿 丙', approver = '名簿 乙') => ({ id, kind: '例外', target, content, state, due, approver });

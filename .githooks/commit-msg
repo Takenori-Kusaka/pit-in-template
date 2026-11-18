@@ -1,0 +1,7 @@
+#!/bin/sh
+# commit-msg: Claude Code の実行(環境変数 CLAUDE_CODE_SESSION_ID)のコミットにだけ、実行の識別子と指示資産の版をトレーラとして足す。
+# 人の端末のコミットには足さない。既にトレーラがあれば(amend)足さない。IMPL-0207・IMPL-1019。標準 第5章 5.8.2、ADR-0222。
+# 見えないもの: git commit --no-verify、別の core.hooksPath、AI の印も付かないコミット。
+[ -n "$CLAUDE_CODE_SESSION_ID" ] || exit 0
+assets=$(node scripts/gate/agent-run-record.mjs assets "$CLAUDE_CODE_SESSION_ID") || assets="unknown(no-run-record)"
+git interpret-trailers --if-exists doNothing --trailer "Agent-Run: $CLAUDE_CODE_SESSION_ID" --trailer "Agent-Assets: $assets" --in-place "$1"
