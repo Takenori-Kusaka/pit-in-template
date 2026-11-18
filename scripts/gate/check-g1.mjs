@@ -116,6 +116,22 @@ const g1Dependent = (msg) => {
   if (g1.passed === null) undecided.push(msg);
   else problems.push(msg);
 };
+// 案件の登録(標準 第5章 5.7 案件の登録 手順1。IMPL-0883)。企画書の project_id が構成の projectId と一致すること、
+// 案件の記録 context/projects/<案件ID>.md が実在すること。G-1 を通過済みの既存の案件は、記録ファイルの不在を注意にとどめる(遡って失敗させない)。
+// 一致の検査は通過済みでも失敗にする(別の案件の企画書を指している)。機械が見るのは値の一致とファイルの実在だけで、記録の内容は見ない
+{
+  const cfgId = typeof config.projectId === 'string' ? config.projectId.trim() : '';
+  if (cfgId && fm.project_id && fm.project_id !== cfgId) {
+    problems.push(`企画書の案件 ID(project_id: ${fm.project_id})が構成の projectId(${cfgId})と一致しません。案件の登録の記録は構成の案件 ID で作ります`);
+  } else if (cfgId) {
+    const rel = `context/projects/${cfgId}.md`;
+    if (!fs.existsSync(path.join(ROOT, rel))) {
+      const msg = `案件の記録 ${rel} がありません(案件の登録。S0 の開始時に案件 ID を付けて残す。context/projects/README.md の項目で作る)`;
+      if (g1.passed === true) warn(`${msg}(G-1 を通過済みのため、遡って失敗させません)`);
+      else g1Dependent(msg);
+    }
+  }
+}
 const scopeRowState = briefScopeRowState(text, gateRecs);
 for (const [section, key] of REQUIRED_ROWS) {
   const row = lines.find((l) => l.replace(/\*/g, '').startsWith(`| ${key} |`));
