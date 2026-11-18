@@ -1,0 +1,54 @@
+# 滞留期間の観測と通知(IMPL-0283。process-compass #443 / ADR-0173)
+#
+# 開いた作業単位(Issue)の着手からの経過が、直近に完了した作業単位の実測サイクルタイムの85パーセンタイルを超えたら、
+# 作業単位の Issue へ担当者と価値責任者を記名したコメントを1回だけ出します。標本が足りないときは「算定できない」として通知しません。
+# ラベルは遷移させません。**必須チェックにしません**。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
+#
+# 検査のコードと構成は、既定ブランチから読みます。契機は schedule と workflow_dispatch だけです(PR の事象で動かしません)。
+#
+# 2026-11-18 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
+# 有効化の前に、試験用のリポジトリで `workflow_dispatch` を dry-run(下の入力)で流して確かめてください。
+
+name: flow-observation
+
+on:
+  schedule:
+    - cron: '43 0 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 書き込まずに、通知する内容だけを出す
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: flow-observation
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: flow-observation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - name: 滞留を観測して通知する
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/gate/flow-observation.mjs --dry-run
+          else
+            node scripts/gate/flow-observation.mjs
+          fi
