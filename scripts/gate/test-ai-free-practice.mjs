@@ -68,20 +68,24 @@ const state = (rows, { freq = '四半期に1回', day = '2026-03-01', config = c
 };
 const texts = (...a) => aiFreePracticeTexts(state(...a));
 const row = (d, area, by) => `| ${d} | ${area} | ${by} |`;
+const localDay = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const R0 = row('2026-02-01', 'docs-typo', '名簿 甲');
 
 // ---------------------------------------------------------------- 層1 の頻度の読み(白名簿)
-for (const [raw, n] of [['四半期に1回', 3], ['12か月', 12], ['半年に1回', 6], ['90日ごと', 90], ['毎年', 12], ['毎月', 1], ['年に1回', 12], ['3か月に1回', 3], ['2週ごと', 14]]) {
+for (const [raw, n] of [['四半期に1回', 3], ['12か月', 12], ['半年に1回', 6], ['90日ごと', 90], ['毎年', 12], ['毎月', 1], ['1年に1回', 12], ['3か月に1回', 3], ['2週ごと', 14]]) {
   check(`IMPL-1021:ok 読める値(${raw})`, parsePracticeInterval(raw)?.n === n, JSON.stringify(parsePracticeInterval(raw)));
 }
 // IMPL-1021:ng(読めない値は空欄と同じに扱い、値を併記して表示する)
-for (const raw of ['3か月に2回', '毎月2回', '3〜6か月', '0か月', '随時', '必要に応じて', '毎月1回、繁忙期は2回', '半年ごと(重要案件は毎月)', '']) {
+for (const raw of ['3月', '12月', '年に1回', '月1回', '12か月毎', '毎月毎', '3ヶ月', '3か月に2回', '毎月2回', '3〜6か月', '0か月', '随時', '必要に応じて', '毎月1回、繁忙期は2回', '半年ごと(重要案件は毎月)', '']) {
   const t = texts(row('2026-02-01', 'docs-typo', '名簿 甲'), { freq: raw });
   check(`IMPL-1021:ng 読めない値/空欄(${raw || '空欄'})は「頻度を定めていない」を値つきで出す`, parsePracticeInterval(raw) === null && t.some((x) => x.includes('頻度を定めていない') && x.includes(raw || '空欄')), t.join(' / '));
 }
 check('IMPL-1021:ok 読める値なら「頻度を定めていない」は出ない', !texts(row('2026-02-01', 'docs-typo', '名簿 甲')).some((x) => x.includes('頻度を定めていない')));
 check('IMPL-1021:ok 範囲が無い構成(allowed が偽)では、空欄でも表示しない', texts(null, { freq: '', config: cfgOf({ delegation: { allowed: false, changeTypes: [{ id: 'docs-typo', basis: BASIS }] } }) }).length === 0);
 check('IMPL-1021:ok 範囲が無い構成(種別の登録なし)では、空欄でも表示しない', texts(null, { freq: '', config: cfgOf({ delegation: { allowed: true, changeTypes: [] } }) }).length === 0);
-check('IMPL-1021:ok 層1 そのものが無い案件は重ねて出さない(別の欠落として出る)', texts(null, { policy: { present: false, cycle: {} } }).length === 0);
+check('IMPL-1021:ok 層1 そのものが無い案件は頻度の表示を重ねて出さない(別の欠落として出る)', !texts(null, { policy: { present: false, cycle: {} } }).some((x) => x.includes('頻度を定めていない')));
+check('IMPL-1022:ng 層1 そのものが無い案件でも「記録が無い」は出る(頻度に依らず)', texts(null, { policy: { present: false, cycle: {} } }).some((x) => x.includes('記録が無い') && x.includes('docs-typo')));
+check('IMPL-1022:ok 層1 が無くても記録があれば「記録が無い」は出ない', !texts(R0, { policy: { present: false, cycle: {} } }).some((x) => x.includes('記録が無い')));
 check('IMPL-1021:ng 層1 があり行が無い(頻度が null)なら、空欄として出す', texts(null, { policy: { present: true, cycle: { aiFree: null, aiFreeRaw: null } } }).some((x) => x.includes('頻度を定めていない') && x.includes('空欄')));
 
 // 層1 の様式の行を実際に読む(テンプレ11 の IMPL-1020 の行)
@@ -222,8 +226,8 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
   const none = e2e('| | | |');
   check('IMPL-1022:ng 集約: 記録が無い範囲を項目7 に出し、照らした基準日を併記する', /AI を用いない実施の記録が無い\(範囲: docs-typo\)/.test(none.body) && /照らした基準日: \d{4}-\d{2}-\d{2}/.test(none.body), none.out.slice(-600));
   check('IMPL-1022:ng 集約: 表示は記載の欠落(止める側)に入れない', !none.out.split('\n').some((l) => /AI を用いない実施/.test(l) && /記載の欠落です/.test(l)), none.out.slice(-600));
-  const done = e2e(`| ${new Date().toISOString().slice(0, 10)} | docs-typo | 名簿 甲 |`);
-  check('IMPL-1022:ok 集約: 頻度内の記録があれば(頻度が未記入の層1 でも)「記録が無い」は出ない', !/AI を用いない実施の記録が無い/.test(done.body), done.out.slice(-600));
+  const done = e2e(`| ${localDay()} | docs-typo | 名簿 甲 |`);
+  check('IMPL-1022:ok 集約: 頻度内の記録があれば(層1 の既定の頻度内)「記録が無い」は出ない', !/AI を用いない実施の記録が無い/.test(done.body), done.out.slice(-600));
 }
 
 console.log('');

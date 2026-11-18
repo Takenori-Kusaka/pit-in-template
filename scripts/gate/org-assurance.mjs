@@ -157,18 +157,17 @@ export function intervalEnd(since, interval) {
  * 層1 の「AI を用いずに実装または調査する機会の頻度」(5.4.7。IMPL-1021)を読む。1回あたりの期間として読める値だけを返す。
  * parseInterval をそのまま使わない(回数を捨て、文字列のどこかに語があれば読めてしまう)。白名簿の全体一致に限り、
  * それ以外(1期間に2回以上、幅、自由文、0 以下、空欄)は null(読めない値。不利な側 = 表示を出す側)
- *   数字 + 日・週・か月・年(「ごと」「に1回」を付けてよい) / 半年・四半期・毎月・毎年(同) / 年に1回・月に1回
+ *   数字 + 日・週・か月・年(「ごと」「に1回」を付けてよい) / 半年・四半期・毎月・毎年(同)。表記の揺れ(ヶ月・月だけ・毎の接尾)は読まない
  */
-const PRACTICE_NUMERIC = /^(\d+)\s*(?:日|週|か月|ヶ月|カ月|ケ月|箇月|月|年)(?:ごと|毎|に\s*1\s*回)?$/;
-const PRACTICE_WORD = /^(?:半年|四半期|毎月|毎年)(?:ごと|毎|に\s*1\s*回)?$/;
-const PRACTICE_ONCE = /^(?:年|月)\s*(?:に)?\s*1\s*回$/;
+const PRACTICE_NUMERIC = /^(\d+)\s*(?:日|週|か月|年)(?:ごと|に\s*1\s*回)?$/;
+const PRACTICE_WORD = /^(?:半年|四半期|毎月|毎年)(?:ごと|に\s*1\s*回)?$/;
 export function parsePracticeInterval(raw) {
   const s = nfkc(raw).replace(/\s+/g, ' ').trim();
   if (!isFilledValue(s)) return null;
   const num = s.match(PRACTICE_NUMERIC);
   if (num) {
     if (Number(num[1]) <= 0) return null;
-  } else if (!PRACTICE_WORD.test(s) && !PRACTICE_ONCE.test(s)) {
+  } else if (!PRACTICE_WORD.test(s)) {
     return null;
   }
   const v = parseInterval(s);
@@ -1219,7 +1218,7 @@ export function competenceState(config, policy, { day = null } = {}) {
  * 第5章 5.4.7「AI を用いない実施」の機会の確保(IMPL-1021・1022)。保証の開示の項目7 に出す状態を、記録から導く。
  * 止めない(記載の欠落・組織継続の側の状態に入れない。ADR-0179 決定2)。実施の中身と事実は確かめない(EV-0322)。
  *   範囲  scope = L3 の範囲の変更種別の id(autonomy.mjs の l3ScopeIds。D-0 の表と同じ導き方)。無ければ空を返す
- *   層1   層1 そのものが無い案件は、層1 が無いこと自体が別の欠落として出るので重ねて出さない。層1 があり行が無い・空欄は「空欄」
+ *   層1   層1 そのものが無い案件は、頻度の表示(freqNotice)だけを重ねて出さない(別の欠落として出る)。記録が無いの表示は層1 に依らず出す。層1 があり行が無い・空欄は「空欄」
  *   記録  D-0 節12 の「AI を用いない実施の記録」(実施した日・対象領域・実施者)。数える行 = 実施した日が実在の日で基準日以前、
  *         対象領域が範囲の名と一致(先頭の「登録した変更種別」は除く)、実施者が1名以上で、そのすべてが人の名簿にあり AI の名義でない
  *   基準日 day(呼び出し側が渡す)。頻度を過ぎる日は practiceDue(月末を繰り越さない)
@@ -1228,8 +1227,9 @@ export function competenceState(config, policy, { day = null } = {}) {
 export function aiFreePracticeState(config, policy, { root = ROOT, day = null, scope = [] } = {}) {
   const ids = [...new Set((scope ?? []).map((v) => String(v ?? '')))].filter(Boolean);
   const empty = { scope: ids, day, freq: { blank: false, raw: null, readable: false }, freqNotice: null, ranges: [], d0Present: false, tablePresent: false };
-  if (!ids.length || policy?.present === false) return empty;
-  const cycle = policy?.cycle ?? NO_CYCLE;
+  if (!ids.length) return empty;
+  const noPolicy = policy?.present === false;
+  const cycle = noPolicy ? NO_CYCLE : (policy?.cycle ?? NO_CYCLE);
   const d0 = readText(D0_FILE, root);
   const t = tableWithHeader(sectionLines(d0, /12\.\s*担い手と運用形態/), { after: /^\*\*AI を用いない実施の記録/ });
   const iDay = colOf(t.header, /実施した日/);
@@ -1260,7 +1260,7 @@ export function aiFreePracticeState(config, policy, { root = ROOT, day = null, s
     scope: ids,
     day,
     freq: { blank: !isFilledValue(cycle.aiFreeRaw), raw: cycle.aiFreeRaw, readable: Boolean(freq), interval: freq },
-    freqNotice: freq ? null : `AI を用いない実施の頻度を定めていない(層1 の値: ${cycle.aiFreeRaw ?? '空欄'})`,
+    freqNotice: freq || noPolicy ? null : `AI を用いない実施の頻度を定めていない(層1 の値: ${cycle.aiFreeRaw ?? '空欄'})`,
     ranges,
     d0Present: Boolean(d0),
     tablePresent: t.header.length > 0,
