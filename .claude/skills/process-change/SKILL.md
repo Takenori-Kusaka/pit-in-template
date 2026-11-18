@@ -93,3 +93,4 @@ node scripts/gate/next.mjs
 
 - 旧い構成からの移行: `reference/integrity.md`
 - 標準 第3章 3.13(体制の変化点)・第5章 5.5・第8章「再テーラリングの契機」
+- 体制の変化点を反映したら、`node scripts/gate/aggregate-evidence.mjs` を実行して依存先の一覧(単一障害点の一覧を含む)を再生成する(第3章 3.12.11 要求事項5)
