@@ -80,7 +80,22 @@ function assetsStatusLines(cwd, pred) {
  * ステージ済みの変更は、そのコミットに入るので数えない
  */
 export function assetsUncommitted(cwd = ROOT) {
-  return assetsStatusLines(cwd, (l) => l[1] !== ' ');
+  return assetsStatusLines(cwd, (l) => l[1] !== ' ' && !isEmptyScaffold(l, cwd));
+}
+
+/**
+ * 追跡されていない、内容の無い足場か(決定可能な条件だけ: 状態が '??' で、パスが大きさ 0 の通常ファイル・文字特殊ファイル)。
+ * 隔離のもとの Claude Code が実行の間だけ作る足場が当たる。追跡中の変更・内容のある未追跡・リンクは当たらない。
+ * 読めない・存在しないときは足場と見なさない(数える側へ倒す)
+ */
+function isEmptyScaffold(line, cwd) {
+  if (!line.startsWith('??')) return false;
+  try {
+    const st = fs.lstatSync(path.join(cwd, line.slice(3).replace(/^"|"$/g, '')));
+    return st.size === 0 && (st.isFile() || st.isCharacterDevice());
+  } catch {
+    return false;
+  }
 }
 
 export function recordPath(id, cwd = ROOT) {

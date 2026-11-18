@@ -210,6 +210,32 @@ function repo() {
   for (const x of [W, W2, W3]) fs.rmSync(x.dir, { recursive: true, force: true });
 }
 
+// ---------------------------------------------------------------- IMPL-1019 隔離の足場(追跡されていない、内容の無いものだけを数えない)
+{
+  const mod = await import(new URL('./agent-run-record.mjs', import.meta.url).href);
+  const pending = (setup) => {
+    const W = repo();
+    setup(W);
+    const r = mod.assetsUncommitted(W.dir);
+    fs.rmSync(W.dir, { recursive: true, force: true });
+    return r;
+  };
+  // IMPL-1019:ng(内容のある未追跡・追跡中の変更・追跡中のファイルを空にした変更は、足場と見なさず dirty に数える)
+  check('IMPL-1019:ng 内容のある未追跡の指示資産は dirty に数える', pending((W) => W.touch('.claude/new-agent.md', '# 新\n')) === true);
+  check('IMPL-1019:ng 追跡中の指示資産の変更は dirty に数える', pending((W) => W.touch('CLAUDE.md', '# 変更\n')) === true);
+  check('IMPL-1019:ng 追跡中のファイルを空にした変更は、大きさ 0 でも dirty に数える', pending((W) => W.touch('.claude/note.md', '')) === true);
+  check('IMPL-1019:ng 追跡中のファイルの削除は dirty に数える', pending((W) => fs.rmSync(path.join(W.dir, 'context', 'glossary.md'))) === true);
+  // IMPL-1019:ok(未追跡の空の足場は clean)
+  check(
+    'IMPL-1019:ok 未追跡で大きさ 0 の足場(隔離のもとで実行の間だけ作られるもの)は dirty に数えない',
+    pending((W) => {
+      W.touch('.claude/agents', '');
+      W.touch('.claude/loop.md', '');
+      W.touch('.claude/scheduled_tasks.json', '');
+    }) === false,
+  );
+}
+
 // ---------------------------------------------------------------- core.hooksPath
 {
   const W = repo();
