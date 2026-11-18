@@ -21,8 +21,92 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ROOT, loadConfig, accountKey, accountLoginOf, accountIdOf, numericAccountId, hasWriteAssociation } from './config.mjs';
+import { ROOT, loadConfig, findPersonByAccount, accountKey, accountLoginOf, accountIdOf, numericAccountId, hasWriteAssociation } from './config.mjs';
 import { readRecordsBranch, parseCopy } from './records.mjs';
+
+// ---------------------------------------------------------------- CODEOWNERS の所有者の検査(IMPL-0211。ADR-0200)
+//
+// 所有者の無い領域と、部署名・グループ名だけの指名を G-5 で失敗させる。機械が見るのは決定可能な条件だけである。
+//   (i) 行の所有者に置き字 `@OWNER` が残る
+//   (ii) 行の所有者が `@org/team` の形(チーム)だけである
+//   (iii) 個人の所有者のログイン名が、名簿(people[].accounts)の人へ対応づかない
+//   (iv) 変更したファイルが、どの行の型にも当たらない(最後に当たった行が勝つ規則で、当たる行の有無を見る)
+// 部署名・グループ名の実質(チームの構成員が誰か)は確かめない。個人のログイン名が名簿の人であることまでを見る。
+// 型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /)を読む。否定(!)・文字クラス・エスケープは読まない。
+// 時計を読まない。ログイン名の照合は名簿のログイン名だけで行う(CODEOWNERS に数値の識別子が無いため)
+
+/** CODEOWNERS の本文を { pattern, owners, line }[] に読む。コメント(# から行末)と空行を除く */
+export function parseCodeowners(text) {
+  const rows = [];
+  String(text ?? '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .forEach((raw, i) => {
+      const body = raw.replace(/(^|\s)#.*$/, '').trim();
+      if (!body) return;
+      const [pattern, ...owners] = body.split(/\s+/);
+      rows.push({ pattern, owners, line: i + 1 });
+    });
+  return rows;
+}
+
+/** gitignore 書式の型が、ファイルのパスに当たるか(型が指すディレクトリの下のファイルにも当たる) */
+export function codeownersMatch(pattern, file) {
+  let p = String(pattern ?? '');
+  if (!p) return false;
+  const anchored = p.startsWith('/') || p.replace(/\/$/, '').includes('/');
+  p = p.replace(/^\//, '').replace(/\/$/, '');
+  let body = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*' && p[i + 1] === '*') {
+      if (p[i + 2] === '/') {
+        body += '(?:.*/)?';
+        i += 2;
+      } else {
+        body += '.*';
+        i += 1;
+      }
+    } else if (c === '*') body += '[^/]*';
+    else if (c === '?') body += '[^/]';
+    else body += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  const re = new RegExp(`^${anchored ? '' : '(?:.*/)?'}${body}(?:/.*)?$`);
+  return re.test(String(file ?? '').replace(/\\/g, '/'));
+}
+
+/** 所有者の書き方: 個人(@login)・チーム(@org/team)・その他(メールアドレスなど) */
+function ownerKind(o) {
+  if (/^@[^/\s]+\/[^/\s]+$/.test(o)) return 'team';
+  if (/^@[^/\s]+$/.test(o)) return 'user';
+  return 'other';
+}
+
+/**
+ * CODEOWNERS(基底ブランチの版の本文)と変更したファイルから、失敗にする問題の一覧を返す。text が null なら、ファイルが無い問題を返す。
+ * 戻り値: { problems: string[], rows: number }
+ */
+export function codeownersProblems(config, text, files = []) {
+  if (text === null || text === undefined) return { problems: ['.github/CODEOWNERS が基底ブランチに無い(所有者を定義していない)'], rows: 0 };
+  const rows = parseCodeowners(text);
+  const problems = [];
+  for (const r of rows) {
+    const where = `${r.line} 行目(${r.pattern})`;
+    if (r.owners.length === 0) {
+      problems.push(`${where}: 所有者が書かれていない`);
+      continue;
+    }
+    if (r.owners.some((o) => /^@OWNER$/i.test(o))) problems.push(`${where}: 置き字 @OWNER が残っている。実在する所有者へ置き換える`);
+    if (r.owners.every((o) => ownerKind(o) === 'team')) problems.push(`${where}: 所有者が ${r.owners.join(' ')} のチームだけ。部署名・グループ名だけの指名は認めない。記名のレビュアとして個人を足す`);
+    for (const o of r.owners) {
+      if (/^@OWNER$/i.test(o) || ownerKind(o) === 'team') continue;
+      if (ownerKind(o) === 'other' || !findPersonByAccount(config, o.replace(/^@/, ''))) problems.push(`${where}: 所有者 ${o} が名簿(people[].accounts)の人へ対応づかない`);
+    }
+  }
+  const uncovered = files.filter((f) => !rows.some((r) => codeownersMatch(r.pattern, f)));
+  if (uncovered.length) problems.push(`所有者が定義されていない領域の変更: ${uncovered.slice(0, 3).join(', ')}${uncovered.length > 3 ? ` ほか ${uncovered.length - 3} 件` : ''}(どの行の型にも当たらない)`);
+  return { problems: [...new Set(problems)], rows: rows.length };
+}
 
 /** 基底ブランチの写しの複製の置き場(aggregate-evidence.mjs の BASE_COPIES_DIR と同じ) */
 export const BASE_COPIES_DIR = 'docs/records/reviews';

@@ -63,6 +63,7 @@ const SPEC_BASE = '---\nid: F-001\n---\n# 機能仕様: 招待\n\n## 背景\n\n�
 write('specs/F-001/spec.md', SPEC_BASE);
 write('specs/F-001/plan.md', '| ID | 内容 |\n| --- | --- |\n| Task-1 | 招待 |\n| Task-2 | 一覧 |\n');
 write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7));
+write('.github/CODEOWNERS', '* @yamada\n');
 write('src/a.js', lines(20));
 // 検査装置(統制の設定。#290): 基底にあるものの変更だけが陰性の確認の対象になる
 write('scripts/gate/spec-lint.mjs', "console.log('spec-lint');\n");
@@ -849,6 +850,44 @@ scenario('ファストトラック: D-002 が返却済みなら新しい印の�
   withFtLedger(exceptionRow('D-002', 21, { content: FT('G-6'), state: '返却済み(2026-11-01)' }), exceptionRow('D-003', 22, { content: FT('G-6') }));
   write('src/big.js', lines(450, 'x'));
 }, exMatched('D-003'));
+rewindBase();
+
+// ---------------------------------------------------------------- CODEOWNERS の所有者(IMPL-0211。ADR-0200)
+const withOwners = (text) => {
+  write('.github/CODEOWNERS', text);
+  advanceBase('codeowners');
+};
+const coFails = (re) => failsWith(/CODEOWNERS: /, (r) => (r.codeowners?.problems.some((p) => re.test(p)) ? [] : [`${re} の問題が出ていない: ${JSON.stringify(r.codeowners)}`]));
+// IMPL-0211:ng(違反と適合の対。標準の実装マーク)
+scenario('CODEOWNERS: 置き字 * @OWNER が残る', {}, () => {
+  withOwners('* @OWNER\n');
+  write('src/a.js', lines(21));
+}, coFails(/置き字 @OWNER が残っている/));
+rewindBase();
+// IMPL-0211:ng
+scenario('CODEOWNERS: 所有者がチーム(@org/team)だけの行', {}, () => {
+  withOwners('* @yamada\nsrc/ @acme/backend\n');
+  write('src/a.js', lines(21));
+}, coFails(/チームだけ/));
+rewindBase();
+// IMPL-0211:ng
+scenario('CODEOWNERS: どの行の型にも当たらない変更', {}, () => {
+  withOwners('/docs/ @yamada\n');
+  write('src/a.js', lines(21));
+}, coFails(/所有者が定義されていない領域の変更: src\/a\.js/));
+rewindBase();
+// IMPL-0211:ng
+scenario('CODEOWNERS: 個人の所有者が名簿の人へ対応づかない', {}, () => {
+  withOwners('* @stranger\n');
+  write('src/a.js', lines(21));
+}, coFails(/@stranger が名簿.*対応づかない/));
+rewindBase();
+// IMPL-0211:ok
+scenario('CODEOWNERS: 名簿の人の login で全体を覆い、深い型が後に勝つ(チームとの併記も通る)', {}, () => {
+  withOwners('* @yamada\n/src/ @suzuki @acme/backend\n**/*.md @sato\n');
+  write('src/a.js', lines(21));
+  write('docs/notes.md', '# メモ\n');
+}, passes((r) => (r.codeowners?.rows === 3 ? [] : ['行を読めていない'])));
 rewindBase();
 
 // ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)

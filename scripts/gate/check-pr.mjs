@@ -185,6 +185,7 @@ import {
 } from './material-attribution.mjs';
 import { judgeOfForm } from './records.mjs';
 import { isClosedState } from './exception-expiry.mjs';
+import { codeownersProblems } from './roster-ids.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
 
@@ -2019,6 +2020,18 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       result.errors.push(
         `区分の引き下げの再判定: ${rejudge.join(' / ')}。区分の引き下げの根拠が引く機能仕様の受入基準を変える PR は、同じ PR で安全重要度の判定を再判定し、D-0 節16 の判定日を改める。` +
           '節の本文の文字列の一致で見る(整形だけの変更も再判定に当たる)。変更が必須制約を外すかの意味は確かめない(再判定の判定者が確かめる)'
+      );
+    }
+  }
+
+  // --- 7d. 所有者の無い領域と部署名だけの指名(IMPL-0211。ADR-0200)。基底(既定ブランチ)の CODEOWNERS を読む ---
+  if (policyConfigured) {
+    const co = codeownersProblems(policyConfig, atPolicy('.github/CODEOWNERS'), all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
+    result.codeowners = co;
+    if (co.problems.length) {
+      result.errors.push(
+        `CODEOWNERS: ${co.problems.join(' / ')}。所有者は名簿の人の個人のログイン名で書く(部署名・グループ名だけの指名を認めない)。` +
+          '部署名・グループ名の実質(チームの構成員が誰か)は確かめない。型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /)で読み、最後に当たった行が勝つ'
       );
     }
   }

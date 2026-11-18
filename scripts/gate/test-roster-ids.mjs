@@ -8,7 +8,7 @@
 //   node scripts/gate/test-roster-ids.mjs
 
 import { identifyAccount, identifyWhy, rosterProblems, accountKey, accountLoginOf, accountIdOf, accountRefOf, accountsWithoutId, findPersonByAccount, numericAccountId } from './config.mjs';
-import { proposeRosterIds, rosterWithProposals, observationsOfCopy } from './roster-ids.mjs';
+import { proposeRosterIds, rosterWithProposals, observationsOfCopy, codeownersMatch, codeownersProblems } from './roster-ids.mjs';
 import { approverFindings, instructorTokensOf } from './check-pr.mjs';
 import { introducedBacking, exceptionReviewBacking } from './material-attribution.mjs';
 import { gateJudgementsOfCopy, lastReviewStates } from './aggregate-evidence.mjs';
@@ -210,6 +210,21 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   const two = { ...before, people: [...before.people, { id: 'p2', name: '鈴木 一郎', accounts: ['suzuki'] }] };
   const twoAfter = { ...two, people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1001 }] }, two.people[1]] };
   check('名簿の変更(H-3): 2名以上の体制では、決定者本人の行の識別子の追加も本人の記名では受け付けない', deciderProblems(twoAfter, diffConfig(two, twoAfter), '山田 太郎', two).length > 0);
+}
+
+{
+  // CODEOWNERS の型の読み(IMPL-0211。gitignore 書式の部分集合)
+  const m = codeownersMatch;
+  check('CODEOWNERS の型: * は全ての階層に当たる', m('*', 'a.js') && m('*', 'src/deep/a.js'));
+  check('CODEOWNERS の型: 先頭の / は根に固定し、下の階層にも及ぶ', m('/src/', 'src/a.js') && m('/src/', 'src/x/a.js') && !m('/src/', 'lib/src/a.js'));
+  check('CODEOWNERS の型: / を含まない型はどの階層でも当たる', m('*.md', 'docs/a.md') && m('docs', 'a/docs/b.md') && !m('*.md', 'a.mdx'));
+  check('CODEOWNERS の型: 途中に / を含む型は根に固定する', m('docs/gates/', 'docs/gates/g1.md') && !m('docs/gates/', 'x/docs/gates/g1.md'));
+  check('CODEOWNERS の型: ** は階層をまたぐ', m('**/test/*.js', 'a/b/test/x.js') && m('src/**', 'src/a/b.js'));
+  const cfg = { people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1 }] }] };
+  const ok = codeownersProblems(cfg, '# コメント\n* @yamada # 末尾のコメント\n', ['src/a.js']);
+  check('CODEOWNERS: 名簿の人の login とコメントを読み、問題が無い', ok.problems.length === 0 && ok.rows === 1, JSON.stringify(ok));
+  check('CODEOWNERS: ファイルが無ければ問題', codeownersProblems(cfg, null, []).problems.length === 1);
+  check('CODEOWNERS: メールアドレスの所有者は名簿へ対応づかない', codeownersProblems(cfg, '* a@example.com\n', ['x']).problems.some((p) => /対応づかない/.test(p)));
 }
 
 console.log(failures ? `\nアカウントと人の対応表の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\nアカウントと人の対応表の試験: ${checks} 件が期待と一致しました`);
