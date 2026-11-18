@@ -690,6 +690,21 @@ const config = {
   check('IMPL-0667:ok 判定の欄が読めない記録は未確認として件数に出し、欠落にしない', unread.unreadable.length === 1 && unread.gaps.length === 0 && /未確認 1 件/.test(JR.reachCountsText(unread)), JR.reachCountsText(unread));
   const parsed = JR.reachRecordOf({ file: 'docs/gates/p.md', judgedAt: '2026-03-01 10:00', inRange: true, text: '| 判定 | 継続 |\n| 7.7.5 の回数 | 通算 2 回。丙のまま |\n\n## 到達の見込み\n\n| 区分 | 期間 丙 / 案件 乙 |\n' });
   check('IMPL-0667:ok 判定記録の本文から、案件の区分・判定・欄の「通算 N 回」を読む', parsed?.cls === '乙' && parsed.verdict === '継続' && parsed.declared === 2, JSON.stringify(parsed));
+  // F-01: 実物の様式 04 の全文を入力にする(冒頭の表の「判定者」「判定日時」が「判定」より先にある配置)
+  {
+    const form = fs.readFileSync(path.join(ROOT, 'templates/04-gate-record.md'), 'utf8').replace(/\r\n/g, '\n');
+    const filled = (verdict) => form
+      .replace(/^\| 判定 \| 継続 \/ 中止[^\n]*$/m, `| 判定 | ${verdict} |`)
+      .replace(/^\| 区分 \| <組ごとの区分[^\n]*$/m, '| 区分 | 期間 乙 / 案件 乙 |');
+    const real = JR.reachRecordOf({ file: 'docs/gates/real.md', judgedAt: '2026-03-01 10:00', inRange: true, text: filled('継続') });
+    check('IMPL-0667:ng 様式 04 の全文を埋めた記録から、判定(継続)と区分(乙)を読める(判定者の行に当たらない)', real.verdict === '継続' && real.cls === '乙' && real.readable === true, JSON.stringify(real));
+    const four = [1, 2, 3, 4].map((i) => JR.reachRecordOf({ file: 'r' + i, judgedAt: '2026-0' + i + '-01 10:00', inRange: true, text: filled('継続') }));
+    const cnt = JR.reachCounts(four);
+    check('IMPL-0667:ng 様式 04 の全文を埋めた乙の継続 4 件で、4 回目が欠落になる', cnt.total === 4 && cnt.gaps.length === 1 && cnt.unreadable.length === 0, JSON.stringify(cnt));
+    const blank = JR.reachRecordOf({ file: 'docs/gates/blank.md', judgedAt: '2026-03-01 10:00', inRange: true, text: form.replace(/^\| 区分 \| <組ごとの区分[^\n]*$/m, '| 区分 | 期間 乙 / 案件 乙 |') });
+    check('IMPL-0667:ok 様式のままの判定の行(継続 / 中止 / 保留 / 差し戻し)は継続と読まず、未確認に数える', blank.verdict === null && blank.readable === false, JSON.stringify(blank));
+    check('IMPL-0667:ok 判定と同時に確定した事項の行を判定として読まない', JR.reachRecordOf({ file: 'x', judgedAt: '2026-03-01 10:00', inRange: true, text: '| 判定者 | 甲 |\n| 判定と同時に確定した事項 | 継続 |\n\n## 到達の見込み\n\n| 区分 | 案件 乙 |\n' }).verdict === null);
+  }
   // IMPL-0622:ng(違反の入力。S1 で記録なしなのに注意が出ない)
   const none = JR.inventoryNotice({ records: [{ gate: '必達基準の判定(ステージの途中)', judgedAt: '2026-01-01 10:00' }], stage: 'S1', day: '2026-11-18' });
   check('IMPL-0622:ng S1 以降で棚卸しの判定記録が無いとき、注意を出す(止めない)', none.level === 'attention' && /記録なし/.test(none.text) && /止めない/.test(none.text), JSON.stringify(none));
@@ -832,29 +847,40 @@ const config = {
     [2, copy(2, { head_sha: yHead, ...(over.y ?? {}) })],
     [3, copy(3, { head_sha: otherHead })],
   ]);
+  // 有効な承認の述語。実物の集約は independentConfirmation を X の写しへ当てる。ここでは写しの承認者が someone のときだけ有効とする
+  const valid = (_n, c) => (c.reviews ?? []).some((r) => r.state === 'APPROVED' && r.user?.login === 'someone');
+  const botApproved = [{ user: { login: 'github-actions[bot]', id: 41898282 }, state: 'APPROVED' }];
   const full = clone('full');
   const g1 = gitOf(full);
-  const r1 = stackedLayerCheck({ copies: mk(), git: g1 });
+  const r1 = stackedLayerCheck({ copies: mk(), git: g1, hasValidApproval: valid });
   check('IMPL-0498:ng 手動のスタック(承認の無い X が Y の先頭の祖先)は数えない(refs/pull/N/head を取得して判定)', r1.verdicts.get(2)?.reason === 'stackedLayer', JSON.stringify([...r1.verdicts]));
   check('IMPL-0498:ok 無関係な Y(X が祖先でない)は数える', !r1.verdicts.has(3), JSON.stringify([...r1.verdicts]));
   check('IMPL-0498:ok 取得は承認の無い X があるときだけ、Y ごとに refs/pull/<Y>/head を --no-tags で行う', g1.calls.filter((c) => /^fetch /.test(c)).every((c) => /--no-tags origin refs\/pull\/\d+\/head/.test(c)) && g1.calls.some((c) => /refs\/pull\/2\/head/.test(c)), g1.calls.join(' | '));
   const g2 = gitOf(full);
-  const r2 = stackedLayerCheck({ copies: mk({ x: { reviews: approved } }), git: g2 });
+  const r2 = stackedLayerCheck({ copies: mk({ x: { reviews: approved } }), git: g2, hasValidApproval: valid });
   check('IMPL-0498:ok X に有効な承認がある層は数える(取得もしない)', r2.verdicts.size === 0 && !g2.calls.some((c) => /^fetch /.test(c)), JSON.stringify([...r2.verdicts]) + g2.calls.join('|'));
   const lower = new Map([[1, copy(1, { base: { ref: 'main' }, merge_commit_sha: mX })], [2, copy(2, { head_sha: yHead })]]);
   const g3 = gitOf(full);
-  const r3 = stackedLayerCheck({ copies: lower, git: g3 });
+  const r3 = stackedLayerCheck({ copies: lower, git: g3, hasValidApproval: valid });
   check('IMPL-0498:ok 下から順に既定ブランチへ入れるスタック(X の基底も既定ブランチ)は数える', r3.verdicts.size === 0 && !g3.calls.some((c) => /^fetch /.test(c)));
   const shallow = clone('shallow', '--depth', '1');
-  const r4 = stackedLayerCheck({ copies: mk(), git: gitOf(shallow) });
+  const r4 = stackedLayerCheck({ copies: mk(), git: gitOf(shallow), hasValidApproval: valid });
   check('IMPL-0498:ng 浅い取得は数えない(未確認)', r4.verdicts.get(2)?.reason === 'stackedUnconfirmed', JSON.stringify([...r4.verdicts]));
-  const r5 = stackedLayerCheck({ copies: mk({ y: { head_sha: '0123456789012345678901234567890123456789' } }), git: gitOf(clone('nohead')) });
+  const r5 = stackedLayerCheck({ copies: mk({ y: { head_sha: '0123456789012345678901234567890123456789' } }), git: gitOf(clone('nohead')), hasValidApproval: valid });
   check('IMPL-0498:ng Y の head を取得できないときは数えない(未確認)', r5.verdicts.get(2)?.reason === 'stackedUnconfirmed', JSON.stringify([...r5.verdicts]));
-  const r6 = stackedLayerCheck({ copies: mk({ x: { merge_commit_sha: '1111111111111111111111111111111111111111' } }), git: gitOf(clone('xmissing')) });
+  const r6 = stackedLayerCheck({ copies: mk({ x: { merge_commit_sha: '1111111111111111111111111111111111111111' } }), git: gitOf(clone('xmissing')), hasValidApproval: valid });
   check('IMPL-0498:ok Y の head があり X の版が無いときは数える', !r6.verdicts.has(2), JSON.stringify([...r6.verdicts]));
   const late = mk({ x: { merged_at: '2026-11-09T00:00:00Z' } });
-  const r7 = stackedLayerCheck({ copies: late, git: gitOf(full) });
+  const r7 = stackedLayerCheck({ copies: late, git: gitOf(full), hasValidApproval: valid });
   check('IMPL-0498:ok Y のマージより後に入った X は候補にしない', r7.verdicts.size === 0, JSON.stringify([...r7.verdicts]));
+  // F-04: 承認の件数ではなく有効な承認で判定する(bot の承認だけの X は承認なし)
+  const rBot = stackedLayerCheck({ copies: mk({ x: { reviews: botApproved } }), git: gitOf(full), hasValidApproval: valid });
+  check('IMPL-0498:ng X の承認が bot だけ(有効な承認でない)なら、承認の件数が 1 でも Y を数えない', rBot.verdicts.get(2)?.reason === 'stackedLayer', JSON.stringify([...rBot.verdicts]));
+  const rThrow = stackedLayerCheck({ copies: mk({ x: { reviews: approved } }), git: gitOf(full), hasValidApproval: () => { throw new Error('x'); } });
+  check('IMPL-0498:ng 有効な承認を判定できない(例外)ときは承認なしに倒し、Y を数えない', rThrow.verdicts.get(2)?.reason === 'stackedLayer', JSON.stringify([...rThrow.verdicts]));
+  let noFn = null;
+  try { stackedLayerCheck({ copies: mk(), git: gitOf(full) }); } catch (e) { noFn = e; }
+  check('IMPL-0498:ng hasValidApproval は必須(渡さなければ件数だけの判定へ戻らず例外)', noFn instanceof TypeError);
   check('IMPL-0498:ok 開示の行に、数えなかった件数・未確認の件数・見逃す場面(取り込みの後の rebase)を出す', /承認の無い層 1 件/.test(stackedLayerText(r1)) && /数えなかった PR 1 件/.test(stackedLayerText(r1)) && /履歴を読めず数えなかった PR 2 件/.test(stackedLayerText(r4)) && /rebase/.test(stackedLayerText(r1)), stackedLayerText(r1));
   fs.rmSync(tmp, { recursive: true, force: true });
 }

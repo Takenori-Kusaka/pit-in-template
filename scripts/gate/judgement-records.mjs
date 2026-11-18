@@ -14,6 +14,12 @@ function cellOf(text, key) {
   return m ? m[1].trim() : null;
 }
 
+/** 表の行「| 欄 | 値 |」の値を返す。欄名は完全一致(前置きの語が同じ別の欄に当たらない)。無ければ null */
+function exactCellOf(text, key) {
+  const m = String(text ?? '').match(new RegExp(`^\\|\\s*\\**${key}\\**\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, 'm'));
+  return m ? m[1].trim() : null;
+}
+
 const CLASSES = ['甲', '乙', '丙'];
 const VERDICTS = ['継続', '保留', '中止', '差し戻し'];
 
@@ -29,8 +35,14 @@ export function reachRecordOf({ file, text, judgedAt, inRange = true }) {
   const clsCell = nf(cellOf(sec, '区分') ?? '').replace(/\([^()]*\)/g, '');
   const caseCls = clsCell.match(/案件(?:の区分)?\s*(?:[::]|は)?\s*(甲|乙|丙)/)?.[1] ?? null;
   const cls = caseCls ?? (['丙', '乙', '甲'].find((c) => clsCell.includes(c)) ?? null);
-  const verdictCell = nf(cellOf(String(text ?? ''), '判定') ?? '');
-  const verdict = VERDICTS.find((v) => verdictCell.startsWith(v)) ?? null;
+  // 判定は節「会議体の判定の記録」(無ければ全文)から、欄名の完全一致で読む。判定の語がちょうど 1 つで先頭にあるときだけ採る
+  // (様式の未記入の行「継続 / 中止 / 保留 / 差し戻し」を継続と読まない。冒頭の表の「判定者」に当たらない)
+  const t0 = String(text ?? '');
+  const bodyAt = t0.search(/^##\s*会議体の判定の記録/m);
+  const verdictScope = bodyAt >= 0 ? (t0.slice(bodyAt).split(/\n##\s/)[0] ?? '') : t0;
+  const verdictCell = nf(exactCellOf(verdictScope, '判定') ?? '');
+  const found = VERDICTS.filter((v) => verdictCell.includes(v));
+  const verdict = found.length === 1 && verdictCell.startsWith(found[0]) ? found[0] : null;
   const declaredCell = nf(cellOf(String(text ?? ''), '7\\.7\\.5 の回数') ?? '');
   const declared = declaredCell.match(/^通算\s*(\d+)\s*回/)?.[1];
   return {

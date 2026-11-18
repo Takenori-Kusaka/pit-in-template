@@ -910,18 +910,22 @@ export function offDefaultMerges({ copies, inRange = () => true, missing = [], s
  *   浅い取得、または Y の先頭を取得できない        → stackedUnconfirmed(数えない側へ倒す)
  * 見逃す場面: 層を取り込んだ後に rebase した変更(祖先でなくなる)。patch-id などの近似は偽陽性が出るため採らない
  */
-export function stackedLayerCheck({ copies, git, defaultBranch = null } = {}) {
+export function stackedLayerCheck({ copies, git, defaultBranch = null, hasValidApproval } = {}) {
   const out = { verdicts: new Map(), unapprovedLayers: 0, fetched: 0 };
+  // 有効な承認の判定(independentConfirmation を X の写しへ当てる)は必須。承認の件数だけの判定へ戻さない(F-04)
+  if (typeof hasValidApproval !== 'function') throw new TypeError('stackedLayerCheck: hasValidApproval(n, copy) が必要です');
   if (!copies || typeof git !== 'function') return out;
+  // 判定できない(例外)ときは承認なしに倒す
+  const approved = (n, c) => { try { return hasValidApproval(n, c) === true; } catch { return false; } };
   const entries = [...copies].map(([n, e]) => [n, e?.copy ?? null]).filter(([, c]) => c).sort((x, y) => x[0] - y[0]);
   const defOf = (c) => (typeof c.default_branch === 'string' && c.default_branch.trim() ? c.default_branch.trim() : (defaultBranch ?? null));
   const baseOf = (c) => (typeof c.base?.ref === 'string' && c.base.ref.trim() ? c.base.ref.trim() : null);
   const sha = (v) => (typeof v === 'string' && /^[0-9a-f]{7,40}$/i.test(v.trim()) ? v.trim() : null);
   const at = (c) => Date.parse(c.merged_at ?? '');
-  const layers = entries.filter(([, c]) => {
+  const layers = entries.filter(([n, c]) => {
     const def = defOf(c);
     const base = baseOf(c);
-    return def && base && base !== def && sha(c.merge_commit_sha) && approvalCountOfCopy(c) === 0;
+    return def && base && base !== def && sha(c.merge_commit_sha) && !approved(n, c);
   });
   out.unapprovedLayers = layers.length;
   if (!layers.length) return out;
@@ -1552,21 +1556,6 @@ if (isMain) {
     baseGates: gateDetails.map((g) => ({ file: g.file, text: fs.readFileSync(path.join(ROOT, g.file), 'utf8') })),
   });
 
-  // 層の合わさり(IMPL-0498)。承認の無い層があるときだけ、PR ごとに refs/pull/N/head を取得して祖先を調べる
-  const stackedLayers = stackedLayerCheck({
-    copies: recordSources.copies,
-    git: (args) => {
-      try {
-        return { status: 0, out: execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
-      } catch (e) {
-        return { status: typeof e.status === 'number' ? e.status : 1, out: '' };
-      }
-    },
-    defaultBranch: (() => {
-      const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
-      return sym ? sym.replace(/^refs\/remotes\/origin\//, '') : null;
-    })(),
-  });
 
   // --- コミットのトレーラ ------------------------------------------------------
 
@@ -2356,6 +2345,41 @@ if (isMain) {
     if (!Number.isFinite(t0) || !ts.length) return null;
     return Math.max(0, Math.round((Math.max(...ts) - t0) / 60000));
   }
+  // 層の合わさり(IMPL-0498)。承認の無い層があるときだけ、PR ごとに refs/pull/N/head を取得して祖先を調べる
+  // 承認の有無は件数でなく有効な承認で判定する(X の写しへ independentConfirmation を当てる。判定できなければ承認なし。重の裁定 3 節・F-04)。
+  // 照合の副作用(アカウントの所見)は残さない
+  const hasValidApproval = (n, copy) => {
+    const snap = [...accountFindings].map(([k, v]) => [k, { ...v, where: [...v.where] }]);
+    try {
+      const d = prData.get(n) ?? prRecordFromCopy(copy);
+      if (!d) return false;
+      const ins = instructorsOf(d);
+      const fromCopy = reviewsOfCopy(copy, { apiReviews: null, stateById: null });
+      const r = independentConfirmation(ins, fromCopy.reviews, (text) => refersToPr(text, n), { files: [], at: null, headOid: headOfCopy(copy) ?? null, prLabel: `PR #${n} の承認(層の判定)` });
+      return r.counted === true;
+    } catch {
+      return false;
+    } finally {
+      accountFindings.clear();
+      for (const [k, v] of snap) accountFindings.set(k, v);
+    }
+  };
+  const stackedLayers = stackedLayerCheck({
+    hasValidApproval,
+    copies: recordSources.copies,
+    git: (args) => {
+      try {
+        return { status: 0, out: execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
+      } catch (e) {
+        return { status: typeof e.status === 'number' ? e.status : 1, out: '' };
+      }
+    },
+    defaultBranch: (() => {
+      const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+      return sym ? sym.replace(/^refs\/remotes\/origin\//, '') : null;
+    })(),
+  });
+
   for (const [hash, m] of commitPr) {
     if (m.role !== 'merge') continue;
     const n = m.number;
