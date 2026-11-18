@@ -1885,8 +1885,17 @@ export function fetchPickupComments() {
 
 /**
  * /pit の「フロー」の節の材料を集める(computeNext から呼ぶ)。S0 の初回は企画書の欄、ステージ移行ゲートの後はその判定記録の欄を
- * 読む定めだが、判定記録に完了の条件の欄が無い(様式 04 は B20 の後)ため、通過したステージ移行ゲートの記録がある案件は算定できないとする
+ * 読む定めで、通過したステージ移行ゲートの記録がある案件は最新の通過の記録の欄(様式 04)を読む(doneConditionSource)。
+ * 単位期間の長さは企画書の欄から読む(判定記録に欄を持たない)
  */
+export function doneConditionSource({ brief, records }) {
+  if (!passed(records, 'sg')) return { value: doneConditionOf(brief), source: 'brief' };
+  const sg = records.filter((r) => r.gate?.startsWith('SG') && validPass(r)).sort((a, b) => timeOf(b).localeCompare(timeOf(a)))[0];
+  const v = sg?.doneCondition ?? null;
+  if (v == null) return { value: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「作業単位の完了の条件」が未記入。企画書の欄は移行の後の条件を表さないため使わない' };
+  return { value: v, source: 'sg' };
+}
+
 export function flowSection({ config, records, today, network, forecastInput = {} }) {
   const lines = [];
   const briefPath = path.join(ROOT, 'docs/project-brief.md');
@@ -1900,10 +1909,12 @@ export function flowSection({ config, records, today, network, forecastInput = {
   let units = [];
   const win = observationWindowAt(config, today);
   if (brief == null) throughput = { computable: false, reason: '企画書(docs/project-brief.md)が無い' };
-  else if (passed(records, 'sg')) throughput = { computable: false, reason: 'ステージ移行ゲートの判定記録の「完了の条件」の欄を読む処理が無い(様式の欄は未整備)。企画書の欄は、移行の後の条件を表さないため使わない' };
+  const dcs = brief == null ? null : doneConditionSource({ brief, records });
+  if (brief == null) throughput = { computable: false, reason: '企画書(docs/project-brief.md)が無い' };
+  else if (dcs.reason) throughput = { computable: false, reason: dcs.reason };
   else if (!network) throughput = { computable: false, reason: '--offline のため GitHub を読んでいない' };
   else {
-    const dc = doneConditionOf(brief);
+    const dc = dcs.value;
     const pd = unitPeriodDaysOf(brief);
     if (isDefaultDoneCondition(dc) && pd) {
       try {

@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
+import { doneConditionSource } from './next.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
@@ -334,6 +335,25 @@ ${r.out}`);
   check('IMPL-0374:ok 既定の文と一致する案件は、単位期間ごとの完了の個数を数える(完了が 0 の期も除かない)', ok.computable && ok.n === 4 && same(ok.periods.map((p) => p.completed), [3, 1, 0, 2]) && ok.min === 0 && ok.max === 3, JSON.stringify(ok));
   check('IMPL-0374:ok 同じ期間に閉じたが完了に当たらない個数を並べる', ok.notCompleted === 1, JSON.stringify(ok));
   check('IMPL-0374:ok 末尾の句点だけの違いは同じ文として読む', completionThroughput({ ...base, doneCondition: `${D}。` }).computable === true);
+  // 様式 04 の欄「作業単位の完了の条件」(ステージ移行ゲートの後の正本)
+  {
+    const form = (gate, judged, dc, result = '通過') => gateRecordFromText(`| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | S1 |\n| 結果 | ${result} |\n| 判定日時 | ${judged} |\n| 作業単位の完了の条件 | ${dc} |\n`, 'x.md', 'base');
+    const brief = `- 作業単位の完了の条件: 企画書の条件\n`;
+    const sgOk = form('SG', '2026-10-01 10:00', D);
+    check('IMPL-0374:ok 様式 04 の欄を読む', sgOk.doneCondition === D, JSON.stringify(sgOk));
+    check('IMPL-0374:ng 様式の文言のままの欄は未記入として読む', form('SG', '2026-10-01 10:00', '<ステージ移行ゲートのみ。条件>').doneCondition === null);
+    const s0 = doneConditionSource({ brief, records: [] });
+    check('IMPL-0374:ok SG の通過が無ければ企画書の欄を読む', s0.source === 'brief' && s0.value === '企画書の条件');
+    const s1 = doneConditionSource({ brief, records: [sgOk] });
+    check('IMPL-0374:ok SG の通過の後は判定記録の欄を読み、企画書の欄は使わない', s1.source === 'sg' && s1.value === D && !s1.reason, JSON.stringify(s1));
+    check('IMPL-0374:ok 最新の通過の記録の欄を読む', doneConditionSource({ brief, records: [sgOk, form('SG', '2026-11-01 10:00', 'あとの条件')] }).value === 'あとの条件');
+    const s2 = doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', '<ステージ移行ゲートのみ>')] });
+    check('IMPL-0374:ng SG の通過の後で欄が未記入なら算定できない(企画書の欄へ戻らない)', s2.value === null && /未記入/.test(s2.reason), JSON.stringify(s2));
+    check('IMPL-0374:ng 差し戻しの SG は通過に数えず企画書の欄を読む', doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', D, '差し戻し')] }).source === 'brief');
+    check('IMPL-0377:ok SG の欄の既定の文なら、見込みの区分まで出せる', reachForecast({ throughput: completionThroughput({ ...base, doneCondition: s1.value }), remainingUnits: 2, remainingPeriods: 9 }).klass !== '算定できない');
+    check('IMPL-0377:ng SG の欄が未記入なら、見込みは算定できない組', reachForecast({ throughput: { computable: false, reason: s2.reason }, remainingUnits: 2, remainingPeriods: 9 }).klass === '算定できない');
+    check('IMPL-0374:ok SG の欄の既定の文は算定できる', completionThroughput({ ...base, doneCondition: s1.value }).computable === true);
+  }
   check('IMPL-0374:ng 窓の外で閉じたものは数えない', completionThroughput({ ...base, doneCondition: D, units: [closed(9, '2026-01-05', true)] }).periods.every((p) => p.completed === 0));
 
   // IMPL-0614: 材料の文面と SC-M の変動率
