@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseHolidays } from './business-days.mjs';
-import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER } from './pre-review.mjs';
+import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER, materialPrOf, requiredOwners, publishedAtOf, withPublishedAt, fetchPrFiles } from './pre-review.mjs';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -253,6 +253,65 @@ const slurped = (args) => {
 };
 const sf = fetchIssues(slurped, 'o/r', { label: 'pre-review' });
 check('ページ送りは --slurp で平らにし、本文の「] [」を壊さない。起票者の関係を読む', sf.length === 2 && sf[0].body === '案 [A] [B]' && sf[0].comments[0].body === '[a] [b]' && sf[0].association === 'OWNER' && sf[1].association === '');
+
+// ---- 0217 必須応答(CODEOWNERS から導出。検出と記載・通知だけ) ----
+const PR_URL = 'https://github.com/o/r/pull/77';
+const coText = '* @boss\n/src/ @bob @dave\ndocs/ @carol @org/team\n';
+const withPr = (o = {}) => issue({ body: form({ 判定資料の所在: PR_URL, ...(o.fields ?? {}) }), comments: o.comments ?? [] });
+const reqPlan = (o = {}) => plan({ issues: [withPr(o)], now: at('2026-11-23'), prFiles: { 77: ['src/a.ts', 'docs/x.md'] }, codeownersText: coText, ...o.plan });
+check('判定資料の所在から PR の番号を読む(URL と PR #N。PR でなければ null)', materialPrOf(PR_URL) === 77 && materialPrOf('PR #12 の本文') === 12 && materialPrOf('https://example.com/x') === null && materialPrOf('') === null);
+const own = requiredOwners(coText, ['src/a.ts', 'docs/x.md', 'README.md', 'other/y.txt']);
+check('IMPL-0217:ok 変更ファイルごとに最後に当たった行の所有者を使う(チームは個人に解決しない)', JSON.stringify(own.logins) === JSON.stringify(['bob', 'dave', 'carol', 'boss']) && JSON.stringify(own.teams) === JSON.stringify(['@org/team']) && own.unowned.length === 0, JSON.stringify(own));
+check('IMPL-0217:ok どの行にも当たらないファイルは unowned に出す', JSON.stringify(requiredOwners('docs/ @carol\n', ['src/a.ts']).unowned) === JSON.stringify(['src/a.ts']));
+const rq = reqPlan();
+const rqBody = rq.actions.find((a) => a.key.startsWith('required:'))?.body ?? '';
+check('IMPL-0217:ng CODEOWNERS の所有者が指名レビュアに無ければ、必須応答として記載し、含まれない者を示す', /必須応答/.test(rqBody) && /@bob @dave @carol/.test(rqBody) && /指名レビュアに含まれていません: @dave。/.test(rqBody) && /通知先: @dave$/m.test(rqBody), rqBody);
+check('IMPL-0217:ok 強制は作らない旨(判定へ進めない扱いは未決)を書く', /判定へ進めない扱いは、機械では決めていません/.test(rqBody) && /PR 上のレビューは読みません/.test(rqBody));
+const allNom = reqPlan({ fields: { 指名レビュア: '@bob @carol @dave @boss' } });
+check('IMPL-0217:ok 全員が指名レビュアに含まれていれば、含まれない者を示さない', (() => { const b = allNom.actions.find((a) => a.key.startsWith('required:')).body; return /全員が指名レビュアに含まれています/.test(b) && /通知先:\s*$/m.test(b); })());
+check('IMPL-0217:ok 起案者本人は必須応答に数えない', !/@alice/.test(reqPlan({ plan: { codeownersText: '* @alice @bob\n' } }).actions.find((a) => a.key.startsWith('required:')).body.split('\n')[0].split(':').slice(1).join(':')));
+check('IMPL-0217:ok 判定資料の所在が PR でなければ導出しない', !kinds(plan({ issues: [issue({ body: form({ 判定資料の所在: 'https://example.com/x' }) })], now: at('2026-11-23'), codeownersText: coText })).some((k) => k.includes('required')));
+check('IMPL-0217:ok 変更ファイルを読めなければ導出せず、注意に書く', reqPlan({ plan: { prFiles: { 77: null } } }).notes.some((n) => /変更ファイルを読めない/.test(n)) && !kinds(reqPlan({ plan: { prFiles: { 77: null } } })).some((k) => k.includes('required:')));
+check('IMPL-0217:ok CODEOWNERS が無ければ導出せず、注意に書く', reqPlan({ plan: { codeownersText: null } }).notes.some((n) => /CODEOWNERS が既定ブランチに無い/.test(n)));
+check('IMPL-0217:ok チームだけの所有者は注意に出す', rq.notes.some((n) => /@org\/team/.test(n)));
+const rqAbsorbed = withPr({ comments: [cm('github-actions[bot]', rqBody, at('2026-11-23'), { bot: true })] });
+check('IMPL-0217:ok 同じ必須応答の記載は重ねて出さない(冪等)', !kinds(plan({ issues: [rqAbsorbed], now: at('2026-11-24'), prFiles: { 77: ['src/a.ts', 'docs/x.md'] }, codeownersText: coText })).some((k) => k.includes('required:')));
+const missPlan = (comments) => plan({ issues: [withPr({ comments, fields: { 指名レビュア: '@bob @carol @dave @boss' } })], now: at('2026-11-26'), prFiles: { 77: ['src/a.ts', 'docs/x.md'] }, codeownersText: coText });
+const miss = missPlan([cm('bob', op(), at('2026-11-22'))]).actions.find((a) => a.key.startsWith('required-miss'));
+check('IMPL-0217:ng 締切で記名の応答が無い必須の者(dave・carol)を、0219 の宛先(節6 の判定する者 @boss)へ通知する', Boolean(miss) && /^@boss /.test(miss.body.split('\n')[1]) && /無い必須応答の者がいます: @dave @carol/.test(miss.body) && !/通知先:.*@bob/.test(miss.body), miss?.body);
+check('IMPL-0217:ng 通知は判定を止めない旨を書く(強制しない)', /判定を止めません/.test(miss?.body ?? ''));
+check('IMPL-0217:ok 全員が記名で応答していれば通知しない', !missPlan(['bob', 'carol', 'dave', 'boss'].map((l) => cm(l, op(), at('2026-11-22')))).actions.some((a) => a.key.startsWith('required-miss')));
+check('IMPL-0217:ok 締切の前には通知しない', !plan({ issues: [withPr()], now: at('2026-11-24'), prFiles: { 77: ['src/a.ts'] }, codeownersText: coText }).actions.some((a) => a.key.startsWith('required-miss')));
+check('IMPL-0217:ok AI の名義(bot)の所有者は必須応答に数えない', !/ci-bot/.test(reqPlan({ plan: { codeownersText: '* @ci-bot @bob\n' } }).actions.find((a) => a.key.startsWith('required:')).body.split('\n')[0]));
+
+// ---- 0830(共通の部分) 行の無い短縮は通知する。行のある短縮の当否と下限は未決 ----
+const ledgerHead = '| ID | 区分 | 対象 | 内容 | 受容した理由 | 返却の目安 | 状態 | 承認した者 | 記録者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
+const ftRow = (target) => `| D-001 | 例外 | ${target} | ファストトラック(短縮: G-6)。事前レビューの短縮 | 期日 | 2026-12-01 | 未返却 | 山田 太郎 | 鈴木 一郎 |\n`;
+const pubTitle = '判定資料: #5';
+const published = (day) => [{ number: 9, title: pubTitle, body: '', publishedAt: at(day, '01:00:00') }];
+const shortPlan = (o = {}) => plan({ issues: [o.issue ?? issue()], materials: o.materials ?? published('2026-11-24'), now: at('2026-11-25'), ledgerText: ledgerHead, ...o.plan });
+const sh = shortPlan().actions.find((a) => a.key.startsWith('shortened'));
+check('IMPL-0830:ng 公開が T−3 の営業日(期日 T−5 より遅い)で、台帳に行が無ければ、起案者と節6 の宛先へ通知する', Boolean(sh) && /@alice/.test(sh.body) && /@boss/.test(sh.body) && /3\.10\.2/.test(sh.body) && sh.key === 'shortened:2026-11-20', sh?.body);
+check('IMPL-0830:ng 通知は可否を決めず、人が決める旨を書く', /機械が決めません/.test(sh?.body ?? ''));
+check('IMPL-0830:ok 期間どおり(公開が T−5 の営業日以前)なら通知しない', !shortPlan({ materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')) && !shortPlan({ materials: published('2026-11-19') }).actions.some((a) => a.key.startsWith('shortened')));
+const ftPlan = shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #5') } });
+check('IMPL-0830:ok 対象を当該の Issue とするファストトラックの行があれば、通知せず「経路と下限は未決」と出す', !ftPlan.actions.some((a) => a.key.startsWith('shortened')) && ftPlan.notes.some((n) => /ファストトラックの行あり\(D-001\)/.test(n) && /短縮の経路と下限は未決\(EV-0281\)/.test(n) && /通知しない・合格ともしない/.test(n)), JSON.stringify(ftPlan.notes));
+check('IMPL-0830:ok 対象を判定資料の PR とする行も当たる', shortPlan({ issue: withPr(), plan: { ledgerText: ledgerHead + ftRow('PR #77') } }).notes.some((n) => /D-001/.test(n)));
+check('IMPL-0830:ng 別の対象の行・印の無い行は当たらず、通知する', shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #99') } }).actions.some((a) => a.key.startsWith('shortened')) && shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #5').replace('ファストトラック(短縮: G-6)。', '') } }).actions.some((a) => a.key.startsWith('shortened')));
+check('IMPL-0830:ng 草案の印のまま期日(T−5)を過ぎれば、短縮として通知する。期日の当日は通知しない', plan({ issues: [issue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-23'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')) && !plan({ issues: [issue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-20'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')));
+check('IMPL-0830:ok 台帳を読めないときは行が無いものとして通知し、読めない旨を書く', /docs\/debt-ledger\.md を読めません/.test(shortPlan({ plan: { ledgerText: null } }).actions.find((a) => a.key.startsWith('shortened')).body));
+const shR1 = plan({ issues: [issue({ body: form({ リスク区分: 'R1' }) })], materials: published('2026-11-16'), now: at('2026-11-17'), ledgerText: ledgerHead }).actions.find((a) => a.key.startsWith('shortened'));
+check('IMPL-0830:ng R1 は T−10 営業日(2026-11-13)が期日', Boolean(shR1) && shR1.key === 'shortened:2026-11-13' && /10営業日前/.test(shR1.body));
+check('IMPL-0830:ok 同じ短縮の通知は重ねて出さない(冪等)', !shortPlan({ issue: issue({ comments: [cm('github-actions[bot]', sh.body, at('2026-11-25'), { bot: true })] }) }).actions.some((a) => a.key.startsWith('shortened')));
+check('公開の時刻: 草案の印を外した題名の改めの履歴から読む', publishedAtOf([{ event: 'renamed', created_at: '2026-11-20T01:00:00Z', rename: { from: '[草案] 判定資料: #5', to: '判定資料: #5' } }]) === '2026-11-20T01:00:00Z' && publishedAtOf([{ event: 'labeled', created_at: '2026-11-20T01:00:00Z' }]) === null);
+const eventsGh = (args) => (/issues\/9\/events/.test(args.join(' ')) ? JSON.stringify([[{ event: 'renamed', created_at: '2026-11-24T01:00:00Z', rename: { from: '[草案] 判定資料: #5', to: '判定資料: #5' } }]]) : '[[]]');
+const wp = withPublishedAt(eventsGh, 'o/r', [{ number: 9, title: '判定資料: #5', body: '' }, { number: 10, title: '[草案] 判定資料: #6', body: '' }]);
+check('公開の時刻を足す(草案のままの資料には足さない)', wp[0].publishedAt === '2026-11-24T01:00:00Z' && wp[1].publishedAt === undefined);
+const prGh = (args) => JSON.stringify([[{ filename: 'src/a.ts' }, { filename: 'docs/b.md', previous_filename: 'docs/a.md' }]]);
+check('変更ファイルの読み取り: 改名前のパスも含める。読めなければ null', JSON.stringify(fetchPrFiles(prGh, 'o/r', 77)) === JSON.stringify(['src/a.ts', 'docs/b.md', 'docs/a.md']) && fetchPrFiles(() => { throw new Error('404'); }, 'o/r', 77) === null);
+const ghCalls = [];
+fetchPrFiles((args) => { ghCalls.push(args.join(' ')); return '[[]]'; }, 'o/r', 77);
+check('変更ファイルの読み取りは読み取りの API だけ', ghCalls.length === 1 && /repos\/o\/r\/pulls\/77\/files/.test(ghCalls[0]) && !/-X/.test(ghCalls[0]));
 
 // ---- TZ に依らない ----
 if (process.argv.includes('--emit')) {

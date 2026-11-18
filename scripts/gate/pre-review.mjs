@@ -11,6 +11,10 @@
 //   - 0213 締切(T−2営業日。R1 は T−5営業日)の2営業日前と前営業日に通知し、誰がいつ通知を受け、いつ最初に応答したかの一覧を残す
 //   - 0219 通知の宛先を未応答の者に絞る(前営業日は D-0 節6 の判定する者にも)。締切を過ぎて未応答が残れば、3.9.3 の措置の宛先へ通知する
 //   - 0215 意見のコメントの雛形(賛否:・理由:・代替案または充足条件:)の欄の空を示す。注意の喚起に限る(意見を応答の対象から外さない)
+//   - 0217(検出と記載・通知の部分) 判定資料の所在が PR を指すとき、その変更ファイルに当たる CODEOWNERS の行の所有者を「必須応答」として記載し、
+//          指名レビュアに含まれない者を示す。締切で記名の応答が無い必須の者を、0219 の宛先へ通知する。記名の応答が揃うまで判定へ進めない強制は作らない(未決。IMPL-0214 と同じ重の審議)
+//   - 0830(共通の部分) 判定資料の公開が T の5営業日前(R1 は10)より遅いものを「短縮」として検出し、対象を当該の Issue か PR とするファストトラックの行
+//          (ADR-0200 の印)が台帳に無ければ、起案者と 0219 の宛先へ通知する。行があれば「短縮の経路と下限は未決」と表示し、通知しない・合格ともしない
 //   - 0216 月次で、応答が付いていない意見の比率などを集計し、指標の Issue へコメントする(個人の集計を出さない。3.10.11)
 //
 // 日付・時刻は引数で渡し、時計を読まない。暦の日は business-days.mjs(UTC の暦、明示した差で直す)で求める。
@@ -22,11 +26,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, aiAccountCheck, dedicatedSeatOf } from './config.mjs';
+import { ROOT, loadConfig, aiAccountCheck, dedicatedSeatOf, parseLedger, CODEOWNERS_PLACES } from './config.mjs';
 import { addBusinessDays, dayOf, isRealDate, isBusinessDay, loadHolidays, HOLIDAYS_FILE, DEFAULT_OFFSET_MINUTES } from './business-days.mjs';
 import { escalationTarget, ghCli, json, BOT_LOGIN } from './review-queue.mjs';
+import { parseCodeowners, codeownersMatch } from './roster-ids.mjs';
 
 const D0_FILE = 'docs/D-0-governance.md';
+const LEDGER_FILE = 'docs/debt-ledger.md';
 export const MARKER = 'pit-in:pre-review';
 export const LABEL = 'pre-review';
 export const MATERIAL_LABEL = 'pre-review-material';
@@ -153,6 +159,58 @@ export function respondedIds(comments, author, config) {
   return ids;
 }
 
+/** 判定資料の所在が指す PR の番号(`.../pull/N` の URL か `PR #N`)。指していなければ null */
+export function materialPrOf(text) {
+  const t = norm(text);
+  const m = /\/pull\/(\d+)(?!\d)/.exec(t) ?? /(?:^|[^A-Za-z])PR\s*#\s*(\d+)(?!\d)/i.exec(t);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * 変更ファイルに当たる CODEOWNERS の行の所有者(IMPL-0217)。GitHub と同じく、ファイルごとに最後に当たった行の所有者を使う。
+ * logins: 個人の login(重複なし)、teams: チーム(個人に解決できない)、unowned: どの行にも当たらないファイル
+ */
+export function requiredOwners(codeownersText, files) {
+  const rows = parseCodeowners(codeownersText);
+  const logins = new Map();
+  const teams = new Set();
+  const unowned = [];
+  for (const f of files ?? []) {
+    const hit = rows.filter((r) => codeownersMatch(r.pattern, f)).at(-1);
+    if (!hit) {
+      unowned.push(f);
+      continue;
+    }
+    for (const o of hit.owners) {
+      const m = /^@([^/\s]+)(\/.+)?$/.exec(o);
+      if (!m) continue;
+      if (m[2]) teams.add(o);
+      else if (isLogin(m[1]) && !/^OWNER$/i.test(m[1])) logins.set(m[1].toLowerCase(), m[1]);
+    }
+  }
+  return { logins: [...logins.values()], teams: [...teams], unowned };
+}
+
+const FAST_TRACK_MARK = /^ファストトラック[((]\s*短縮\s*[::]\s*([^))]*)[))]/;
+/** 台帳から、対象が #n を指すファストトラックの行(区分「例外」・内容の先頭が印 `ファストトラック(短縮: <ゲート>)`)を探す。行の有効性は問わない */
+export function fastTrackRowsFor(ledgerText, numbers) {
+  const wanted = (numbers ?? []).filter((n) => Number.isInteger(n));
+  return parseLedger(ledgerText)
+    .filter((r) => r.kind === '例外' && FAST_TRACK_MARK.test(String(r.content ?? '').normalize('NFKC').trim()))
+    .filter((r) => wanted.some((n) => new RegExp(`(?:^|[^0-9])#\\s*${n}(?!\\d)`).test(String(r.target ?? '').normalize('NFKC'))))
+    .map((r) => r.id);
+}
+
+/** 判定資料の Issue の履歴から、草案の印を外した(題名を改めた)時刻。外した記録が無ければ null */
+export function publishedAtOf(events) {
+  const hit = (events ?? [])
+    .filter((e) => e.event === 'renamed' && String(e.rename?.from ?? '').startsWith(DRAFT_PREFIX.trim()) && !String(e.rename?.to ?? '').startsWith(DRAFT_PREFIX.trim()) && Number.isFinite(Date.parse(e.created_at)))
+    .map((e) => e.created_at)
+    .sort()
+    .at(-1);
+  return hit ?? null;
+}
+
 /** Issue 1件の事前レビューの状態を読む(純関数) */
 export function readProposal(issue, { config, holidays = new Set() }) {
   const fields = parseIssueForm(issue.body);
@@ -160,6 +218,7 @@ export function readProposal(issue, { config, holidays = new Set() }) {
   const risk = riskOf(fields);
   const T = norm(fields[FIELDS.due]);
   const out = { number: issue.number, fields, ...t, risk, T: isRealDate(T) ? T : null, problems: [], cautions: [] };
+  out.materialPr = materialPrOf(fields[FIELDS.material]);
   if (!t.target) return out;
   if (issue.association !== undefined && !TRUSTED_ASSOCIATIONS.includes(issue.association)) {
     return { ...out, target: null, reason: `起票者の関係(${issue.association || '不明'})が OWNER・MEMBER・COLLABORATOR ではないため、対象にしない(外部の者の起票で機械が通知を出さないため)` };
@@ -276,10 +335,12 @@ const SPLIT_PROMPT = '1つの論点につき1つのスレッドを立てます�
 /**
  * 事前レビューの起票・通知・一覧・注意を決める(純関数)。
  * issues: { number, state, title, body, labels[], comments:[{id, body, login, userId, bot, at}] }[](ラベル pre-review の Issue)
- * materials: 判定資料の Issue(ラベル pre-review-material)。{ number, title, body }[]
+ * materials: 判定資料の Issue(ラベル pre-review-material)。{ number, title, body, publishedAt? }[]
+ * prFiles: 判定資料の所在が指す PR の変更ファイル。{ [PR番号]: string[] | null }(null は読めなかった)。codeownersText: 既定ブランチの CODEOWNERS(無ければ null)
+ * ledgerText: 技術負債台帳 docs/debt-ledger.md の本文(無ければ null)
  * 戻り値: { actions, notes }。action は { kind: 'create-issue'|'comment'|'update-comment', ... }
  */
-export function planNotify({ issues, materials = [], now, config, d0Text = '', holidays = new Set(), offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null }) {
+export function planNotify({ issues, materials = [], now, config, d0Text = '', holidays = new Set(), offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null, prFiles = {}, codeownersText = null, ledgerText = null }) {
   const nowDay = dayOf(now, offsetMinutes);
   const notes = [];
   const actions = [];
@@ -337,6 +398,63 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
       }
     }
     if (!esc.login && waiting.length) notes.push(`#${issue.number}: D-0 節6 の宛先を解決できない(${esc.why})。記名なしで知らせる`);
+
+    // 0217 必須応答(検出と記載・通知。判定へ進めない強制は作らない)。CODEOWNERS の行の所有者を、判定資料の所在が指す PR の変更ファイルから導く
+    if (p.materialPr && nowDay >= tl.publishDay && nowDay <= p.T) {
+      const files = prFiles?.[p.materialPr];
+      if (!Array.isArray(files)) notes.push(`#${issue.number}: 判定資料の所在が指す PR #${p.materialPr} の変更ファイルを読めない。必須応答を導出しない`);
+      else if (codeownersText === null || codeownersText === undefined) notes.push(`#${issue.number}: CODEOWNERS が既定ブランチに無い。必須応答を導出しない`);
+      else {
+        const own = requiredOwners(codeownersText, files);
+        const authorKey = p.author?.toLowerCase();
+        const required = own.logins.filter((l) => l.toLowerCase() !== authorKey && !isAiActor(config, { login: l }));
+        const nominated = new Set(p.reviewers.map((l) => l.toLowerCase()));
+        const missing = required.filter((l) => !nominated.has(l.toLowerCase()));
+        if (own.teams.length) notes.push(`#${issue.number}: CODEOWNERS の所有者のうち、チーム(${own.teams.join('・')})は個人に解決できないため必須応答に数えない`);
+        if (own.unowned.length) notes.push(`#${issue.number}: PR #${p.materialPr} の変更ファイルのうち、CODEOWNERS のどの行にも当たらないもの: ${own.unowned.slice(0, 3).join('、')}${own.unowned.length > 3 ? ` ほか ${own.unowned.length - 3} 件` : ''}`);
+        if (required.length) {
+          const sorted = required.map((l) => l.toLowerCase()).sort();
+          push(
+            `required:${p.materialPr}:${sorted.join(',')}`,
+            [
+              `必須応答(CODEOWNERS から導出。PR #${p.materialPr} の変更ファイル ${files.length} 件に当たる行の所有者): ${required.map(mention).join(' ')}`,
+              missing.length ? `指名レビュアに含まれていません: ${missing.map(mention).join(' ')}。指名は人が行います(起案者は、指名レビュアの欄へ加えるかを決めてください)。` : '全員が指名レビュアに含まれています。',
+              '記名の応答は、この Issue の意見のコメント(`賛否:` の欄が書かれたもの)だけを数えます。PR 上のレビューは読みません。',
+              `通知先: ${missing.map(mention).join(' ')}`.trimEnd(),
+              'これは検出と記載です。記名の応答が揃うまで判定へ進めない扱いは、機械では決めていません(標準 3.10.9。未決)。',
+            ].join('\n'),
+          );
+        }
+        // 締切で記名の応答が無い必須の者を、0219 の宛先へ通知する
+        const silent = required.filter((l) => !p.responded.has(l.toLowerCase()));
+        if (silent.length && nowDay > tl.deadlineDay) {
+          const escTo = esc.login ? `${mention(esc.login)} ` : '';
+          push(
+            `required-miss:${tl.deadlineDay}`,
+            `${escTo}意見の受付の締切(${tl.deadlineDay})を過ぎても、記名の応答が無い必須応答の者がいます: ${silent.map(mention).join(' ')}\n措置(3.9.3。D-0 表3 に記名した者への通知と、代理の指名)が要るかを、宛先の方が判断してください。この通知は判定を止めません。\n通知先: ${silent.map(mention).join(' ')}`,
+          );
+        }
+      }
+    }
+
+    // 0830(共通の部分) 判定資料の公開が期日(T の5営業日前。R1 は10)より遅いものを短縮として検出する。行が無ければ通知、行があれば未決と表示するだけ
+    {
+      const pub = publishedState(p, materials);
+      const mat = materialOf(materials, p.number);
+      const publishedDay = pub.published && mat?.publishedAt ? dayOf(mat.publishedAt, offsetMinutes) : null;
+      const late = (!pub.published && nowDay > tl.publishDay && nowDay <= p.T) || (publishedDay !== null && publishedDay > tl.publishDay);
+      if (late) {
+        const rows = ledgerText ? fastTrackRowsFor(ledgerText, [p.number, p.materialPr]) : [];
+        if (rows.length) notes.push(`#${issue.number}: 事前レビュー期間が短縮になっている(公開が期日 ${tl.publishDay} より遅い)。ファストトラックの行あり(${rows.join('・')})。短縮の経路と下限は未決(EV-0281)。通知しない・合格ともしない`);
+        else {
+          const to = [p.author, esc.login].filter(Boolean).map(mention).join(' ');
+          push(
+            `shortened:${tl.publishDay}`,
+            `${to} 判定資料の公開が期日(${tl.publishDay}。T の${p.risk === 'R1' ? '10' : '5'}営業日前)より遅れ、事前レビュー期間が短縮になっています(${pub.published ? `公開 ${publishedDay}` : '未公開'})。\n標準 3.10.2 は、短縮を第7章 7.4 のファストトラックを適用した場合に限ります。技術負債台帳${ledgerText === null || ledgerText === undefined ? '(docs/debt-ledger.md を読めません)' : ''}に、対象を #${p.number}${p.materialPr && p.materialPr !== p.number ? ` か #${p.materialPr}` : ''} とする印「ファストトラック(短縮: <ゲート>)」の行が見つかりません。\n短縮の可否は機械が決めません。判定者へ知らせ、期間どおりに戻すか、7.4 の手続を取るかを人が決めてください。\n通知先: ${to}`,
+          );
+        }
+      }
+    }
 
     // 0215 意見の様式の欄の空(注意の喚起に限る)
     for (const o of p.opinions) {
@@ -426,6 +544,28 @@ export function fetchIssues(gh, repo, { label, state = 'all' }) {
   }));
 }
 
+/** 判定資料の所在が指す PR の変更ファイルのパスを読む。読めなければ null。gh は差し替えられる */
+export function fetchPrFiles(gh, repo, n) {
+  try {
+    return parse(gh, [`repos/${repo}/pulls/${n}/files?per_page=100`]).flatMap((f) => (f.previous_filename ? [f.filename, f.previous_filename] : [f.filename])).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/** 判定資料の Issue に、草案の印を外した時刻 publishedAt を足す(題名の改めの履歴から。読めなければ足さない)。gh は差し替えられる */
+export function withPublishedAt(gh, repo, materials) {
+  return materials.map((m) => {
+    if (String(m.title ?? '').startsWith(DRAFT_PREFIX.trim())) return m;
+    try {
+      const at = publishedAtOf(parse(gh, [`repos/${repo}/issues/${m.number}/events?per_page=100`]));
+      return at ? { ...m, publishedAt: at } : m;
+    } catch {
+      return m;
+    }
+  });
+}
+
 export function postComment(gh, repo, n, body) {
   gh(['api', '-X', 'POST', `repos/${repo}/issues/${n}/comments`, '--input', '-'], { input: JSON.stringify({ body }) });
 }
@@ -497,10 +637,19 @@ function main(argv) {
     if (!dry) postComment(ghCli, repo, target, body);
     return;
   }
-  const materials = fetchIssues(ghCli, repo, { label: MATERIAL_LABEL, state: 'all' });
+  const materials = withPublishedAt(ghCli, repo, fetchIssues(ghCli, repo, { label: MATERIAL_LABEL, state: 'all' }));
+  const prFiles = {};
+  for (const i of issues) {
+    const n = readProposal(i, { config, holidays: hol.days }).materialPr;
+    if (n && !(n in prFiles)) prFiles[n] = fetchPrFiles(ghCli, repo, n);
+  }
+  const coPlace = CODEOWNERS_PLACES.find((f) => fs.existsSync(path.join(ROOT, f)));
+  const codeownersText = coPlace ? fs.readFileSync(path.join(ROOT, coPlace), 'utf8') : null;
+  const ledgerPath = path.join(ROOT, LEDGER_FILE);
+  const ledgerText = fs.existsSync(ledgerPath) ? fs.readFileSync(ledgerPath, 'utf8') : null;
   const d0 = path.join(ROOT, D0_FILE);
   const d0Text = fs.existsSync(d0) ? fs.readFileSync(d0, 'utf8') : '';
-  const r = planNotify({ issues, materials, now, config, d0Text, holidays: hol.days, offsetMinutes: offset, holidaysNote: hol.note });
+  const r = planNotify({ issues, materials, now, config, d0Text, holidays: hol.days, offsetMinutes: offset, holidaysNote: hol.note, prFiles, codeownersText, ledgerText });
   if (!issues.length) console.log(`注意: ラベル ${LABEL} の開いている Issue が無い(様式で起票していないか、ラベルが付いていない)`);
   for (const n of r.notes) console.log(`注意: ${n}`);
   for (const l of applyActions(ghCli, repo, r.actions, { dry })) console.log(l);

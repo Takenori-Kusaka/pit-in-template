@@ -36,9 +36,11 @@ on:
         type: boolean
         default: true
 
+# pull-requests: read は、判定資料の所在が指す PR の変更ファイルを読み、CODEOWNERS から必須応答を導くため(IMPL-0217。読み取りだけ)
 permissions:
   contents: read
   issues: write
+  pull-requests: read
 
 concurrency:
   group: pre-review
