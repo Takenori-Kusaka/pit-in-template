@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseHolidays } from './business-days.mjs';
-import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, DRAFT_PREFIX, MARKER } from './pre-review.mjs';
+import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, DRAFT_PREFIX, MARKER } from './pre-review.mjs';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -71,8 +71,8 @@ check('IMPL-0571:ng 標準変更を対象にしない', targetOf({ 種別: '標�
 const sc = plan({ issues: [issue({ body: form({ 種別: '標準変更(対象外)' }) })], now: at('2026-11-24') });
 check('IMPL-0571:ng 標準変更の Issue には起票も通知も出ない', sc.actions.length === 0 && sc.notes.some((n) => /標準変更/.test(n)));
 check('IMPL-0571:ng 種別を読めない Issue は対象にしない', plan({ issues: [issue({ body: form({ 種別: 'B-9' }) })] }).actions.length === 0);
-const gt = plan({ issues: [issue({ body: form({ 種別: '工程ゲート', 工程ゲート: 'G-3' }) })], now: at('2026-11-20') });
-check('IMPL-0571:ok 工程ゲートも判定資料を起票する。起票と通知の他の行為(判定当日の手順)を持たない', gt.actions.some((a) => a.kind === 'create-issue') && gt.actions.every((a) => ['comment', 'create-issue', 'update-comment'].includes(a.kind)));
+const gt = plan({ issues: [issue({ body: form({ 種別: '工程ゲート', 工程ゲート: 'G-3' }) })], now: at('2026-11-24') });
+check('IMPL-0571:ok 工程ゲートは通知を出す。起票と通知の他の行為(判定当日の手順)を持たない', gt.actions.some((a) => a.key === 'notice:n1') && gt.actions.every((a) => ['comment', 'create-issue', 'update-comment'].includes(a.kind)));
 
 // ---- 0210 判定資料の起票 ----
 const before = plan({ now: at('2026-11-19') });
@@ -92,6 +92,54 @@ check(
 );
 check('IMPL-0210:ok 判定資料の所在が書かれていれば公開に数える', publishedState({ number: 5, fields: { ...pf, 判定資料の所在: 'https://example.com/x' } }, []).published === true);
 
+// ---- 0213・0219 締切の通知 ----
+const n2 = plan({ now: at('2026-11-23') });
+check('IMPL-0213:ok 締切の2営業日前に通知を出す(記名)', kinds(n2).includes('comment:notice:n2') && /通知先: @bob @carol/.test(n2.actions.find((a) => a.key === 'notice:n2').body));
+const n1 = plan({ now: at('2026-11-24') });
+check('IMPL-0213:ng 前営業日に通知が出る(2営業日前の通知は遅れて出さない)', kinds(n1).includes('comment:notice:n1') && !kinds(n1).includes('comment:notice:n2'));
+check('IMPL-0213:ok 期間の外では出ない(締切の3営業日前)', !kinds(plan({ now: at('2026-11-20') })).some((k) => /notice/.test(k)));
+const bobOp = cm('bob', op(), at('2026-11-22'));
+const part = plan({ issues: [issue({ comments: [bobOp] })], now: at('2026-11-24') });
+const n1body = part.actions.find((a) => a.key === 'notice:n1').body;
+check('IMPL-0219:ng 通知の宛先は未応答の者に絞る(応答済みの bob は記名のみ・通知先に入れない)', /通知先: @carol\s*$/m.test(n1body) && /bob\(応答済み\)/.test(n1body) && !/通知先:.*@bob/.test(n1body), n1body);
+check('IMPL-0219:ok 前営業日は D-0 節6 の判定する者(席 → 名簿 → login)へも知らせる', /@boss/.test(n1body));
+check('IMPL-0219:ok 全員応答済みなら通知を出さない', !kinds(plan({ issues: [issue({ comments: [bobOp, cm('carol', op('反対', '懸念', '案X'), at('2026-11-22'))] })] })).some((k) => /notice|measure/.test(k)));
+check('IMPL-0219:ok AI の担い手(bot)の意見は応答に数えない', /通知先: @bob @carol/.test(plan({ issues: [issue({ comments: [cm('bob', op(), at('2026-11-22'), { bot: true })] })] }).actions.find((a) => a.key === 'notice:n1').body));
+check('IMPL-0219:ok 賛否の欄が空のコメントは応答に数えない', /通知先: @bob @carol/.test(plan({ issues: [issue({ comments: [cm('bob', '賛否:\n理由: x', at('2026-11-22'))] })] }).actions.find((a) => a.key === 'notice:n1').body));
+const late = plan({ issues: [issue({ comments: [bobOp] })], now: at('2026-11-26') });
+const meas = late.actions.find((a) => a.key === 'measure');
+check('IMPL-0219:ng 締切を過ぎて未応答が残れば、3.9.3 の措置の宛先へ通知する', Boolean(meas) && /@boss/.test(meas.body) && /通知先: @carol/.test(meas.body) && /3\.9\.3/.test(meas.body), meas?.body);
+check('IMPL-0219:ok 措置は人が行う旨を書く(代理の指名・自動の再割り当てをしない)', /指名は人が行います/.test(meas.body));
+check('IMPL-0219:ok R1 は判定へ進めない旨を出す', /進めません/.test(plan({ issues: [issue({ body: form({ リスク区分: 'R1' }) })], now: at('2026-11-23') }).actions.find((a) => a.key === 'measure').body));
+check(
+  'IMPL-0219:ok 宛先を解決できなければ記名なしで知らせ、注意に書く',
+  (() => {
+    const r = plan({ now: at('2026-11-24'), config: { ...config, seats: [] } });
+    return r.actions.some((a) => a.key === 'notice:n1') && r.notes.some((n) => /宛先を解決できない/.test(n));
+  })(),
+);
+
+// 冪等: 出した通知を取り込んで再実行すると、同じ通知を重ねて出さない
+const absorb = (iss, r, t) => ({ ...iss, comments: [...iss.comments, ...r.actions.filter((a) => a.kind === 'comment').map((a) => cm('github-actions', a.body, t, { bot: true }))] });
+const round1 = absorb(issue(), n1, at('2026-11-24'));
+const mat1 = [{ number: 9, title: created.title, body: created.body }];
+// 一覧は通知の時刻を取り込むため、1回目の後に1度更新される。更新を取り込んだ後は何も出ない
+const r2 = plan({ issues: [round1], materials: mat1, now: at('2026-11-24', '09:00:00') });
+const round2 = { ...round1, comments: round1.comments.map((c) => { const u = r2.actions.find((a) => a.kind === 'update-comment' && a.commentId === c.id); return u ? { ...c, body: u.body } : c; }) };
+const again = plan({ issues: [round2], materials: mat1, now: at('2026-11-24', '11:00:00') });
+check('通知は冪等: 同じ印の通知があれば重ねて出さない(一覧は内容が同じなら更新しない)', !r2.actions.some((a) => a.kind === 'comment' && /notice/.test(a.key)) && again.actions.length === 0, kinds(r2).join() + ' / ' + kinds(again).join());
+
+// ---- 0213 一覧 ----
+const noticeComment = cm('github-actions', n1body, at('2026-11-24', '01:00:00'), { bot: true });
+const ledgerRun = plan({ issues: [issue({ comments: [noticeComment, bobOp] })], now: at('2026-11-24', '05:00:00') });
+const ledger = ledgerRun.actions.find((a) => a.key === 'ledger');
+check('IMPL-0213:ok 一覧に、通知を受けた時刻と最初の応答の時刻を残す', Boolean(ledger) && /\| carol \| 2026-11-24T01:00:00Z \| \(応答なし\) \|/.test(ledger.body) && /\| bob \| \(通知なし\) \| 2026-11-22T03:00:00Z \|/.test(ledger.body), ledger?.body);
+check('IMPL-0213:ok 一覧は個人の評価に使わない旨を書く', /個人の評価に使いません/.test(ledger.body));
+const ledgerComment = cm('github-actions', ledger.body, at('2026-11-24', '05:00:00'), { bot: true });
+const upd = plan({ issues: [issue({ comments: [noticeComment, bobOp, ledgerComment, cm('carol', op(), at('2026-11-24', '06:00:00'))] })], now: at('2026-11-24', '07:00:00') });
+check('IMPL-0213:ok 応答が付いたら一覧のコメントを更新する(新しいコメントを重ねない)', upd.actions.some((a) => a.kind === 'update-comment' && a.commentId === ledgerComment.id && /\| carol \| 2026-11-24T01:00:00Z \| 2026-11-24T06:00:00Z \|/.test(a.body)), JSON.stringify(kinds(upd)));
+check('IMPL-0213:ok 時刻だけが違う再実行では一覧を更新しない', !plan({ issues: [issue({ comments: [noticeComment, bobOp, ledgerComment] })], now: at('2026-11-24', '09:00:00') }).actions.some((a) => a.key === 'ledger'));
+
 // ---- 0215 意見の様式 ----
 check('意見の読み: 欄の値を見出しから次の見出しまで読む', JSON.stringify(parseOpinion('賛否: 反対\n理由: 遅い\n続き\n代替案または充足条件: 案X')) === JSON.stringify({ stance: '反対', reason: '遅い\n続き', alt: '案X' }) && parseOpinion('ただのコメント') === null);
 check('意見の欄の空: 反対のときだけ代替案の空を数える', JSON.stringify(opinionGaps(parseOpinion('賛否: 賛成\n理由: 良い\n代替案または充足条件:'))) === '[]' && JSON.stringify(opinionGaps(parseOpinion('賛否: 反対\n理由: x\n代替案または充足条件:'))) === '["代替案または充足条件"]');
@@ -102,6 +150,24 @@ check('IMPL-0215:ng 理由が空の意見に、空の欄を示す注意が出る
 check('IMPL-0215:ok 注意の喚起に限る(意見として扱うかを機械が決めないと書き、応答の対象から外さない)', /機械が決めません/.test(note.body) && !/無効|却下|除外/.test(note.body));
 check('IMPL-0215:ok 欄が埋まっていれば注意は出ない', !kinds(plan({ issues: [issue({ comments: [cm('carol', op(), at('2026-11-21'))] })], now: at('2026-11-21') })).some((k) => /opinion:/.test(k)));
 check('IMPL-0215:ok 同じ意見への注意は重ねて出さない', !plan({ issues: [issue({ comments: [bad, cm('github-actions', note.body, at('2026-11-21'), { bot: true })] })], now: at('2026-11-21') }).actions.some((a) => a.key === `opinion:${bad.id}`));
+
+// ---- 0216 月次の集計 ----
+const op1 = cm('bob', op(), at('2026-11-21'));
+const op2 = cm('carol', op('反対', '懸念', '案X'), at('2026-11-22'));
+const reply = cm('alice', `応答: https://github.com/o/r/issues/5#issuecomment-${op1.id}\n採用します`, at('2026-11-23'));
+const aiOp = cm('claude-bot', op('反対', 'x', 'y'), at('2026-11-22'), { bot: true });
+const i5 = issue({ comments: [op1, op2, reply, aiOp] });
+const i6 = issue({ number: 6, body: form({ '判定予定日 T': '2026-11-30', 指名レビュア: '@bob' }) });
+const i7 = issue({ number: 7, body: form({ '判定予定日 T': '2026-12-10' }) });
+const i8 = issue({ number: 8, body: form({ 種別: '標準変更(対象外)' }) });
+const m = metricsFor({ issues: [i5, i6, i7, i8], month: '2026-11', config });
+check('IMPL-0216:ng 応答の無い意見が比率に入る(応答の宣言行が結ぶ意見は入らない)', m.unansweredOpinionRatio.startsWith('50%') && m.unansweredOpinionRatio.includes('1/2'), JSON.stringify(m));
+check('IMPL-0216:ok AI の担い手のコメントを分子にも分母にも数えない', m.unansweredOpinionRatio.includes('/2') && m.reviewerResponseRatio.includes('2/3'), JSON.stringify(m));
+check('IMPL-0216:ok 月と対象の絞り込み: T が別の月の上程・標準変更を数えない', m.proposals === 2 && m.noOpinionRatio.startsWith('50%'), JSON.stringify(m));
+const body = metricsBody(m);
+check('IMPL-0216:ok 個人別の値を出さない(ログイン名が本文に無い)・個人の評価に使わない旨を書く', !/bob|carol|alice/.test(body) && /個人の評価指標にしません/.test(body));
+check('IMPL-0216:ok 対象が無い月は算定できないと出す(0 で割らない)', metricsFor({ issues: [], month: '2026-10', config }).unansweredOpinionRatio.includes('算定できない'));
+check('IMPL-0216:ok 応答の宣言行は起案者のコメントだけが結ぶ', metricsFor({ issues: [issue({ comments: [op1, cm('bob', `応答: https://github.com/o/r/issues/5#issuecomment-${op1.id}`, at('2026-11-23'))] })], month: '2026-11', config }).unansweredOpinionRatio.startsWith('100%'));
 
 // ---- 読み取り・書き込みの差し替え ----
 const canned = (args) => {
@@ -126,12 +192,12 @@ check('書き込み: コメントの投稿・資料の起票・一覧の更新�
 calls.length = 0;
 applyActions(fakeGh, 'o/r', [{ kind: 'comment', issue: 5, key: 'k', body: 'b' }], { dry: true });
 check('dry-run は書き込まない', calls.length === 0);
-check('通知の印は固定の語を持つ', o1.actions[0].body.includes(`<!-- ${MARKER} `));
+check('通知の印は固定の語を持つ', n1.actions[0].body.includes(`<!-- ${MARKER} `));
 
 // ---- TZ に依らない ----
 if (process.argv.includes('--emit')) {
-  const r = plan({ issues: [issue({ comments: [bad] })], now: at('2026-11-20', '15:30:00') });
-  console.log(JSON.stringify({ actions: r.actions, notes: r.notes }));
+  const r = plan({ issues: [issue({ comments: [bobOp] })], now: at('2026-11-24', '15:30:00') });
+  console.log(JSON.stringify({ actions: r.actions, notes: r.notes, m: metricsFor({ issues: [i5], month: '2026-11', config }) }));
   process.exit(0);
 }
 const run = (tz) => execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--emit'], { env: { ...process.env, TZ: tz }, encoding: 'utf8' }).trim();

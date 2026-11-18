@@ -1,12 +1,14 @@
-# 事前レビュー期間の受付・起票・通知(IMPL-0571・0210・0213・0219・0215・0216。process-compass #325 / ADR-0200)
+# 事前レビュー期間の受付・起票・通知・集計(IMPL-0571・0210・0213・0219・0215・0216。process-compass #325 / ADR-0200)
 #
 # Issue の様式(.github/ISSUE_TEMPLATE/pre-review.yml。ラベル pre-review)で起票された上程だけを対象にします。
-# 機械は、判定資料の Issue の起票(草案の印つき)と、意見の欄の注意のコメントだけを行います。
+# 機械は、判定資料の Issue の起票(草案の印つき)と、コメントと記名(@login)の通知、月次の集計だけを行います。
 # 内容の確定・意見の採否・措置(代理の指名)は人が行います。自動の再割り当てと自動承認はしません。
 # **必須チェックにしません**(pre-review-closed・pre-review-all-responded は IMPL-0214 の重の審議に残す)。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
 #
 # 検査のコードと構成は、既定ブランチから読みます。契機は schedule と workflow_dispatch だけです(PR の事象で動かしません)。
 # 営業日の祝日は .github/business-holidays.txt(任意)から読み、無ければ土日だけを除き、出力に「祝日を数えていない」と書きます。
+# 月次の集計の宛先は、リポジトリの変数 PRE_REVIEW_METRICS_ISSUE(指標の Issue の番号)です。未設定なら出力だけで書き込みません。
+#
 # 2026-11-18 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
 # 有効化の前に、試験用のリポジトリで `workflow_dispatch` を dry-run(下の入力)で流して確かめてください。
 
@@ -15,8 +17,18 @@ name: pre-review
 on:
   schedule:
     - cron: '27 0 * * *'
+    - cron: '41 0 1 * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 実行する内容(notify = 起票と通知、metrics = 月次の集計)
+        type: choice
+        options: [notify, metrics]
+        default: notify
+      month:
+        description: metrics の対象月(YYYY-MM)。空なら前の月
+        type: string
+        default: ''
       dry-run:
         description: 書き込まずに、行う内容だけを出す
         type: boolean
@@ -33,6 +45,7 @@ concurrency:
 jobs:
   notify:
     name: pre-review-notify
+    if: (github.event_name == 'schedule' && github.event.schedule == '27 0 * * *') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'notify')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +55,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .github/gate-node-version
-      - name: 判定資料の起票と意見の様式の注意
+      - name: 判定資料の起票と締切の通知
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -54,3 +67,27 @@ jobs:
             node scripts/gate/pre-review.mjs notify
           fi
 
+  metrics:
+    name: pre-review-metrics
+    if: (github.event_name == 'schedule' && github.event.schedule == '41 0 1 * *') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'metrics')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - name: 形骸化の指標の月次の集計
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PRE_REVIEW_METRICS_ISSUE: ${{ vars.PRE_REVIEW_METRICS_ISSUE }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          MONTH: ${{ inputs.month }}
+        run: |
+          set --
+          if [ -n "$MONTH" ]; then set -- --month "$MONTH"; fi
+          if [ "$DRY_RUN" = "true" ]; then set -- "$@" --dry-run; fi
+          node scripts/gate/pre-review.mjs metrics "$@"
