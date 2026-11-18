@@ -297,7 +297,7 @@ if (generalEmpty.length) {
 // 立ち上げの順序(標準 第2章 2.8・第5章 5.7 案件の立ち上げ手順。IMPL-0884)。日付の前後だけを見る:
 // (a) D-0 の承認日 ≤ (b) 節16 の判定日 ≤ (c) 様式 09 の承認日(表を置いた案件だけ) ≤ (d) G-1 で判定する企画書の版のコミットの日付。
 // 読めない日付は「確認できない」と注意に出し、失敗にしない(欠落は check-d0 などが別に落とす)。案件の登録(組織の台帳)はリポジトリの外で確かめない。
-// G-1 を通過済みの案件は、D-0 や判定の記録が変化点で改められた日付が企画書より後になり得るため、遡って失敗させず注意にする
+// 順序は通過の前後を問わず失敗にする。D-0 の日付は判定した企画書の版の時点の物で比べるため、変化点の改訂では誤検出にならない
 {
   const day = (s) => dateOnly(String(s ?? '').trim().replace(/^["']|["']$/g, ''));
   const git = (args) => {
@@ -310,9 +310,31 @@ if (generalEmpty.length) {
   const seq = [];
   const unknown = [];
   const push = (label, d) => (d ? seq.push([label, d]) : unknown.push(label));
-  const d0Path = path.join(ROOT, 'docs/D-0-governance.md');
-  if (fs.existsSync(d0Path)) {
-    const d0 = fs.readFileSync(d0Path, 'utf8');
+  // D-0 は判定した企画書の版の時点の物を読む(変化点で現在の D-0 の承認日が改まっても、遡って失敗させない)。
+  // 版が読めない(G-1 の記録に版が無い・浅い取得・版が無い)ときは確かめられないものとして失敗にする
+  const latestG1 = gateRecs.filter((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過').sort((a, b) => String(b.judgedAt ?? '').localeCompare(String(a.judgedAt ?? '')))[0];
+  let ver = null;
+  if (latestG1) {
+    try {
+      ver = briefVersionOf(latestG1.text ?? fs.readFileSync(path.join(ROOT, latestG1.file), 'utf8'));
+    } catch {
+      ver = null;
+    }
+  }
+  let d0Text = null;
+  let d0Why = null;
+  if (latestG1 && !ver) d0Why = 'G-1 の判定記録に、判定した企画書の版(コミットの識別子)が記録されていません';
+  else {
+    const target = ver ?? git(['log', '-1', '--format=%H', '--', 'docs/project-brief.md']);
+    if (target) {
+      d0Text = fileAtVersion(ROOT, target, 'docs/D-0-governance.md');
+      if (d0Text == null) d0Why = `版 ${target} の時点の docs/D-0-governance.md を読めません(浅い取得、または版が存在しない)`;
+    } else if (fs.existsSync(path.join(ROOT, 'docs/D-0-governance.md'))) d0Text = fs.readFileSync(path.join(ROOT, 'docs/D-0-governance.md'), 'utf8'); // 企画書が未コミット: 判定した版がまだ無い
+  }
+  if (d0Why) {
+    g1Dependent(`立ち上げの順序(D-0 の承認 → 安全重要度の判定 → 安全リスクアセスメント → 企画書)を確かめられません: ${d0Why}。確かめられない間は失敗として扱います(標準 第2章 2.8)`);
+  } else if (d0Text != null) {
+    const d0 = d0Text;
     push('D-0 の承認日(節11。frontmatter の approved_at)', day(d0.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1]?.match(/^approved_at:\s*(.*)$/m)?.[1]));
     push('安全重要度の判定の記録の判定日(D-0 節16)', day(parseClRecord(d0).values.judgedAt));
   } else {
@@ -335,23 +357,13 @@ if (generalEmpty.length) {
     }
     push('安全リスクアセスメント表の承認日(様式 09)', day(approvedAt));
   }
-  const latestG1 = gateRecs.filter((r) => /^G-1(?!\d)/.test(r.gate ?? '') && r.result === '通過').sort((a, b) => String(b.judgedAt ?? '').localeCompare(String(a.judgedAt ?? '')))[0];
-  let ver = null;
-  if (latestG1) {
-    try {
-      ver = briefVersionOf(latestG1.text ?? fs.readFileSync(path.join(ROOT, latestG1.file), 'utf8'));
-    } catch {
-      ver = null;
-    }
-  }
   const iso = ver ? git(['log', '-1', '--format=%cI', ver]) : git(['log', '-1', '--format=%cI', '--', 'docs/project-brief.md']);
   push(ver ? `G-1 で判定する企画書の版(${ver})のコミットの日付` : '企画書(docs/project-brief.md)の最後のコミットの日付', day(String(iso ?? '').slice(0, 10)));
   if (unknown.length) notice(`立ち上げの順序のうち、確認できない日付があります(${unknown.join(' / ')})。読めた日付の間だけ前後を確かめました`);
   for (let i = 1; i < seq.length; i++) {
     if (seq[i - 1][1] > seq[i][1]) {
       const msg = `立ち上げの順序が逆です: ${seq[i - 1][0]} ${seq[i - 1][1]} が ${seq[i][0]} ${seq[i][1]} より後です。D-0 の承認 → 安全重要度の判定 → 安全リスクアセスメント → 企画書の順に進めます(標準 第2章 2.8・第5章 5.7)`;
-      if (g1.passed === true) warn(`${msg}(G-1 を通過済みのため、遡って失敗させません)`);
-      else g1Dependent(msg);
+      g1Dependent(msg);
     }
   }
 }

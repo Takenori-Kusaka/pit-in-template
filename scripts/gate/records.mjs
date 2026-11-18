@@ -331,6 +331,8 @@ export function recordFromForm(text, file, source) {
     judgedAt: formCell(text, '判定日時'),
     // ステージ移行ゲートの完了の条件(第2章 2.10.2 要求事項4。様式 04 の欄)。未記入・様式の文言のままは null
     doneCondition: formCell(text, '作業単位の完了の条件'),
+    // 単位期間の長さ(同じ置き場。要求事項4)
+    unitPeriod: formCell(text, '単位期間の長さ'),
   };
 }
 

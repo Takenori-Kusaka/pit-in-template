@@ -337,8 +337,8 @@ ${r.out}`);
   check('IMPL-0374:ok 末尾の句点だけの違いは同じ文として読む', completionThroughput({ ...base, doneCondition: `${D}。` }).computable === true);
   // 様式 04 の欄「作業単位の完了の条件」(ステージ移行ゲートの後の正本)
   {
-    const form = (gate, judged, dc, result = '通過') => gateRecordFromText(`| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | S1 |\n| 結果 | ${result} |\n| 判定日時 | ${judged} |\n| 作業単位の完了の条件 | ${dc} |\n`, 'x.md', 'base');
-    const brief = `- 作業単位の完了の条件: 企画書の条件\n`;
+    const form = (gate, judged, dc, result = '通過', period = '2週間') => gateRecordFromText(`| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | S1 |\n| 結果 | ${result} |\n| 判定日時 | ${judged} |\n| 作業単位の完了の条件 | ${dc} |\n| 単位期間の長さ | ${period} |\n`, 'x.md', 'base');
+    const brief = `- 作業単位の完了の条件: 企画書の条件\n- 単位期間の長さ: 1週間\n`;
     const sgOk = form('SG', '2026-10-01 10:00', D);
     check('IMPL-0374:ok 様式 04 の欄を読む', sgOk.doneCondition === D, JSON.stringify(sgOk));
     check('IMPL-0374:ng 様式の文言のままの欄は未記入として読む', form('SG', '2026-10-01 10:00', '<ステージ移行ゲートのみ。条件>').doneCondition === null);
@@ -349,6 +349,15 @@ ${r.out}`);
     check('IMPL-0374:ok 最新の通過の記録の欄を読む', doneConditionSource({ brief, records: [sgOk, form('SG', '2026-11-01 10:00', 'あとの条件')] }).value === 'あとの条件');
     const s2 = doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', '<ステージ移行ゲートのみ>')] });
     check('IMPL-0374:ng SG の通過の後で欄が未記入なら算定できない(企画書の欄へ戻らない)', s2.value === null && /未記入/.test(s2.reason), JSON.stringify(s2));
+    // 単位期間の長さ: SG の後は様式 04 の行(企画書の欄を読まない)、SG の前は企画書の欄(見込み)
+    check('IMPL-0374:ok SG の前は企画書の単位期間の長さを読む', s0.periodDays === 7, JSON.stringify(s0));
+    check('IMPL-0374:ok SG の後は判定記録の単位期間の長さを読み、企画書の欄は使わない', s1.periodDays === 14, JSON.stringify(s1));
+    const s3 = doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', D, '通過', '<ステージ移行ゲートのみ>')] });
+    check('IMPL-0374:ng SG の後で単位期間の長さが未記入なら算定できない(企画書の欄へ戻らない)', s3.periodDays === null && /単位期間の長さ/.test(s3.reason ?? ''), JSON.stringify(s3));
+    const s4 = doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', D, '通過', '隔週')] });
+    check('IMPL-0374:ng SG の後で単位期間の長さが読めない書き方なら算定できない', s4.periodDays === null && !!s4.reason, JSON.stringify(s4));
+    const s5 = doneConditionSource({ brief, records: [sgOk, form('SG', '2026-11-01 10:00', 'あとの条件', '差し戻し')] });
+    check('IMPL-0374:ng 通過の後に別の SG の差し戻しがあっても、企画書の欄へ戻らず最新の通過の記録を読む', s5.source === 'sg' && s5.value === D && s5.periodDays === 14, JSON.stringify(s5));
     check('IMPL-0374:ng 差し戻しの SG は通過に数えず企画書の欄を読む', doneConditionSource({ brief, records: [form('SG', '2026-10-01 10:00', D, '差し戻し')] }).source === 'brief');
     check('IMPL-0377:ok SG の欄の既定の文なら、見込みの区分まで出せる', reachForecast({ throughput: completionThroughput({ ...base, doneCondition: s1.value }), remainingUnits: 2, remainingPeriods: 9 }).klass !== '算定できない');
     check('IMPL-0377:ng SG の欄が未記入なら、見込みは算定できない組', reachForecast({ throughput: { computable: false, reason: s2.reason }, remainingUnits: 2, remainingPeriods: 9 }).klass === '算定できない');

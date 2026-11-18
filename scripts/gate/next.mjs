@@ -1884,16 +1884,19 @@ export function fetchPickupComments() {
 }
 
 /**
- * /pit の「フロー」の節の材料を集める(computeNext から呼ぶ)。S0 の初回は企画書の欄、ステージ移行ゲートの後はその判定記録の欄を
- * 読む定めで、通過したステージ移行ゲートの記録がある案件は最新の通過の記録の欄(様式 04)を読む(doneConditionSource)。
- * 単位期間の長さは企画書の欄から読む(判定記録に欄を持たない)
+ * /pit の「フロー」の節の材料を集める(computeNext から呼ぶ)。S0 の初回は企画書の欄(見込み)、ステージ移行ゲートの後はその判定記録の欄を
+ * 読む定めで、通過したステージ移行ゲートの記録(validPass)が1件でもある案件は、最新の通過の記録の完了の条件と単位期間の長さ(様式 04)を読む。
+ * 後に別のステージ移行ゲートの差し戻しがあっても、企画書の欄へは戻らない
  */
 export function doneConditionSource({ brief, records }) {
-  if (!passed(records, 'sg')) return { value: doneConditionOf(brief), source: 'brief' };
-  const sg = records.filter((r) => r.gate?.startsWith('SG') && validPass(r)).sort((a, b) => timeOf(b).localeCompare(timeOf(a)))[0];
-  const v = sg?.doneCondition ?? null;
-  if (v == null) return { value: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「作業単位の完了の条件」が未記入。企画書の欄は移行の後の条件を表さないため使わない' };
-  return { value: v, source: 'sg' };
+  const sgPasses = records.filter((r) => r.gate?.startsWith('SG') && validPass(r)).sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
+  if (!sgPasses.length) return { value: doneConditionOf(brief), periodDays: unitPeriodDaysOf(brief), source: 'brief' };
+  const sg = sgPasses[0];
+  const v = sg.doneCondition ?? null;
+  if (v == null) return { value: null, periodDays: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「作業単位の完了の条件」が未記入。企画書の欄は移行の後の条件を表さないため使わない' };
+  const pd = sg.unitPeriod == null ? null : unitPeriodDaysOf(`- 単位期間の長さ: ${sg.unitPeriod}`);
+  if (pd == null) return { value: v, periodDays: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「単位期間の長さ」が未記入または読めない(N日・N週間のように書く)。企画書の欄は移行の後の長さを表さないため使わない' };
+  return { value: v, periodDays: pd, source: 'sg' };
 }
 
 export function flowSection({ config, records, today, network, forecastInput = {} }) {
@@ -1915,7 +1918,7 @@ export function flowSection({ config, records, today, network, forecastInput = {
   else if (!network) throughput = { computable: false, reason: '--offline のため GitHub を読んでいない' };
   else {
     const dc = dcs.value;
-    const pd = unitPeriodDaysOf(brief);
+    const pd = dcs.periodDays;
     if (isDefaultDoneCondition(dc) && pd) {
       try {
         units = fetchClosedUnits({ sinceDay: monthsBefore(today, win), base: defaultBranchOf(git) ?? 'main' });
