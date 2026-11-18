@@ -186,7 +186,7 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm, parseDeclaration, readRecordsBranch } from './records.mjs';
-import { isClosedState } from './exception-expiry.mjs';
+import { isClosedState, fastTrackMarkOf } from './exception-expiry.mjs';
 import { codeownersProblems } from './roster-ids.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
@@ -741,12 +741,7 @@ export function specFindings(pr, { exists }) {
  * (A) で裏づけた行は、PR の先頭の台帳(headLedgerText)にある行でもよい。ctx を渡さない呼び出しは帰属を確かめられず、行を数えない
  */
 export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
-  // 台帳の行の印(ADR-0200 決定2): 区分「例外」の行の内容の先頭が `ファストトラック(短縮: <ゲート>)` の行をファストトラックの適用とする。
-  // 印を書かない行は、機械が当該の種類の行として見分けられない(印の付け忘れは機械で捕まえない)
-  const fastTrackMarkOf = (content) => {
-    const m = /^ファストトラック[((]\s*短縮\s*[::]\s*([^))]*)[))]/.exec(String(content ?? '').normalize('NFKC').trim());
-    return m ? { scope: m[1].trim() } : null;
-  };
+  // 台帳の行の印(ADR-0200 決定2): fastTrackMarkOf(exception-expiry.mjs。集約と同じ関数)で読む
   const fastTrackForbidden = (ft) => {
     const out = [];
     if (/(^|[^A-Za-z0-9])G-?[45](?!\d)/i.test(ft.scope)) out.push(`ファストトラックの短縮の対象(${ft.scope})が G-4・G-5 を名指す(7.4 の限定列挙の外。G-4・G-5 は短縮できない)`);
@@ -1818,6 +1813,54 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     result.notices.push(`閾値・除外設定だけを変える PR です(${thresholdChanges.join(', ')})。緩める向きの変更は /process-change と記名を要する`);
   }
   if (initial.length) result.notices.push(`閾値・除外設定の初回の設定(基底に無い): ${initial.join(', ')}。同時変更の検査の対象外`);
+
+  // --- 3a. 判定記録の写しと、台帳の行・閾値・停止の解除の様式の同時変更(IMPL-0554。第4章 G-5 の PR 単位の検査) ---
+  // 判定記録の写し(docs/records/reviews/)を含む PR が、技術負債台帳(docs/debt-ledger.md)・閾値のファイルと構成の ci・task・guard・
+  // 停止の解除の様式(docs/gates/ の「停止の解除」の様式)も変えるなら失敗にする。全ステージで失敗にする(段で緩めない)。
+  // 出荷の PR は写しと様式(docs/gates/)を複製する(ship-evidence.yml)。記録用ブランチ records/gates/ に同名・同内容の様式が在る停止の解除の様式は複製として除く。
+  // 記録用ブランチを読めないときは、その様式についてだけ注意にとどめる
+  {
+    const norm = (t) => String(t ?? '').replace(/\r\n/g, '\n').trim();
+    const copies = all.filter((e) => e.path.startsWith('docs/records/reviews/'));
+    if (copies.length) {
+      const mixed = [];
+      if (all.some((e) => e.path === 'docs/debt-ledger.md')) mixed.push('docs/debt-ledger.md');
+      mixed.push(...thresholdChanges, ...initial);
+      const releaseForms = all.filter((e) => /^docs\/gates\/.+\.md$/.test(e.path) && /停止の解除/.test(atHead(e.path) ?? ''));
+      let branch = null;
+      const branchOf = () => {
+        if (branch === null) {
+          try {
+            branch = (typeof pr.recordsBranch === 'function' ? pr.recordsBranch() : pr.recordsBranch !== undefined ? pr.recordsBranch : readRecordsBranch({ cwd: root, fetch: true })) ?? { available: false, gates: [] };
+          } catch {
+            branch = { available: false, gates: [] };
+          }
+        }
+        return branch;
+      };
+      const unreadable = [];
+      for (const e of releaseForms) {
+        const b = branchOf();
+        if (!b?.available) {
+          unreadable.push(e.path);
+          continue;
+        }
+        const twin = (b.gates ?? []).find((g) => g.baseFile === e.path || String(g.file ?? '').endsWith('/' + e.path.split('/').pop()));
+        if (twin && norm(twin.text) === norm(atHead(e.path))) continue;
+        mixed.push(e.path + '(停止の解除の様式)');
+      }
+      result.copyMixed = { copies: copies.map((e) => e.path), mixed, unreadable };
+      if (mixed.length) {
+        result.errors.push(
+          '判定記録の写し(docs/records/reviews/)と、技術負債台帳の行・閾値のファイル・構成の ci/task/guard・停止の解除の様式が同じ PR で変わっています(第4章 G-5。IMPL-0554)。写し: ' +
+            copies.slice(0, 3).map((e) => e.path).join(', ') + ' / 同時に変わったもの: ' + mixed.slice(0, 5).join(', ') + '。写しだけの PR にし、台帳・閾値・様式の変更は別の PR に分ける'
+        );
+      }
+      if (unreadable.length) {
+        result.notices.push('停止の解除の様式 ' + unreadable.join(', ') + ' は、記録用ブランチを読めず、複製かを確かめられませんでした。写しと同じ PR で変えている場合は、複製であることを人が確かめてください');
+      }
+    }
+  }
 
   // --- 3b. 統制の設定の陰性の確認(標準 第4章 G-5。ADR-0073) ---
   // 統制の設定(閾値・除外設定・ルールセット・フック・権限・ワークフロー)を変える PR は、違反の場面を1つ通して止まることを人が確かめ、本文に記録する。

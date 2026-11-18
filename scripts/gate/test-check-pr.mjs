@@ -919,6 +919,54 @@ scenario('ファストトラック: D-002 が返却済みなら新しい印の�
 }, exMatched('D-003'));
 rewindBase();
 
+// IMPL-0612:ng(太字の印が G-5 を名指す行も、限定列挙の拒否に届く)
+scenario('ファストトラック: 太字にした印(**...**)の短縮の対象が G-5 の行も対応づけない', { number: 21 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: '**' + FT('G-5') + '**' }));
+  write('src/big.js', lines(450, 'x'));
+}, exRejected(/G-4・G-5 を名指す/));
+rewindBase();
+// IMPL-0612:ok(太字の印は G-6 なら対応づく)
+scenario('ファストトラック: 太字にした印の短縮の対象が G-6 の行は対応づく', { number: 21 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: '**' + FT('G-6') + '**' }));
+  write('src/big.js', lines(450, 'x'));
+}, exMatched('D-002'));
+rewindBase();
+
+// ---------------------------------------------------------------- 判定記録の写しと台帳・閾値・停止の解除の様式の同時変更(IMPL-0554)
+const COPY_FILE = 'docs/records/reviews/pr-9.json';
+const RELEASE_FORM = '# 停止の解除\n\n| 項目 | 内容 |\n| --- | --- |\n| 対象 | PR #9 |\n';
+const BRANCH_WITH = (text) => ({ available: true, reason: null, gates: text === null ? [] : [{ file: 'records/gates/stop-release.md', baseFile: 'docs/gates/stop-release.md', text }], reviews: new Map() });
+const copyMixedNg = failsWith(/判定記録の写し.*同じ PR で変わっています/);
+// IMPL-0554:ng
+scenario('写し + 台帳の行: 判定記録の写しと技術負債台帳を同じ PR で変える', {}, () => {
+  write(COPY_FILE, '{}\n');
+  write('docs/debt-ledger.md', '# 台帳\n');
+}, copyMixedNg);
+// IMPL-0554:ng
+scenario('写し + 閾値: 判定記録の写しと閾値のファイルを同じ PR で変える', {}, () => {
+  write(COPY_FILE, '{}\n');
+  write('.eslintrc.json', '{ "rules": { "no-unused-vars": "warn" } }\n');
+}, copyMixedNg);
+// IMPL-0554:ng
+scenario('写し + 記録用ブランチに無い停止の解除の様式: 複製と言えない様式を同じ PR で足す', { recordsBranch: BRANCH_WITH(null) }, () => {
+  write(COPY_FILE, '{}\n');
+  write('docs/gates/stop-release.md', RELEASE_FORM);
+}, copyMixedNg);
+// IMPL-0554:ok
+scenario('写しだけの PR は通る', {}, () => write(COPY_FILE, '{}\n'), passes());
+// IMPL-0554:ok
+scenario('台帳だけの PR は写しが無いので、この検査では失敗しない', {}, () => write('docs/debt-ledger.md', '# 台帳\n'), (r) => (has(r, /判定記録の写し.*同じ PR で変わっています/) ? ['失敗するはずがない'] : []));
+// IMPL-0554:ok
+scenario('出荷の PR: 写しと、記録用ブランチと同じ内容の停止の解除の様式の複製は通る', { recordsBranch: BRANCH_WITH(RELEASE_FORM) }, () => {
+  write(COPY_FILE, '{}\n');
+  write('docs/gates/stop-release.md', RELEASE_FORM);
+}, passes());
+// IMPL-0554:ok
+scenario('記録用ブランチを読めないとき、停止の解除の様式は注意にとどめる(失敗にしない)', {}, () => {
+  write(COPY_FILE, '{}\n');
+  write('docs/gates/stop-release.md', RELEASE_FORM);
+}, passes(noticedEarly(/記録用ブランチを読めず、複製かを確かめられませんでした/)));
+
 // ---------------------------------------------------------------- CODEOWNERS の所有者(IMPL-0211。ADR-0200)
 const withOwners = (text) => {
   write('.github/CODEOWNERS', text);

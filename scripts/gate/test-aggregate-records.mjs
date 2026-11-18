@@ -48,6 +48,7 @@ import {
   inputRecordGaps,
 } from './aggregate-evidence.mjs';
 import { stopFindings } from './check-pr.mjs';
+import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { ROOT, sealChangeLog } from './config.mjs';
@@ -566,6 +567,35 @@ const config = {
   };
   check('IMPL-0687:ok 入力を欠いた出力でも、項目1〜7 の見出しが在り、本文が空でない', [1, 2, 3, 4, 5, 6, 7].every((k) => body(k).length > 0), [1, 2, 3, 4, 5, 6, 7].map((k) => `${k}:${body(k).length}`).join(' '));
   check('IMPL-0687:ok 入力を欠いた出力でも、保証の主張の成立判定の見出しが本文つきで出る', /### 保証の主張の成立判定\n+\S/.test(report));
+}
+
+// ---------------------------------------------------------------- 第7章の行使(IMPL-0612・IMPL-0628・IMPL-0669)
+{
+  const ex = (id, target, content, state = '未返却', due = '2026-12-31 まで。回収責任者 名簿 丙', approver = '名簿 乙') => ({ id, kind: '例外', target, content, state, due, approver });
+  // IMPL-0612:ng(違反の入力。太字・バッククォート・括弧の前の空白の印を読めない)
+  const forms = ['ファストトラック(短縮: G-6)', '**ファストトラック(短縮: G-6)**', '`ファストトラック(短縮: G-6)`', 'ファストトラック (短縮: G-6)', 'ファストトラック（短縮：G-6）'];
+  check('IMPL-0612:ng 太字・バッククォート囲み・括弧の前の空白・全角の印を、同じ印として読む', forms.every((f) => fastTrackMarkOf(f + ' 内容')?.scope === 'G-6'), forms.map((f) => fastTrackMarkOf(f)?.scope).join());
+  check('IMPL-0612:ng 太字の印が G-5 を名指す行も scope に G-5 が出る(check-pr の拒否に届く)', /G-?5/.test(fastTrackMarkOf('**ファストトラック(短縮: G-5)** 内容')?.scope ?? ''));
+  // IMPL-0612:ok(適合の入力。印の無い行・別の語は印にならない。発生率と回収完了率が出る)
+  check('IMPL-0612:ok 印の無い行と別の語は印として読まない', fastTrackMarkOf('G-6 基準4 を満たさない') === null && fastTrackMarkOf('急ぎのファストトラック(短縮: G-6)') === null);
+  const rows = [ex('D-1', 'PR #1', 'ファストトラック(短縮: G-6) 急ぎ', '返却済み(2026-11-18)'), ex('D-2', 'PR #2', '**ファストトラック(短縮: G-6)** 急ぎ'), ex('D-3', 'PR #3', '印なしの例外')];
+  const defects = '| ID | 現象 | 原因の変更 | 処分 | 確定した者 | 確定日 |\n| --- | --- | --- | --- | --- | --- |\n| X-1 | a | PR #1 | 欠陥 | 名簿 甲 | 2026-11-10 |\n| X-2 | b | | 欠陥 | 名簿 甲 | 2026-11-10 |\n| X-3 | c | PR #9 | 欠陥 | 名簿 甲 | 2026-11-10 |\n| X-4 | d | PR #2 | 欠陥 | | |\n';
+  const m = fastTrackMetrics({ rows, changeTotal: 4, defectText: defects });
+  check('IMPL-0612:ok 印 2 件・回収 1 件(回収完了率 50%)。欠陥は結べた件数と空欄の件数を併記する(確定していない行は数えない)', m.marked === 2 && m.closed === 1 && m.defects.confirmed === 3 && m.defects.linked === 1 && m.defects.causeBlank === 1 && /回収完了率 50%/.test(fastTrackMetricsText(m)) && /発生率 50%/.test(fastTrackMetricsText(m)) && /結べた 1 件.*空欄で結べない 1 件/.test(fastTrackMetricsText(m)), JSON.stringify(m) + fastTrackMetricsText(m));
+  // IMPL-0628:ng(違反の入力。7.9.4 の行の承認者が B-2 の決定者でない。回収責任者が無い)
+  const units = [{ label: '#10', independent: { restrictionTouched: true, by: ['a'] } }, { label: '#11', independent: { restrictionTouched: true, by: ['a', 'b'] } }, { label: '#12', independent: { restrictionTouched: false, by: [] } }, { label: 'コミット abcdef12', independent: { restrictionTouched: true, by: [] } }];
+  const isDecider = (a) => (a === '名簿 乙' ? true : a === '名簿 丁' ? false : null);
+  const bad = restrictedStateExceptions({ rows: [ex('D-10', 'PR #10', 'ファストトラック(短縮: G-6) 急ぎ', '未返却', '2026-12-31 まで', '名簿 丁')], units, isDecider });
+  check('IMPL-0628:ng 7.9.4 の行の承認者が B-2 の決定者でない・回収責任者が無いとき、欠落にする', bad.found.length === 1 && bad.gaps.length === 2 && /B-2 の決定者/.test(bad.gaps[0]) && /回収責任者/.test(bad.gaps[1]), bad.gaps.join('\n'));
+  // IMPL-0628:ok(適合の入力。B-2 の決定者の記名・期限と回収責任者あり。印の無い行は件数に出るが通る。2 名の承認がある変更・制限に触れない変更は 7.9.4 でない)
+  const good = restrictedStateExceptions({ rows: [ex('D-10', 'PR #10', '印なしの例外'), ex('D-11', 'PR #11', 'x'), ex('D-12', 'PR #12', 'x'), ex('D-13', 'abcdef1234', 'x')], units, isDecider });
+  check('IMPL-0628:ok B-2 の決定者の記名と期限・回収責任者があれば欠落なし。印の無い行は件数に出る。2 名承認・制限外の変更は対象でない', good.gaps.length === 0 && good.found.map((x) => x.id).join() === 'D-10,D-13' && good.unmarked.join() === 'D-10,D-13', JSON.stringify(good));
+  check('IMPL-0628:ok 承認した者が B-2 の決定者かを確認できない(isDecider が null)とき、欠落にせず未確認に出す', restrictedStateExceptions({ rows: [ex('D-10', 'PR #10', 'x', '未返却', '2026-12-31 まで。回収責任者 名簿 丙', '外部の人')], units, isDecider }).unconfirmed.join() === 'D-10');
+  // IMPL-0669:ng(違反の入力。枠 2・行使 3 で残りが出ない)
+  const brief = '| 項目 | 内容 |\n| --- | --- |\n| 例外の枠(事業ステージあたり) | 2 |\n';
+  check('IMPL-0669:ng 枠 2・行使 3 で「残り -1(超過)」を出し、止めない旨を添える', /枠 2・行使 3・残り -1\(超過\).*止めない/.test(exceptionQuotaText({ briefText: brief, used: 3 })), exceptionQuotaText({ briefText: brief, used: 3 }));
+  // IMPL-0669:ok(適合の入力。枠が読めない・累計が読めないときは「確認できない」)
+  check('IMPL-0669:ok 枠が件数として読めない、またはステージの累計を読めないとき、確認できないと出す', /枠: 確認できない/.test(exceptionQuotaText({ briefText: '| 例外の枠(事業ステージあたり) | <件数> |', used: 1 })) && /累計を確認できない/.test(exceptionQuotaText({ briefText: brief, used: 0, usedReadable: false })));
 }
 
 console.log('');

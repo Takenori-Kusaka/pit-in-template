@@ -134,7 +134,7 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -4334,6 +4334,45 @@ if (isMain) {
     },
   });
 
+  // 例外の行使の表示(項目7。IMPL-0612・IMPL-0628・IMPL-0669)。止めない表示と、7.9.4 の行の欠落
+  const exceptionUse = (() => {
+    const rows = exceptionRows ?? [];
+    const d0Text = exists('docs/D-0-governance.md') ? fs.readFileSync(path.join(ROOT, 'docs/D-0-governance.md'), 'utf8') : '';
+    // B-2 の決定者。D-0 の会議体の表の B-2 の行の決定者の欄。「該当なし」・空欄・雛形のままなら事業決裁者の席の責任者と比べる
+    const b2 = (d0Text.split(/\r?\n/).find((l) => /^\|\s*B-2\s*\|/.test(l))?.split('|')[2] ?? '').normalize('NFKC').trim();
+    const seatName = !b2 || b2.startsWith('<') || /該当なし/.test(b2) ? 'biz-approver' : b2;
+    const seat = (config.seats ?? []).find((s) => s.role === seatName || (s.name && s.name === seatName));
+    const holder = seat?.accountable ?? null;
+    const isDecider = (approver) => {
+      if (!holder) return null;
+      const p = resolveSigner(config, approver);
+      return p ? personKey(config, holder) === p.id : false;
+    };
+    const restricted = restrictedStateExceptions({ rows, units: changeUnits, isDecider });
+    for (const g of restricted.gaps) gaps.push(g);
+    // ステージの累計: 直前のステージ移行ゲートの通過のコミットの台帳と先端の台帳の差
+    const stageGate = gateRecordList
+      .filter((r) => /ステージ移行|^SG/.test(String(r.gate ?? '').normalize('NFKC')) && resultWord(r.result) === '通過')
+      .sort((a, b) => String(a.judgedAt ?? '').localeCompare(String(b.judgedAt ?? '')))
+      .at(-1);
+    let startIds = new Set();
+    let usedReadable = true;
+    if (stageGate) {
+      const sha = lastCommitOfFile(gitText, 'HEAD', stageGate.file);
+      const t = sha ? gitText(['show', `${sha}:${debtFile}`]) : '';
+      if (t) startIds = new Set(parseLedger(t).map((r) => r.id));
+      else usedReadable = false;
+    }
+    const used = restricted.found.filter((x) => !startIds.has(x.id)).length;
+    const briefText = exists('docs/project-brief.md') ? fs.readFileSync(path.join(ROOT, 'docs/project-brief.md'), 'utf8') : '';
+    const defectText = exists(DEFECT_FILE) ? fs.readFileSync(path.join(ROOT, DEFECT_FILE), 'utf8') : null;
+    return {
+      fastTrack: fastTrackMetricsText(fastTrackMetrics({ rows, changeTotal: changesTotal, defectText })),
+      restricted: { count: restricted.found.length, unmarked: restricted.unmarked, unconfirmed: restricted.unconfirmed },
+      quota: exceptionQuotaText({ briefText, used, usedReadable }),
+    };
+  })();
+
   // 5. 残存リスク、既知の不具合、未回収の例外
   const debtRows = exceptionRows ? exceptionRows.filter((r) => r.state.startsWith('未返却')) : null;
   const residual = {
@@ -5048,6 +5087,7 @@ if (isMain) {
     // 規模の観測(7項目に数えない。#295)。evidence.json にも出し、集約を読む側が基準値の較正に使える
     sizeObservation,
     generation,
+    exceptionUse,
     drift,
     // AI を用いない実施(第5章 5.4.7。IMPL-1021・1022)。項目7 に出す。止めない。組織継続の側の状態にも記載の欠落にも入れない。
     // 基準日は releaseDay(範囲の終点の日。取れないときは実行した日の時計)。照らした基準日を併記して開示する
@@ -6509,6 +6549,9 @@ if (isMain) {
       R.push(`- 宣言した担い手: ${A.generation.declaredPerformers}`);
     }
     R.push(`- コミットに記録された共著者: ${listOr(A.generation.observedCoAuthors)}`);
+    R.push(`- ${A.exceptionUse.fastTrack}`);
+    R.push(`- 制限された状態での例外決裁(7.9.4)の行: ${A.exceptionUse.restricted.count} 件(うち印の無い行 ${A.exceptionUse.restricted.unmarked.length} 件${A.exceptionUse.restricted.unmarked.length ? ': ' + A.exceptionUse.restricted.unmarked.join(', ') : ''}。印の無い行は欠落にしない)${A.exceptionUse.restricted.unconfirmed.length ? ` / 承認した者が B-2 の決定者かを確認できない ${A.exceptionUse.restricted.unconfirmed.join(', ')}` : ''}`);
+    R.push(`- ${A.exceptionUse.quota}`);
     R.push(`- 指示資産(CLAUDE.md・.claude)の最終変更: ${A.generation.instructionAssets}`);
     if (!A.generation.changeLogPresent) {
       R.push(`- 期間中の体制の変化点: ${NO_RECORD}(構成に changeLog がない)`);

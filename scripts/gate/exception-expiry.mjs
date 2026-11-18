@@ -156,6 +156,126 @@ export function lapsedSimilarGapText(x, day) {
   );
 }
 
+/**
+ * 台帳の行の印(ADR-0200 決定2): 区分「例外」の行の内容の先頭が `ファストトラック(短縮: <ゲート>)` の行をファストトラックの適用とする。
+ * 強調の `*`・`` ` `` と括弧の前の空白は、印の読みから除く(太字にした印が G-4・G-5 を名指す行の拒否を素通りしないため。IMPL-0612)。
+ * 印を書かない行は、機械が当該の種類の行として見分けられない(印の付け忘れは機械で捕まえない)。check-pr.mjs と集約が同じ関数を使う
+ */
+export function fastTrackMarkOf(content) {
+  const t = String(content ?? '').normalize('NFKC').replace(/[*`]/g, '').trim();
+  const m = /^ファストトラック\s*[(（]\s*短縮\s*[:：]\s*([^)）]*)[)）]/.exec(t);
+  return m ? { scope: m[1].trim() } : null;
+}
+
+const cellsOf = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const blankCell = (v) => !String(v ?? '').normalize('NFKC').replace(/[—\-–\s]/g, '');
+
+/** 対象の欄(PR の番号またはコミットの識別子)が、原因の変更の欄と同じ変更を指すか */
+function sameChange(target, cause) {
+  const t = String(target ?? '').normalize('NFKC');
+  const c = String(cause ?? '').normalize('NFKC');
+  const prs = [...t.matchAll(/PR\s*#\s*(\d+)/gi)].map((m) => m[1]);
+  if (prs.some((n) => new RegExp('(?:PR\\s*)?#\\s*' + n + '(?!\\d)', 'i').test(c))) return true;
+  const hexes = [...t.matchAll(/\b[0-9a-f]{7,40}\b/gi)].map((m) => m[0].toLowerCase());
+  const chexes = [...c.matchAll(/\b[0-9a-f]{7,40}\b/gi)].map((m) => m[0].toLowerCase());
+  return hexes.some((h) => chexes.some((x) => x.startsWith(h) || h.startsWith(x)));
+}
+
+/**
+ * ファストトラック(7.4)の指標(IMPL-0612。乱用を防ぐ制約5)。印のある区分「例外」の行から数える。
+ *   発生率: 印の行の数 ÷ 範囲の変更数 / 回収完了率: 状態が閉じた値(返却済み・取り下げ)の印の行 ÷ 印の行
+ *   適用後の欠陥: 欠陥の台帳の処分が「欠陥」で確定した者と確定日のある行のうち、原因の変更が印の行の対象と結べた件数と、
+ *   原因の変更の欄が空欄の件数を併記する(空欄は結べない。結べた件数は下限であり、楽観へ偏る)
+ * 印の付け忘れは数えられない。会議体へ報告するふるまいは見ない
+ */
+export function fastTrackMetrics({ rows, changeTotal, defectText = null }) {
+  const marked = (rows ?? []).filter((r) => r.kind === '例外' && fastTrackMarkOf(r.content));
+  const closed = marked.filter((r) => isClosedState(r)).length;
+  const out = { marked: marked.length, closed, changeTotal: changeTotal ?? 0, defects: null };
+  if (defectText == null) return out;
+  const lines = String(defectText).split(/\r?\n/).filter((l) => /^\s*\|/.test(l));
+  const hi = lines.findIndex((l) => l.includes('原因の変更') && l.includes('処分'));
+  if (hi < 0) return { ...out, defects: { readable: false } };
+  const head = cellsOf(lines[hi]);
+  const iCause = head.findIndex((h) => h.includes('原因の変更'));
+  const iDisp = head.findIndex((h) => h.includes('処分'));
+  const iBy = head.findIndex((h) => h.includes('確定した者'));
+  const iDay = head.findIndex((h) => h.includes('確定日'));
+  let confirmed = 0;
+  let linked = 0;
+  let causeBlank = 0;
+  for (const l of lines.slice(hi + 1)) {
+    const c = cellsOf(l);
+    if (c.every((x) => /^:?-+:?$/.test(x))) continue;
+    if (String(c[iDisp] ?? '').normalize('NFKC').trim() !== '欠陥' || blankCell(c[iBy]) || blankCell(c[iDay])) continue;
+    confirmed++;
+    if (blankCell(c[iCause])) causeBlank++;
+    else if (marked.some((m) => sameChange(m.target, c[iCause]))) linked++;
+  }
+  return { ...out, defects: { readable: true, confirmed, linked, causeBlank } };
+}
+
+/** 指標の行の文(項目7)。 */
+export function fastTrackMetricsText(m) {
+  const pct = (a, b) => (b ? ' ' + Math.round((a / b) * 100) + '%' : ' —');
+  const d = m.defects;
+  const defect = d == null ? '欠陥の台帳が無く、適用後の欠陥は数えていない' : !d.readable ? '欠陥の台帳の表を読めず、適用後の欠陥は数えていない' : '適用後の欠陥: 確定した欠陥 ' + d.confirmed + ' 件のうち、原因の変更を印の行の対象と結べた ' + d.linked + ' 件 / 原因の変更の欄が空欄で結べない ' + d.causeBlank + ' 件(空欄は結べないため、結べた件数は楽観へ偏る)';
+  return (
+    'ファストトラック(7.4)の指標: 印のある行 ' + m.marked + ' 件(範囲の変更 ' + m.changeTotal + ' 件に対する発生率' + pct(m.marked, m.changeTotal) + ') / 回収完了 ' + m.closed + ' 件(回収完了率' + pct(m.closed, m.marked) + ') / ' + defect +
+    '。印の付け忘れは数えられず、会議体への報告のふるまいは見ない'
+  );
+}
+
+/**
+ * 制限された状態での例外決裁(7.9.4。IMPL-0628)の行。区分「例外」の行のうち、対象の変更が承認権限の一時制限の範囲に触れ(restrictionTouched)、
+ * 数えた承認が 2 名に満たないものとする。units は { label: '#12' | 'コミット abcdef12', independent: { restrictionTouched, by } } の配列。
+ * 欠落: (a) 承認した者が B-2 の決定者でない(isDecider(承認した者) が false。null は未確認として欠落にしない) (b) 返却の目安に日付か回収責任者が無い。
+ * 印(ファストトラック)の無い行の件数は出す(欠落にしない。ADR-0200 決定5(a))
+ */
+export function restrictedStateExceptions({ rows, units, isDecider = () => null }) {
+  const found = [];
+  const gaps = [];
+  const unconfirmed = [];
+  for (const r of (rows ?? []).filter((x) => x.kind === '例外')) {
+    const t = String(r.target ?? '').normalize('NFKC');
+    if (!t.trim() || /^\s*(G|SG)-?\d/.test(t)) continue;
+    const pr = /PR\s*#\s*(\d+)/i.exec(t)?.[1];
+    const hexes = [...t.matchAll(/\b[0-9a-f]{7,40}\b/gi)].map((m) => m[0].toLowerCase());
+    const unit = (units ?? []).find((u) => {
+      const l = String(u.label ?? '');
+      if (pr && l === '#' + pr) return true;
+      const h = /コミット\s*([0-9a-f]+)/i.exec(l)?.[1]?.toLowerCase();
+      return Boolean(h) && hexes.some((x) => x.startsWith(h) || h.startsWith(x));
+    });
+    if (!unit || unit.independent?.restrictionTouched !== true || (unit.independent?.by ?? []).length >= 2) continue;
+    found.push({ id: r.id, target: t.trim(), marked: Boolean(fastTrackMarkOf(r.content)) });
+    const dec = isDecider(r.approver);
+    if (dec === false) gaps.push('制限された状態での例外決裁 ' + r.id + '(対象 ' + t.trim() + '): 承認した者「' + String(r.approver ?? '').trim() + '」が、D-0 の会議体の表の B-2 の決定者(B-2 が該当なしなら事業決裁者の席の責任者)でありません。記録の欠落です(第7章 7.9.4 要求事項2)');
+    else if (dec == null) unconfirmed.push(r.id);
+    const due = String(r.due ?? '').normalize('NFKC');
+    if (!dueDayOf(due) || !/回収責任者\s*[:：]?\s*[^\s|]/.test(due)) {
+      gaps.push('制限された状態での例外決裁 ' + r.id + '(対象 ' + t.trim() + '): 返却の目安に、回収の期限の日付か回収責任者がありません。記録の欠落です(第7章 7.9.4 要求事項4)');
+    }
+  }
+  return { found, gaps, unconfirmed, unmarked: found.filter((x) => !x.marked).map((x) => x.id) };
+}
+
+/**
+ * 7.9.5 の枠と行使の件数(IMPL-0669)。briefText は企画書、used は当該ステージで行使した 7.9.4 の行の数、usedReadable は累計を読めたか。
+ * 枠が読めなければ「確認できない」を出す。止めない
+ */
+export function exceptionQuotaText({ briefText, used, usedReadable = true }) {
+  const line = String(briefText ?? '').split(/\r?\n/).find((l) => l.includes('例外の枠'));
+  const cell = line ? (cellsOf(line)[1] ?? '') : '';
+  const m = /^\s*(\d+)/.exec(cell.normalize('NFKC'));
+  const quota = m ? Number(m[1]) : null;
+  const base = '制限された状態での例外決裁(7.9.4)の対応づけは 7.9.4 の条件による';
+  if (!usedReadable) return base + '。ステージの累計を確認できない(直前のステージ移行ゲートの通過のコミットの台帳を読めない)';
+  if (quota === null) return base + '。枠: 確認できない(企画書の「例外の枠」が件数として読めない) / 行使 ' + used + ' 件';
+  const rest = quota - used;
+  return base + '。枠 ' + quota + '・行使 ' + used + '・残り ' + rest + (rest < 0 ? '(超過)' : '') + '。止めない。累計は範囲の中で 7.9.4 の条件に当たる行の数(範囲の外で足された行は再判定できず、下限の値)';
+}
+
 /** 記録の欠落の文(集約の gaps へ出す) */
 export function lapsedGapText(x, day) {
   const why = x.standing === 'lapsed' ? `状態が失効です` : x.unclosed ? `状態が「${x.state}」で、閉じた値(「返却済み」で始まる値・「取り下げ」)でなく、未回収のまま回収の期限(${x.due})を突合の日(${day})が過ぎています` : `状態が有効のまま、回収の期限(${x.due})を突合の日(${day})が過ぎています`;
