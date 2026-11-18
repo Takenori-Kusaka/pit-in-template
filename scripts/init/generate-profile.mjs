@@ -3463,6 +3463,7 @@ function d0GovernanceRows(config) {
 
 /** D-0 の生成区間が構成と一致するかを確かめる。問題の一覧を返す */
 export function d0SectionProblems(text, config) {
+  const q1 = readF2Q1Text(text);
   const NAMES = { seats: '節1 役割の割り当て', performers: '節12 担い手と運用形態', history: '節13 改訂履歴' };
   const norm = (s) => s.replace(/\r\n/g, '\n').trim();
   const out = [];
@@ -3498,6 +3499,7 @@ export function d0SectionProblems(text, config) {
  * 受け付けるので、/pit が再生成を勧める注記に使う(突合 X-8)。受け付けの期限は置かない(期限を置く根拠が無い)
  */
 export function d0LegacyOnlySections(text, config) {
+  const q1 = readF2Q1Text(text);
   const NAMES = { seats: '節1 役割の割り当て', performers: '節12 担い手と運用形態', history: '節13 改訂履歴' };
   const norm = (s) => s.replace(/\r\n/g, '\n').trim();
   const out = [];
@@ -3523,6 +3525,7 @@ export function d0LegacyOnlySections(text, config) {
  * 目印があって構成と一致しなければ problems に出す(#288 第6巡 R)
  */
 export function d0OptionalSectionProblems(text, config) {
+  const q1 = readF2Q1Text(text);
   // 「(名簿の外)」の注記は第7巡で足した表示であり、注記の無い旧い区間を失敗させない(比較のときだけ除く)
   const norm = (s) => s.replace(/\r\n/g, '\n').replace(/\(名簿の外\)/g, '').trim();
   const out = { missing: [], problems: [] };

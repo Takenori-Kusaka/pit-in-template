@@ -190,6 +190,7 @@ import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
+import { checkSafetyRecord, safetyRecordResultText } from './check-safety-record.mjs';
 import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl, readF2Q1 } from './cl-judgment.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
@@ -3261,6 +3262,10 @@ if (isMain) {
   // 未達のまま出荷しない(CL1 以上・規制業。種類を問わない。手書きの構成に頼らず G-3 の未達を導き直す。IMPL-0738)
   for (const g of unmetShipGaps(config)) gaps.push(g);
 
+  // 安全関連部の検証の記録(G-7 基準7。附属書F F.7。IMPL-1007・0925・0927・0934)。記載の欠落の検査のみ。内容の妥当性は確かめていない
+  const safetyRecord = checkSafetyRecord({ root: ROOT, config, day: exceptionDay });
+  if (safetyRecord.applies) for (const p of safetyRecord.problems) gaps.push(`安全関連部の検証の記録(基準7): ${p}`);
+
   // 責任者が未記入の席は、誰が結果責任を負うかを示せない。記録の欠落として扱う(D-0 節1)
   const blankSeats = (config.seats ?? []).filter((s) => !s.accountable).map((s) => s.name ?? s.role);
   if (blankSeats.length) gaps.push(`責任者が未記入の席があります: ${blankSeats.join(' / ')}`);
@@ -5700,8 +5705,8 @@ if (isMain) {
     {
       id: 7,
       label: '安全適合性の検証記録(安全関連ソフトウェアのみ)',
-      machine: 'not-checked',
-      result: null,
+      machine: 'partial',
+      result: safetyRecordResultText(safetyRecord),
       humanReconcile: `安全関連ソフトウェアを含むか(構成の安全重要度: ${config.answers?.['q-criticality'] ?? '未記入'})と、含む場合は附属書F F.7 の記録`,
     },
     {
