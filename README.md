@@ -379,6 +379,23 @@ hook・statusLine・`.mcp.json` は入れていません。`graft init` は hook
 
 graft は匿名の利用統計を送ります。止めるときは `npx -y @nanonets/graft@0.12.1 telemetry disable` を実行するか、環境変数 `DO_NOT_TRACK=1` を設定してください(端末単位の設定で、リポジトリには含まれません)。
 
+### 実行の記録と実行基盤の隔離(標準 第5章 5.8.2・5.8.6。ADR-0222)
+
+**実行の記録**(IMPL-0207・IMPL-1019)
+
+- SessionStart のフック(`scripts/gate/agent-run-record.mjs record`)が、実行の識別子ごとに `.claude/agent-runs/<id>.json` へ、開始の時点の HEAD・指示資産(CLAUDE.md・AGENTS.md・.claude・context)の要約値・コミットに無い変更の有無(`assets=clean` または `dirty`)を書きます。再開(同じ識別子)は元の記録を書き換えません
+- `.githooks/commit-msg` が、Claude Code の実行(環境変数 `CLAUDE_CODE_SESSION_ID`)のコミットにだけ、トレーラ `Agent-Run:` と `Agent-Assets:` を足します。人のコミットには足さず、amend で二重に足しません
+- `core.hooksPath` は未設定のときだけ `.githooks` にします。**別の値があれば変えません**。そのときは `.githooks/commit-msg` が走らないため、起動の出力に旨が出ます。husky などを使う採用者は、そのフックから `.githooks/commit-msg` を呼んでください
+- 見えないもの: `git commit --no-verify`、別の `core.hooksPath`、AI の印も付かないコミット。別のセッションの amend は元の識別子が残ります。利用者の範囲の指示(`~/.claude`)の版は記録できません(`user-scope=unrecorded`)
+- 出荷の証跡の集約(保証の開示 項目7)が、AI の印のあるコミットを 5 区分(版を特定できる clean・dirty / 特定できない unknown・トレーラなし / フックの導入前)の件数で出し、外す対象の一覧を出します。**外すのは監査人**です(`.claude/skills/gate/SKILL.md`)
+
+**実行基盤の隔離**(IMPL-0506・IMPL-0510)
+
+- `.claude/settings.json` の `sandbox` が、隔離の有効化(`enabled: true`)・隔離の外での実行の要求の拒否(`allowUnsandboxedCommands: false`)・許可する宛先(`network.allowedDomains`)を置きます。既定の宛先はテンプレート自身の手順が通信する `registry.npmjs.org`・`github.com`・`api.github.com` だけです
+- **確認済みの基盤は WSL2 だけ**です。**ネイティブの Windows では隔離が効きません**。macOS とネイティブの Linux は確認していません(確認の手順は `research` の本体側の記録を参照)。初期化の試験(`test-init-g5.mjs`)は設定の値の存在を確かめるだけで、**隔離が効くことは確かめません**。効くかは採用者の AI維持管理者が自分の基盤で確かめます
+- 隔離はシェルだけに掛かります。ファイルの道具・MCP・フックは隔離の外です
+- 社内レジストリなどの宛先を足すのは緩める向きです。`network.allowedDomains` に足す変更は強制層の変更として AI維持管理者が承認します。足した宛先は、再生成しても残ります
+
 ### 言語に依存しません
 
 CI が固定するのは**ゲート契約**だけです。

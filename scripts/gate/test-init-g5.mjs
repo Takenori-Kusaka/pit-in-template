@@ -145,6 +145,21 @@ for (const n of [1, 3]) {
   // 保管領域の読み込みの拒否は、ステージ(1名は S0、3名は S1)に依らず残る(標準 第3章 3.11.4 要求事項7)
   const deny = JSON.parse(W.read('.claude/settings.json')).permissions?.deny ?? [];
   check(`${tag}: 権限設定が保管領域(context/_archive/)の読み込みを拒否する`, deny.includes('Read(./context/_archive/**)'), JSON.stringify(deny));
+  // 隔離の設定と、強制層の拒否の全パス(IMPL-0506・IMPL-0510。標準 第5章 5.8.6 要求事項3・6。ADR-0222)。
+  // **この検査は設定の値の存在だけを確かめる。隔離が実際に効くことは確かめない**(効くかは基盤ごとの実機の確認。EV-0318。確認済みの基盤は WSL2 だけ)
+  {
+    const st = JSON.parse(W.read('.claude/settings.json'));
+    const sb = st.sandbox ?? {};
+    const DEFAULT_DOMAINS = ['registry.npmjs.org', 'github.com', 'api.github.com'];
+    check(`${tag}: IMPL-0506 隔離を有効にする(sandbox.enabled が true)`, sb.enabled === true, JSON.stringify(sb));
+    check(`${tag}: IMPL-0506 隔離の外での実行の要求を拒む(allowUnsandboxedCommands が false)`, sb.allowUnsandboxedCommands === false, JSON.stringify(sb));
+    check(`${tag}: IMPL-0506 許可する宛先は、テンプレート自身の手順の宛先だけ(ワイルドカードを置かない)`, Array.isArray(sb.network?.allowedDomains) && sb.network.allowedDomains.length > 0 && sb.network.allowedDomains.every((d) => DEFAULT_DOMAINS.includes(d)), JSON.stringify(sb.network));
+    // IMPL-0510: シェルからの書き込みを拒否する経路は、権限設定の deny に置く強制層の全パス。隔離の設定と対で固定する
+    const MUST_DENY = ['Edit(./.claude/settings.json)', 'Edit(./.claude/guard.json)', 'Edit(./.claude/hooks/**)', 'Edit(./process.config.json)', 'Edit(./.github/rulesets/**)', 'Edit(./.github/workflows/**)', 'Edit(./adapters/**)', 'Edit(./scripts/gate/**)', 'Edit(./scripts/vendor/**)', 'Write(./scripts/vendor/**)'];
+    const missing = MUST_DENY.filter((r) => !(st.permissions?.deny ?? []).includes(r));
+    check(`${tag}: IMPL-0510 強制層の全パスの書き込みを deny に置く(生成後。欠けた行 ${missing.length} 件)`, missing.length === 0, missing.join(', '));
+  }
+
   // 組織の管理外への送信を既定で止める(標準 第5章 5.8.6、ADR-0103 決定2。process-compass #425)
   const settingsAfter = JSON.parse(W.read('.claude/settings.json'));
   check(`${tag}: 道具の利用統計を既定で送らない(env の DO_NOT_TRACK)`, settingsAfter.env?.DO_NOT_TRACK === '1', JSON.stringify(settingsAfter.env));

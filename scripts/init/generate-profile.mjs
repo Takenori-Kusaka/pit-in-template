@@ -149,6 +149,9 @@ import {
   detectionComplete,
 } from '../gate/config.mjs';
 
+/** 隔離の既定の宛先。テンプレート自身の手順(npx による検査器の取得・gh)が通信する宛先だけ(IMPL-0506)。社内レジストリなどは採用者が足す */
+export const SANDBOX_DEFAULT_DOMAINS = ['registry.npmjs.org', 'github.com', 'api.github.com'];
+
 const normName = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
 
 /** 名簿の行の種別の表記(変化点の差分に出す) */
@@ -7030,6 +7033,20 @@ export function tailorGuardAndSettings(config, guardSource, settingsSource) {
       messages.push('[プロセス構成] エージェント用ガードを有効化（enabled: true）し、検査コードやワークフロー（Category C）への直接編集をロックダウン（遮断）しました。事業ステージ（PoC を含む）に依らず有効です（標準 第8章 軸B、ADR-0050）。');
     }
   }
+
+  // 実行基盤の隔離(Claude Code の sandbox。標準 第5章 5.8.6 要求事項3 のシェルとネットワーク。IMPL-0506。ADR-0222)。
+  // 隔離を有効にし、隔離の外での実行の要求を拒み、許可する宛先をテンプレート自身の手順が通信する宛先に限る。
+  // 採用者が足した宛先は残す(社内レジストリなど。足すのは緩める向きで、強制層の変更として AI維持管理者が承認する)。
+  // 隔離はシェルだけに掛かる(ファイルの道具・MCP・フックは隔離の外)。確認済みの基盤は WSL2 だけで、ネイティブの Windows では効かない(IMPL-0507)。
+  // この生成は設定の値を置くだけで、隔離が効くことは確かめない(EV-0318)
+  const sandbox = settingsObj.sandbox && typeof settingsObj.sandbox === 'object' && !Array.isArray(settingsObj.sandbox) ? settingsObj.sandbox : {};
+  const keptDomains = Array.isArray(sandbox.network?.allowedDomains) ? sandbox.network.allowedDomains.filter((d) => typeof d === 'string') : [];
+  settingsObj.sandbox = {
+    ...sandbox,
+    enabled: true,
+    allowUnsandboxedCommands: false,
+    network: { ...(sandbox.network ?? {}), allowedDomains: [...new Set([...SANDBOX_DEFAULT_DOMAINS, ...keptDomains])] },
+  };
 
   return {
     guardText: JSON.stringify(guardObj, null, 2) + '\n',

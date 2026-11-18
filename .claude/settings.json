@@ -109,5 +109,12 @@
         ]
       }
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": ["registry.npmjs.org", "github.com", "api.github.com"]
+    }
   }
 }
