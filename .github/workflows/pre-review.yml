@@ -1,0 +1,56 @@
+# 事前レビュー期間の受付・起票・通知(IMPL-0571・0210・0213・0219・0215・0216。process-compass #325 / ADR-0200)
+#
+# Issue の様式(.github/ISSUE_TEMPLATE/pre-review.yml。ラベル pre-review)で起票された上程だけを対象にします。
+# 機械は、判定資料の Issue の起票(草案の印つき)と、意見の欄の注意のコメントだけを行います。
+# 内容の確定・意見の採否・措置(代理の指名)は人が行います。自動の再割り当てと自動承認はしません。
+# **必須チェックにしません**(pre-review-closed・pre-review-all-responded は IMPL-0214 の重の審議に残す)。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
+#
+# 検査のコードと構成は、既定ブランチから読みます。契機は schedule と workflow_dispatch だけです(PR の事象で動かしません)。
+# 営業日の祝日は .github/business-holidays.txt(任意)から読み、無ければ土日だけを除き、出力に「祝日を数えていない」と書きます。
+# 2026-11-18 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
+# 有効化の前に、試験用のリポジトリで `workflow_dispatch` を dry-run(下の入力)で流して確かめてください。
+
+name: pre-review
+
+on:
+  schedule:
+    - cron: '27 0 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 書き込まずに、行う内容だけを出す
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pre-review
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: pre-review-notify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - name: 判定資料の起票と意見の様式の注意
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/gate/pre-review.mjs notify --dry-run
+          else
+            node scripts/gate/pre-review.mjs notify
+          fi
+

@@ -1,0 +1,87 @@
+name: 事前レビュー期間の上程
+description: 会議体の判定(B-1〜B-4)または工程ゲートの判定を、事前レビュー期間(標準 第3章 3.10)に載せる
+title: "事前レビュー: "
+labels: [pre-review]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        判定予定日 T の5営業日前(リスク区分 R1 は10営業日前)に、判定資料の Issue が**草案の印つき**で自動で起票されます。
+        中身(判定基準の充足状況・未解決の論点・高リスク事項・リスク区分の根拠・求める判断)は、起案者が書きます。
+        草案の印は、題名の先頭の「[草案] 」です。内容を確定したら、起案者が外してください。外すまで「公開」に数えません。
+
+        指名レビュアは、意見の受付の締切までに、次の雛形でこの Issue にコメントします。1つの論点につき1つのコメントにしてください。
+        ```
+        賛否:
+        理由:
+        代替案または充足条件:
+        ```
+        起案者は、全ての意見へ応答します。応答のコメントには、宣言行 `応答: <意見のコメントの URL>` を1行書きます。
+        AI の担い手のコメントは、意見にも応答にも数えません(標準 3.10.1)。
+        標準変更(3.7.4)は事前承認済みの経路のため、この様式の対象外です。選んでも通知しません。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - B-1
+        - B-2
+        - B-3
+        - B-4
+        - 工程ゲート
+        - 標準変更(対象外)
+    validations:
+      required: true
+
+  - type: input
+    id: gate
+    attributes:
+      label: 工程ゲート
+      description: 種別が工程ゲートのときだけ。G-1〜G-8。工程ゲートは非同期コメント期間のみで、判定当日の手順は起動しません
+      placeholder: G-3
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: リスク区分
+      description: R1 は判定資料の公開が T の10営業日前、締切が5営業日前。R2・R3 は5営業日前と2営業日前
+      options:
+        - R1
+        - R2
+        - R3
+    validations:
+      required: true
+
+  - type: input
+    id: due
+    attributes:
+      label: 判定予定日 T
+      description: YYYY-MM-DD
+      placeholder: 2026-12-10
+    validations:
+      required: true
+
+  - type: input
+    id: author
+    attributes:
+      label: 起案者
+      description: "@login"
+      placeholder: "@alice"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reviewers
+    attributes:
+      label: 指名レビュア
+      description: 意見を求めるレビュアを記名で指名する(@login を空白か改行で区切る)。AI の担い手の名義は数えません
+      placeholder: "@bob @carol"
+    validations:
+      required: true
+
+  - type: input
+    id: material
+    attributes:
+      label: 判定資料の所在
+      description: 起案者が判定資料を別の場所に置くときだけ、その URL。空なら、自動で起票される判定資料の Issue を使います
