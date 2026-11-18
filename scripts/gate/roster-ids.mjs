@@ -91,7 +91,7 @@ function ownerKind(o) {
  * 戻り値: { problems: string[], notices: string[], rows: number }(notices は名簿に対応づかない個人。失敗にしない)
  */
 export function codeownersProblems(config, text, files = [], searched = ['.github/CODEOWNERS']) {
-  if (text === null || text === undefined) return { problems: [`CODEOWNERS が基底ブランチに無い(検査した所在: ${searched.join('・')}。所有者を定義していない)`], rows: 0 };
+  if (text === null || text === undefined) return { problems: [`CODEOWNERS が基底ブランチに無い(検査した所在: ${searched.join('・')}。所有者を定義していない)`], notices: [], rows: 0 };
   const rows = parseCodeowners(text);
   const problems = [];
   const notices = [];

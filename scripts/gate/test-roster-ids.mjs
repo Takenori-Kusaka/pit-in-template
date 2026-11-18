@@ -225,6 +225,7 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   const ok = codeownersProblems(cfg, '# コメント\n* @yamada # 末尾のコメント\n', ['src/a.js']);
   check('CODEOWNERS: 名簿の人の login とコメントを読み、問題が無い', ok.problems.length === 0 && ok.rows === 1, JSON.stringify(ok));
   check('CODEOWNERS: ファイルが無ければ問題', codeownersProblems(cfg, null, []).problems.length === 1);
+  check('CODEOWNERS: ファイルが無いときも notices は配列', Array.isArray(codeownersProblems(cfg, null, []).notices));
   const mail = codeownersProblems(cfg, '* a@example.com\n', ['x']);
   check('CODEOWNERS: メールアドレスの所有者は名簿へ対応づかず、失敗でなく注意に出る', mail.problems.length === 0 && mail.notices.some((p) => /対応づかない/.test(p)), JSON.stringify(mail));
   const stranger = codeownersProblems(cfg, '* @stranger\n', ['x']);
