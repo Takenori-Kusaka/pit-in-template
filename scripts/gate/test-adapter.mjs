@@ -37,9 +37,9 @@ dirs.push(BIN);
 // 代役: 呼ばれた所在(作業ディレクトリ)に .fake-<名> を書き、FAKE_EXIT で終わる
 for (const name of ['npx', 'python', 'poetry', 'uv']) {
   // 環境変数 UV_PYTHON も印に書く(python-uv が runtimeVersion の python を使うか。突合 X-4)
-  fs.writeFileSync(path.join(BIN, name), `#!/bin/sh\necho "$@" > ".fake-${name}"\necho "UV_PYTHON=$UV_PYTHON" >> ".fake-${name}"\nexit \${FAKE_EXIT:-0}\n`);
+  fs.writeFileSync(path.join(BIN, name), `#!/bin/sh\necho "$@" > ".fake-${name}"\necho "UV_PYTHON=$UV_PYTHON" >> ".fake-${name}"\necho "ALLOWED=$PIT_IN_ALLOWED_LICENSES" >> ".fake-${name}"\nexit \${FAKE_EXIT:-0}\n`);
   fs.chmodSync(path.join(BIN, name), 0o755);
-  fs.writeFileSync(path.join(BIN, `${name}.cmd`), `@echo off\r\necho %* > ".fake-${name}"\r\necho UV_PYTHON=%UV_PYTHON%>> ".fake-${name}"\r\nif "%FAKE_EXIT%"=="" exit /b 0\r\nexit /b %FAKE_EXIT%\r\n`);
+  fs.writeFileSync(path.join(BIN, `${name}.cmd`), `@echo off\r\necho %* > ".fake-${name}"\r\necho UV_PYTHON=%UV_PYTHON%>> ".fake-${name}"\r\necho ALLOWED=%PIT_IN_ALLOWED_LICENSES%>> ".fake-${name}"\r\nif "%FAKE_EXIT%"=="" exit /b 0\r\nexit /b %FAKE_EXIT%\r\n`);
 }
 
 const SECRETLINT_RC = '{ "rules": [{ "id": "@secretlint/secretlint-rule-preset-recommend" }] }\n';
@@ -237,6 +237,39 @@ for (const id of ['python-poetry', 'python-uv']) {
     const ok = W.adapter(phase, '0');
     check(`node: ${phase} のコマンドが通れば段も通る`, ok.code === 0, ok.out);
   }
+}
+
+// ---------------------------------------------------------------- 6. 暫定のライセンスの許可(ci.provisionalLicenses。IMPL-0683。#447)
+// 期限の内の暫定の許可だけが許可リストに入る。期限を過ぎた許可・必須の欄の欠けた許可は入らず、基準5 が再び止める
+{
+  const { effectiveAllowedLicenses, provisionalLicenseProblems } = await import('./license-allowlist.mjs');
+  const perm = ['MIT', 'Apache-2.0'];
+  const entry = (o = {}) => ({ license: 'GPL-3.0-only', expires: '2030-06-30', approvedBy: '法務 山田', reason: '移行の間だけ', ...o });
+  const cfg = (list) => ({ ci: { allowedLicenses: perm, provisionalLicenses: list } });
+  const eff = (list, day) => effectiveAllowedLicenses(cfg(list), day);
+  // IMPL-0683:ng(違反側。期限を過ぎた許可・欄の欠けた許可が一覧へ入ることを許さない)
+  check('IMPL-0683:ng 期限の翌日に、暫定の許可が一覧から外れる', !eff([entry()], '2030-07-01').allowed.includes('GPL-3.0-only') && eff([entry()], '2030-07-01').expired.length === 1);
+  for (const k of ['license', 'expires', 'approvedBy', 'reason']) {
+    const e = entry({ [k]: '' });
+    check(`IMPL-0683:ng ${k} の欠けた暫定の許可は一覧へ入らず、検査が拒否する`, !eff([e], '2030-01-01').allowed.some((x) => x === 'GPL-3.0-only') && provisionalLicenseProblems(cfg([e])).length > 0, JSON.stringify(provisionalLicenseProblems(cfg([e]))));
+  }
+  check('IMPL-0683:ng 実在しない日付の期限を拒否する', provisionalLicenseProblems(cfg([entry({ expires: '2030-02-31' })])).length > 0);
+  check('IMPL-0683:ng 暫定の許可は恒久の一覧 allowedLicenses へ混ざらない(設定の配列を書き換えない)', (() => { eff([entry()], '2030-01-01'); return perm.length === 2; })());
+  check('IMPL-0683:ng アダプタを経ない Python の経路(ip-clearance-python.mjs)は暫定の許可を読まない(止める側に倒れる)', !/provisional/i.test(fs.readFileSync(path.join(ROOT, 'scripts/gate/ip-clearance-python.mjs'), 'utf8')));
+  for (const [label, expires, want] of [['期限が過ぎた許可', '2000-01-01', false], ['期限の内の許可', '2999-12-31', true]]) {
+    const W = workspace('node', { 'package.json': '{ "name": "x" }\n' });
+    const p = path.join(W.dir, 'process.config.json');
+    const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+    c.ci = { ...c.ci, provisionalLicenses: [entry({ expires })] };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    W.adapter('licenses', '0');
+    const args = fs.existsSync(path.join(W.dir, '.fake-npx')) ? fs.readFileSync(path.join(W.dir, '.fake-npx'), 'utf8') : '';
+    check(`${want ? 'IMPL-0683:ok' : 'IMPL-0683:ng'} node: ${label}は、検査器へ渡す許可リストに${want ? '入る' : '入らない'}`, args.includes('GPL-3.0-only') === want && args.includes('MIT'), args);
+  }
+  // IMPL-0683:ok(適合側)
+  check('IMPL-0683:ok 期限の日までは一覧に入る', eff([entry()], '2030-06-30').allowed.includes('GPL-3.0-only') && eff([entry()], '2030-06-30').active.length === 1);
+  check('IMPL-0683:ok 恒久の一覧は期限に依らず常に入る', ['2000-01-01', '2999-01-01'].every((d) => perm.every((l) => eff([entry()], d).allowed.includes(l))));
+  check('IMPL-0683:ok 欄がそろった暫定の許可は検査を通る', provisionalLicenseProblems(cfg([entry()])).length === 0 && provisionalLicenseProblems({ ci: {} }).length === 0);
 }
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });

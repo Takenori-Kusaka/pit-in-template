@@ -12,6 +12,7 @@
 | `projectId` / `profileName` | 案件 ID、プロファイル名 | — |
 | `ci.coverageThreshold` | カバレッジの下限(0〜100)。数値は較正した値として記録する(由来 `calibrated`)。`"derived"` は導出の基準値へ戻す(未達の間は代償措置の 90 が重なる)。由来の記録の無い旧い構成の値を戻すかは、ここで決める | **下げるのは緩める向き**。未達を解く変更では、代償措置の終了の行が同じ差分に出る(その変更の記名で決まる) |
 | `ci.failOnSeverity` / `ci.allowedLicenses` | 失敗させる重大度、許可するライセンス | **重大度を外す、ライセンスを足すのは緩める向き** |
+| `ci.provisionalLicenses` | 暫定のライセンスの許可 `[{ "license", "expires", "approvedBy", "reason" }]`(標準 第4章 G-5「許可リストが判定を妨げた場合の救済」)。`expires` は実在の日付(YYYY-MM-DD。期限の日まで有効で、翌日から基準5 が再び止める)。`approvedBy` は許可を出した法務またはその委任先の記名(AI の名義でない)。4つの欄が全て要る。恒久の一覧 `ci.allowedLicenses` へは混ぜない。第7章の例外承認の台帳では受けない(1 行が 1 つのゲートの 1 つの対象で、期限までの全 PR に効く許可を表せないため) | **足す・期限を延ばすのは緩める向き**。期限を過ぎた許可は一覧から外れ、記載の欠けた行は設定の検査が拒否する。有効な許可と期限は保証の開示 項目5 に出る。恒久への切り替えは法務の所管(`ci.allowedLicenses`) |
 | `task.maxChangedLines` / `maxChangedFiles` / `selfHealMaxIterations` | 規模の基準値(超過で規模の確認を要する。遮断ではない)と反復の上限。`maxChanged*` は `null`(基準なし)も取れる。`null` は `task.assurance` が L2 で根拠が実在し、確約範囲・コア指定のパス(`delegation.protectedPaths` か `riskFloor.rules` のパス)を宣言した構成でだけ書け、R1・R2・そのパスの変更には効かない | **上げる・`null` にするのは緩める向き** |
 | `task.nonProductPaths` | 規模の算定で別に数える置き場(glob の配列)。既定のテスト・fixture・snapshot に足す | **足すのは緩める向き**。閾値として扱い、製品のコードと同じ PR に入れない |
 | `task.assurance` | 担保水準の宣言 `{ "level": "L0" \| "L1" \| "L2", "basis": "<リポジトリ内のパス>", "declaredBy", "declaredAt", "reviewAt" }`。未宣言は L0 | **L0 から L1・L2 へ上げるのは緩める向き**(記名と理由を要する)。宣言は記録であり、緩和を自動で与えない。機械が確かめるのは根拠の実在と見直し日だけで、見直し日を過ぎると L0 として扱う |

@@ -21,7 +21,8 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES } from './config.mjs';
+import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES, localDay } from './config.mjs';
+import { effectiveAllowedLicenses } from './license-allowlist.mjs';
 
 const [, , mode, phase] = process.argv;
 const config = loadConfig();
@@ -114,7 +115,8 @@ const env = {
   ...process.env,
   PIT_IN_FAIL_ON_SEVERITY: failLevels.join(';'),
   PIT_IN_AUDIT_LEVEL: auditLevel === 'medium' ? 'moderate' : auditLevel,
-  PIT_IN_ALLOWED_LICENSES: (config.ci?.allowedLicenses ?? []).join(';'),
+  // 恒久の一覧に、期限の内の暫定の許可を足した一覧(license-allowlist.mjs。期限を過ぎた許可は入らない。IMPL-0683)
+  PIT_IN_ALLOWED_LICENSES: effectiveAllowedLicenses(config, localDay()).allowed.join(';'),
   // 値の有無は coverage-check と契約検査が確かめて落とす。ここは子の検査器へ渡すだけ(#337 項目2)
   PIT_IN_COVERAGE_THRESHOLD: String(config.ci?.coverageThreshold ?? 80),
   PIT_IN_ROOT: rootPosix,

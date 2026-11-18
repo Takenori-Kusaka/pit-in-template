@@ -42,6 +42,7 @@ import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
+import { provisionalLicenseProblems } from '../gate/license-allowlist.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
 import { recordsBranchNotice } from '../gate/records.mjs';
@@ -1088,6 +1089,7 @@ export function buildConfig(answers, opts = {}) {
       coverageScope,
       failOnSeverity,
       allowedLicenses,
+      ...(opts.provisionalLicenses?.length ? { provisionalLicenses: opts.provisionalLicenses } : {}),
       strengthened: ciStrengthened,
     },
     review: {
@@ -2436,6 +2438,15 @@ export function diffConfig(before, after, opts = {}) {
       if (!added.length && !removed.length) continue;
       const loosens = addLoosens ? added.length > 0 : removed.length > 0;
       push(`${label}: ${[...b].join(', ') || 'なし'} → ${[...a].join(', ') || 'なし'}`, loosens ? 1 : 0, loosens ? 0 : 1, M);
+    }
+    // 暫定のライセンスの許可(ci.provisionalLicenses。IMPL-0683)。許可の追加・期限の延長は緩める向き
+    {
+      const key = (c) => new Set((Array.isArray(c?.ci?.provisionalLicenses) ? c.ci.provisionalLicenses : []).map((e) => `${e?.license}@${e?.expires}`));
+      const b = key(before);
+      const a = key(after);
+      const added = [...a].filter((x) => !b.has(x));
+      const removed = [...b].filter((x) => !a.has(x));
+      if (added.length || removed.length) push(`暫定のライセンスの許可: ${[...b].join(', ') || 'なし'} → ${[...a].join(', ') || 'なし'}`, added.length ? 1 : 0, added.length ? 0 : 1, M);
     }
     for (const [k, label] of [
       ['maxChangedLines', '規模の基準値(行数)'],
@@ -5386,6 +5397,7 @@ if (isMain) {
       bad.push('settings.ci.coverageThreshold は 0〜100 の数値(較正した値)か、"derived"(標準の導出値へ戻す)で書きます');
     }
     for (const k of ['failOnSeverity', 'allowedLicenses']) if (S.ci?.[k] !== undefined && !strList(S.ci[k])) bad.push(`settings.ci.${k} は文字列の配列で書きます`);
+    if (S.ci?.provisionalLicenses !== undefined) bad.push(...provisionalLicenseProblems({ ci: { provisionalLicenses: S.ci.provisionalLicenses } }).map((p) => `settings.${p}`));
     if (S.ci?.coverageScope !== undefined && !['changed', 'whole'].includes(S.ci.coverageScope)) bad.push('settings.ci.coverageScope は "changed"(変更で加えた・変えたコード)か "whole"(全体)で書きます');
     if (S.task !== undefined && !isObject(S.task)) bad.push('settings.task はオブジェクトで書きます');
     for (const k of ['maxChangedLines', 'maxChangedFiles']) {
@@ -5703,6 +5715,7 @@ if (isMain) {
       reviewSourcing: { ...Object.fromEntries((prior?.unmet ?? []).map((u) => [u.gate, u.reviewSourcing])), ...(S.reviewSourcing ?? {}) },
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
+      provisionalLicenses: ciNow.provisionalLicenses,
       // 下限の由来(#318 / ADR-0088 決定5)。種別 settings の数値は較正、"derived" は導出値へ戻す(緩める向きなら差分に出て記名を要する)
       coverageThreshold: S.ci?.coverageThreshold === 'derived' ? undefined : ciNow.coverageThreshold,
       coverageOrigin:

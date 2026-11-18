@@ -47,6 +47,7 @@
 // 範囲の中の変化点の記録のうち決定者の記名を要するものと、sgRecord が指す SG の判定記録を、記録を入れた PR の作成者・承認者に
 // 照合して、裏づけの無いものを記載の欠落にします(material-attribution.mjs)。
 
+import { effectiveAllowedLicenses } from './license-allowlist.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -4522,6 +4523,11 @@ if (isMain) {
   const debtRows = exceptionRows ? exceptionRows.filter((r) => r.state.startsWith('未返却')) : null;
   const residual = {
     unmet: unmet.map((u) => u.label),
+    // 暫定のライセンスの許可(ci.provisionalLicenses。IMPL-0683)。期限の内の許可と、期限を過ぎて基準5 が再び止める許可
+    provisionalLicenses: (() => {
+      const e = effectiveAllowedLicenses(config, localDay());
+      return { active: e.active.map((x) => `${x.license}(期限 ${x.expires}。許可 ${x.approvedBy})`), expired: e.expired.map((x) => `${x.license}(期限 ${x.expires} を過ぎた。基準5 で再び停止)`), problems: e.problems };
+    })(),
     deviations: deviations.map((d) => d.label),
     // 独立した人の確認を経ていないが、例外承認の記録が対応づいたため欠落として扱わなかった変更(未回収の例外)
     exceptedChanges: exceptedChanges.map((c) => `${c.label}(${c.riskClass ?? '区分未記入'}。${c.records.join(', ')})`),
@@ -6590,6 +6596,10 @@ if (isMain) {
     R.push('### 5. 残存リスク、既知の不具合、未回収の例外');
     R.push('');
     R.push(`- 未達のゲート: ${listOr(A.residual.unmet)}`);
+    {
+      const p = A.residual.provisionalLicenses;
+      if (p && (p.active.length || p.expired.length || p.problems.length)) R.push(`- 暫定のライセンスの許可(構成 ci.provisionalLicenses。法務またはその委任先の許可。期限を過ぎると基準5 で再び停止): 有効 ${listOr(p.active)} / 期限切れ ${listOr(p.expired)}${p.problems.length ? ` / **記載の欠け** ${p.problems.join('。')}` : ''}`);
+    }
     {
       const sep = (A.continuity?.spof ?? []).filter((x) => x.state === '基準集合の確定者と導入承認者が同一人物');
       if (sep.length) R.push(`- 基準集合の正解の確定者と導入の承認者が同一人物のモデル(第3章 3.12.3 要求事項12。分離が成り立たない。層1 の権限者の期限つきの受容が要る): ${sep.map((x) => `${x.subject}(${x.acceptance?.status === 'accepted' ? `受容あり、期限 ${x.acceptance.until}` : x.acceptance?.status === 'expired' ? '受容の期限切れ。記載の欠落' : '受容なし'})`).join(' / ')}`);
