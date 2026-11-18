@@ -65,12 +65,22 @@ export const BASE_STEP = { cl0: 1, cl1: 2, cl2: 3, cl3: 1 };
 
 const clean = (v) => String(v ?? '').replace(/\*/g, '').trim();
 
-/** D-0 の本文から節16 の表を読む。節が無ければ present: false */
-export function parseClRecord(text) {
-  const lines = String(text ?? '').split(/\r?\n/);
+/** HTML の注釈とコードの囲みを除く(行の数は保つ)。注釈・コードの中の表の行を、記入として読まない(R1-11) */
+function stripNonContent(text) {
+  const blank = (m) => m.replace(/[^\r\n]/g, '');
+  return String(text ?? '')
+    .replace(/<!--[\s\S]*?-->/g, blank)
+    .replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, blank);
+}
+
+/** D-0 の本文から節16 の表を読む。節が無ければ present: false。F.2 の行が複数あり値が違うときは conflicts.f2 を立てる */
+export function parseClRecord(rawText) {
+  const text = stripNonContent(rawText);
+  const lines = text.split(/\r?\n/);
   const start = lines.findIndex((l) => CL_SECTION_HEADING.test(l));
   if (start < 0) return { present: false, values: {}, missingRows: Object.keys(CL_FIELDS) };
   const values = {};
+  const conflicts = {};
   for (let i = start + 1; i < lines.length; i++) {
     const l = lines[i];
     if (/^##\s/.test(l)) break;
@@ -78,10 +88,13 @@ export function parseClRecord(text) {
     const cells = l.split('|').slice(1, -1).map((c) => clean(c));
     if (cells.length < 2) continue;
     const key = Object.keys(CL_FIELDS).find((k) => CL_FIELDS[k] === cells[0]);
-    if (key && !(key in values)) values[key] = cells.slice(1).join(' | ').trim();
+    if (!key) continue;
+    const v = cells.slice(1).join(' | ').trim();
+    if (!(key in values)) values[key] = v;
+    else if (key === 'f2' && values[key] !== v) conflicts.f2 = true;
   }
   const missingRows = Object.keys(CL_FIELDS).filter((k) => !(k in values));
-  return { present: true, values, missingRows };
+  return { present: true, values, missingRows, conflicts };
 }
 
 /**
@@ -92,7 +105,10 @@ export function componentClasses(text) {
   const lines = String(text ?? '').split(/\r?\n/);
   const s = lines.findIndex((l) => CL_SECTION_HEADING.test(l));
   if (s < 0) return { present: false, rows: [] };
-  let i = lines.findIndex((l, k) => k > s && /^###\s+構成要素ごとの判定/.test(l));
+  // 見出しの探索は、節16 の終わり(次の「## 」の手前)までに限る(R1-17)
+  let end = lines.findIndex((l, k) => k > s && /^##\s/.test(l));
+  if (end < 0) end = lines.length;
+  let i = lines.findIndex((l, k) => k > s && k < end && /^###\s+構成要素ごとの判定/.test(l));
   if (i < 0) return { present: false, rows: [] };
   const rows = [];
   let header = false;
@@ -116,10 +132,13 @@ export function classOf(value) {
 }
 
 /** F.2 の回答の Q1。先頭の「はい」「いいえ」を読む。読めなければ null */
+const UNDECIDED = /未定|判定中|検討中|後日|保留|TBD/i;
 export function f2Q1Of(value) {
   const s = String(value ?? '').normalize('NFKC').replace(/^Q1\s*[::]?\s*/i, '').trim();
-  if (/^いいえ/.test(s)) return false;
-  if (/^はい/.test(s)) return true;
+  // 「はい / いいえ」のように両方を並べた記入、語の直後が別の語の記入、判定が定まっていない記入は読めない(R1-11)
+  if (/^(はい|いいえ)\s*\//.test(s)) return null;
+  if (/^いいえ(?=$|[\s。、,.(:])/.test(s)) return UNDECIDED.test(s) ? null : false;
+  if (/^はい(?=$|[\s。、,.(:])/.test(s)) return true;
   return null;
 }
 
@@ -137,6 +156,7 @@ export function readF2Q1Text(text) {
   if (text === null || text === undefined) return null;
   const p = parseClRecord(text);
   if (!p.present) return null;
+  if (p.conflicts?.f2) return null;
   return f2Q1Of(p.values.f2);
 }
 

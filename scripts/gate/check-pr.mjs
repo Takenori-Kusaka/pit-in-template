@@ -378,6 +378,8 @@ export const CONTROL_FILES = [
   // 検査装置(標準 第1章 1.4): 検査のスクリプト、知識ベースの複製、スタック別の検査の定義。検査のスクリプトを `process.exit(0)` に
   // 替える PR が、誤りも注意も出さずに通っていた(process-compass #290 / ADR-0074)
   'scripts/gate/**', 'scripts/vendor/**', 'adapters/**',
+  // コミットのフックの本体(トレーラ Agent-Run・Agent-Assets を足す commit-msg など。IMPL-0207・1019。R1-07)。外せば実行の記録が付かなくなる
+  '.githooks/**',
   // 判定のコードの読み込み先(標準 第4章 G-5「判定のコードの読み元」)。ワークフローが使う手元の action と、検査の道具を動かす
   // Node の版。書き換えれば判定のコードを替えられる(process-compass #371 / ADR-0115)
   '.github/actions/**', '.github/gate-node-version',

@@ -170,6 +170,46 @@ function repo() {
   fs.rmSync(W.dir, { recursive: true, force: true });
 }
 
+// ---------------------------------------------------------------- IMPL-1019 実行の途中の変更(R1-03)・読めない状態(R1-16)
+{
+  const W = repo();
+  W.record('sess-m');
+  const rec = W.readRecord('sess-m');
+  // IMPL-1019:ng(途中で指示資産を変えて、そのコミットに含める → dirty と start=)
+  W.touch('CLAUDE.md', '# 規則 途中で変えた\n');
+  W.git('add', '-A');
+  W.commit('feat: mid change staged', 'sess-m');
+  const v1 = W.trailer('Agent-Assets')[0] ?? '';
+  check('IMPL-1019:ng 実行の途中で指示資産を変えてコミットに含めると assets=dirty と start= が付く', /; assets=dirty;/.test(v1) && v1.includes(`; start=sha256:${rec?.digest}`), v1);
+  // IMPL-1019:ng(指示資産の変更を未コミットで残す → dirty)
+  const W2 = repo();
+  W2.record('sess-n');
+  W2.touch('src/app.js', 'x\n');
+  W2.touch('context/glossary.md', 'g 未コミットで残す\n');
+  W2.git('add', 'src/app.js');
+  W2.commit('feat: leave asset change', 'sess-n');
+  const v2 = W2.trailer('Agent-Assets')[0] ?? '';
+  check('IMPL-1019:ng 指示資産の変更を未コミットで残したコミットは assets=dirty', /; assets=dirty;/.test(v2), v2);
+  // IMPL-1019:ok(変更なし → clean。start= は付かない)
+  const W3 = repo();
+  W3.record('sess-o');
+  W3.touch('src/app.js', 'y\n');
+  W3.git('add', '-A');
+  W3.commit('feat: no asset change', 'sess-o');
+  const v3 = W3.trailer('Agent-Assets')[0] ?? '';
+  check('IMPL-1019:ok 指示資産を変えていなければ assets=clean で start= は付かない', /; assets=clean;/.test(v3) && !v3.includes('start='), v3);
+  // IMPL-1019:ng(リポジトリの外で状態を読めない → clean と偽らず unknown(assets-unreadable))
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-agent-out-'));
+  dirs.push(out);
+  W3.touch('x', 'x');
+  fs.mkdirSync(path.join(out, '.claude', 'agent-runs'), { recursive: true });
+  fs.copyFileSync(W3.recordFile('sess-o'), path.join(out, '.claude', 'agent-runs', 'sess-o.json'));
+  const mod = await import(new URL('./agent-run-record.mjs', import.meta.url).href);
+  const v4 = mod.assetsTrailerValue('sess-o', out);
+  check('IMPL-1019:ng 状態を読めないとき clean と偽らず unknown(assets-unreadable) と出す', v4 === 'unknown(assets-unreadable)', v4);
+  for (const x of [W, W2, W3]) fs.rmSync(x.dir, { recursive: true, force: true });
+}
+
 // ---------------------------------------------------------------- core.hooksPath
 {
   const W = repo();

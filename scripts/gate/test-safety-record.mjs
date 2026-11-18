@@ -77,7 +77,7 @@ const withFault = (n, env, result) => {
 
 // ---- IMPL-0925: 故障挿入の環境の形
 // IMPL-0925:ng
-for (const [v, label] of [['模擬環境', '種別だけ'], ['本番機', '3種でない語'], ['模擬環境と本番の併用', '併用'], ['本番の模擬環境(X)', '前方が3種でない'], ['', '空欄'], ['模擬環境()', '識別が空'], ['例外承認: D-1', '例外承認の ID']]) {
+for (const [v, label] of [['模擬環境', '種別だけ'], ['本番機', '3種でない語'], ['模擬環境と本番の併用', '併用'], ['本番の模擬環境(X)', '前方が3種でない'], ['', '空欄'], ['模擬環境()', '識別が空'], ['例外承認: D-1', '例外承認の ID'], ['模擬環境(HIL-2)(本番)', '括弧を2組(丸括弧)'], ['模擬環境: HIL-2(本番機)', 'コロンの形に括弧を含む']]) {
   check(`0925 違反: 環境「${v}」(${label})`, problems(withFault(1, v, null)).some((p) => /試験項目1.*挿入した環境/.test(p)));
 }
 // IMPL-0925:ok
@@ -87,16 +87,24 @@ for (const v of ['模擬環境(HIL-2)', '試験台の実機: 台3', '専門部�
 
 // ---- IMPL-0927: 結果の欄の形
 const LEDGER = [
-  { id: 'D-5', kind: '例外', state: '有効', due: '2099-12-31', text: '' },
-  { id: 'D-6', kind: '例外', state: '失効', due: '2099-12-31', text: '' },
-  { id: 'D-7', kind: '例外', state: '有効', due: '2020-01-01', text: '' },
+  { id: 'D-5', kind: '例外', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-6', kind: '例外', state: '失効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-7', kind: '例外', state: '有効', due: '2020-01-01', approver: '甲', text: '' },
+  { id: 'D-10', kind: '例外', state: '有効', due: '2099-12-31', approver: '', text: '' },
+  { id: 'D-11', kind: '例外', state: '有効', due: '2099-12-31', approver: 'Claude Code', text: '' },
+  { id: 'D-12', kind: '例外', state: '有効', due: '2099-12-31', approver: '名簿の外の者', text: '' },
 ];
-const ctx = { ledgerRows: LEDGER, day: '2026-11-18' };
+const isValidApprover = (n) => n === '甲';
+const ctx = { ledgerRows: LEDGER, day: '2026-11-18', isValidApprover };
 // IMPL-0927:ng
 for (const v of ['', '省略', '該当なし(時間窓なし)', '未実施', '例外承認: D-9', '例外承認: D-6', '例外承認: D-7']) {
   check(`0927 違反: 項目2 の結果「${v}」`, problems(withFault(2, null, v), ctx).some((p) => /試験項目2.*結果/.test(p)));
 }
-check('0927 違反: 例外承認の台帳を読めない(ID を確かめられない)', problems(withFault(2, null, '例外承認: D-5'), { ledgerRows: null, day: '2026-11-18' }).some((p) => /試験項目2.*結果/.test(p)));
+for (const [id, why] of [['D-10', '承認者が空'], ['D-11', 'AI の名義'], ['D-12', '名簿の外']]) {
+  check(`0927 違反: 例外承認 ${id}(${why})`, problems(withFault(2, null, `例外承認: ${id}`), ctx).some((p) => /試験項目2.*結果.*承認/.test(p)));
+}
+check('0927 違反: 承認者の照合の手段が渡されない', problems(withFault(2, null, '例外承認: D-5'), { ledgerRows: LEDGER, day: '2026-11-18' }).some((p) => /試験項目2.*結果/.test(p)));
+check('0927 違反: 例外承認の台帳を読めない(ID を確かめられない)', problems(withFault(2, null, '例外承認: D-5'), { ledgerRows: null, day: '2026-11-18', isValidApprover }).some((p) => /試験項目2.*結果/.test(p)));
 check('0927 違反: 項目2 以外の行でも「省略」は通らない', problems(withFault(5, null, '省略'), ctx).some((p) => /試験項目5.*結果/.test(p)));
 // IMPL-0927:ok
 for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)', '例外承認: D-5']) {
@@ -164,6 +172,29 @@ for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)',
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   check('適用: 判定の純関数(区分が読めず Q1 いいえ)は適用として扱う', safetyRecordApplies({ q1: false, classes: [null] }).applies === true);
+}
+
+// ---- IMPL-0927: 承認者の照合を実物の名簿から作る(checkSafetyRecord)
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'safety-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), '## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n| 判定した区分 | CL2 |\n| 附属書F F.2 の回答 | はい |\n');
+    fs.writeFileSync(path.join(tmp, 'docs/safety-risk-assessment.md'), withFault(2, null, '例外承認: D-5'));
+    const ledger = (who) => `| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| D-5 | 例外 | 基準7 | 省く | 理由 | — | 2099-12-31 | 有効 | 乙 | ${who} |\n`;
+    const config = { answers: { 'q-criticality': 'cl2' }, people: [{ id: 'p-ko', name: '甲' }, { id: 'p-ai', name: 'Claude Code' }] };
+    const run = (who) => checkSafetyRecord({ root: tmp, config, day: '2026-11-18' }).problems.filter((p) => /試験項目2/.test(p));
+    // IMPL-0927:ng
+    for (const [who, label] of [['', '空'], ['Claude Code', 'AI の名義(名簿にあっても)'], ['丙', '名簿の外']]) {
+      fs.writeFileSync(path.join(tmp, 'docs/debt-ledger.md'), ledger(who));
+      check(`0927 違反(実物の名簿): 承認者が${label}`, run(who).length > 0, run(who).join(' / '));
+    }
+    // IMPL-0927:ok
+    fs.writeFileSync(path.join(tmp, 'docs/debt-ledger.md'), ledger('甲'));
+    check('0927 適合(実物の名簿): 名簿の人が承認した成立した行', run('甲').length === 0, run('甲').join(' / '));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ---- 様式との一致(初期の文は定数で持ち、様式と一致を固定する)

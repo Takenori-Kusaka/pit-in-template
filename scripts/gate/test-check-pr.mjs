@@ -1385,6 +1385,10 @@ ${instr}
   scenario('製品のスタックの除外の一覧だけを置く PR(陰性の確認の記録あり)は通り、閾値・除外設定の変更として数える', { body: `除外の登録\n\n${RISK('R2\n\n確定した者: 鈴木 一郎')}${NEG()}` }, () => {
     write('.github/stack-exclusions.json', EXCL('tools'));
   }, passes((r) => (r.thresholds.changed.includes('.github/stack-exclusions.json') ? [] : [`除外の一覧の変更として識別していない: ${JSON.stringify(r.thresholds)}`])));
+  // IMPL-0207:ng フックの本体(.githooks/**)を変える PR は統制の設定の変更に数える(R1-07)
+  unit('IMPL-0207:ng .githooks/commit-msg の変更を統制の設定に数える', controlTouchedOf([{ path: '.githooks/commit-msg' }]).includes('.githooks/commit-msg'));
+  // IMPL-0207:ok 製品のコードは数えない
+  unit('IMPL-0207:ok 製品のコードの変更は統制の設定に数えない', controlTouchedOf([{ path: 'src/githooks.js' }]).length === 0);
   unit('統制の設定の変更の承認の範囲: 製品のスタックの除外の一覧を数える', controlTouchedOf([{ path: '.github/stack-exclusions.json' }]).includes('.github/stack-exclusions.json'));
 }
 

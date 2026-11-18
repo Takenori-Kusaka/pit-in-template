@@ -3501,7 +3501,8 @@ export function d0SectionProblems(text, config) {
     ) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
-          '体制を変えるときは /process-change、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
+          '体制を変えるときは /process-change、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います' +
+          '。附属書F F.2 の回答を改めたときは、生成区間を作り直してください(表の委任の段階が回答に連動します)'
       );
     }
   }
@@ -6945,6 +6946,7 @@ export function tailorGuardAndSettings(config, guardSource, settingsSource) {
   const standardCategoryC = [
     "Edit(./.github/rulesets/**)",
     "Edit(./.github/workflows/**)",
+    "Edit(./.githooks/**)",
     "Edit(./adapters/**)",
     "Edit(./scripts/gate/**)",
     "Edit(./scripts/vendor/**)",

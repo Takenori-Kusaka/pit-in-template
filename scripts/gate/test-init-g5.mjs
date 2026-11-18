@@ -155,7 +155,7 @@ for (const n of [1, 3]) {
     check(`${tag}: IMPL-0506 隔離の外での実行の要求を拒む(allowUnsandboxedCommands が false)`, sb.allowUnsandboxedCommands === false, JSON.stringify(sb));
     check(`${tag}: IMPL-0506 許可する宛先は、テンプレート自身の手順の宛先だけ(ワイルドカードを置かない)`, Array.isArray(sb.network?.allowedDomains) && sb.network.allowedDomains.length > 0 && sb.network.allowedDomains.every((d) => DEFAULT_DOMAINS.includes(d)), JSON.stringify(sb.network));
     // IMPL-0510: シェルからの書き込みを拒否する経路は、権限設定の deny に置く強制層の全パス。隔離の設定と対で固定する
-    const MUST_DENY = ['Edit(./.claude/settings.json)', 'Edit(./.claude/guard.json)', 'Edit(./.claude/hooks/**)', 'Edit(./process.config.json)', 'Edit(./.github/rulesets/**)', 'Edit(./.github/workflows/**)', 'Edit(./adapters/**)', 'Edit(./scripts/gate/**)', 'Edit(./scripts/vendor/**)', 'Write(./scripts/vendor/**)'];
+    const MUST_DENY = ['Edit(./.claude/settings.json)', 'Edit(./.claude/guard.json)', 'Edit(./.claude/hooks/**)', 'Edit(./process.config.json)', 'Edit(./.github/rulesets/**)', 'Edit(./.github/workflows/**)', 'Edit(./adapters/**)', 'Edit(./scripts/gate/**)', 'Edit(./scripts/vendor/**)', 'Write(./scripts/vendor/**)', 'Edit(./.githooks/**)'];
     const missing = MUST_DENY.filter((r) => !(st.permissions?.deny ?? []).includes(r));
     check(`${tag}: IMPL-0510 強制層の全パスの書き込みを deny に置く(生成後。欠けた行 ${missing.length} 件)`, missing.length === 0, missing.join(', '));
   }

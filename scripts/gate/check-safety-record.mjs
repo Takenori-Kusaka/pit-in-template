@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, parseLedger } from './config.mjs';
+import { ROOT, parseLedger, resolveSigner, aiNameBlocked } from './config.mjs';
 import { parseClRecord, classOf, f2Q1Of } from './cl-judgment.mjs';
 import { exceptionStanding } from './exception-expiry.mjs';
 
@@ -92,7 +92,8 @@ export function envProblem(env) {
   if (isBlankCell(s)) return '未記入';
   if (s === PRE_EXECUTION) return null;
   const kinds = ENV_KINDS.join('|');
-  const m = s.match(new RegExp(`^(${kinds})\\s*(?:[(（]\\s*(.+?)\\s*[)）]|[:：]\\s*(.+))$`));
+  // 識別は括弧を含まない(括弧を2組持つ形は、後ろの括弧に別の語を足せるため通さない。R1-01)
+  const m = s.match(new RegExp(`^(${kinds})\\s*(?:[(（]\\s*([^()（）]+?)\\s*[)）]|[:：]\\s*([^()（）]+))$`));
   if (m) return isBlankCell(m[2] ?? m[3]) ? '識別が空欄' : null;
   if (ENV_KINDS.includes(s)) return '種別だけで識別がない(F.7 は環境の識別を求める)';
   return `「${ENV_KINDS.join('・')}(識別)」か「${PRE_EXECUTION}」の形でない`;
@@ -101,7 +102,7 @@ export function envProblem(env) {
 const EXCEPTION_RE = /^例外承認\s*[:：]\s*(D-\d+)/;
 
 /** 結果の欄の形。通れば null、通らなければ理由。ledgerRows は技術負債台帳の行(null なら例外承認の ID を確かめられない) */
-export function resultProblem(result, { ledgerRows = null, day = null } = {}) {
+export function resultProblem(result, { ledgerRows = null, day = null, isValidApprover = null } = {}) {
   const s = norm(result);
   if (isBlankCell(s)) return '未記入';
   if (/^(一致|不一致)/.test(s)) return null;
@@ -110,13 +111,18 @@ export function resultProblem(result, { ledgerRows = null, day = null } = {}) {
     const row = (ledgerRows ?? []).find((r) => r.id === m[1] && r.kind === '例外');
     if (!row) return `例外承認の ID ${m[1]} が技術負債台帳の区分「例外」に無い`;
     const st = exceptionStanding(row, day ?? new Date().toISOString().slice(0, 10));
-    return st === 'active' ? null : `例外承認 ${m[1]} が成立していない(効力: ${st})`;
+    if (st !== 'active') return `例外承認 ${m[1]} が成立していない(効力: ${st})`;
+    // 承認者(様式 03 が区分「例外」の行で必須とする欄)。空欄・名簿の外・AI の名義は成立させない(R1-02)。照合の手段が無ければ確かめられないので通さない
+    const who = norm(row.approver);
+    if (isBlankCell(who)) return `例外承認 ${m[1]} の承認者が空欄`;
+    if (typeof isValidApprover !== 'function') return `例外承認 ${m[1]} の承認者を確かめられない(名簿との照合の手段が無い)`;
+    return isValidApprover(who) ? null : `例外承認 ${m[1]} の承認者「${who}」が名簿の人でない、または AI の名義`;
   }
   return '「一致」「不一致」で始まらない(項目を省く場合は「例外承認: <行の ID>」)';
 }
 
 /** 記録の本文から記載の欠落を出す。text が null なら記録のファイルが無い */
-export function safetyRecordProblems(text, { ledgerRows = null, day = null } = {}) {
+export function safetyRecordProblems(text, { ledgerRows = null, day = null, isValidApprover = null } = {}) {
   const out = [];
   const where = '節「安全関連部の検証の記録」';
   if (text === null || text === undefined) return { problems: [`${SAFETY_RECORD_FILE} がありません`], hr: null };
@@ -161,7 +167,7 @@ export function safetyRecordProblems(text, { ledgerRows = null, day = null } = {
     }
     const e = envProblem(f.env);
     if (e) out.push(`故障挿入の試験項目${n}(${f.line}行)の挿入した環境: ${e}`);
-    const r = resultProblem(f.result, { ledgerRows, day });
+    const r = resultProblem(f.result, { ledgerRows, day, isValidApprover });
     if (r) out.push(`故障挿入の試験項目${n}(${f.line}行)の結果: ${r}`);
   }
   return { problems: out, hr };
@@ -193,10 +199,16 @@ export function checkSafetyRecord({ root = ROOT, config = null, day = null } = {
       classes.push(classOf(p.values.cls));
     }
   }
+  // 承認者は名簿の人で、AI の名義でないこと(resolveSigner と aiNameBlocked。構成が無ければ名簿の人と確かめられない)
+  const isValidApprover = (name) => {
+    if (!config) return false;
+    const p = resolveSigner(config, name);
+    return !!p && !aiNameBlocked(config, p.name) && !aiNameBlocked(config, name);
+  };
   const ap = safetyRecordApplies({ q1, classes });
   if (!ap.applies) return { applies: false, why: ap.why, problems: [], hr: null };
   const ledgerText = read('docs/debt-ledger.md');
-  const { problems, hr } = safetyRecordProblems(read(SAFETY_RECORD_FILE), { ledgerRows: ledgerText ? parseLedger(ledgerText) : null, day });
+  const { problems, hr } = safetyRecordProblems(read(SAFETY_RECORD_FILE), { ledgerRows: ledgerText ? parseLedger(ledgerText) : null, day, isValidApprover });
   return { applies: true, why: ap.why, problems, hr };
 }
 

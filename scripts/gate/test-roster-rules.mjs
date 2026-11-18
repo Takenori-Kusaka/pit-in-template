@@ -411,6 +411,8 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(第3章 3.
   check('名簿に nameConfirmed があれば、氏名の確認の列に確認の状態を出す(旧い生成区間には列が無い)', /氏名の確認/.test(cur) && !/氏名の確認/.test(old) && !/\| — \|\s*$/m.test(cur.split('\n').find((l) => l.includes('`a`')) ?? ''), cur);
   const wrap = (body) => ['seats', 'performers', 'history'].map((k) => `<!-- generated:d0-${k} start -->\n\n${k === 'seats' ? body : renderD0Section(k, nc)}\n\n<!-- generated:d0-${k} end -->`).join('\n\n');
   check('列の無い旧い生成区間も一致として受け付ける', d0SectionProblems(wrap(old), nc).length === 0 && d0SectionProblems(wrap(cur), nc).length === 0, JSON.stringify(d0SectionProblems(wrap(old), nc)));
+  // IMPL-0759:ng 食い違いの文に、F.2 の回答を改めたときの再生成の案内が入る(R1-12。旧い生成区間を一致として受け付ける形は採らない)
+  check('IMPL-0759:ng 生成区間の食い違いの文に、F.2 の回答を改めたときの再生成の案内が入る', d0SectionProblems(wrap('食い違う本文'), nc).some((p) => /附属書F F.2 の回答を改めたときは、生成区間を作り直してください/.test(p)), JSON.stringify(d0SectionProblems(wrap('食い違う本文'), nc)));
   check('旧い生成区間とだけ一致する節を、再生成を勧める注記のために出す(突合 X-8)', d0LegacyOnlySections(wrap(old), nc).join(',') === '節1 役割の割り当て' && d0LegacyOnlySections(wrap(cur), nc).length === 0, JSON.stringify(d0LegacyOnlySections(wrap(old), nc)));
   const plain = build({ 'q-team-size': 'size-1-2', 'q-biz-phase': 'mvp', 'q-external-reviewer': 'reviewer-yes' }, { people: [A], seats: seatsOf({ 'dev-verifier': 'a' }) });
   const plainCur = renderD0Section('seats', plain);

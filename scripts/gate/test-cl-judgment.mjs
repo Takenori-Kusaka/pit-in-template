@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, sraResidualProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
+import { parseClRecord, componentClasses, readF2Q1Text, clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, sraResidualProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -622,6 +622,36 @@ try {
     const an = state({}, {});
     check('IMPL-1016:ok 写しなし × D-0「いいえ」は注意だけで止めず、/process-change で答えるよう案内する', mismatch(an).length === 0 && noteOf(an).length === 1 && /process-change/.test(noteOf(an)[0]) && an.shipBlocking === false, JSON.stringify({ p: an.recordProblems, n: an.notes }));
   }
+}
+
+// --- IMPL-0919(R1-11): F.2 の Q1 の読み。読めないものを「いいえ」と読まない ---
+{
+  const sec = (rows) => `## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n${rows}\n`;
+  const q = (v) => readF2Q1Text(sec(`| 附属書F F.2 の回答 | ${v} |`));
+  // IMPL-0919:ng
+  for (const v of ['いいえ(判定中。後日確定)', 'いいえ / はい', 'はい / いいえ', 'いいえだが検討中', 'いいえ(未定)']) {
+    check(`IMPL-0919:ng F.2「${v}」は読めない(null)`, q(v) === null, String(q(v)));
+  }
+  check('IMPL-0919:ng 注釈(HTML コメント)の中の値は読まない', readF2Q1Text(sec('<!-- | 附属書F F.2 の回答 | いいえ | -->')) === null);
+  check('IMPL-0919:ng コードの囲みの中の値は読まない', readF2Q1Text(sec('```\n| 附属書F F.2 の回答 | いいえ |\n```')) === null);
+  check('IMPL-0919:ng 値の違う 2 行は読めない(null)', readF2Q1Text(sec('| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | はい |')) === null);
+  check('IMPL-0919:ng 値の違う 2 行は conflicts.f2 を立てる', parseClRecord(sec('| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | はい |')).conflicts?.f2 === true);
+  // IMPL-0919:ok
+  for (const v of ['いいえ。人はいない', 'いいえ(制御を持たない)', 'いいえ']) {
+    check(`IMPL-0919:ok F.2「${v}」は偽(いいえ)`, q(v) === false, String(q(v)));
+  }
+  check('IMPL-0919:ok 「はい。…」は真', q('はい。搬送機の停止の制御を持つ') === true);
+  check('IMPL-0919:ok 同じ値の 2 行は読める', readF2Q1Text(sec('| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | いいえ |')) === false);
+}
+
+// --- IMPL-0759(R1-17): 構成要素ごとの判定の見出しは、節 16 の中だけを探す ---
+{
+  const text = '## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n| 判定した区分 | CL0 |\n\n## 17. 別の節\n\n### 構成要素ごとの判定\n\n| 構成要素 | 区分 | 最悪の帰結 |\n| --- | --- | --- |\n| 制御部 | CL3 | x |\n';
+  // IMPL-0759:ng
+  check('IMPL-0759:ng 後の節の同名の見出しを読まない', componentClasses(text).present === false, JSON.stringify(componentClasses(text)));
+  // IMPL-0759:ok
+  const inside = '## 16. 安全重要度の判定の記録\n\n### 構成要素ごとの判定\n\n| 構成要素 | 区分 | 最悪の帰結 |\n| --- | --- | --- |\n| 制御部 | CL1 | x |\n\n## 17. 別の節\n';
+  check('IMPL-0759:ok 節の中の見出しは読む', componentClasses(inside).present === true && componentClasses(inside).rows.length === 1);
 }
 
 console.log('');

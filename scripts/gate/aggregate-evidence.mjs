@@ -5999,7 +5999,7 @@ if (isMain) {
   const MACHINE_TEXT = { checked: '', partial: '(一部だけ)', 'not-checked': '機械では確かめていない' };
   for (const c of criteria) {
     R.push(
-      `| ${c.id}. ${c.label} | ${c.result ? `${MACHINE_TEXT[c.machine]}${c.result}` : MACHINE_TEXT[c.machine]} | ${c.humanReconcile ? `機械では確かめていない。出荷判定者が次の記録と突合する: ${c.humanReconcile}` : '—'} |`
+      `| ${c.id}. ${c.label} | ${c.result ? `${MACHINE_TEXT[c.machine]}${c.result}` : MACHINE_TEXT[c.machine]} | ${c.humanReconcile ? `${c.id === 7 ? '内容の妥当性は機械では確かめていない' : '機械では確かめていない'}。出荷判定者が次の記録と突合する: ${c.humanReconcile}` : '—'} |`
     );
   }
   R.push('');

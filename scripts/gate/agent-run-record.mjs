@@ -58,15 +58,29 @@ export function assetsDigest(cwd = ROOT) {
 
 /** 指示資産のパスに、コミットに無い変更(追跡の変更・未追跡)があるか。製品のコードは見ない */
 export function assetsDirty(cwd = ROOT) {
+  return assetsStatusLines(cwd, () => true);
+}
+
+/** status の行のうち pred(行) を満たすものが、除外の外の指示資産のパスに当たるか。状態を読めなければ null(clean と偽らない。R1-16) */
+function assetsStatusLines(cwd, pred) {
   const out = git(['status', '--porcelain=v1', '-uall', '--', ...ASSET_ROOTS], cwd);
-  if (out === null) return false;
+  if (out === null) return null;
   return out
     .split(/\r?\n/)
     .filter(Boolean)
+    .filter(pred)
     .some((l) => {
       const paths = l.slice(3).split(' -> ').map((p) => p.replace(/^"|"$/g, ''));
       return paths.some((p) => !excluded(p));
     });
+}
+
+/**
+ * コミットに入らない指示資産の変更(作業ツリーの未ステージの変更と未追跡)があるか。読めなければ null(R1-03・R1-16)。
+ * ステージ済みの変更は、そのコミットに入るので数えない
+ */
+export function assetsUncommitted(cwd = ROOT) {
+  return assetsStatusLines(cwd, (l) => l[1] !== ' ');
 }
 
 export function recordPath(id, cwd = ROOT) {
@@ -84,7 +98,10 @@ export function writeRunRecord(id, cwd = ROOT, now = new Date()) {
     startedAt: now.toISOString(),
     base: head,
     digest: assetsDigest(cwd),
-    assets: assetsDirty(cwd) ? 'dirty' : 'clean',
+    assets: (() => {
+      const d = assetsDirty(cwd);
+      return d === null ? 'unknown' : d ? 'dirty' : 'clean';
+    })(),
     userScope: 'unrecorded',
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -97,8 +114,15 @@ export function assetsTrailerValue(id, cwd = ROOT) {
   if (!safeId(id) || !fs.existsSync(recordPath(id, cwd))) return 'unknown(no-run-record)';
   try {
     const r = JSON.parse(fs.readFileSync(recordPath(id, cwd), 'utf8'));
-    if (!/^[0-9a-f]{64}$/.test(r.digest ?? '') || !['clean', 'dirty'].includes(r.assets) || typeof r.base !== 'string') return 'unknown(unreadable-run-record)';
-    return `sha256:${r.digest}; base=${r.base}; assets=${r.assets}; user-scope=${r.userScope === 'unrecorded' ? 'unrecorded' : 'unrecorded'}`;
+    if (!/^[0-9a-f]{64}$/.test(r.digest ?? '') || !['clean', 'dirty', 'unknown'].includes(r.assets) || typeof r.base !== 'string') return 'unknown(unreadable-run-record)';
+    // コミットの時点の状態(R1-03)。実行の途中で指示資産を変えた(要約値が開始と違う)か、コミットに入らない変更が残るなら dirty。
+    // 途中で変えたときは開始の要約値を start= に残す。状態を読めなければ clean と偽らない(R1-16)
+    const pending = assetsUncommitted(cwd);
+    if (pending === null || r.assets === 'unknown') return 'unknown(assets-unreadable)';
+    const now = assetsDigest(cwd);
+    const changed = now !== r.digest;
+    const state = r.assets === 'dirty' || pending || changed ? 'dirty' : 'clean';
+    return `sha256:${now}; base=${r.base}; assets=${state}; user-scope=unrecorded${changed ? `; start=sha256:${r.digest}` : ''}`;
   } catch {
     return 'unknown(unreadable-run-record)';
   }

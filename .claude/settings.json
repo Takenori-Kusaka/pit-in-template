@@ -58,6 +58,7 @@
       "Edit(./.claude/hooks/**)",
       "Edit(./.github/rulesets/**)",
       "Edit(./.github/workflows/**)",
+      "Edit(./.githooks/**)",
       "Edit(./process.config.json)",
       "Edit(./adapters/**)",
       "Edit(./scripts/gate/**)",
