@@ -1,0 +1,86 @@
+# レビューの滞留の通知と、リスク区分の一次判定のラベル(IMPL-0680・0681・0682・0979・0136・0212。process-compass #445 / ADR-0200)
+#
+# 機械は、コメントと記名(@login)で知らせるだけです。指名の取り消し・再割り当て・自動承認はしません。
+# **必須チェックにしません**(ルールセットの required_status_checks は gate-g5 と gate-g5-base のまま)。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
+#
+# **検査のコードと構成は、既定ブランチから読みます**。PR の先頭を checkout する手順を、このワークフローへ足してはなりません
+# (pull_request_target は基底の定義で動き、PR の側のコードを実行しないためです)。pull_request と pull_request_review は使いません。
+#
+# 期限は D-0 節5、宛先は D-0 節6 から読みます。営業日の祝日は .github/business-holidays.txt(任意)から読み、
+# 無ければ土日だけを除き、出力に「祝日を数えていない」と書きます。
+#
+# 2026-11-18 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
+# 有効化の前に、試験用のリポジトリで `workflow_dispatch` を dry-run(下の入力)で流して確かめてください。
+
+name: review-queue-control
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  # pull_request_target は、ワークフローの定義を基底ブランチから読む。PR の側の定義では動かない
+  pull_request_target:
+    types: [opened, synchronize, edited, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 書き込まずに、通知する内容だけを出す
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: review-queue-control-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # 時刻の契機。開いた PR の滞留を調べる
+  queue:
+    name: review-queue
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - name: レビューの滞留を通知する
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REVIEW_LOAD_LIMIT: ${{ vars.REVIEW_LOAD_LIMIT }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/gate/review-queue.mjs queue --dry-run
+          else
+            node scripts/gate/review-queue.mjs queue
+          fi
+
+  # PR の事象の契機。リスク区分のラベルが無ければ、区分の下限から一次判定のラベルを付ける
+  risk-label:
+    name: risk-label
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      # PR の題名・本文・ブランチ名は信頼できない入力である。シェルへ展開しない。渡すのは PR の番号だけ
+      - name: 一次判定のリスク区分のラベルを付ける
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/gate/review-queue.mjs risk --pr "$PR_NUMBER"
