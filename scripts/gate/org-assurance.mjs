@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isFilledValue, isRealDay, nameProblems, resolveSigner, signerKey, loadConfig, localDay, aiNameReason, personKey, personName } from './config.mjs';
+import { ROOT, isFilledValue, isRealDay, nameProblems, resolveSigner, aiNameBlocked, signerKey, loadConfig, localDay, aiNameReason, personKey, personName } from './config.mjs';
 
 export const POLICY_FILE = 'docs/quality-assurance-policy.md';
 export const BRIEF_FILE = 'docs/project-brief.md';
@@ -151,6 +151,37 @@ export function intervalEnd(since, interval) {
   const [y, mo, d] = since.split('-').map(Number);
   const t = interval.unit === 'day' ? new Date(Date.UTC(y, mo - 1, d + interval.n)) : new Date(Date.UTC(y, mo - 1 + interval.n, d));
   return t.toISOString().slice(0, 10);
+}
+
+/**
+ * 層1 の「AI を用いずに実装または調査する機会の頻度」(5.4.7。IMPL-1021)を読む。1回あたりの期間として読める値だけを返す。
+ * parseInterval をそのまま使わない(回数を捨て、文字列のどこかに語があれば読めてしまう)。白名簿の全体一致に限り、
+ * それ以外(1期間に2回以上、幅、自由文、0 以下、空欄)は null(読めない値。不利な側 = 表示を出す側)
+ *   数字 + 日・週・か月・年(「ごと」「に1回」を付けてよい) / 半年・四半期・毎月・毎年(同) / 年に1回・月に1回
+ */
+const PRACTICE_NUMERIC = /^(\d+)\s*(?:日|週|か月|ヶ月|カ月|ケ月|箇月|月|年)(?:ごと|毎|に\s*1\s*回)?$/;
+const PRACTICE_WORD = /^(?:半年|四半期|毎月|毎年)(?:ごと|毎|に\s*1\s*回)?$/;
+const PRACTICE_ONCE = /^(?:年|月)\s*(?:に)?\s*1\s*回$/;
+export function parsePracticeInterval(raw) {
+  const s = nfkc(raw).replace(/\s+/g, ' ').trim();
+  if (!isFilledValue(s)) return null;
+  const num = s.match(PRACTICE_NUMERIC);
+  if (num) {
+    if (Number(num[1]) <= 0) return null;
+  } else if (!PRACTICE_WORD.test(s) && !PRACTICE_ONCE.test(s)) {
+    return null;
+  }
+  const v = parseInterval(s);
+  return v && v.n > 0 ? v : null;
+}
+
+/** 5.4.7 の頻度を過ぎる日。月の加算で日が無いときはその月の末日にする(intervalEnd と違い繰り越さない。IMPL-1022) */
+export function practiceDue(since, interval) {
+  if (!interval || !isRealDay(since)) return null;
+  const [y, mo, d] = since.split('-').map(Number);
+  if (interval.unit === 'day') return new Date(Date.UTC(y, mo - 1, d + interval.n)).toISOString().slice(0, 10);
+  const last = new Date(Date.UTC(y, mo - 1 + interval.n + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, mo - 1 + interval.n, Math.min(d, last))).toISOString().slice(0, 10);
 }
 
 /** 記録の日が、判定の日に間隔の内か。日付でない記録、間隔の無い場合は false */
@@ -335,12 +366,16 @@ function readCycle(text) {
   const minRaw = find(/後継候補の最低数/);
   const trainerRaw = find(/育成の担当/);
   const remeasureRaw = find(/人の層の再測定の契機/);
+  const aiFreeRaw = find(/AI を用いずに実装または調査/);
   return {
     present: rows.length > 0,
     drill: parseInterval(drillRaw),
     drillRaw: isFilledValue(drillRaw) ? clean(drillRaw) : null,
     exit: parseInterval(exitRaw),
     degradation: parseInterval(degRaw),
+    // 5.4.7 の AI を用いない実施の頻度(IMPL-1020・1021)。白名簿の全体一致だけを読み、それ以外は null(読めない値)
+    aiFree: parsePracticeInterval(aiFreeRaw),
+    aiFreeRaw: isFilledValue(aiFreeRaw) ? clean(aiFreeRaw) : null,
     competence: parseInterval(compRaw),
     successorMin: parseSuccessorMin(minRaw),
     trainer: isFilledValue(trainerRaw) ? clean(trainerRaw) : null,
@@ -348,7 +383,7 @@ function readCycle(text) {
     humanRemeasure: parseHumanRemeasure(remeasureRaw),
   };
 }
-const NO_CYCLE = { present: false, drill: null, drillRaw: null, exit: null, degradation: null, competence: null, successorMin: null, trainer: null, humanRemeasure: parseHumanRemeasure(null) };
+const NO_CYCLE = { present: false, drill: null, drillRaw: null, exit: null, degradation: null, aiFree: null, aiFreeRaw: null, competence: null, successorMin: null, trainer: null, humanRemeasure: parseHumanRemeasure(null) };
 
 /**
  * 層1 の「人の層の再測定の契機」を読む(#288 第6巡 O)。本標準は値を定めない。
@@ -608,6 +643,13 @@ const PAIR_WORDS = { 'value-owner': ['価値責任者'], 'tech-lead': ['技術�
  * D-0 節2「非推奨の兼務の記録」の表に、兼務している組の行(責任者と理由が記入された行)が無い組を返す。
  * 記録の無い非推奨の兼務は記載の欠落(第6章 テンプレ0 表5)。理由の中身の妥当性は確かめない(内部監査で確かめる)
  */
+// 理由の欄が節13(表8)の特定の日付の行を指す字面(IMPL-0298 / #351 H-4)。字面は1つに絞る
+const CHANGELOG_REF = /(?:表\s*8|節\s*13)(?:\s*の\s*改訂履歴)?\s*の\s*(\d{4}-\d{2}-\d{2})\s*の\s*行/;
+/** 指した日付の変化点の記録のうち、決定した者と理由がともに埋まったもの(節13 に理由が出る形)が1件以上あるか */
+function changeLogRowHasReason(config, day) {
+  if (!isRealDay(day)) return false;
+  return (config?.changeLog ?? []).some((e) => String(e?.date ?? '').slice(0, 10) === day && isFilledValue(e?.decidedBy) && isFilledValue(e?.reason));
+}
 export function discouragedUnrecorded(config, d0) {
   const pairs = discouragedPairings(config);
   if (!pairs.length || !d0) return [];
@@ -620,7 +662,15 @@ export function discouragedUnrecorded(config, d0) {
     return !t.rows.some((r) => {
       const cell = pairWord(r[iPair >= 0 ? iPair : 0]);
       if (!words.every((ws) => ws.some((w) => w && cell.includes(w)))) return false;
-      return isFilledValue(r[iWho >= 0 ? iWho : 1]) && isFilledValue(r[iWhy >= 0 ? iWhy : 2]);
+      if (!(isFilledValue(r[iWho >= 0 ? iWho : 1]) && isFilledValue(r[iWhy >= 0 ? iWhy : 2]))) return false;
+      // 理由の欄が節13 の特定の日付の行を指すときは、その行が在り理由を持つことも確かめる。
+      // 指した行が当該の兼務の決定かどうかは自由な文の意味で、機械では確かめない(内部監査)
+      const ref = nfkc(r[iWhy >= 0 ? iWhy : 2]).match(CHANGELOG_REF);
+      if (ref && !changeLogRowHasReason(config, ref[1])) {
+        p.refMissing = ref[1];
+        return false;
+      }
+      return true;
     });
   });
 }
@@ -632,6 +682,7 @@ export function discouragedText(p, { recorded = null } = {}) {
     'D-0 節2「非推奨の兼務の記録」に、兼務する組・責任者・兼務を選んだ理由を書きます。記録が無いと、出荷判定の証跡の集約が記載の欠落として扱います。' +
     '既存の D-0 に「### 非推奨の兼務の記録」の表が無ければ、templates/00-d0-governance.md の節2 から見出しと表を写します' +
     (recorded === true ? '(記録あり)' : recorded === false ? '(**記録なし**)' : '') +
+    (p.refMissing ? `。理由の欄が指す節13 の ${p.refMissing} の行が無い(または決定した者か理由が無い)` : '') +
     '。標準は代替の統制を課しません'
   );
 }
@@ -1162,6 +1213,70 @@ export function competenceState(config, policy, { day = null } = {}) {
     const note = outsideRoster ? `確認した者 ${c.confirmedBy} は名簿の外(受け付ける。所属・役職は確認の記録 ${c.record ?? '所在なし'} で示す。内部監査の観点6 で名簿と突合する)` : null;
     return { seat: label, role, accountable, record: c, status, why, nextDue, ok: status === 'valid', outsideRoster, note };
   });
+}
+
+/**
+ * 第5章 5.4.7「AI を用いない実施」の機会の確保(IMPL-1021・1022)。保証の開示の項目7 に出す状態を、記録から導く。
+ * 止めない(記載の欠落・組織継続の側の状態に入れない。ADR-0179 決定2)。実施の中身と事実は確かめない(EV-0322)。
+ *   範囲  scope = L3 の範囲の変更種別の id(autonomy.mjs の l3ScopeIds。D-0 の表と同じ導き方)。無ければ空を返す
+ *   層1   層1 そのものが無い案件は、層1 が無いこと自体が別の欠落として出るので重ねて出さない。層1 があり行が無い・空欄は「空欄」
+ *   記録  D-0 節12 の「AI を用いない実施の記録」(実施した日・対象領域・実施者)。数える行 = 実施した日が実在の日で基準日以前、
+ *         対象領域が範囲の名と一致(先頭の「登録した変更種別」は除く)、実施者が1名以上で、そのすべてが人の名簿にあり AI の名義でない
+ *   基準日 day(呼び出し側が渡す)。頻度を過ぎる日は practiceDue(月末を繰り越さない)
+ * 実施者の名は返さない(組織の外へ渡す形でも、範囲の名・日付・頻度だけを出せる)
+ */
+export function aiFreePracticeState(config, policy, { root = ROOT, day = null, scope = [] } = {}) {
+  const ids = [...new Set((scope ?? []).map((v) => String(v ?? '')))].filter(Boolean);
+  const empty = { scope: ids, day, freq: { blank: false, raw: null, readable: false }, freqNotice: null, ranges: [], d0Present: false, tablePresent: false };
+  if (!ids.length || policy?.present === false) return empty;
+  const cycle = policy?.cycle ?? NO_CYCLE;
+  const d0 = readText(D0_FILE, root);
+  const t = tableWithHeader(sectionLines(d0, /12\.\s*担い手と運用形態/), { after: /^###\s*AI を用いない実施の記録/ });
+  const iDay = colOf(t.header, /実施した日/);
+  const iArea = colOf(t.header, /対象領域/);
+  const iBy = colOf(t.header, /実施者/);
+  const counted = t.rows
+    .map((r) => {
+      const at = clean(r[iDay >= 0 ? iDay : 0]);
+      const area = nfkc(r[iArea >= 0 ? iArea : 1]).replace(/^登録した変更種別\s*/, '').trim();
+      const names = String(r[iBy >= 0 ? iBy : 2] ?? '')
+        .split(/[、,，/／]/)
+        .map((n) => clean(n))
+        .filter(Boolean);
+      const okBy = names.length > 0 && names.every((n) => resolveSigner(config, n) && !aiNameBlocked(config, n));
+      const okDay = isRealDay(at) && (!day || at <= day);
+      return okBy && okDay ? { at, area } : null;
+    })
+    .filter(Boolean);
+  const freq = cycle.aiFree;
+  const ranges = ids.map((id) => {
+    const rows = counted.filter((c) => c.area === nfkc(id).trim());
+    const last = rows.map((c) => c.at).sort().pop() ?? null;
+    const due = last && freq ? practiceDue(last, freq) : null;
+    const status = !last ? 'no-record' : due && day && due < day ? 'overdue' : 'ok';
+    return { id, last, due, status };
+  });
+  return {
+    scope: ids,
+    day,
+    freq: { blank: !isFilledValue(cycle.aiFreeRaw), raw: cycle.aiFreeRaw, readable: Boolean(freq), interval: freq },
+    freqNotice: freq ? null : `AI を用いない実施の頻度を定めていない(層1 の値: ${cycle.aiFreeRaw ?? '空欄'})`,
+    ranges,
+    d0Present: Boolean(d0),
+    tablePresent: t.header.length > 0,
+  };
+}
+
+/** aiFreePracticeState の表示の文(保証の開示の項目7)。実施者の名は含めない */
+export function aiFreePracticeTexts(st) {
+  const out = [];
+  if (!st?.scope?.length) return out;
+  if (st.freqNotice) out.push(st.freqNotice);
+  for (const r of st.ranges) {
+    if (r.status === 'no-record') out.push(`AI を用いない実施の記録が無い(範囲: ${r.id})`);
+    else if (r.status === 'overdue') out.push(`AI を用いない実施が頻度を過ぎている(範囲: ${r.id}、最後の実施の日: ${r.last}、頻度: ${st.freq.raw}、期限: ${r.due})`);
+  }
+  return out;
 }
 
 /** 名簿の外の確認した者の注記の短い形(D-0 節9・集約・次の一手で同じ語) */

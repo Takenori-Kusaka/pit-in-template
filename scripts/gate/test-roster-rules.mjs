@@ -29,7 +29,7 @@ import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxF
 import { headcountProblems, deviationCategory, deviationCategoryProblems, enforcedApprovalFindings, RULE_APPROVER_SEAT } from './config.mjs';
 import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices, pendingTightenings } from '../init/generate-profile.mjs';
 import { ESCALATION, renderEscalation } from '../init/generate-profile.mjs';
-import { discouragedPairings, discouragedUnrecorded, deviationTagHits } from './org-assurance.mjs';
+import { discouragedPairings, discouragedUnrecorded, discouragedText, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
 let n = 0;
@@ -326,6 +326,22 @@ check('承認した版: 版を確かめられなければ数えない(unknown)',
   check('記録: 理由が空欄なら欠落', discouragedUnrecorded(mid, d0('| 価値責任者 × 技術判断者 | 名簿 甲 | | 2026-10-23 |')).length === 1);
   check('記録: 別の組の行では欠落を解かない', discouragedUnrecorded(mid, d0('| 事業決裁者 × 価値責任者 | 名簿 甲 | 理由 | 2026-10-23 |')).length === 1);
   check('記録: D-0 が無ければ欠落を出さない(D-0 の欠落は別に出る)', discouragedUnrecorded(mid, null).length === 0);
+  // IMPL-0298:ng / :ok(理由の欄が節13 の特定の日付の行を指す場合。#351 H-4。指した日付の変化点の記録が在り、決定した者と理由を持つこと)
+  {
+    const withLog = (log) => ({ ...mid, changeLog: log });
+    const ref = (text) => d0(`| 価値責任者 × 技術判断者 | 名簿 甲 | ${text} | 2026-10-23 |`);
+    const logOk = [{ date: '2026-10-01T09:00:00+09:00', decidedBy: '名簿 甲', reason: '増員までの暫定' }];
+    // IMPL-0298:ng
+    check('H-4 ng: 指した日付の記録が changeLog に無ければ欠落', discouragedUnrecorded(withLog([]), ref('節13 の 2026-10-01 の行')).length === 1);
+    check('H-4 ng: 指した日付の記録に理由が無ければ欠落', discouragedUnrecorded(withLog([{ date: '2026-10-01', decidedBy: '名簿 甲', reason: '' }]), ref('節13 の 2026-10-01 の行')).length === 1);
+    check('H-4 ng: 指した日付の記録に決定した者が無ければ欠落(節13 に理由が出ない形)', discouragedUnrecorded(withLog([{ date: '2026-10-01', reason: '理由' }]), ref('節13 の 2026-10-01 の行')).length === 1);
+    check('H-4 ng: 実在しない日付(2026-02-30)は行が無いものとする', discouragedUnrecorded(withLog([{ date: '2026-02-30', decidedBy: '名簿 甲', reason: '理由' }]), ref('表8 の 2026-02-30 の行')).length === 1);
+    check('H-4 ng: 欠落の文が、指した日付の行が無い旨を出す', /2026-10-01 の行が無い/.test(discouragedText(discouragedUnrecorded(withLog([]), ref('節13 の 2026-10-01 の行'))[0], { recorded: false })));
+    // IMPL-0298:ok
+    check('H-4 ok: 「節13 の YYYY-MM-DD の行」で理由つきの記録が在れば欠落にしない', discouragedUnrecorded(withLog(logOk), ref('節13 の 2026-10-01 の行')).length === 0);
+    check('H-4 ok: 標準の呼び方「表8 の YYYY-MM-DD の行」も同じ', discouragedUnrecorded(withLog(logOk), ref('表8 の 2026-10-01 の行')).length === 0);
+    check('H-4 ok: 理由を直に書いた行は従来どおり(日付を含む文も記入の有無だけを見る)', discouragedUnrecorded(withLog([]), ref('2026-10-01 の増員まで暫定')).length === 0);
+  }
   // /pit の注記の出し分け(突合 X-6)
   const recorded = d0('| 価値責任者 × 技術判断者 | 名簿 甲 | 技術判断を担える人が他にいない | 2026-10-23 |');
   // IMPL-0297:ok(違反と適合の対。標準の実装マーク。process-compass #314)

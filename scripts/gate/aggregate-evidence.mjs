@@ -136,9 +136,9 @@ import {
 } from './config.mjs';
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions } from './exception-expiry.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
-import { discouragedText, deviationTagHits } from './org-assurance.mjs';
+import { discouragedText, deviationTagHits, aiFreePracticeState, aiFreePracticeTexts } from './org-assurance.mjs';
 import {
   readPolicy,
   readBriefScope,
@@ -4999,6 +4999,9 @@ if (isMain) {
     sizeObservation,
     generation,
     drift,
+    // AI を用いない実施(第5章 5.4.7。IMPL-1021・1022)。項目7 に出す。止めない。組織継続の側の状態にも記載の欠落にも入れない。
+    // 基準日は releaseDay(範囲の終点の日。取れないときは実行した日の時計)。照らした基準日を併記して開示する
+    aiFreePractice: { ...aiFreePracticeState(config, policy, { root: ROOT, day: releaseDay, scope: l3ScopeIds(config) }), clockFallback: !toDay },
     // 組織継続の側の状態(項目5・7 へ出す。成立条件には入れない。附属書H H.6)
     continuity: {
       d0Policy: continuity.d0Policy,
@@ -5760,6 +5763,18 @@ if (isMain) {
   }
 
   /** 項目7 へ出す組織継続の側の状態(依存先の一覧、退出の予行、縮退、後継、コア理解、有事の決定者、停止の申し立て) */
+  // AI を用いない実施(第5章 5.4.7)。範囲が無ければ何も出さない。実施者の名は出さない(組織の外へ渡す形も同じ)
+  function renderAiFreePractice(ap) {
+    const texts = aiFreePracticeTexts(ap);
+    if (!ap?.scope?.length || !texts.length) return [];
+    const R = [];
+    R.push('AI を用いない実施(第5章 5.4.7。出荷を止めない。組織継続の側の状態に含めない。表示が出ないことも技能の維持を示さない):');
+    R.push('');
+    for (const t of texts) R.push(`- ${t}`);
+    R.push(`- 照らした基準日: ${ap.day}${ap.clockFallback ? '(範囲の終点の日が取れず、実行した日の時計で照らした)' : '(範囲の終点の日。保証の開示を作る日ではない)'}`);
+    R.push('');
+    return R;
+  }
   function renderContinuityGeneration(ct, releases, external) {
     const R = [];
     R.push('');
@@ -6489,6 +6504,7 @@ if (isMain) {
     }
     R.push('');
     R.push(...renderContinuityGeneration(A.continuity, A.stopReleases, external));
+    R.push(...renderAiFreePractice(A.aiFreePractice));
     if (A.drift.length) {
       R.push('**宣言と実態のずれ**(体制の変化点として起票してください。機械は起票しません。起票されたかは出荷判定者が確かめます):');
       R.push('');

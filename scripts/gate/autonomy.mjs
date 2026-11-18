@@ -129,6 +129,21 @@ export function autonomyCap(config, { kb = null } = {}) {
   }
 }
 
+/**
+ * 「L2 以上を適用する範囲」= D-0 の「AI自律レベルの適用」の表が現在のレベルを L3 と書く行の変更種別の id(IMPL-1021・1022。標準 第5章 5.4.7)。
+ * 表(renderAutonomyTable)と保証の開示の項目7 の判定が同じ導き方を使い、食い違わないようにする。
+ * 委任が許されていない・上限が L3 未満・手戻り率が未計測の種別は L1 と書かれるので含めない。
+ * 停止中(「L3(停止中は L1)」の行)は含める(表の静的な文字列で決まる決定可能な条件にそろえる)。種別の id の配列だけを返す
+ */
+export function l3ScopeIds(config) {
+  if (!config) return [];
+  const d = config.delegation ?? {};
+  const types = d.allowed ? (d.changeTypes ?? []) : [];
+  if (!types.length) return [];
+  if (levelRank(autonomyCap(config).level) < levelRank('L3')) return [];
+  return types.filter((t) => detectionFilled(t.basis).includes('reworkRate')).map((t) => String(t.id ?? ''));
+}
+
 /** 登録の拒否に使う。上限が L3 未満なら、その理由を返す(準拠テンプレートは L2 を支えないため、登録は L3 の扱い) */
 export function capRefusal(config) {
   const cap = autonomyCap(config);

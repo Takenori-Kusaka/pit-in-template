@@ -54,13 +54,14 @@ const SEPARATE = seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier
 const RECORD_ROW = '| 価値責任者 × 技術判断者 | 名簿 甲 | 技術判断を担える人が他にいない | 2026-10-23 |';
 const PATTERN = /非推奨の兼務です.*記載の欠落です/;
 
-function workspace(seats, recordRow) {
+function workspace(seats, recordRow, changeLog = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-discouraged-'));
   for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
     if (SKIP.has(e.name)) continue;
     fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
   }
   const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats }).config);
+  if (changeLog) config.changeLog = changeLog;
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
   let d0 = fs.readFileSync(path.join(dir, 'templates/00-d0-governance.md'), 'utf8');
   if (recordRow) d0 = d0.replace(/(\| 兼務する組 \| 責任者 \| 兼務を選んだ理由 \| 記録日 \|\n\| --- \| --- \| --- \| --- \|\n)\| \| \| \| \|/, `$1${recordRow}`);
@@ -99,6 +100,17 @@ function workspace(seats, recordRow) {
   check('記録のある構成でも集約は最後まで走る(試験の前提)', /を出力しました/.test(r.out), r.out);
   // IMPL-0298:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('組・責任者・理由のある行があれば、非推奨の兼務の欠落は出ない', !r.out.split('\n').some((l) => PATTERN.test(l)), r.out);
+}
+// #351 H-4: 理由の欄が節13 の特定の日付の行を指すとき、その行が在り理由を持つことも確かめる
+{
+  const REF_ROW = '| 価値責任者 × 技術判断者 | 名簿 甲 | 節13 の 2026-10-01 の行 | 2026-10-23 |';
+  const none = workspace(SHARED, REF_ROW, []);
+  const lines = none.out.split('\n').filter((l) => PATTERN.test(l));
+  // IMPL-0298:ng(指した日付の行が節13 に無い参照は、記載の欠落)
+  check('H-4 ng: 理由の欄が指した節13 の日付の行が無ければ、集約が欠落として出す', lines.length === 1 && /2026-10-01 の行が無い/.test(lines[0]), none.out);
+  const ok = workspace(SHARED, REF_ROW, [{ date: '2026-10-01T09:00:00+09:00', decidedBy: '名簿 甲', reason: '増員までの暫定' }]);
+  // IMPL-0298:ok(指した日付の行が在り、決定した者と理由を持つ参照は、欠落にしない)
+  check('H-4 ok: 指した日付の行が在り理由を持てば、欠落は出ない', /を出力しました/.test(ok.out) && !ok.out.split('\n').some((l) => PATTERN.test(l)), ok.out);
 }
 {
   const r = workspace(SEPARATE, null);

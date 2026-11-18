@@ -40,7 +40,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
-import { DETECTION_UNVERIFIED, autonomyCap, capRefusal, levelRank, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
+import { DETECTION_UNVERIFIED, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
 import { recordsBranchNotice } from '../gate/records.mjs';
@@ -3178,17 +3178,18 @@ export function renderAutonomyTable(config, blank = false) {
   const d = config.delegation ?? {};
   const where = '判定のたびに記録から導く(`/pit` の注記、保証の開示の項目3)';
   const types = d.allowed ? (d.changeTypes ?? []) : [];
+  const l3Ids = l3ScopeIds(config);
   for (const t of types) {
     // 計測していない検知条件のある範囲へ L2 以上を書かない(第6章 テンプレ0)。手戻り率は準拠テンプレートの外で
     // 集計する(登録の根拠の所在)。所在が未記入なら「未計測」とし、レベルを L1 と書く(突合 X-4)
     const rework = t.basis?.detection?.reworkRate;
     const reworkMeasured = detectionFilled(t.basis).includes('reworkRate');
-    const level =
-      levelRank(cap.level) < levelRank('L3')
+    // L3 の範囲の導き方は保証の開示の項目7(IMPL-1021・1022)と共有する(l3ScopeIds)
+    const level = l3Ids.includes(String(t.id ?? ''))
+      ? 'L3(停止中は L1)'
+      : levelRank(cap.level) < levelRank('L3')
         ? `L1(上限 ${cap.level} のため登録を適用しない)`
-        : !reworkMeasured
-          ? 'L1(手戻り率が未計測)'
-          : 'L3(停止中は L1)';
+        : 'L1(手戻り率が未計測)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
     const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
