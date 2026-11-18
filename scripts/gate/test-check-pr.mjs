@@ -636,6 +636,7 @@ const withDecisionRules = (rules, extra = {}) => {
   advanceBase('decision-rules');
 };
 const API_RULE = [{ id: 'public-api', paths: ['src/api/**'], why: '公開インタフェース' }];
+const APPROVE = (login, extra = {}) => ({ author: { login, id: UID[login], is_bot: false }, state: 'APPROVED', body: '挙動を確かめた', ...extra });
 const ADR_BODY = (ids = 'ADR-0001') => BODY(`Spec: F-001 / Task-1\nADR: ${ids}`);
 // IMPL-0384:ng(違反と適合の対。標準の実装マーク。process-compass #314)
 scenario('判断記録の要否: 規則(src/api/**)に当たる変更にトレーラ ADR が無い', {}, () => {
@@ -649,7 +650,7 @@ scenario('判断記録の要否: トレーラ ADR が指す判断記録が conte
 }, failsWith(/ADR-0007\)が context\/decisions\/ に無い/));
 rewindBase();
 // IMPL-0384:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-scenario('判断記録の要否: トレーラ ADR が実在する判断記録を指せば通る(「ADR-1」の書き方も 4 桁へ読む)', { body: ADR_BODY('ADR-1') }, () => {
+scenario('判断記録の要否: トレーラ ADR が実在する判断記録を指せば通る(「ADR-1」の書き方も 4 桁へ読む)', { body: ADR_BODY('ADR-1'), reviews: [APPROVE('suzuki')] }, () => {
   withDecisionRules(API_RULE);
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
@@ -699,6 +700,112 @@ scenario('判断記録の要否: 形の誤った規則(paths が文字列)は数
   withDecisionRules([{ id: 'bad', paths: 'src/api/**', why: '形の誤り' }]);
   write('src/a.js', lines(21));
 }, passes(noticedEarly(/形の誤った規則\(bad。/)));
+rewindBase();
+
+// ---------------------------------------------------------------- 判断記録の G-3 の判定記録への到達(第2章 2.6 要求事項4。IMPL-0972)
+const G3_REC = (adr, res = '通過') => `# ゲート判定記録
+
+| 項目 | 値 |
+| --- | --- |
+| ゲート | G-3 技術設計判断 |
+| 対象 | ${adr} |
+| 判定者 | 鈴木 一郎 |
+| 判定日時 | 2026-10-03 10:00 |
+| 結果 | ${res} |
+| 判定した判断記録(G-3 のみ) | ${adr} / 版: abc1234 |
+`;
+const withG3Record = (adr, res) => {
+  withDecisionRules(API_RULE);
+  write('docs/gates/g3-api-shape.md', G3_REC(adr, res));
+  advanceBase('g3-record');
+};
+// IMPL-0972:ng(違反と適合の対。標準の実装マーク)
+scenario('判断記録の G-3 への到達: トレーラ ADR に G-3 の記録も承認も無い', { body: ADR_BODY('ADR-0001') }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, failsWith(/判断記録の G-3 の判定への到達: ADR-0001/));
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 承認が AI の名義だけ', { body: ADR_BODY('ADR-0001'), reviews: [APPROVE('claude-bot', { author: { login: 'claude-bot', id: 9999, is_bot: true } })] }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, failsWith(/判断記録の G-3 の判定への到達: ADR-0001/));
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 基底の G-3 の記録の結果が差し戻し', { body: ADR_BODY('ADR-0001') }, () => {
+  withG3Record('ADR-0001', '差し戻し');
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, failsWith(/判断記録の G-3 の判定への到達: ADR-0001/));
+rewindBase();
+rewindBase();
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: 基底に G-3 通過の記録がある', { body: ADR_BODY('ADR-0001') }, () => {
+  withG3Record('ADR-0001');
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, passes((r) => (r.decisionRules?.g3Reach?.[0]?.ok ? [] : ['到達を確かめていない'])));
+rewindBase();
+rewindBase();
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: 判断記録を入れた PR に名簿の人の承認がある', { body: ADR_BODY('ADR-0001'), reviews: [APPROVE('sato')] }, () => {
+  withDecisionRules(API_RULE);
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, passes((r) => (r.decisionRules?.g3Reach?.[0]?.ok ? [] : ['承認を数えていない'])));
+rewindBase();
+scenario('判断記録の G-3 への到達: 事業ステージ S0 では失敗させず注意に出す', { body: ADR_BODY('ADR-0001') }, () => {
+  withDecisionRules(API_RULE, { answers: { 'q-biz-phase': 'poc' } });
+  write('src/api/handler.js', lines(5, 'h'));
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+}, passes(noticedEarly(/判断記録の G-3 の判定への到達.*S0 のため失敗させない/)));
+rewindBase();
+
+// ---------------------------------------------------------------- 区分の引き下げの制約を外す変更の再判定(IMPL-0767)
+const D0_RED = (reduction, judgedAt = '2026-09-01') =>
+  `# D-0
+
+## 16. 安全重要度の判定の記録
+
+| 項目 | 記載 |
+| --- | --- |
+| 判定した区分 | CL1 |
+| 判定者 | 鈴木 一郎 |
+| 判定日 | ${judgedAt} |
+| 区分の引き下げの根拠 | ${reduction} |
+`;
+const SPEC_AC_CHANGED = () => SPEC_BASE.replace('## 受入基準', '## 受入基準\n\n- 制約を外した条件');
+const withD0 = (reduction) => {
+  write('docs/D-0-governance.md', D0_RED(reduction));
+  advanceBase('d0-reduction');
+};
+// IMPL-0767:ng(違反と適合の対。標準の実装マーク)
+scenario('再判定: 根拠が引く F-001 の受入基準を変え、判定日が同じ', {}, () => {
+  withD0('ADR-0001 の設計で低減。必須制約は F-001');
+  write('specs/F-001/spec.md', SPEC_AC_CHANGED());
+  write('docs/D-0-governance.md', D0_RED('ADR-0001 の設計で低減。必須制約は F-001'));
+}, failsWith(/区分の引き下げの再判定: F-001/));
+rewindBase();
+// IMPL-0767:ok
+scenario('再判定: 同じ変更で判定日を改めた', {}, () => {
+  withD0('ADR-0001 の設計で低減。必須制約は F-001');
+  write('specs/F-001/spec.md', SPEC_AC_CHANGED());
+  write('docs/D-0-governance.md', D0_RED('ADR-0001 の設計で低減。必須制約は F-001', '2026-11-01'));
+}, passes());
+rewindBase();
+// IMPL-0767:ok
+scenario('再判定: 根拠が引かない F-002 を変えた', {}, () => {
+  withD0('ADR-0001 の設計で低減。必須制約は F-002');
+  write('specs/F-001/spec.md', SPEC_AC_CHANGED());
+}, passes());
+rewindBase();
+// IMPL-0767:ok
+scenario('再判定: 根拠が「該当なし」', {}, () => {
+  withD0('該当なし');
+  write('specs/F-001/spec.md', SPEC_AC_CHANGED());
+}, passes());
 rewindBase();
 
 // ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)

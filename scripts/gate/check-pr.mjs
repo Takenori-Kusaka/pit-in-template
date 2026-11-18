@@ -184,7 +184,8 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm } from './records.mjs';
-import { SPEC_FILE, changedSpecSections } from './spec-sections.mjs';
+import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
+import { parseClRecord } from './cl-judgment.mjs';
 
 /** 製品のコードでないもの。文書・記録・成果物・強制層・構成。変更規模の算定と、同時変更の判定から除く */
 export const NON_PRODUCT = [
@@ -989,6 +990,96 @@ export function decisionRuleHits(rules, changes, tracked = null) {
     if (files.length) hits.push({ id: r.id ?? '(ID なし)', why: r.why ?? null, files });
   }
   return { rules: valid, unmatched, malformed, hits };
+}
+
+/**
+ * 判断記録の G-3 の判定記録への到達(標準 第2章 2.6 要求事項4。IMPL-0972)。トレーラ ADR が指す判断記録ごとに、次のどちらかを要する。
+ *   (i) 基底ブランチの docs/gates/*.md に、ゲート欄が G-3、欄「判定した判断記録(G-3 のみ)」が当該 ADR、結果が「通過」の記録がある
+ *   (ii) 当該の判断記録を入れた PR(基底へ入っていれば最後に変えた PR、この PR の中で足したものならこの PR)に、名簿の人で AI の名義でない者の承認がある
+ * 判定した版と取り込む版の一致は確かめない(IMPL-0523)。判定の中身は G-3 の判定者が確かめる。
+ * 戻り値は ADR ごとの { id, ok, how, why }
+ */
+export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting = null, reviews = null }) {
+  const nf = (v) => String(v ?? '').normalize('NFKC').trim();
+  const rowOf = (text, key) => {
+    for (const line of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
+      const cells = line.split('|').map((c) => c.trim());
+      if (cells.length >= 3 && cells[0] === '' && nf(cells[1]).startsWith(key)) return nf(cells[2]);
+    }
+    return null;
+  };
+  const files = (git(['ls-tree', '--name-only', policyRef, 'docs/gates/']) ?? '').split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.md'));
+  const passed = new Set();
+  for (const f of files) {
+    const text = git(['show', `${policyRef}:${f}`]);
+    if (!text) continue;
+    if (!/G-?3/.test(rowOf(text, 'ゲート') ?? '')) continue;
+    if (rowOf(text, '結果') !== '通過') continue;
+    const m = /ADR-(\d{1,5})/.exec(rowOf(text, '判定した判断記録') ?? '');
+    if (m) passed.add(String(Number(m[1])).padStart(4, '0'));
+  }
+  const humanApprovers = (list) => {
+    const out = [];
+    for (const x of list) {
+      const ref = x && typeof x === 'object' ? { login: String(x.login ?? '').replace(/^@/, ''), id: numericAccountId(x.id ?? null) } : { login: String(x ?? '').replace(/^@/, ''), id: null };
+      if (!ref.login || /\[bot\]$/i.test(ref.login) || aiNameBlocked(config, ref.login) || dedicatedSeatOf(config, ref)) continue;
+      const person = identifyAccount(config, ref).person;
+      if (person && person.appointer !== true) out.push(`@${ref.login}`);
+    }
+    return out;
+  };
+  const prApprovers = () => {
+    const last = new Map();
+    for (const r of Array.isArray(reviews) ? reviews : []) {
+      const ref = accountRefOf(r);
+      const state = String(r?.state ?? '').toUpperCase();
+      if (!ref.login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
+      last.set(ref.id !== null ? `#${ref.id}` : ref.login, { ref: { login: ref.login, id: ref.id }, approved: state === 'APPROVED' && hasWriteAssociation(r) !== false && !r.author?.is_bot });
+    }
+    return humanApprovers([...last.values()].filter((v) => v.approved).map((v) => v.ref));
+  };
+  return ids.map((id) => {
+    if (passed.has(id)) return { id, ok: true, how: '基底ブランチの G-3 の判定記録(通過)' };
+    const file = fileOf(id);
+    const inBase = file ? Boolean(git(['cat-file', '-e', `${policyRef}:${file}`]) !== null && git(['show', `${policyRef}:${file}`]) !== null) : false;
+    if (inBase) {
+      const sha = lastCommitOfFile(git, policyRef, file);
+      const info = sha && hosting ? hosting.prOfCommit(sha) : null;
+      if (!info) return { id, ok: false, why: '基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR の記録もホスティングから読めない' };
+      const who = info.number == null ? [] : humanApprovers(Array.isArray(info.approvers) ? info.approvers : []);
+      return who.length ? { id, ok: true, how: `判断記録を入れた PR #${info.number} の名簿の人の承認(${who.join(', ')})` } : { id, ok: false, why: `基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR${info.number != null ? ` #${info.number}` : ''}に名簿の人(AI の名義でない)の承認が無い` };
+    }
+    const who = prApprovers();
+    return who.length ? { id, ok: true, how: `この PR の名簿の人の承認(${who.join(', ')})` } : { id, ok: false, why: '基底ブランチに G-3 の判定記録が無く、この PR に名簿の人(AI の名義でない)の承認も無い' };
+  });
+}
+
+/**
+ * 区分の引き下げの制約を外す変更の再判定(標準 第8章 軸E。IMPL-0767)。D-0 節16 の「区分の引き下げの根拠」が機能仕様 F-NNN を引くとき、
+ * PR がその spec.md の受入基準の節を変え(基底と先頭の本文が文字列で一致しない。整形だけの変更も含む)、同じ PR の先頭の節16 の
+ * 「判定日」が基底の判定日より後でなければ、再判定が無いとして問題を返す。根拠が「該当なし」・未記入なら何も返さない。
+ * 変更が必須制約を外すかの意味は確かめない(再判定の判定者が確かめる)
+ */
+export function reductionRejudgeProblems({ atBase, atHead, changedFiles }) {
+  const base = parseClRecord(atBase('docs/D-0-governance.md'));
+  if (!base.present) return [];
+  const r = String(base.values.reduction ?? '').normalize('NFKC').trim();
+  if (!isFilledValue(r) || /^該当なし/.test(r)) return [];
+  const specs = [...new Set([...r.matchAll(/\bF-\d{3,}\b/g)].map((m) => m[0]))];
+  const day = (v) => /(\d{4}-\d{2}-\d{2})/.exec(String(v ?? '').normalize('NFKC'))?.[1] ?? null;
+  const headRec = parseClRecord(atHead('docs/D-0-governance.md'));
+  const judgedBase = day(base.values.judgedAt);
+  const judgedHead = headRec.present ? day(headRec.values.judgedAt) : null;
+  const out = [];
+  for (const id of specs) {
+    const file = `specs/${id}/spec.md`;
+    if (!changedFiles.includes(file)) continue;
+    const cmp = compareSpecSections(atBase(file), atHead(file));
+    if (cmp.sections['受入基準'] !== 'mismatch') continue;
+    if (judgedHead && (!judgedBase || judgedHead > judgedBase)) continue;
+    out.push(`${id} の受入基準を変えているが、D-0 節16 の「判定日」(PR の先頭: ${judgedHead ?? '読めない'}、基底: ${judgedBase ?? '読めない'})が基底より後でない`);
+  }
+  return out;
 }
 
 /** 本文の末尾の段落のトレーラ ADR が指す判断記録の番号(4桁)。「ADR: ADR-021, ADR-0034」の形を読む */
@@ -1876,6 +1967,39 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       else result.errors.push(msg);
     } else if (dr.hits.length && missing.length) {
       result.warnings.push(`判断記録の要否の規則: トレーラ ADR のうち ${missing.map((id) => `ADR-${id}`).join(', ')} が context/decisions/ に無い`);
+    }
+    // 判断記録の G-3 の判定記録への到達(2.6 要求事項4。IMPL-0972)。判定した版と取り込む版の一致は確かめない(IMPL-0523)
+    if (found.length) {
+      const reach = decisionG3Reach({
+        git,
+        policyRef,
+        config: policyConfigured ? policyConfig : headConfig,
+        ids: found,
+        fileOf: (id) => `context/decisions/${present.find((f) => f.startsWith(`${id}-`) && f.endsWith('.md'))}`,
+        hosting: prHosting,
+        reviews: pr.reviews ?? null,
+      });
+      result.decisionRules.g3Reach = reach;
+      const bad = reach.filter((x) => !x.ok);
+      if (bad.length) {
+        const msg =
+          `判断記録の G-3 の判定への到達: ${bad.map((x) => `ADR-${x.id}(${x.why})`).join(' / ')}。判断記録は取り込む前に技術設計判断(G-3)の判定を受ける(標準 第2章 2.6 要求事項4)。` +
+          '基底ブランチの docs/gates/ に G-3 の判定記録(欄「判定した判断記録(G-3 のみ)」に ADR 番号、結果「通過」)を置くか、判断記録を入れる PR で名簿の人が承認する。' +
+          '判定した版と取り込む版の一致は確かめない(IMPL-0523)。判定の中身は G-3 の判定者が確かめる';
+        if (stage === 'S0') result.notices.push(`${msg}。事業ステージ S0 のため失敗させない(2.6 のステージ表)`);
+        else result.errors.push(msg);
+      }
+    }
+  }
+
+  // --- 7c. 区分の引き下げの制約を外す変更の再判定(第8章 軸E。IMPL-0767) ---
+  {
+    const rejudge = reductionRejudgeProblems({ atBase, atHead, changedFiles: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])) });
+    if (rejudge.length) {
+      result.errors.push(
+        `区分の引き下げの再判定: ${rejudge.join(' / ')}。区分の引き下げの根拠が引く機能仕様の受入基準を変える PR は、同じ PR で安全重要度の判定を再判定し、D-0 節16 の判定日を改める。` +
+          '節の本文の文字列の一致で見る(整形だけの変更も再判定に当たる)。変更が必須制約を外すかの意味は確かめない(再判定の判定者が確かめる)'
+      );
     }
   }
 
