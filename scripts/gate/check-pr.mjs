@@ -2086,9 +2086,10 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     const coPlace = CODEOWNERS_PLACES.find((f) => atPolicy(f) !== null) ?? null;
     const co = codeownersProblems(policyConfig, coPlace ? atPolicy(coPlace) : null, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), CODEOWNERS_PLACES);
     result.codeowners = co;
+    if (co.notices.length) result.notices.push(`CODEOWNERS(${coPlace ?? '無し'}): ${co.notices.join(' / ')}`);
     if (co.problems.length) {
       result.errors.push(
-        `CODEOWNERS(${coPlace ?? "無し"}): ${co.problems.join(' / ')}。所有者は名簿の人の個人のログイン名で書く(部署名・グループ名だけの指名を認めない)。` +
+        `CODEOWNERS(${coPlace ?? "無し"}): ${co.problems.join(' / ')}。所有者は個人のログイン名を書く(名簿の人の個人を勧める。名簿に無い個人は注意に出し、失敗にしない)。部署名・グループ名だけの指名は認めない。` +
           '部署名・グループ名の実質(チームの構成員が誰か)は確かめない。型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /。末尾が /* の型は直下のファイルだけ)で読み、どれかの行に当たるかを見る'
       );
     }

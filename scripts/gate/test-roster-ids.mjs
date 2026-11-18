@@ -225,7 +225,11 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   const ok = codeownersProblems(cfg, '# コメント\n* @yamada # 末尾のコメント\n', ['src/a.js']);
   check('CODEOWNERS: 名簿の人の login とコメントを読み、問題が無い', ok.problems.length === 0 && ok.rows === 1, JSON.stringify(ok));
   check('CODEOWNERS: ファイルが無ければ問題', codeownersProblems(cfg, null, []).problems.length === 1);
-  check('CODEOWNERS: メールアドレスの所有者は名簿へ対応づかない', codeownersProblems(cfg, '* a@example.com\n', ['x']).problems.some((p) => /対応づかない/.test(p)));
+  const mail = codeownersProblems(cfg, '* a@example.com\n', ['x']);
+  check('CODEOWNERS: メールアドレスの所有者は名簿へ対応づかず、失敗でなく注意に出る', mail.problems.length === 0 && mail.notices.some((p) => /対応づかない/.test(p)), JSON.stringify(mail));
+  const stranger = codeownersProblems(cfg, '* @stranger\n', ['x']);
+  check('CODEOWNERS: 名簿に無い個人は失敗でなく注意に出る', stranger.problems.length === 0 && stranger.notices.length === 1, JSON.stringify(stranger));
+  check('CODEOWNERS: 置き字・チームだけ・所有者無しは失敗に残る', codeownersProblems(cfg, '* @OWNER\n/a/ @o/t\n/b/\n', ['x']).problems.length >= 3);
 }
 
 console.log(failures ? `\nアカウントと人の対応表の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\nアカウントと人の対応表の試験: ${checks} 件が期待と一致しました`);

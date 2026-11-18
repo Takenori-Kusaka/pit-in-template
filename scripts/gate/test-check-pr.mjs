@@ -944,10 +944,16 @@ scenario('CODEOWNERS: どの行の型にも当たらない変更', {}, () => {
 }, coFails(/所有者が定義されていない領域の変更: src\/a\.js/));
 rewindBase();
 // IMPL-0211:ng
-scenario('CODEOWNERS: 個人の所有者が名簿の人へ対応づかない', {}, () => {
+scenario('CODEOWNERS: 所有者の無い行は失敗にする', {}, () => {
+  withOwners('* @yamada\n/src/\n');
+  write('src/a.js', lines(21));
+}, coFails(/所有者が書かれていない/));
+rewindBase();
+// IMPL-0211:ok
+scenario('CODEOWNERS: 名簿に無い個人(外部の保守担当など)は通り、注意が出る', {}, () => {
   withOwners('* @stranger\n');
   write('src/a.js', lines(21));
-}, coFails(/@stranger が名簿.*対応づかない/));
+}, passes((r) => (r.codeowners?.problems.length === 0 && r.notices.some((n) => /@stranger が名簿.*対応づかない/.test(n)) ? [] : [`注意が出ていない: ${JSON.stringify(r.codeowners)}`])));
 rewindBase();
 // IMPL-0211:ok
 scenario('CODEOWNERS: 名簿の人の login で全体を覆い、深い型が後に勝つ(チームとの併記も通る)', {}, () => {

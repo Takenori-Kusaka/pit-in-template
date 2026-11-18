@@ -88,12 +88,13 @@ function ownerKind(o) {
 
 /**
  * CODEOWNERS(基底ブランチの版の本文)と変更したファイルから、失敗にする問題の一覧を返す。text が null なら、ファイルが無い問題を返す。
- * 戻り値: { problems: string[], rows: number }
+ * 戻り値: { problems: string[], notices: string[], rows: number }(notices は名簿に対応づかない個人。失敗にしない)
  */
 export function codeownersProblems(config, text, files = [], searched = ['.github/CODEOWNERS']) {
   if (text === null || text === undefined) return { problems: [`CODEOWNERS が基底ブランチに無い(検査した所在: ${searched.join('・')}。所有者を定義していない)`], rows: 0 };
   const rows = parseCodeowners(text);
   const problems = [];
+  const notices = [];
   for (const r of rows) {
     const where = `${r.line} 行目(${r.pattern})`;
     if (r.owners.length === 0) {
@@ -104,12 +105,13 @@ export function codeownersProblems(config, text, files = [], searched = ['.githu
     if (r.owners.every((o) => ownerKind(o) === 'team')) problems.push(`${where}: 所有者が ${r.owners.join(' ')} のチームだけ。部署名・グループ名だけの指名は認めない。記名のレビュアとして個人を足す`);
     for (const o of r.owners) {
       if (/^@OWNER$/i.test(o) || ownerKind(o) === 'team') continue;
-      if (ownerKind(o) === 'other' || !findPersonByAccount(config, o.replace(/^@/, ''))) problems.push(`${where}: 所有者 ${o} が名簿(people[].accounts)の人へ対応づかない`);
+      // 名簿に対応づかない個人(外部の保守担当・委託先など)は失敗にせず注意に出す(条文に無い義務を課さない。承認として数えるかは名簿の照合が別に確かめる)
+      if (ownerKind(o) === 'other' || !findPersonByAccount(config, o.replace(/^@/, ''))) notices.push(`${where}: 所有者 ${o} が名簿(people[].accounts)の人へ対応づかない(名簿の個人のログイン名を併記することを勧める)`);
     }
   }
   const uncovered = files.filter((f) => !rows.some((r) => codeownersMatch(r.pattern, f)));
   if (uncovered.length) problems.push(`所有者が定義されていない領域の変更: ${uncovered.slice(0, 3).join(', ')}${uncovered.length > 3 ? ` ほか ${uncovered.length - 3} 件` : ''}(どの行の型にも当たらない)`);
-  return { problems: [...new Set(problems)], rows: rows.length };
+  return { problems: [...new Set(problems)], notices: [...new Set(notices)], rows: rows.length };
 }
 
 /** 基底ブランチの写しの複製の置き場(aggregate-evidence.mjs の BASE_COPIES_DIR と同じ) */

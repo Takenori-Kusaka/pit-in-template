@@ -288,7 +288,7 @@ if (config.configured === false) {
   }
   const co = codeownersState(ROOT);
   if (co.owner.length) {
-    problems.push(`${co.effective} に雛形の所有者 @OWNER が残っています(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられません。誤りは CODEOWNERS の画面と API に出ますが、PR の失敗としては出ません。名簿(people[].accounts)の人の個人のログイン名(チームを書くときは個人と併記する)へ置き換えてください(人が決める)`);
+    problems.push(`${co.effective} に雛形の所有者 @OWNER が残っています(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられません。誤りは CODEOWNERS の画面と API に出ますが、PR の失敗としては出ません。実在する個人のログイン名(名簿 people[].accounts の人を勧める。チームを書くときは個人と併記する)へ置き換えてください(人が決める)`);
   }
   if (co.places.length > 1) {
     notes.push(`CODEOWNERS が ${co.places.length} か所にあります(${co.places.join(' / ')})。GitHub は決まった順に探して最初に見つけた1つ(${co.effective})を使います。ほかは使われません`);

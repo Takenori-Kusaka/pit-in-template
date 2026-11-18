@@ -41,7 +41,7 @@ npx -y @nanonets/graft@0.12.1 build
 既にコードと履歴があるリポジトリで適用を始めるときの**要求事項**は、標準の[第1章 1.10.1](https://takenori-kusaka.github.io/process-compass/phase4-process-design/overview/)にあります(既存の統制の資産の一覧と扱い、技術判断の席の責任者の記名、事前点検が検出した資産との照合、統制に効くファイルの規則、開始より前の履歴)。**手順は手引き**で、正は標準の[準拠テンプレートリポジトリ](https://takenori-kusaka.github.io/process-compass/phase5-implementation/template-repository/)の「既存のリポジトリへ持ち込む」です。要約は次のとおりです。
 
 1. テンプレートの追跡ファイルを、既存のファイルを上書きせずに複製する。テンプレートの履歴は併合しない(共通の祖先の無い履歴の併合は、事前点検が根のコミットごとに資産として告げる。テンプレートの履歴を併合していたら、併合を戻してファイルの複製で持ち込む)
-2. 名前が重なるファイルは、既存の内容を残したうえで、テンプレートの側の内容を含める。`CLAUDE.md` はテンプレートの常駐の規則の節と規則をすべて含め、区間の目印を置く。`CODEOWNERS` は1か所に置き、雛形の所有者 `@OWNER` を名簿(people[].accounts)の人の個人のログイン名(チームを書くときは個人と併記する)へ置き換える(人が決める)。`.gitignore` はテンプレートの行を含める
+2. 名前が重なるファイルは、既存の内容を残したうえで、テンプレートの側の内容を含める。`CLAUDE.md` はテンプレートの常駐の規則の節と規則をすべて含め、区間の目印を置く。`CODEOWNERS` は1か所に置き、雛形の所有者 `@OWNER` を名簿(people[].accounts)の人の個人のログイン名を勧める形(チームを書くときは個人と併記する)で置き換える(人が決める)。`.gitignore` はテンプレートの行を含める
 3. 事前点検を実行する: `node scripts/gate/preflight.mjs`。何も書き込まない。止める項目(`[止める]`)をすべて直す。既存の `.claude/settings.json` にテンプレートのフックの登録が無ければ、`node scripts/init/generate-profile.mjs --merge-hooks` で併合する(既存の登録は残す)
 4. 告げる項目(`[告げる]`)に資産があれば、`node scripts/gate/preflight.mjs --draft > docs/adoption-inventory.md` で一覧の下書きを作る。資産ごとの扱い(取り込む・置き換える・残して並存する・対象外とする)と、確定した者・確定日は、技術判断の席の責任者が書く。AI は下書きまでを行い、扱いと記名の欄を埋めない
 5. `/process-init` を実行する。初期化も同じ事前点検を行い、止める項目が1つでもあれば構成を書かない(`--dry-run` でも構成を出さない)。点検の結果は適用の開始の記録(`changeLog[0]` の `preflight`)へ道具が書く。取り込んだテンプレートのコミットは `--template-commit <コミット>` で渡す(構成の `template.commit`。道具だけが書く)
@@ -591,7 +591,7 @@ node scripts/init/generate-profile.mjs --change <migrate の入力> --dry-run   
 | 落ちうる検査 | 直し方 |
 | --- | --- |
 | `CODEOWNERS` に雛形の所有者 `@OWNER` が残っている(契約検査が失敗) | 名簿(people[].accounts)の人の個人のログイン名(チームを書くときは個人と併記する)へ置き換える(人が決める) |
-| `CODEOWNERS` の行の所有者がチームだけ、名簿(`people[].accounts`)の人へ対応づかない個人、どの行の型にも当たらない変更(`pr-rules` が失敗) | 所有者は名簿の人の個人のログイン名で書く(チームを書くときは個人と併記する)。型が覆わない領域の行を足す。置き場は `.github/CODEOWNERS`・`CODEOWNERS`・`docs/CODEOWNERS` の順に探し、最初に見つけた1つを検査する(人が決める) |
+| `CODEOWNERS` の行の所有者がチームだけ、所有者の無い行、どの行の型にも当たらない変更(`pr-rules` が失敗)。名簿(`people[].accounts`)の人へ対応づかない個人は失敗にならず、注意に出る | 所有者は名簿の人の個人のログイン名で書くことを勧める(チームを書くときは個人と併記する)。名簿に無い個人(外部の保守担当など)は注意が出る。型が覆わない領域の行を足す。置き場は `.github/CODEOWNERS`・`CODEOWNERS`・`docs/CODEOWNERS` の順に探し、最初に見つけた1つを検査する(人が決める) |
 | `.claude/settings.json` にテンプレートのフックの登録が無い(契約検査が失敗) | `node scripts/init/generate-profile.mjs --merge-hooks` で併合する(既存の登録は残す) |
 | 知らない形式の版(既知より大きい `formatVersion`・`schemaVersion`)の構成(契約検査が失敗) | 構成を生成した版の準拠テンプレートを取り込んでから検査する |
 | 実環境の統制の確認の記録(`docs/adoption-trial/env-check.json`)が4値より前の形 | 「未確認(旧い形の記録)」として読む。実環境の `gh` で `node scripts/gate/adoption-trial.mjs env-check --by <氏名>` を実行し直し、記録をコミットする |
