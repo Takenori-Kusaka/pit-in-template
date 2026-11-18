@@ -28,6 +28,32 @@ export function normalizeDecisionText(text) {
   return lines.join('\n');
 }
 
+/**
+ * 判断記録ごとの G-3 の通過の記録を集める(IMPL-0523。F-03)。読み先は 3 経路で、decisionG3Reach と揃える。
+ *   forms         基底の様式(docs/gates/)と記録用ブランチの様式: [{ source, gate, result, cell, judgeOk }]
+ *                 cell は欄「判定した判断記録」の値(ADR-NNNN と「版: <識別子>」)。judgeOk が偽(判定者が名簿の人でない・AI の名義)は数えない
+ *   declarations  宣言行 G-3: 通過 のレビュー: [{ source, id, ver, ok }]。ok が偽(書き手が判定者でない)は数えない。
+ *                 ver は判定した版(マージ時の head と一致するものはマージコミット、一致しないものはレビューの commit_id)
+ * 戻り値: Map(ADR-NNNN → [{ source, ver }])
+ */
+export function decisionG3Passes({ forms = [], declarations = [] } = {}) {
+  const out = new Map();
+  const add = (id, p) => (out.get(id) ?? out.set(id, []).get(id)).push(p);
+  for (const f of forms) {
+    if (f.judgeOk === false) continue;
+    if (!/G-?3/.test(String(f.gate ?? '').normalize('NFKC')) || String(f.result ?? '').normalize('NFKC').trim() !== '通過') continue;
+    const cell = String(f.cell ?? '').normalize('NFKC');
+    const m = /ADR-(\d{1,5})/.exec(cell);
+    if (!m) continue;
+    add(`ADR-${m[1].padStart(4, '0')}`, { source: f.source, ver: /版\s*[::]\s*([0-9a-f]{7,40})/i.exec(cell)?.[1] ?? null });
+  }
+  for (const d of declarations) {
+    if (d.ok === false || !d.id) continue;
+    add(d.id, { source: d.source, ver: d.ver ?? null });
+  }
+  return out;
+}
+
 export const NO_PASS_REASON = 'この判断記録を対象とする G-3 の通過の記録が無い。機械は欠落にしない(置き換える決定を持つ場合は replacementWithoutG3 が別に欠落にする)';
 
 /**

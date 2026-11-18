@@ -216,6 +216,23 @@ fieldCase('開示した偽の失敗: 取り消し「人手で戻せる(一部は
   check('IMPL-0523:ok 版を読めない記録・通過の記録が無いものは未確認で、欠落にしない', unr.length === 2 && unr.every((x) => x.result === 'unconfirmed') && DR.decisionRecheckSummary(unr).mismatch === 0, JSON.stringify(unr));
 }
 
+// F-03: G-3 の通過の読み先は、基底の様式・記録用ブランチの様式・宣言行のレビューの 3 経路(decisionG3Reach と揃える)
+{
+  const form = (over = {}) => ({ source: 'records/gates/g3-a.md', gate: 'G-3 判断記録', result: '通過', cell: 'ADR-0007 / 版: 1a2b3c4d', judgeOk: true, ...over });
+  const branchOnly = DR.decisionG3Passes({ forms: [form()], declarations: [] });
+  check('IMPL-0523:ng 記録用ブランチだけの通過を読み、ADR-0007 の通過として返す(基底の様式だけを見ない)', branchOnly.get('ADR-0007')?.[0]?.ver === '1a2b3c4d' && branchOnly.get('ADR-0007')[0].source === 'records/gates/g3-a.md', JSON.stringify([...branchOnly]));
+  const rewritten = DR.decisionRecheck({ decisions: [{ id: 'ADR-0007', tipText: '# ADR\n- 状態: 採用\n決定: B\n', passes: branchOnly.get('ADR-0007').map((p) => ({ source: p.source, text: '# ADR\n- 状態: 採用\n決定: A\n', unresolved: null })) }] });
+  check('IMPL-0523:ng 記録用ブランチだけの通過の後に本文を書き換えると不一致を検出する(未確認にしない)', rewritten[0].result === 'mismatch', JSON.stringify(rewritten));
+  const viaDecl = DR.decisionG3Passes({ forms: [], declarations: [{ source: 'PR #12 のレビュー', id: 'ADR-0007', ver: 'abcdef12', ok: true }] });
+  check('IMPL-0523:ok 宣言行のレビュー(G-3: 通過)も通過として返す', viaDecl.get('ADR-0007')?.[0]?.source === 'PR #12 のレビュー' && viaDecl.get('ADR-0007')[0].ver === 'abcdef12', JSON.stringify([...viaDecl]));
+  const sameBranch = DR.decisionRecheck({ decisions: [{ id: 'ADR-0007', tipText: '# ADR\n- 状態: 廃止\n決定: A\n', passes: branchOnly.get('ADR-0007').map((p) => ({ source: p.source, text: '# ADR\n- 状態: 採用\n決定: A\n', unresolved: null })) }] });
+  check('IMPL-0523:ok 記録用ブランチの通過の後に状態の行だけを変えても一致', sameBranch[0].result === 'match', JSON.stringify(sameBranch));
+  const replacement = DR.replacementWithoutG3({ decisions: [{ id: 'ADR-0007', replaces: ['ADR-0003'], hasG3: branchOnly.has('ADR-0007') }] });
+  check('IMPL-0523:ok 記録用ブランチの通過がある置き換えは、G-3 の無い置き換えの欠落にならない', replacement.length === 0, JSON.stringify(replacement));
+  const none = DR.decisionG3Passes({ forms: [form({ result: '差し戻し' }), form({ gate: 'G-4', source: 's2' }), form({ judgeOk: false, source: 's3' }), form({ cell: '判定した判断記録なし', source: 's4' })], declarations: [{ source: 'd', id: 'ADR-0007', ver: 'x', ok: false }] });
+  check('IMPL-0523:ok 通過でない・G-3 でない・判定者が名簿の人でない・判断記録を指さない・宣言行の書き手が判定者でないものは通過に数えない', none.size === 0, JSON.stringify([...none]));
+}
+
 if (failures) {
   console.error(`\n判断記録の検査の試験: ${failures} / ${n} 件が期待と一致しませんでした`);
   process.exit(1);

@@ -187,7 +187,7 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { loadDecisions, checkDecisions, countsLine, fieldProblems, replacesOf, DECISIONS_DIR, ARCHIVE_DIR } from './check-decisions.mjs';
-import { decisionRecheck, decisionRecheckGapText, decisionRecheckSummary, replacementWithoutG3, replacementWithoutG3GapText } from './decision-recheck.mjs';
+import { decisionRecheck, decisionRecheckGapText, decisionRecheckSummary, replacementWithoutG3, replacementWithoutG3GapText, decisionG3Passes } from './decision-recheck.mjs';
 import { handoverItems, handoverGapText, handoverResultText } from './handover-items.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
@@ -3503,17 +3503,28 @@ if (isMain) {
       const m = /(?:^|\/)(\d{1,5})-[^/]*\.md$/.exec(f);
       return m ? `ADR-${m[1].padStart(4, '0')}` : null;
     };
-    const g3Passes = new Map();
-    for (const r of gateRecordList) {
-      if (!/G-?3/.test(String(r.gate ?? '').normalize('NFKC')) || resultWord(r.result) !== '通過') continue;
-      const text = fs.readFileSync(path.join(ROOT, r.file), 'utf8');
-      const cell = String(rowValue(text, '判定した判断記録', false) ?? '').normalize('NFKC');
-      const id = /ADR-(\d{1,5})/.exec(cell)?.[1];
-      if (!id) continue;
-      const key = `ADR-${id.padStart(4, '0')}`;
-      const ver = /版\s*[::]\s*([0-9a-f]{7,40})/i.exec(cell)?.[1] ?? null;
-      (g3Passes.get(key) ?? g3Passes.set(key, []).get(key)).push({ source: r.file, ver });
+    // G-3 の通過の読み先は 3 経路(F-03。decisionG3Reach と揃える): (1) 基底の様式 (2) 記録用ブランチの様式(判定者が名簿の人で AI の名義でないもの)
+    // (3) 宣言行 G-3: 通過 のレビュー(判定者本人。版は、マージ時の head と一致するレビューならマージコミット)
+    const formsAll = gateRecordList
+      .filter((r) => /G-?3/.test(String(r.gate ?? '').normalize('NFKC')) && resultWord(r.result) === '通過')
+      .map((r) => ({ source: r.file, gate: r.gate, result: '通過', cell: rowValue(fs.readFileSync(path.join(ROOT, r.file), 'utf8'), '判定した判断記録', false), judgeOk: true }));
+    for (const g of recordSources.gates) {
+      if (g.baseFile) continue; // 基底へ複製済みの様式は (1) で読む
+      const judge = judgeOfForm(g.text);
+      formsAll.push({ source: g.file, gate: rowValue(g.text, 'ゲート', false), result: resultWord(rowValue(g.text, '結果', false)), cell: rowValue(g.text, '判定した判断記録', false), judgeOk: Boolean(judge) && !aiNameBlocked(config, judge) && Boolean(resolveSigner(config, judge)) });
     }
+    const declarationsAll = [];
+    for (const f of changed) {
+      const id = idOf(f);
+      const sha = id ? lastCommitOfFile(gitText, to, f) : null;
+      const prNo = sha ? (commitPr.get(sha)?.number ?? null) : null;
+      if (prNo === null) continue;
+      for (const j of reviewJudgements) {
+        if (j.pr !== prNo || j.gate !== 'G-3' || resultWord(j.result) !== '通過') continue;
+        declarationsAll.push({ source: `PR #${prNo} の宣言行 G-3: 通過 のレビュー${j.reviewId ? ` ${j.reviewId}` : ''}`, id, ver: j.headMatch ? j.mergeCommit : (j.commitId ?? null), ok: j.judgeOk !== false });
+      }
+    }
+    const g3Passes = decisionG3Passes({ forms: formsAll, declarations: declarationsAll });
     const readAt = (ref, id) => {
       const files = (gitText(['ls-tree', '-r', '--name-only', ref, '--', DECISIONS_DIR, ARCHIVE_DIR]) ?? '').split(LF_RE).filter(Boolean);
       const f = files.find((x) => idOf(x) === id);
