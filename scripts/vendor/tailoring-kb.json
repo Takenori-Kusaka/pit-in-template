@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "b64593312dbcf3233842253483657a1cbde8824d",
+    "commit": "91980f9528d782dc60c9a3eb6ce30225a5c8bf6b",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -930,10 +930,10 @@
             "id": "outer-gates"
           },
           "action": "note",
-          "note": "既存の決裁ゲート(品質部門の判定・CTOレビュー等)に外殻ゲートを対応づける。新設や二重化はしない"
+          "note": "既存の決裁ゲート(品質部門の判定・CTOレビュー等)に、参照モデルの企画承認(G-1)・出荷判定(G-7)を対応づける。新設や二重化はしない"
         }
       ],
-      "reason": "ピットイン方式の外殻は既存制度を置き換えるものではなく、対応づけて再利用する設計。既存制度への変更は、技術判断の分離・単独判定・出荷判定者の署名の意味・品質保証の方針と受容の基準の記名の4点である(附属書A A.5)",
+      "reason": "ピットイン方式のマクロライフサイクルは既存制度を置き換えるものではなく、対応づけて再利用する設計。既存制度への変更は、技術判断の分離・単独判定・出荷判定者の署名の意味・品質保証の方針と受容の基準の記名の4点である(附属書A A.5)",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 10,
       "sourceFile": "rules-supplementary.yaml"
@@ -952,7 +952,7 @@
             "id": "outer-gates"
           },
           "action": "note",
-          "note": "外殻ゲート(企画承認・出荷判定)を軽量に新設する。判定記録を残すことから始める"
+          "note": "企画承認と出荷判定のゲートを軽量に新設する。判定記録を残すことから始める"
         }
       ],
       "reason": "ゲートがない組織では、重い会議体でなく「記録の残る判定」として最小構成で導入する",
@@ -997,7 +997,7 @@
           "action": "set",
           "param": "aiLoop",
           "value": "disabled",
-          "note": "AI協調ループを無効化する。外殻ゲート・責任の分離・記録の原則は従来型開発でもそのまま機能する"
+          "note": "AI協調ループを無効化する。ゲート・責任の分離・記録の原則は従来型開発でもそのまま機能する"
         },
         {
           "target": {
@@ -1008,7 +1008,7 @@
           "note": "AI実行ロールを除外する(実装・検証はすべて人が担う)"
         }
       ],
-      "reason": "ピットイン方式の外殻はAIの有無に依存しない設計。AI解禁時にループを足すだけで移行できる",
+      "reason": "ピットイン方式のゲート・責任の分離・記録の原則はAIの有無に依存しない設計。AI解禁時にループを足すだけで移行できる",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/",
       "priority": 40,
       "sourceFile": "rules-supplementary.yaml"
@@ -1286,8 +1286,8 @@
     },
     {
       "id": "outer-gates",
-      "name": "外殻ゲートの対応づけ",
-      "description": "組織の既存決裁ゲートと参照モデルの外殻ゲートの接続方法",
+      "name": "既存の決裁ゲートとの対応づけ",
+      "description": "組織の既存の決裁ゲートと、参照モデルの企画承認(G-1)・出荷判定(G-7)の接続方法",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/integrated-process/"
     },
     {
