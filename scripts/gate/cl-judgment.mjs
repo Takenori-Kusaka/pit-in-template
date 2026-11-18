@@ -104,6 +104,24 @@ export function stepOf(value) {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * D-0 の本文から F.2 の Q1 を読む(IMPL-0919)。真=はい、偽=いいえ、null=読めない(節が無い・未記入・様式のまま・「未定」)。
+ * 読めないものを「いいえ」と読まない。委任の判定が止まる側へ倒すための読み方である
+ */
+export function readF2Q1Text(text) {
+  if (text === null || text === undefined) return null;
+  const p = parseClRecord(text);
+  if (!p.present) return null;
+  return f2Q1Of(p.values.f2);
+}
+
+/** 案件の D-0 を読んで F.2 の Q1 を返す(D-0 が無ければ null) */
+export function readF2Q1({ root = ROOT } = {}) {
+  const file = path.join(root, 'docs/D-0-governance.md');
+  if (!fs.existsSync(file)) return null;
+  return readF2Q1Text(fs.readFileSync(file, 'utf8'));
+}
+
 const isUnmetText = (v) => /^未達/.test(clean(v));
 
 /**

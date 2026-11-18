@@ -61,7 +61,7 @@ const policyOf = (raw) => ({ present: true, cycle: { aiFree: parsePracticeInterv
 const state = (rows, { freq = '四半期に1回', day = '2026-03-01', config = cfgOf(), scope = null, policy = null } = {}) => {
   const dir = root(rows);
   try {
-    return aiFreePracticeState(config, policy ?? policyOf(freq), { root: dir, day, scope: scope ?? l3ScopeIds(config) });
+    return aiFreePracticeState(config, policy ?? policyOf(freq), { root: dir, day, scope: scope ?? l3ScopeIds(config, { q1: false }) });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -126,7 +126,7 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
 
 // ---------------------------------------------------------------- 範囲: D-0 の表との一致
 {
-  const L = (config) => renderAutonomyTable(config).filter((l) => /^\| 登録した変更種別 /.test(l)).map((l) => l.split('|')[1].trim());
+  const L = (config) => renderAutonomyTable(config, false, { q1: false }).filter((l) => /^\| 登録した変更種別 /.test(l)).map((l) => l.split('|')[1].trim());
   const withBasis = (over) => cfgOf(over);
   const cases = [
     ['allowed が偽', withBasis({ delegation: { allowed: false, changeTypes: [{ id: 'a', basis: BASIS }] } }), []],
@@ -135,9 +135,9 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
     ['L3', withBasis({ delegation: { allowed: true, changeTypes: [{ id: 'a', basis: BASIS }, { id: 'b', basis: { detection: { rejectionRate: 'x' } } }] } }), ['a']],
   ];
   for (const [name, config, expected] of cases) {
-    const ids = l3ScopeIds(config);
+    const ids = l3ScopeIds(config, { q1: false });
     const lv = L(config);
-    const tableL3 = renderAutonomyTable(config)
+    const tableL3 = renderAutonomyTable(config, false, { q1: false })
       .filter((l) => /^\| 登録した変更種別 /.test(l))
       .filter((l) => l.split('|')[2].trim().startsWith('L3'))
       .map((l) => l.split('|')[1].trim().replace('登録した変更種別 ', ''));
@@ -148,7 +148,7 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
     check(`IMPL-1021:ok 範囲なし(${name})は空欄でも表示しない`, texts(null, { freq: '', config }).length === 0);
   }
   // 停止中の範囲(「L3(停止中は L1)」の行)も範囲に含める(表の静的な文字列にそろえる)
-  check('範囲: 表が「L3(停止中は L1)」と書く行は範囲に含める', renderAutonomyTable(cases[3][1]).some((l) => l.includes('L3(停止中は L1)')) && l3ScopeIds(cases[3][1]).includes('a'));
+  check('範囲: 表が「L3(停止中は L1)」と書く行は範囲に含める', renderAutonomyTable(cases[3][1], false, { q1: false }).some((l) => l.includes('L3(停止中は L1)')) && l3ScopeIds(cases[3][1], { q1: false }).includes('a'));
 }
 
 // ---------------------------------------------------------------- 生成区間の不変(L3 の範囲の導き方を共有する変更の前後)
@@ -166,7 +166,7 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
     cfgOf(),
   ];
   four.forEach((config, i) => {
-    const rows = renderAutonomyTable(config).filter((l) => /^\| 登録した変更種別 /.test(l));
+    const rows = renderAutonomyTable(config, false, { q1: false }).filter((l) => /^\| 登録した変更種別 /.test(l));
     const same = rows.every((l, j) => l.split('|')[2].trim() === legacy(config, config.delegation.changeTypes[j]));
     check(`D-0 の表の生成(代表 ${i + 1}/4): 現在のレベルの列が変更前の導き方と一致する`, rows.length === config.delegation.changeTypes.length && same, rows.join('\n'));
   });
@@ -198,6 +198,8 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
     config.delegation = { ...(config.delegation ?? {}), allowed: true, changeTypes: [{ id: 'docs-typo', basis: BASIS }] };
     fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
     let d0 = fs.readFileSync(path.join(dir, 'templates/00-d0-governance.md'), 'utf8').replace(/\r\n/g, '\n');
+    // 安全関連部の委任の停止(IMPL-0919)。D-0 表10 の F.2 の Q1 が「いいえ」の案件にする
+    d0 = d0.replace(/(\| 附属書F F\.2 の回答 \|)[^\n]*/, '$1 いいえ。人身への危害は生じない |');
     d0 = d0.replace(/(\*\*AI を用いない実施の記録[\s\S]*?\| --- \| --- \| --- \|\n)\| \| \| \|/, `$1${rows}`);
     fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), d0);

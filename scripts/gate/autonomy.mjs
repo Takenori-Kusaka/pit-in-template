@@ -38,6 +38,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { reworkBaselineAt, reworkBaselineInfo } from './config.mjs';
+import { readF2Q1 } from './cl-judgment.mjs';
 import { lastParagraph } from './check-pr.mjs';
 import { detectionFilled, CHANGE_TYPE_DETECTION, ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
@@ -83,7 +84,24 @@ export const STOP_KIND = {
   'cause-unknown': '適用の条件の欠落(原因を特定できない)',
   unmeasurable: '適用の条件の欠落(判定できない)',
   cap: '適用の条件の欠落(上限)',
+  'safety-part': '適用の条件の欠落(安全関連部)',
 };
+
+/**
+ * 安全関連部の判定の唯一の所在(IMPL-0919。ADR-0220)。D-0 表10 の F.2 の Q1(読めた値: 真=はい、偽=いいえ、読めなければ null)を受け、
+ * 委任を止めるかを返す。止めないのは「いいえ」と読めたときだけである。「はい」・未記入・様式のまま・読めない・D-0 が無い、はすべて止める。
+ * 種別の停止(autonomyState)・登録の拒否(capRefusal)・D-0 の表の生成と L3 の範囲(renderAutonomyTable・l3ScopeIds)が、この関数だけを通る。
+ * 準拠テンプレートは安全関連部の範囲を持たないため、止めるのは案件の全体である(標準が求めるのは安全関連部の L1 固定まで)。
+ * Q1 の答えの正しさは機械で閉じない(確かめる者: 判定者と確認者)
+ */
+export function safetyPartStop(q1) {
+  if (q1 === false) return null;
+  const why =
+    q1 === true
+      ? 'D-0 表10 の F.2 の Q1 が「はい」である。安全関連部は附属書F F.3 により AI自律レベル L1 固定で、準拠テンプレートは安全関連部の範囲を持たないため、委任を案件の全体で止める'
+      : 'D-0 表10 の F.2 の Q1 を「いいえ」と読めない(D-0 が無い・未記入・様式のまま・読めない)。判定できないものとして、委任を案件の全体で止める';
+  return { kind: 'safety-part', reason: why };
+}
 
 let kbCache = null;
 function loadKB() {
@@ -135,8 +153,9 @@ export function autonomyCap(config, { kb = null } = {}) {
  * 委任が許されていない・上限が L3 未満・手戻り率が未計測の種別は L1 と書かれるので含めない。
  * 停止中(「L3(停止中は L1)」の行)は含める(表の静的な文字列で決まる決定可能な条件にそろえる)。種別の id の配列だけを返す
  */
-export function l3ScopeIds(config) {
+export function l3ScopeIds(config, { q1 = null } = {}) {
   if (!config) return [];
+  if (safetyPartStop(q1)) return [];
   const d = config.delegation ?? {};
   const types = d.allowed ? (d.changeTypes ?? []) : [];
   if (!types.length) return [];
@@ -145,9 +164,12 @@ export function l3ScopeIds(config) {
 }
 
 /** 登録の拒否に使う。上限が L3 未満なら、その理由を返す(準拠テンプレートは L2 を支えないため、登録は L3 の扱い) */
-export function capRefusal(config) {
+export function capRefusal(config, { q1 = null } = {}) {
   const cap = autonomyCap(config);
-  if (levelRank(cap.level) >= levelRank('L3')) return null;
+  if (levelRank(cap.level) >= levelRank('L3')) {
+    const sp = safetyPartStop(q1);
+    return sp ? `${sp.reason}。変更種別の登録は L3 の適用であり、止める案件では登録しない(附属書F F.3。標準 第5章 5.4.4・5.4.5)` : null;
+  }
   return (
     `AI自律レベルの上限が ${cap.level} である(${cap.source === 'config' ? '構成の autonomy.maxLevel' : 'テーラリングの規則'}。${cap.reason ?? '理由の記録なし'})。` +
     '変更種別の登録は L3 の適用であり、準拠テンプレートは L2 を支えないため、上限が L3 未満の構成では登録しない(標準 第5章 5.4.4・5.4.5)'
@@ -243,6 +265,9 @@ export function autonomyState(config, records) {
     const registeredAt = isRealDay(t.registeredAt) ? t.registeredAt : null;
     const stops = [];
     const stop = (category, kind, reason) => stops.push({ category, kind, reason });
+    // 安全関連部(IMPL-0919)。D-0 表10 の Q1 を判定のたびに読んだ値(records.f2q1)で止める。記録が無い・値が無いときは null として止める
+    const sp = safetyPartStop(records?.f2q1 ?? null);
+    if (sp) stop('安全関連部', sp.kind, sp.reason);
     if (levelRank(cap.level) < levelRank('L3')) stop('上限', 'cap', `AI自律レベルの上限が ${cap.level} である。L3 を適用できない(${cap.reason ?? '理由の記録なし'})`);
     // 登録日の無い種別は、登録の判定と事象・窓の前後を確かめられない(突合 X-9)
     if (!registeredAt) stop('記録', 'unmeasurable', '登録日(registeredAt)が無く、登録の判定と事象・窓の前後を確かめられない。登録が完了していないものとして止める');
@@ -884,7 +909,8 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
     notes.push(...rr.notes);
   }
   const rework = types.length ? readReworkRecords({ root, until: asOf }) : { available: true, trailers: [], plan: [] };
-  return { asOf, defects, core, history, rejections, undeclared, rework, notes };
+  // D-0 表10 の F.2 の Q1(IMPL-0919)。判定のたびに読む。構成へ写さない(写すと D-0 と食い違う。ADR-0171 決定4)
+  return { asOf, f2q1: readF2Q1({ root }), defects, core, history, rejections, undeclared, rework, notes };
 }
 
 /**

@@ -41,11 +41,11 @@ import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
-import { DETECTION_UNVERIFIED, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
+import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
 import { recordsBranchNotice } from '../gate/records.mjs';
-import { reductionProblems } from '../gate/cl-judgment.mjs';
+import { reductionProblems, readF2Q1, readF2Q1Text } from '../gate/cl-judgment.mjs';
 import {
   isFilledValue,
   reviewersRequiredOf,
@@ -3154,7 +3154,7 @@ function windowDeciderText(config) {
   return `(既定 ${WINDOW_MONTHS}か月。構成の最新の値は ${last.months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値(${prev}か月)で数える。決定: ${last.decidedBy ?? '記録なし'}、記録した日 ${last.recordedAt ?? '記録なし'})`;
 }
 
-export function renderAutonomyTable(config, blank = false) {
+export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
   const L = [];
   L.push('AI自律レベルの適用(標準 第5章 5.4.4・5.4.6。レベルは委任の登録から導く。準拠テンプレートは L2 を支えない):');
   L.push('');
@@ -3168,7 +3168,9 @@ export function renderAutonomyTable(config, blank = false) {
   const d = config.delegation ?? {};
   const where = '判定のたびに記録から導く(`/pit` の注記、保証の開示の項目3)';
   const types = d.allowed ? (d.changeTypes ?? []) : [];
-  const l3Ids = l3ScopeIds(config);
+  // 安全関連部(IMPL-0919)。委任の判定(autonomyState)・登録の拒否と同じ safetyPartStop を通る。Q1 は D-0 表10 から読んだ値
+  const sp = safetyPartStop(q1);
+  const l3Ids = l3ScopeIds(config, { q1 });
   for (const t of types) {
     // 計測していない検知条件のある範囲へ L2 以上を書かない(第6章 テンプレ0)。手戻り率は準拠テンプレートの外で
     // 集計する(登録の根拠の所在)。所在が未記入なら「未計測」とし、レベルを L1 と書く(突合 X-4)
@@ -3179,7 +3181,9 @@ export function renderAutonomyTable(config, blank = false) {
       ? 'L3(停止中は L1)'
       : levelRank(cap.level) < levelRank('L3')
         ? `L1(上限 ${cap.level} のため登録を適用しない)`
-        : 'L1(手戻り率が未計測)';
+        : sp
+          ? 'L1(安全関連部の適用の条件のため登録を適用しない)'
+          : 'L1(手戻り率が未計測)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
     const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
@@ -3192,6 +3196,7 @@ export function renderAutonomyTable(config, blank = false) {
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
   L.push('');
   L.push(`- AI自律レベルの上限: ${cap.level}(${cap.source === 'config' ? '構成の `autonomy.maxLevel`' : 'テーラリングの規則から導いた値'}${cap.reason ? `。${cap.reason}` : ''})`);
+  if (sp) L.push(`- 安全関連部: ${sp.reason}。Q1 の答えの正しさは機械で閉じない(確かめる者: 判定者と確認者)`);
   return L;
 }
 
@@ -3217,7 +3222,7 @@ export function performerAccountCell(config, s) {
   return '**未申告**(席の責任者と共有として扱う。列挙に無い離脱)';
 }
 
-export function renderD0Section(key, config, { legacy = false, before430 = false, before376 = false } = {}) {
+export function renderD0Section(key, config, { legacy = false, before430 = false, before376 = false, q1 = null } = {}) {
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
   const blank = config.configured === false;
@@ -3368,7 +3373,7 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
       );
     }
     L.push('');
-    L.push(...renderAutonomyTable(config, blank));
+    L.push(...renderAutonomyTable(config, blank, { q1 }));
   } else if (key === 'history') {
     // 変更の行ごとの種類の欄(第3章 3.13.4 記録7。#376)を置く前の生成区間は、欄の無い形で出す(旧い D-0 を失敗させない)
     const kindsCol = !(legacy || before430 || before376);
@@ -3434,7 +3439,7 @@ export function applyD0Sections(text, config) {
       if (!D0_OPTIONAL_SECTIONS.includes(key)) missing.push(key);
       continue;
     }
-    out = out.slice(0, b) + begin + '\n\n' + renderD0Section(key, config) + '\n\n' + out.slice(e);
+    out = out.slice(0, b) + begin + '\n\n' + renderD0Section(key, config, { q1: readF2Q1Text(text) }) + '\n\n' + out.slice(e);
   }
   // 節3(決定の権限)の2行の決定者。構成(governance)を正とし、決定(1名)の欄だけを書き換える
   if (config.configured !== false) {
@@ -3471,13 +3476,13 @@ export function d0SectionProblems(text, config) {
           '`node scripts/init/generate-profile.mjs --answers process.config.json` で区間を書き込んでください'
       );
     } else if (
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config)) &&
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { q1 })) &&
       // 表5-2 の列(#312)を置く前の生成区間も、一致として受け付ける(旧い D-0 を失敗させない。/pit が再生成を勧める)
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true })) &&
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { legacy: true, q1 })) &&
       // 表5-2 のアカウントの数値の識別子と表7 の担い手の名義の列(#430)を置く前の生成区間も受け付ける(/pit が再生成を勧める)
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before430: true })) &&
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before430: true, q1 })) &&
       // 節13 の変更の行ごとの種類の欄(#376)を置く前の生成区間も受け付ける(/pit が再生成を勧める)
-      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before376: true }))
+      norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { before376: true, q1 }))
     ) {
       out.push(
         `D-0 の${NAMES[key]}の生成区間が、構成(process.config.json)と一致しません。この区間は手で編集しません。` +
@@ -3503,10 +3508,10 @@ export function d0LegacyOnlySections(text, config) {
     if (b < 0 || e < 0 || e < b) continue;
     const body = norm(text.slice(b + begin.length, e));
     if (
-      body !== norm(renderD0Section(key, config)) &&
-      (body === norm(renderD0Section(key, config, { legacy: true })) ||
-        body === norm(renderD0Section(key, config, { before430: true })) ||
-        body === norm(renderD0Section(key, config, { before376: true })))
+      body !== norm(renderD0Section(key, config, { q1 })) &&
+      (body === norm(renderD0Section(key, config, { legacy: true, q1 })) ||
+        body === norm(renderD0Section(key, config, { before430: true, q1 })) ||
+        body === norm(renderD0Section(key, config, { before376: true, q1 })))
     )
       out.push(NAMES[key]);
   }
@@ -3526,7 +3531,7 @@ export function d0OptionalSectionProblems(text, config) {
     const b = text.indexOf(begin);
     const e = text.indexOf(end);
     if (b < 0 || e < 0 || e < b) out.missing.push(key);
-    else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config))) {
+    else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { q1 }))) {
       out.problems.push(
         `D-0 の節9「席の責任者本人の力量の確認」の生成区間が、構成(process.config.json の seats[].competence)と一致しません。この区間は手で編集しません。` +
           '確認の記録は /process-change(種別 accountable の seats.<席>.competence)で構成へ書き、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
@@ -6180,7 +6185,10 @@ if (isMain) {
       refused.push(`標準変更カタログ: ${p}`);
     }
     // 上限が L3 未満の構成では、変更種別を登録しない(第5章 5.4.4・5.4.5。準拠テンプレートは L2 を支えない)
-    if (newTypes.size && capRefusal(config)) refused.push(`標準変更カタログ: ${capRefusal(config)}`);
+    {
+      const refusal = newTypes.size ? capRefusal(config, { q1: readF2Q1({ root: ROOT }) }) : null;
+      if (refusal) refused.push(`標準変更カタログ: ${refusal}`);
+    }
     // 登録する者がリリース判定会(B-4)のとき、機械が確かめるのは、登録した者が名簿にいることだけである
     const registrarNote =
       newTypes.size && (config.governance?.catalogRegistrar ?? structureDeciderSeat(config)) === 'b4'

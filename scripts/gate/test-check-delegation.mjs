@@ -8,10 +8,12 @@
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { ROOT, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
-import { autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
+import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
+import { l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -264,12 +266,12 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('上限: 未設定の構成は L1', autonomyCap({ configured: false }).level === 'L1');
   check('生成: 上限が L3 の回答では委任を許す', buildDelegation({ 'q-criticality': 'cl0', 'q-quality': 'quality-standard' }).allowed === true);
   check('生成: 上限が L3 未満の回答では委任を許さない(理由に上限を出す)', buildDelegation({ 'q-criticality': 'cl3' }).blockedBy.some((b) => /上限が L1/.test(b)));
-  const table = renderAutonomyTable(base().config).join('\n');
+  const table = renderAutonomyTable(base().config, false, { q1: false }).join('\n');
   check('生成: D-0 の表に、登録した変更種別の L3 と、それ以外の L1 と、計測の所在を出す', /表示文言 \| L3/.test(table) && /\| それ以外 \| L1/.test(table) && /最小標本数 30 件/.test(table) && /準拠テンプレートが算出する/.test(table) && /数えていない/.test(table) && !/\| L3 \|[^\n]*未計測/.test(table));
   {
     const nr = base();
     delete nr.config.delegation.changeTypes[0].basis.detection.reworkRate;
-    const t2 = renderAutonomyTable(nr.config).join('\n');
+    const t2 = renderAutonomyTable(nr.config, false, { q1: false }).join('\n');
     check('生成: 手戻り率の根拠が未記入の種別は、L3 と「未計測」を同じ行に出さない(L1 と出す。突合 X-4)', t2.includes('L1(手戻り率が未計測)') && !/\| L3 \|[^\n]*未計測/.test(t2));
   }
   const s0 = autonomyState(base().config, base().records);
@@ -372,13 +374,13 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     // 「効く評価の日」の表示は正規表現の \d 落ちで常に「記録なし」と出ていた。停止の残りは本ファイルの IMPL-0516:ng の場面が覆う
     {
       const entry = (months, recordedAt) => ({ months, recordedAt, decidedBy: '山田 太郎', reason: 'x' });
-      const tbl = (history) => renderAutonomyTable(withWindow(base().config, history)).join('\n');
+      const tbl = (history) => renderAutonomyTable(withWindow(base().config, history), false, { q1: false }).join('\n');
       const tLong = tbl([entry(4, '2026-10-10')]);
       check('D-0 の窓(長くした): 最新の値 4か月・2026-11-01 の評価から・前の値 2か月・記録した日を出す', /最新の値は 4か月で、2026-11-01 の評価から効く/.test(tLong) && /前の値\(2か月\)で数える/.test(tLong) && /記録した日 2026-10-10/.test(tLong) && !/記録なし/.test(tLong));
       const tShort = tbl([entry(4, '2026-09-01'), entry(2, '2026-10-10')]);
       check('D-0 の窓(短くした): 効いている長い値(4か月)と、次に効く短い値(2か月)・効く評価の日(2026-11-01)を出す', /最新の値は 2か月で、2026-11-01 の評価から効く/.test(tShort) && /前の値\(4か月\)で数える/.test(tShort) && /直近、評価の日に効く観測の窓/.test(tShort) && !/毎月、直近2か月の窓/.test(tShort));
       check('D-0 の窓(年をまたぐ): 12 月に記録した値は翌年 1 月 1 日の評価から効く', /2027-01-01 の評価から効く/.test(tbl([entry(3, '2026-12-20')])));
-      const tDef = renderAutonomyTable(base().config).join('\n');
+      const tDef = renderAutonomyTable(base().config, false, { q1: false }).join('\n');
       check('D-0 の窓(既定): 窓の変更の開示は出さず、「直近2か月の窓」と書く', /毎月、直近2か月の窓\(/.test(tDef) && !/評価から効く/.test(tDef));
       check('D-0 の手戻り率の欄: 差し戻し率と共通の観測の窓であることを書く', /毎月、[^|]*\(差し戻し率と共通の観測の窓/.test(tLong.split('\n').find((l) => l.includes('表示文言')).split('|')[5] ?? ''));
     }
@@ -528,7 +530,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     const okB = base();
     const nGate = '保証の開示と次の一手';
     const lines = [autonomyNoteLines(autonomyState(okB.config, okB.records)).join(' '), autonomyNoteLines(autonomyState(mk({ doubles: 7 }).config, mk({ doubles: 7 }).records)).join(' ')];
-    const tbl = renderAutonomyTable(base().config).join(' ');
+    const tbl = renderAutonomyTable(base().config, false, { q1: false }).join(' ');
     const rt = reworkText(tOf(base()));
     check(`IMPL-0983 ok: ${nGate}: 次の一手(停止なし・停止あり)・reworkText・D-0 の表が「内容は機械で確かめていない」を出し、結果を含まない旨も出す`,
       lines.every((l) => l.includes(DETECTION_UNVERIFIED) && l.includes('この出力はその結果を含まない')) &&
@@ -542,7 +544,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     const j = judgeDelegatedMerge(ng);
     const t = autonomyState(ng.config, ng.records).types[0];
     check('IMPL-0983 ng: reworkRate が未記入なら、登録の検査が拒否し(条件2)、reworkText は reworkRate を名指さず、D-0 の表は「記入の有無は機械が確かめた」を出さない',
-      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes('手戻り率 reworkRate') && !renderAutonomyTable(ng.config).join(' ').includes(DETECTION_UNVERIFIED));
+      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes('手戻り率 reworkRate') && !renderAutonomyTable(ng.config, false, { q1: false }).join(' ').includes(DETECTION_UNVERIFIED));
   }
   {
     // 拒否される構成(rejectionRate 未記入)では、reworkRate が記入済みでも「確かめた」と出さない
@@ -551,13 +553,13 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     const j = judgeDelegatedMerge(rj);
     const t = autonomyState(rj.config, rj.records).types[0];
     check('IMPL-0983 ng: rejectionRate が未記入(登録は拒否される)なら、reworkRate が記入済みでも reworkText と D-0 の表は「確かめた」と出さない',
-      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes(DETECTION_UNVERIFIED) && !renderAutonomyTable(rj.config).join(' ').includes(DETECTION_UNVERIFIED));
+      !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && !reworkText(t).includes(DETECTION_UNVERIFIED) && !renderAutonomyTable(rj.config, false, { q1: false }).join(' ').includes(DETECTION_UNVERIFIED));
   }
   {
     const num = base();
     num.config.delegation.changeTypes[0].basis.detection.reworkRate = 1;
     const j = judgeDelegatedMerge(num);
-    check('登録の根拠の判定の一致: reworkRate が数値なら、登録の検査が拒否し(条件2)、D-0 の表も「未計測」と出す', !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && /未計測/.test(renderAutonomyTable(num.config).join(' ')));
+    check('登録の根拠の判定の一致: reworkRate が数値なら、登録の検査が拒否し(条件2)、D-0 の表も「未計測」と出す', !j.eligible && j.conditions.some((c) => c.id === '条件2' && !c.ok) && /未計測/.test(renderAutonomyTable(num.config, false, { q1: false }).join(' ')));
   }
   check('文言: REWORK_UNCOUNTED は手段の内容を機械で確かめていないと書き、reworkText を保証の開示の行で呼ぶ', REWORK_UNCOUNTED.includes('内容は機械で確かめていない') && fs.readFileSync(path.join(ROOT, 'scripts/gate/aggregate-evidence.mjs'), 'utf8').includes('reworkText(t)') && detectionBasisText({}) === '');
 
@@ -833,6 +835,80 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     check('差し戻しの帰属: 席の責任者の差し戻しは数える', counted2.includes('PR #80'), JSON.stringify({ counted2, why2 }));
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+// 安全関連部の委任の停止(IMPL-0919。ADR-0220)。D-0 表10 の F.2 の Q1 を判定のたびに読み、「いいえ」と読めないときは止める。
+// 委任の判定(autonomyState・judgeDelegatedMerge)・登録の拒否(capRefusal)・D-0 の表の生成(renderAutonomyTable・l3ScopeIds)が同じ関数(safetyPartStop)を通ることを確かめる
+{
+  const d0 = (f2) => `# D-0\n\n## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n| 附属書F F.2 の回答 | ${f2} |\n`;
+  const withQ1 = (q1) => ({ ...base(), records: { ...base().records, f2q1: q1 } });
+  const stoppedBy = (input) => {
+    const st = autonomyState(input.config, input.records);
+    return st.types.length > 0 && st.types.every((t) => t.stops.some((s) => s.kind === 'safety-part'));
+  };
+  const rowLevels = (config, q1) => renderAutonomyTable(config, false, { q1 }).filter((l) => /^\| 登録した変更種別 /.test(l)).map((l) => l.split('|')[2].trim());
+
+  // IMPL-0919:ng
+  // CL0 × Q1「はい」: 登録の拒否・D-0 の表が L1・委任の判定が不可、の3つが同時に成り立つ
+  {
+    const yes = withQ1(true);
+    check('安全関連部: Q1「はい」(CL0)では登録を拒む', capRefusal({ configured: true, answers: { 'q-criticality': 'cl0' } }, { q1: true }) !== null);
+    check('安全関連部: Q1「はい」(CL0)では D-0 の表が L3 と書かず L1 と出す', rowLevels(yes.config, true).length > 0 && rowLevels(yes.config, true).every((l) => /^L1/.test(l)));
+    check('安全関連部: Q1「はい」(CL0)では登録済みの種別が止まり、委任の判定が不可になる', stoppedBy(yes) && !judgeDelegatedMerge(yes).eligible);
+    check('安全関連部: Q1「はい」では L3 の範囲(l3ScopeIds)が空になる', l3ScopeIds(yes.config, { q1: true }).length === 0);
+  }
+  // IMPL-0919:ng
+  // 読めない値は「いいえ」と読まず、止める側へ倒す
+  for (const [label, text, q1] of [
+    ['未記入', d0(''), null],
+    ['様式のまま', d0('<はい / いいえ で始める。Q1(人身への危害が生じうる制御があるか)の答えと理由>'), null],
+    ['「未定」', d0('未定'), null],
+    ['D-0 に節が無い', '# D-0\n', null],
+    ['D-0 が無い', null, null],
+  ]) {
+    const read = readF2Q1Text(text);
+    check(`安全関連部: Q1 が「${label}」のとき null と読む`, read === q1, String(read));
+    const input = withQ1(read);
+    check(`安全関連部: Q1 が「${label}」のとき委任が止まる(判定・表・登録の拒否)`, stoppedBy(input) && !judgeDelegatedMerge(input).eligible && rowLevels(input.config, read).every((l) => /^L1/.test(l)) && capRefusal(input.config, { q1: read }) !== null);
+  }
+  // 値が records に無い(readAutonomyRecords を通らない)入力も止める
+  {
+    const noValue = base();
+    delete noValue.records.f2q1;
+    check('安全関連部: 記録に Q1 の値が無い入力は止まる', stoppedBy(noValue) && !judgeDelegatedMerge(noValue).eligible);
+  }
+  // IMPL-0919:ng
+  // いいえで登録した後に「はい」へ改めると、登録済みの種別が止まる
+  {
+    const before = base();
+    const after = withQ1(readF2Q1Text(d0('はい。人身への危害が生じうる制御がある')));
+    check('安全関連部: 「いいえ」で委任できた同じ入力が、D-0 を「はい」へ改めると止まる', judgeDelegatedMerge(before).eligible && !judgeDelegatedMerge(after).eligible && stoppedBy(after));
+  }
+  // IMPL-0919:ok
+  // CL0 × 「いいえ」は現行のとおり委任できる。判定・表・登録が同じ結果になる
+  {
+    const no = withQ1(readF2Q1Text(d0('いいえ。人身への危害は生じない')));
+    check('安全関連部: Q1「いいえ」(CL0)では委任できる', no.records.f2q1 === false && judgeDelegatedMerge(no).eligible && !stoppedBy(no));
+    check('安全関連部: Q1「いいえ」では登録を拒まず、D-0 の表は L3 と書く', capRefusal({ configured: true, answers: { 'q-criticality': 'cl0' } }, { q1: false }) === null && rowLevels(no.config, false).some((l) => /^L3/.test(l)));
+    // 表の L3 の行と l3ScopeIds が、Q1 のどの値でも一致する(同じ関数を通る)
+    for (const q1 of [false, true, null]) {
+      const ids = l3ScopeIds(no.config, { q1 });
+      const tableL3 = renderAutonomyTable(no.config, false, { q1 }).filter((l) => /^\| 登録した変更種別 /.test(l) && /\| L3/.test(l)).length;
+      check(`安全関連部: Q1=${q1} で L3 の範囲と表の L3 の行が一致する`, ids.length === tableL3);
+    }
+  }
+  // D-0 の本文から読む(ファイルの経路)
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'q1-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+      check('安全関連部: D-0 のファイルが無い案件は null', readF2Q1({ root: dir }) === null);
+      fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), d0('Q1: はい'));
+      check('安全関連部: D-0 のファイルの「Q1: はい」を真と読む', readF2Q1({ root: dir }) === true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 

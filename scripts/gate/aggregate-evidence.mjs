@@ -190,7 +190,7 @@ import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
 import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
-import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
+import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl, readF2Q1 } from './cl-judgment.mjs';
 
 // --- 承認レビューの写しと記録用ブランチ(process-compass #321 D2〜D6 / #54 段階 2) ---------------------
 //
@@ -5269,7 +5269,7 @@ if (isMain) {
     drift,
     // AI を用いない実施(第5章 5.4.7。IMPL-1021・1022)。項目7 に出す。止めない。組織継続の側の状態にも記載の欠落にも入れない。
     // 基準日は releaseDay(範囲の終点の日。取れないときは実行した日の時計)。照らした基準日を併記して開示する
-    aiFreePractice: { ...aiFreePracticeState(config, policy, { root: ROOT, day: releaseDay, scope: l3ScopeIds(config) }), clockFallback: !toDay },
+    aiFreePractice: { ...aiFreePracticeState(config, policy, { root: ROOT, day: releaseDay, scope: l3ScopeIds(config, { q1: readF2Q1({ root: ROOT }) }) }), clockFallback: !toDay },
     // 組織継続の側の状態(項目5・7 へ出す。成立条件には入れない。附属書H H.6)
     continuity: {
       d0Policy: continuity.d0Policy,

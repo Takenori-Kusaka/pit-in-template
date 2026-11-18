@@ -181,6 +181,7 @@
   "reviews": [],
   "records": {
     "asOf": "2026-10-20",
+    "f2q1": false,
     "defects": {
       "present": true,
       "rows": []
