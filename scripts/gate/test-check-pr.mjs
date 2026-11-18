@@ -723,7 +723,7 @@ const withG3Record = (adr, res) => {
   advanceBase('g3-record');
 };
 // IMPL-0972:ng(違反と適合の対。標準の実装マーク)
-scenario('判断記録の G-3 への到達: トレーラ ADR に G-3 の記録も承認も無い', { body: ADR_BODY('ADR-0001') }, () => {
+scenario('判断記録の G-3 への到達: トレーラ ADR に G-3 の記録も承認も無い', { body: ADR_BODY('ADR-0001'), reviews: [] }, () => {
   withDecisionRules(API_RULE);
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
@@ -737,7 +737,7 @@ scenario('判断記録の G-3 への到達: 承認が AI の名義だけ', { bod
 }, failsWith(/判断記録の G-3 の判定への到達: ADR-0001/));
 rewindBase();
 // IMPL-0972:ng
-scenario('判断記録の G-3 への到達: 基底の G-3 の記録の結果が差し戻し', { body: ADR_BODY('ADR-0001') }, () => {
+scenario('判断記録の G-3 への到達: 基底の G-3 の記録の結果が差し戻し', { body: ADR_BODY('ADR-0001'), reviews: [] }, () => {
   withG3Record('ADR-0001', '差し戻し');
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
@@ -776,7 +776,7 @@ rewindBase();
 scenario('判断記録の G-3 への到達: 記録用ブランチの様式(判定者の記名が名簿の人)を読む', { body: ADR_BODY('ADR-0001'), recordsBranch: { available: true, reason: null, gates: [{ file: 'records/gates/g3-api-shape.md', text: G3_REC('ADR-0001') }], reviews: new Map() } }, decisionSetup, reachOk('記録用ブランチの様式を読んでいない'));
 rewindBase();
 // IMPL-0972:ng
-scenario('判断記録の G-3 への到達: 記録用ブランチの様式の判定者の記名が名簿の人へ対応づかない', { body: ADR_BODY('ADR-0001'), recordsBranch: { available: true, reason: null, gates: [{ file: 'records/gates/g3-api-shape.md', text: G3_REC('ADR-0001').replace('鈴木 一郎', '知らない 人') }], reviews: new Map() } }, decisionSetup, reachNg);
+scenario('判断記録の G-3 への到達: 記録用ブランチの様式の判定者の記名が名簿の人へ対応づかない', { body: ADR_BODY('ADR-0001'), reviews: [], recordsBranch: { available: true, reason: null, gates: [{ file: 'records/gates/g3-api-shape.md', text: G3_REC('ADR-0001').replace('鈴木 一郎', '知らない 人') }], reviews: new Map() } }, decisionSetup, reachNg);
 rewindBase();
 // 基底へ入っている判断記録(入れた PR の写しで宣言行を読む)
 const withBaseAdr = () => {
@@ -805,7 +805,26 @@ scenario('判断記録の G-3 への到達: 記録用ブランチを読めない
 rewindBase();
 rewindBase();
 
-scenario('判断記録の G-3 への到達: 事業ステージ S0 では失敗させず注意に出す', { body: ADR_BODY('ADR-0001') }, () => {
+// IMPL-0972:ok(この PR のレビューを読めないときは失敗にせず注意に出す)
+scenario('判断記録の G-3 への到達: この PR のレビューを読めない(reviews が無い)ときは失敗にせず「確かめられない」と出す', { body: ADR_BODY('ADR-0001'), reviews: null, recordsBranch: NO_RECORDS }, decisionSetup, passes(noticedEarly(/判断記録の G-3 の判定への到達: ADR-0001.*レビューを読めない/)));
+rewindBase();
+// IMPL-0972:ng(記録用ブランチを読めないことは「まだ無い」と区別できないので、失敗を残して理由に書く)
+scenario('判断記録の G-3 への到達: この PR の判断記録で、レビューが無く記録用ブランチも読めないときは失敗にし、読めない旨を書く', { body: ADR_BODY('ADR-0001'), reviews: [], recordsBranch: { available: false, reason: '試験: 取得に失敗', gates: [], reviews: new Map() } }, decisionSetup, failsWith(/判断記録の G-3 の判定への到達: ADR-0001.*記録用ブランチを読めない[(]試験: 取得に失敗[)]/));
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: PR を経ずに入った判断記録で記録用ブランチを読めないときは、読めない旨を書いて失敗にする', { body: ADR_BODY('ADR-0001'), hostingLookup: { prOfCommit: () => ({ number: null, author: 'yamada', approvers: [] }) }, recordsBranch: { available: false, reason: '試験: 取得に失敗', gates: [], reviews: new Map() } }, withBaseAdr, failsWith(/判断記録の G-3 の判定への到達: ADR-0001.*PR を経ずに.*記録用ブランチを読めない/));
+rewindBase();
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 基底の判断記録を入れた PR の写しが記録用ブランチに無いときは、写しが無い旨を書いて失敗にする', { body: ADR_BODY('ADR-0001'), hostingLookup: inPr5, recordsBranch: { available: true, reason: null, gates: [], reviews: new Map(), conflicts: [] } }, withBaseAdr, failsWith(/判断記録の G-3 の判定への到達: ADR-0001.*PR #5 の写し records[/]reviews[/]pr-5[.]json が記録用ブランチに無い/));
+rewindBase();
+rewindBase();
+// IMPL-0972:ok(衝突の記録のある写しは読めないものとして注意に出す)
+scenario('判断記録の G-3 への到達: 写しが衝突の記録になっているときは失敗にせず「確かめられない」と出す', { body: ADR_BODY('ADR-0001'), hostingLookup: inPr5, recordsBranch: { available: true, reason: null, gates: [], reviews: new Map(), conflicts: [{ file: 'records/conflicts/pr-5-1-1.json', pr: 5 }] } }, withBaseAdr, passes(noticedEarly(/判断記録の G-3 の判定への到達: ADR-0001.*衝突の記録/)));
+rewindBase();
+rewindBase();
+
+scenario('判断記録の G-3 への到達: 事業ステージ S0 では失敗させず注意に出す', { body: ADR_BODY('ADR-0001'), reviews: [] }, () => {
   withDecisionRules(API_RULE, { answers: { 'q-biz-phase': 'poc' } });
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');

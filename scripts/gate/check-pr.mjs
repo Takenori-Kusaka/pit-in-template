@@ -1024,7 +1024,8 @@ export function decisionRuleHits(rules, changes, tracked = null) {
  *       読む先は、当該の判断記録を入れた PR(この PR の中で足したものならこの PR のレビュー、基底へ入っていれば最後に変えた PR の写し
  *       records/reviews/pr-<N>.json)。宣言行の無い承認は取り込みの事務であり、G-3 の判定記録に数えない
  * 判定した版と取り込む版の一致は確かめない(IMPL-0523)。判定の中身は G-3 の判定者が確かめる。
- * 読めない(ホスティングの記録を引けない、記録用ブランチを読めない)ときは失敗にせず ok: null で返す(呼び出し側は注意に出す)。
+ * 読めないときの扱い: ホスティングの記録を引けない・この PR のレビューを読めない・基底へ入っている判断記録の PR の写しの置き場を読めない(衝突の記録を含む)ときは ok: null(注意)。
+ * 記録用ブランチを読めないとき、この PR で足した判断記録と PR を経ない判断記録、写しが無いときは、ok: false を残す(「まだ無い」と「取得に失敗した」を区別できず、null にすると記録用ブランチの無い初期の案件が G-3 を経ずに通るため)。理由の文に読めないことを書く。
  * recordsBranch は記録用ブランチの読み(readRecordsBranch の戻り値)を返す関数。戻り値は ADR ごとの { id, ok, how, why }
  */
 export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting = null, reviews = null, recordsBranch = null }) {
@@ -1108,17 +1109,22 @@ export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting =
       const sha = lastCommitOfFile(git, policyRef, file);
       const info = sha && hosting ? hosting.prOfCommit(sha) : null;
       if (!info) return { id, ok: null, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録を入れた PR の記録もホスティングから読めないため、確かめられない' };
-      if (info.number == null) return { id, ok: false, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録は PR を経ずに入っている(宣言行つきのレビューを持つ PR が無い)' };
       const b = branchOf();
+      if (info.number == null) return { id, ok: false, why: b?.available ? '基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録は PR を経ずに入っている(宣言行つきのレビューを持つ PR が無い)' : `基底ブランチに G-3 の判定記録が無く、判断記録は PR を経ずに入っている。記録用ブランチを読めない(${b?.reason ?? '理由不明'})。様式をそこへ置いたなら、読める環境で再実行する` };
       if (!b?.available) return { id, ok: null, why: `基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR #${info.number} のレビューの写しを読めないため、確かめられない(${b?.reason ?? '記録用ブランチを読めない'})` };
       const copy = b.reviews?.get(info.number) ?? null;
+      if (!copy && (b.conflicts ?? []).some((c) => c.pr === info.number)) return { id, ok: null, why: `判断記録を入れた PR #${info.number} のレビューの写しが衝突の記録(records/conflicts/)になっており読めないため、確かめられない` };
+      if (!copy) return { id, ok: false, why: `PR #${info.number} の写し records/reviews/pr-${info.number}.json が記録用ブランチに無い(記録用ブランチの様式を置けば受ける)` };
       const who = copy ? declarers((copy.reviews ?? []).map((r) => ({ ...r, author: r.author ?? r.user }))) : [];
       return who.length
         ? { id, ok: true, how: `判断記録を入れた PR #${info.number} の宣言行 G-3: 通過 のレビュー(${who.join(', ')})` }
         : { id, ok: false, why: `基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録を入れた PR #${info.number} に宣言行 \`G-3: 通過\` を持つ名簿の人(AI の名義でない)のレビューが無い` };
     }
+    if (!Array.isArray(reviews)) return { id, ok: null, why: 'この PR のレビューを読めないため、宣言行 `G-3: 通過` の有無を確かめられない' };
     const who = declarers(reviews);
-    return who.length ? { id, ok: true, how: `この PR の宣言行 G-3: 通過 のレビュー(${who.join(', ')})` } : { id, ok: false, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、この PR に宣言行 `G-3: 通過` を持つ名簿の人(AI の名義でない)のレビューも無い' };
+    if (who.length) return { id, ok: true, how: `この PR の宣言行 G-3: 通過 のレビュー(${who.join(', ')})` };
+    const bb = branchOf();
+    return { id, ok: false, why: bb?.available ? '基底ブランチと記録用ブランチに G-3 の判定記録が無く、この PR に宣言行 `G-3: 通過` を持つ名簿の人(AI の名義でない)のレビューも無い' : `基底ブランチに G-3 の判定記録が無く、この PR に宣言行 \`G-3: 通過\` を持つ名簿の人(AI の名義でない)のレビューも無い。記録用ブランチを読めない(${bb?.reason ?? '理由不明'})。様式をそこへ置いたなら、読める環境で再実行する` };
   });
 }
 
