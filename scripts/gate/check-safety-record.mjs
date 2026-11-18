@@ -100,8 +100,20 @@ export function envProblem(env) {
 }
 
 const EXCEPTION_RE = /^例外承認\s*[:：]\s*(D-\d+)/;
-/** 例外承認の行の対象が、基準7 または安全関連部の検証の記録を指す語を含むか(語の有無だけ。意味は人が確かめる) */
-export const EXCEPTION_TARGET_RE = /基準\s*7|安全関連部の検証の記録/;
+const OTHER_GATE_BEFORE_RE = /(?<![A-Za-z0-9])(?:G-[1-68]|SG)\s*(?:の\s*)?$/;
+/**
+ * 例外承認の行の対象が、基準7 または安全関連部の検証の記録を指す語を含むか。
+ * 語「基準7」は、後ろに数字が続く出現(基準70)と、直前に G-7 以外のゲート名(G-1〜G-6・G-8・SG。空白と助詞「の」を許す)が付く出現を数えない。
+ * 照合の前に NFKC で正規化する(全角の数字・空白を受ける)。見るのは語の有無と直前のゲート名だけで、文の意味は見ない(人が確かめる)
+ */
+export function exceptionTargetHasWord(target) {
+  const s = norm(target);
+  if (s.includes('安全関連部の検証の記録')) return true;
+  for (const m of s.matchAll(/基準\s*7(?!\d)/g)) {
+    if (!OTHER_GATE_BEFORE_RE.test(s.slice(0, m.index))) return true;
+  }
+  return false;
+}
 
 /** 結果の欄の形。通れば null、通らなければ理由。ledgerRows は技術負債台帳の行(null なら例外承認の ID を確かめられない) */
 export function resultProblem(result, { ledgerRows = null, day = null, isValidApprover = null } = {}) {
@@ -114,8 +126,9 @@ export function resultProblem(result, { ledgerRows = null, day = null, isValidAp
     if (!row) return `例外承認の ID ${m[1]} が技術負債台帳の区分「例外」に無い`;
     const st = exceptionStanding(row, day ?? new Date().toISOString().slice(0, 10));
     if (st !== 'active') return `例外承認 ${m[1]} が成立していない(効力: ${st})`;
-    // 対象の欄(様式 03)が基準7 か安全関連部の検証の記録を指す語を持つこと。別のゲート・別の対象の行の流用を通さない。語の有無だけを見る
-    if (!EXCEPTION_TARGET_RE.test(norm(row.target))) return `例外承認 ${m[1]} の対象に「基準7」または「安全関連部の検証の記録」の語が無い`;
+    // 対象の欄(様式 03)が基準7 か安全関連部の検証の記録を指す語を持つこと。別の対象の行と、G-7 以外のゲート名が付く基準7 の流用を通さない。見るのは語の有無と直前のゲート名だけ
+    if (row.target === null || row.target === undefined) return `例外承認 ${m[1]} について、技術負債台帳に対象の欄が無い`;
+    if (!exceptionTargetHasWord(row.target)) return `例外承認 ${m[1]} の対象に「基準7」または「安全関連部の検証の記録」の語が無い`;
     // 承認者(様式 03 が区分「例外」の行で必須とする欄)。空欄・名簿の外・AI の名義は成立させない(R1-02)。照合の手段が無ければ確かめられないので通さない
     const who = norm(row.approver);
     if (isBlankCell(who)) return `例外承認 ${m[1]} の承認者が空欄`;

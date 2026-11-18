@@ -97,6 +97,14 @@ const LEDGER = [
   { id: 'D-21', kind: '例外', target: '基準 7(試験項目2)', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
   { id: 'D-22', kind: '例外', target: '安全関連部の検証の記録 項目2', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
   { id: 'D-23', kind: '例外', target: null, state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-24', kind: '例外', target: '基準70', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-25', kind: '例外', target: 'G-5 基準7', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-26', kind: '例外', target: 'SG の基準7', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-27', kind: '例外', target: '基準７(試験項目2)', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-28', kind: '例外', target: 'G-7 の基準7', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-29', kind: '例外', target: 'G-7 基準7', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-30', kind: '例外', target: 'G-5 基準7 と 基準7', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
+  { id: 'D-31', kind: '例外', target: '', state: '有効', due: '2099-12-31', approver: '甲', text: '' },
 ];
 const isValidApprover = (n) => n === '甲';
 const ctx = { ledgerRows: LEDGER, day: '2026-11-18', isValidApprover };
@@ -107,13 +115,14 @@ for (const v of ['', '省略', '該当なし(時間窓なし)', '未実施', '�
 for (const [id, why] of [['D-10', '承認者が空'], ['D-11', 'AI の名義'], ['D-12', '名簿の外']]) {
   check(`0927 違反: 例外承認 ${id}(${why})`, problems(withFault(2, null, `例外承認: ${id}`), ctx).some((p) => /試験項目2.*結果.*承認/.test(p)));
 }
-for (const id of ['D-20', 'D-23']) check(`0927 違反: 対象に基準7 の語が無い行 ${id}`, problems(withFault(2, null, `例外承認: ${id}`), ctx).some((p) => /試験項目2.*結果.*対象.*基準7/.test(p)));
+for (const [id, why] of [['D-20', 'PR の番号'], ['D-24', '基準70'], ['D-25', 'G-5 基準7'], ['D-26', 'SG の基準7'], ['D-31', '空欄']]) check(`0927 違反: 対象に基準7 の語が無い行 ${id}(${why})`, problems(withFault(2, null, `例外承認: ${id}`), ctx).some((p) => /試験項目2.*結果.*対象.*基準7/.test(p)));
+check('0927 違反: 対象の欄が無い台帳は、語が無いとは別の理由を出す', (() => { const ps = problems(withFault(2, null, '例外承認: D-23'), ctx); return ps.some((p) => /試験項目2.*結果.*技術負債台帳に対象の欄が無い/.test(p)) && !ps.some((p) => /語が無い/.test(p)); })());
 check('0927 違反: 対象の語が無い理由に行の ID を出す', problems(withFault(2, null, '例外承認: D-20'), ctx).some((p) => /D-20/.test(p)));
 check('0927 違反: 承認者の照合の手段が渡されない', problems(withFault(2, null, '例外承認: D-5'), { ledgerRows: LEDGER, day: '2026-11-18' }).some((p) => /試験項目2.*結果/.test(p)));
 check('0927 違反: 例外承認の台帳を読めない(ID を確かめられない)', problems(withFault(2, null, '例外承認: D-5'), { ledgerRows: null, day: '2026-11-18', isValidApprover }).some((p) => /試験項目2.*結果/.test(p)));
 check('0927 違反: 項目2 以外の行でも「省略」は通らない', problems(withFault(5, null, '省略'), ctx).some((p) => /試験項目5.*結果/.test(p)));
 // IMPL-0927:ok
-for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)', '例外承認: D-5', '例外承認: D-21', '例外承認: D-22']) {
+for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)', '例外承認: D-5', '例外承認: D-21', '例外承認: D-22', '例外承認: D-27', '例外承認: D-28', '例外承認: D-29', '例外承認: D-30']) {
   check(`0927 適合: 項目2 の結果「${v}」`, problems(withFault(2, null, v), ctx).length === 0, problems(withFault(2, null, v), ctx).join(' / '));
 }
 
