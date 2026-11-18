@@ -1893,7 +1893,7 @@ export function doneConditionSource({ brief, records }) {
   if (!sgPasses.length) return { value: doneConditionOf(brief), periodDays: unitPeriodDaysOf(brief), source: 'brief' };
   const sg = sgPasses[0];
   const v = sg.doneCondition ?? null;
-  if (v == null) return { value: null, periodDays: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「作業単位の完了の条件」が未記入。企画書の欄は移行の後の条件を表さないため使わない' };
+  if (v == null) return { value: null, periodDays: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「作業単位の完了の条件」が未記入または読めない。企画書の欄は移行の後の条件を表さないため使わない' };
   const pd = sg.unitPeriod == null ? null : unitPeriodDaysOf(`- 単位期間の長さ: ${sg.unitPeriod}`);
   if (pd == null) return { value: v, periodDays: null, source: 'sg', reason: 'ステージ移行ゲートの判定記録の欄「単位期間の長さ」が未記入または読めない(N日・N週間のように書く)。企画書の欄は移行の後の長さを表さないため使わない' };
   return { value: v, periodDays: pd, source: 'sg' };
