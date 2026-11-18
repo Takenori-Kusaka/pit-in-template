@@ -348,6 +348,23 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
   const f2q1 = parsed.present && isFilledValue(v.f2) ? f2Q1Of(v.f2) : null;
   if (parsed.present && isFilledValue(v.f2) && f2q1 === null) recordProblems.push(`安全重要度の判定の記録の「附属書F F.2 の回答」を、Q1 の答え(はい / いいえ)で始めてください(${v.f2.slice(0, 40)})`);
 
+  // 構成の回答 q-f2-q1(Q1 の写し。初期化の回答は仮の答え)と D-0 表10 の食い違い(IMPL-1016。ADR-0171 決定2)。正本は D-0。
+  // 写しが「いいえ」か無く、正本が「はい」: 導出が G-7 を戻していないため、記録の不備にする(G-1 の前は失敗、以後は出荷の記載の欠落。
+  // G-8 の受容で代えない)。逆向きと、写しが無く正本も「はい」でない場合は注意にとどめる。Q1 の答えの正しさは確かめない
+  if (parsed.present) {
+    const copy = config?.answers?.['q-f2-q1'] ?? null;
+    if (f2q1 === true && copy !== 'f2q1-yes') {
+      recordProblems.push(
+        `構成の回答 q-f2-q1(Q1 の写し)が${copy === 'f2q1-no' ? '「ない」' : '無い'}のに、D-0 表10 の附属書F F.2 の回答は「はい」です。` +
+          '導出が S0 の出荷判定(G-7)を戻していません。/process-change(種別 axis)で q-f2-q1 を「ある」へ改めます(ADR-0171 決定2。正本は D-0 表10)'
+      );
+    } else if (f2q1 !== true && copy === 'f2q1-yes') {
+      notes.push('構成の回答 q-f2-q1(Q1 の写し)は「ある」ですが、D-0 表10 の附属書F F.2 の回答は「はい」ではありません。構成は G-7 を適用する側で動くため止めません。写しと D-0 のどちらが事実かを判定者が確かめ、食い違いを解きます(ADR-0171 決定2)');
+    } else if (f2q1 !== true && copy === null) {
+      notes.push('構成の回答に q-f2-q1(附属書F F.2 の Q1 の写し)がありません。/process-change(種別 axis)で答えてください。D-0 表10 が「はい」になるまで止めません(ADR-0171 決定2)');
+    }
+  }
+
   // 判定日は YYYY-MM-DD に限る(読めない書き方は判定者が直せる欠陥。突合 X-2)
   const judgedAt = parsed.present && isFilledValue(v.judgedAt) ? dateOnly(v.judgedAt) : null;
   if (parsed.present && isFilledValue(v.judgedAt) && !judgedAt) recordProblems.push(`安全重要度の判定の記録の「判定日」(${clean(v.judgedAt)})を YYYY-MM-DD の形で書いてください`);

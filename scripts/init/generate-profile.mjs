@@ -3832,6 +3832,7 @@ export function renderProfileMd(config, result) {
   if (a['q-external-reviewer']) L.push(`| 作成を指示した本人以外の確認者 | ${a['q-external-reviewer']} |`);
   L.push(`| 既存の承認ゲート | ${a['q-existing-gates']} |`);
   L.push(`| AI 利用の制約 | ${a['q-ai-constraint']} |`);
+  if (a['q-f2-q1']) L.push(`| 人身への危害が生じうる制御(附属書F F.2 の Q1 の写し。仮の答え) | ${a['q-f2-q1']} |`);
   L.push('');
   {
     const outsourcing = outsourcingPointer(config);

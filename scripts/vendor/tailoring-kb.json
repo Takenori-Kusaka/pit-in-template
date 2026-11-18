@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "7fce0ddd08f86cb393c89b416bb87a2a34ebb8b2",
+    "commit": "b62647d47863a66b2f82bee2d41063c2341c106d",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -99,6 +99,23 @@
           "id": "cl3",
           "label": "死亡または重篤な傷害が起こりうる",
           "note": "車載制御、生命維持に関わる機器など"
+        }
+      ]
+    },
+    {
+      "id": "q-f2-q1",
+      "axis": "E",
+      "text": "人の身体に危害が及びうる制御(機械・装置・車両・医療機器などの制御)を、成果物は持つ?",
+      "help": "附属書F F.2 の Q1 に当たる。実験参加者が触る試作でも、人身への危害が生じうる制御があれば「ある」を選ぶ。初期化の時点の見込みでよい。正本は D-0 の安全重要度の判定の記録に書き、判定者が確かめる。ここでの答えは、最悪の場合の問い(安全重要度)とは別に聞く",
+      "options": [
+        {
+          "id": "f2q1-no",
+          "label": "ない"
+        },
+        {
+          "id": "f2q1-yes",
+          "label": "ある",
+          "note": "成果物を実験参加者へ出す前に、安全適合性の検証記録を判定する席として出荷判定(G-7)を適用する"
         }
       ]
     },
@@ -218,7 +235,7 @@
             "id": "g-ship"
           },
           "action": "omit",
-          "note": "出荷判定は省略する。安全重要度 CL1 以上では省略しない"
+          "note": "出荷判定は省略する。安全重要度 CL1 以上、または附属書F F.2 の Q1 が「はい」の案件では省略しない"
         },
         {
           "target": {
@@ -428,6 +445,28 @@
       ],
       "reason": "回復可能であっても個人の権利に影響が及ぶ場合、判断の経路を後から再構成できる必要がある。独立した人の確認と、その欠落を差し戻す出荷判定を、事業ステージを理由に外さない。危害の深刻度は、体制の都合でも事業ステージの都合でも下がらない",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/",
+      "priority": 50,
+      "sourceFile": "rules-criticality.yaml"
+    },
+    {
+      "id": "r-e-f2q1-yes",
+      "when": {
+        "q-f2-q1": [
+          "f2q1-yes"
+        ]
+      },
+      "adjustments": [
+        {
+          "target": {
+            "type": "gate",
+            "id": "g-ship"
+          },
+          "action": "restore",
+          "note": "附属書F F.2 の Q1 が「はい」の案件は、事業ステージによる出荷判定の省略(S0)の対象にしない。安全適合性の検証記録(F.7)を判定する席を残す。G-6 は省略のまま"
+        }
+      ],
+      "reason": "人身への危害を受けうる実験参加者を、F.7 の記録を判定する席の無いまま出荷先に置かないため。安全重要度(CL)の区分は変えない",
+      "source": "https://takenori-kusaka.github.io/process-compass/adr/0171-s0-omission-premise-f2-q1-restores-g7/",
       "priority": 50,
       "sourceFile": "rules-criticality.yaml"
     },

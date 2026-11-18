@@ -284,6 +284,32 @@ const NOTICE_DAY = localDay();
   w.done();
 }
 {
+  // IMPL-0764: 案件の安全重要度ごとの求める段。値は構成の回答 q-criticality から導き、判定記録ごとに比べる(IMPL-0184)。
+  // CL2 は段2 以上(段1 は届かない)、CL3 は段3 以上(段2 は届かない)。新しい設定は足さない
+  const D = { id: 'd', name: '田中 三郎', accounts: ['tanaka'] };
+  const rows = (who, step) =>
+    `| 安全性の評価者 | ${who} |\n| 安全性の評価の記録の所在 | docs/safety/2026-11.md |\n| 安全性の評価者の段 | ${step} |\n| 安全性の評価者の段の根拠 | 直属の上長が異なり、対象のリリースの権限を持たない |\n`;
+  const lines = (w, h) => {
+    const agg = w.aggregate();
+    return `${agg.out}\n${agg.report}`.split('\n').filter((l) => l.includes(`g6-${h}.md: 安全性の評価者`)).join('\n');
+  };
+  const w2 = workspace(cfg(ANS({ 'q-criticality': 'cl2' }), [A, B, C, D], BASE3));
+  const h2 = w2.commitWithG6('src/e.js', C.name, rows(D.name, '段1'));
+  const g2 = lines(w2, h2);
+  w2.done();
+  const w3 = workspace(cfg(ANS({ 'q-criticality': 'cl3' }), [A, B, C, D], BASE3));
+  // IMPL-0764:ng CL3 で評価者の段2 の記録は、求める段 段3 に届かず記録の欠落になる(CL2 の求める段のまま比べると通ってしまう違反)
+  const h3ng = w3.commitWithG6('src/f.js', C.name, rows(D.name, '段2'));
+  // IMPL-0764:ok CL3 で段3、CL2 で段2 の記録は求める段に届く(CL2 で段1 は届かない)
+  const h3ok = w3.commitWithG6('src/g.js', C.name, rows(D.name, '段3'));
+  const g3ng = lines(w3, h3ng);
+  const g3ok = lines(w3, h3ok);
+  w3.done();
+  check('集約: CL2 で評価者の段1 は、求める段 段2 に届かず記録の欠落にする', /求める段 段2 に届かない/.test(g2), g2);
+  check('集約: CL3 で評価者の段2 は、求める段 段3 に届かず記録の欠落にする', /求める段 段3 に届かない/.test(g3ng), g3ng);
+  check('集約: CL3 で評価者の段3 は、求める段に届く(CL2 の段2 は上の対で届く)', !/段/.test(g3ok), g3ok);
+}
+{
   const vend = cfg(ANS({ 'q-dev-form': 'vendor' }), [A, B, C], BASE3);
   const w = workspace(vend, { 'docs/ai-sla.md': '## 9. 判定の置き先と結果の受け渡し\n\n| 項目 | 合意 |\n| --- | --- |\n| 価値責任者(発注側が選任した者) | 鈴木 花子 |\n' });
   const agg = w.aggregate();

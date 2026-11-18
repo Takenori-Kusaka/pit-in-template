@@ -169,7 +169,7 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
   // IMPL-0449:ok(違反と適合の対。標準の実装マーク。process-compass #373)
   st = clJudgmentState(config, { text: d0() });
   check('記録: 欄がそろい、判定者が決定者で、区分が回答と一致すれば記録の不備なし', st.recordProblems.length === 0 && st.cls === 'cl0' && st.f2q1 === false, JSON.stringify(st.recordProblems));
-  check('記録: CL3 の「外れる区分が無い」の記載を記入として受け付ける', clJudgmentState(configOf({ 'q-criticality': 'cl3' }), { text: d0({ 判定した区分: 'CL3', '1つ上の区分に当たらない理由': '外れる区分が無い(CL3)', '附属書F F.2 の回答': 'はい。車載の制御を持つ。安全関連部は制動の制御', 確認者: '加藤 六郎', 確認者の段: '段3', 段の根拠: '別の法人の評価部門' }) }).recordProblems.length === 0);
+  check('記録: CL3 の「外れる区分が無い」の記載を記入として受け付ける', clJudgmentState(configOf({ 'q-criticality': 'cl3', 'q-f2-q1': 'f2q1-yes' }), { text: d0({ 判定した区分: 'CL3', '1つ上の区分に当たらない理由': '外れる区分が無い(CL3)', '附属書F F.2 の回答': 'はい。車載の制御を持つ。安全関連部は制動の制御', 確認者: '加藤 六郎', 確認者の段: '段3', 段の根拠: '別の法人の評価部門' }) }).recordProblems.length === 0);
 }
 
 // --- IMPL-0450: 確認者の記名と段 ---
@@ -190,7 +190,7 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
   const cl1 = configOf({ 'q-criticality': 'cl1' });
   st = clJudgmentState(cl1, { text: d0({ 判定した区分: 'CL1' }) });
   check('確認: CL1 の判定を段1 で確かめても段2 に届かず未達。CL1 は欠落に数える(未達のまま出荷しない)', !st.confirmation.ok && st.confirmation.required === 2 && st.shipBlocking, JSON.stringify(st.confirmation));
-  st = clJudgmentState(config, { text: d0({ '附属書F F.2 の回答': 'はい。搬送機の停止の制御を持つ。安全関連部は停止の監視', 確認者の段: '段2' }) });
+  st = clJudgmentState(configOf({ 'q-f2-q1': 'f2q1-yes' }), { text: d0({ '附属書F F.2 の回答': 'はい。搬送機の停止の制御を持つ。安全関連部は停止の監視', 確認者の段: '段2' }) });
   check(
     '確認: F.2 の Q1 が「はい」で段3 の確認が欠ければ、CL0 でも欠落に数える(G-8 で受容しても出荷しない)',
     !st.confirmation.ok && st.confirmation.required === 3 && st.shipBlocking && /G-8 の受容で代えない/.test(st.shipBlockingReason),
@@ -203,7 +203,7 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
   // IMPL-0452:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   st = clJudgmentState(cl1, { text: d0({ 判定した区分: 'CL1', 確認者: '青木 一郎', 確認者の段: '段2', 段の根拠: '直属の上長が異なり、リリースの権限を持たない' }) });
   check('確認: 反証の無い確認者の段2 は記録した段で数える(距離そのものは確かめない)', st.confirmation.ok && st.confirmation.effective === 2, JSON.stringify(st.confirmation));
-  const small = configOf({ 'q-team-size': 'size-1-2' }, { people: [PEOPLE[4], PEOPLE[3], PEOPLE[5]], seats: seatsOf({ 'biz-approver': 'p4', 'dev-verifier': 'p4', 'independent-reviewer': 'p3' }) });
+  const small = configOf({ 'q-team-size': 'size-1-2', 'q-f2-q1': 'f2q1-yes' }, { people: [PEOPLE[4], PEOPLE[3], PEOPLE[5]], seats: seatsOf({ 'biz-approver': 'p4', 'dev-verifier': 'p4', 'independent-reviewer': 'p3' }) });
   st = clJudgmentState(small, { text: d0({ 確認者の段: '段2' }) });
   check('確認: 2名の体制の内の相手は段1 として数える', st.confirmation.effective === 1 && st.confirmation.recorded === 2 && st.confirmation.ok, JSON.stringify(st.confirmation));
   st = clJudgmentState(small, { text: d0({ '附属書F F.2 の回答': 'はい。設備の非常停止を制御する', 確認者の段: '段3', 段の根拠: '別の指揮系統' }) });
@@ -537,8 +537,10 @@ try {
   let a = aggregate();
   check('集約: CL0 の確認の未達は項目1 に未達と出し、欠落に数えない', /\*\*未達\*\*/.test(clRow(a.report)) && !clGap(a.out) && /未達: 安全重要度の判定の確認/.test(a.out), `${clRow(a.report)}\n${a.out.slice(-1500)}`);
   writeD0({ '附属書F F.2 の回答': 'はい。搬送機の停止の制御を持つ。安全関連部は停止の監視' });
+  fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(configOf({ 'q-f2-q1': 'f2q1-yes' })), null, 2) + '\n');
   a = aggregate();
   check('集約: F.2 の Q1 が「はい」で段3 の確認が欠ければ、欠落に数える', clGap(a.out) && /G-8 の受容で代えない/.test(a.out), a.out.slice(-1500));
+  fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(configOf()), null, 2) + '\n');
   writeD0({});
   a = aggregate();
   check('集約: 求める段で確かめた判定は、確認ありと出し欠落に数えない', /確認者: 江藤 四郎/.test(clRow(a.report)) && !/\*\*未達\*\*/.test(clRow(a.report)) && !clGap(a.out), clRow(a.report));
@@ -593,6 +595,33 @@ try {
     check('構成要素: 判定 CL2・表の最大 CL1(判定が高い)は不備にせず注意に出す', tableProblems(s).length === 0 && s.notes.some((n) => /構成要素ごとの判定/.test(n)));
   }
   check('構成要素: 低減の後の区分(CL1)で判定 CL1 は通る', tableProblems(st({ 判定した区分: 'CL1', 確認者の段: '段2' }, { comp: [['制御部(低減の後)', 'CL1', '低減の前は CL2 相当の誤作動']] })).length === 0);
+}
+
+// --- IMPL-1016: 構成の回答 q-f2-q1(Q1 の写し)と D-0 表10 の食い違い(ADR-0171 決定2) ---
+// 写しが「いいえ」か無く、正本が「はい」: 記録の不備(G-1 の前は D-0 の検査を失敗させ、以後は出荷の記載の欠落。G-8 の受容で代えない)。
+// 写しが「はい」で正本が「いいえ」: 注意。写しが無く正本も「はい」でない: 注意(/process-change で答える)。Q1 の答えの正しさは確かめない
+{
+  const D0_YES = { '附属書F F.2 の回答': 'はい。搬送機の停止の制御を持つ', 確認者の段: '段3', 段の根拠: '別の指揮系統' };
+  const mismatch = (s) => s.recordProblems.filter((p) => /写し/.test(p) && /q-f2-q1/.test(p));
+  const noteOf = (s) => s.notes.filter((n) => /q-f2-q1/.test(n));
+  const state = (answers, rows) => clJudgmentState(configOf(answers), { text: d0(rows) });
+  // IMPL-1016:ng 写しが「いいえ」で D-0 が「はい」、写しが無く D-0 が「はい」は、記録の不備として出荷を止める(違反の入力)
+  for (const [label, answers] of [['写し「いいえ」', { 'q-f2-q1': 'f2q1-no' }], ['写しなし', {}]]) {
+    const s = state(answers, D0_YES);
+    check(`IMPL-1016:ng ${label} × D-0「はい」は記録の不備で、出荷の記載の欠落に数える`, mismatch(s).length === 1 && s.shipBlocking === true, JSON.stringify({ p: s.recordProblems, b: s.shipBlocking }));
+    check(`IMPL-1016:ng ${label} × D-0「はい」の不備は、G-1 を通過済みの CL0 でも旧い構成として緩めない`, clJudgmentState(configOf(answers), { text: d0(D0_YES), gateRecords: G1_PASSED, since: SINCE }).legacy === false);
+  }
+  // IMPL-1016:ok 適合の入力(写しと D-0 が一致、または写しが「はい」で D-0 が「いいえ」)は記録の不備にしない
+  {
+    const yy = state({ 'q-f2-q1': 'f2q1-yes' }, D0_YES);
+    check('IMPL-1016:ok 写し「はい」× D-0「はい」は不備も注意も無い', mismatch(yy).length === 0 && noteOf(yy).length === 0, JSON.stringify({ p: yy.recordProblems, n: yy.notes }));
+    const nn = state({ 'q-f2-q1': 'f2q1-no' }, {});
+    check('IMPL-1016:ok 写し「いいえ」× D-0「いいえ」は不備も注意も無い', mismatch(nn).length === 0 && noteOf(nn).length === 0, JSON.stringify({ p: nn.recordProblems, n: nn.notes }));
+    const yn = state({ 'q-f2-q1': 'f2q1-yes' }, {});
+    check('IMPL-1016:ok 写し「はい」× D-0「いいえ」は注意にとどめる(止めない)', mismatch(yn).length === 0 && noteOf(yn).length === 1 && yn.shipBlocking === false, JSON.stringify({ p: yn.recordProblems, n: yn.notes }));
+    const an = state({}, {});
+    check('IMPL-1016:ok 写しなし × D-0「いいえ」は注意だけで止めず、/process-change で答えるよう案内する', mismatch(an).length === 0 && noteOf(an).length === 1 && /process-change/.test(noteOf(an)[0]) && an.shipBlocking === false, JSON.stringify({ p: an.recordProblems, n: an.notes }));
+  }
 }
 
 console.log('');
