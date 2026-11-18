@@ -4,6 +4,7 @@
 //   node scripts/gate/next.mjs --brief    セッションの開始時に注入する要約(数百トークン)
 //   node scripts/gate/next.mjs --json     機械可読
 //   node scripts/gate/next.mjs --role <ロール>   ロールの詳細(判定するゲート・受信箱など)と、そのロールの次の一手
+//   node scripts/gate/next.mjs --remaining-periods N --confirmed YYYY-MM-DD   到達の見込みの入力(比べる残りの期間。SC-M を確定した日)
 //   node scripts/gate/next.mjs --scopes   標準の条項の適用範囲と判定の単位
 //   node scripts/gate/next.mjs --offline  記録用ブランチの fetch と gh api を行わない(手元の参照だけで読む)
 //   node scripts/gate/next.mjs --pickup <ラベル> <対象> [--from <前のラベル>]   受信箱から拾った作業単位に、着手の前提の判定記録があるか(第3章 3.5.5 要求事項5)
@@ -45,13 +46,14 @@ import { overdueExceptionNote, validDay } from './exception-expiry.mjs';
 import { ROOT, resolveSigner, isGateActive, readGateRecords, personName, structureDeciderSeat, MODE_LABEL, localDay, reviewersRequiredOf, corePathsOf, hasBehaviorSummary, behaviorSummaryShortfall, aiNameReason, identifyAccount, accountsWithoutId, numericAccountId, trackedFiles, unmatchedCoreText, nameConfirmationNotices } from './config.mjs';
 import { readRecordsBranch, judgementsFromCopy, headMatches, parseDeclaration, recordFromForm, RECORDS_REF, REVIEWS_DIR, GATES_DIR } from './records.mjs';
 import { readLock } from './self-heal.mjs';
+import { doneConditionOf, isDefaultDoneCondition, unitPeriodDaysOf } from './brief-estimates.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { readTrialChecklist } from './trial-checklist.mjs';
 import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
-import { retiredDetectionTypes, valueOwnerAgreementState } from './config.mjs';
+import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
@@ -833,7 +835,7 @@ export function outsourcingReceiverNote(config, slaText) {
  * fetch: 記録用ブランチが手元に無いときに origin から 1 回 fetch するか。network: 写しの PR 本文を gh api で補うか。
  * --brief(セッションの開始時)と --offline では、どちらも行わない
  */
-export function computeNext({ fetch = true, network = true, today = localDay() } = {}) {
+export function computeNext({ fetch = true, network = true, today = localDay(), forecastInput = {} } = {}) {
   const result = { generatedAt: new Date().toISOString(), configured: null, summary: null, records: null, project: [], features: [], ship: [], notes: [], notSeen: [] };
   const cfgPath = path.join(ROOT, 'process.config.json');
   let config;
@@ -1347,6 +1349,34 @@ export function computeNext({ fetch = true, network = true, today = localDay() }
       }
     }
   }
+  // フローの集計と --pickup が止めた件数(表示のみ。合否に使わない。IMPL-0374・0377・0614・0500)
+  try {
+    const fl = flowSection({ config, records, today, network, forecastInput });
+    result.flow = fl.text;
+    for (const l of fl.lines) result.notes.push(l);
+  } catch (e) {
+    result.notes.push(`フローの集計を読めない(${String(e.message).split('\n')[0].slice(0, 80)})`);
+  }
+  try {
+    let unwritten = 0;
+    try {
+      unwritten = countUnwrittenPickup(fs.readFileSync(UNWRITTEN_PICKUP, 'utf8'));
+    } catch {
+      /* 記録が無い = 0 件 */
+    }
+    let byIssue = {};
+    let readFailed = null;
+    if (network) {
+      try {
+        byIssue = countPickupUndecided(fetchPickupComments());
+      } catch (e) {
+        readFailed = String(e.message).split('\n')[0].slice(0, 60);
+      }
+    } else readFailed = '--offline のため GitHub を読んでいない';
+    result.pickupUndecided = pickupUndecidedNote({ byIssue, unwritten, readFailed });
+  } catch {
+    /* 表示だけ。読めなくても段階の導出を止めない */
+  }
   result.notSeen.push(NOT_SEEN);
   return result;
 }
@@ -1577,6 +1607,302 @@ function stepLine(s) {
   return '';
 }
 
+// ---- フローの集計(IMPL-0374・0377・0614・0500。process-compass #443 / ADR-0173) ----
+// 純粋関数(git と GitHub を使わない)と、GitHub から材料を読む部分(gh api。--offline では呼ばない)に分ける。
+// 表示だけで、合否には使わない。評価と発火の判断は価値責任者が行い、機械はしない。
+// 作業単位は「閉じた Issue」で数える。企画書の「1件の作業単位の定義」の意味は機械が読まない(定義が Issue でない案件は、
+// 完了の条件を既定の文にしない=算定しない、とする運用に頼る)。
+
+/** 確約範囲(SC-M)の作業単位の Issue に付けるラベル名。母集団はラベルで数える。SG で記名した一覧との照合は人が行う(機械は意味を読まない) */
+export const SC_M_LABEL = 'SC-M';
+/** 到達の見込みの算定に要る窓の中の単位期間の最小数(標準 第7章 7.7.3) */
+export const FORECAST_MIN_PERIODS = 3;
+
+const DAY_MS = 86400000;
+const dayNum = (day) => Math.floor(Date.parse(`${String(day).slice(0, 10)}T00:00:00Z`) / DAY_MS);
+const dayStr = (n) => new Date(n * DAY_MS).toISOString().slice(0, 10);
+function monthsBefore(day, months) {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 観測の窓の単位期間ごとの完了スループット。units は { number, closedAt, completed }(completed は「既定ブランチへ取り込んだ PR が
+ * closes で結び付き、完了の理由で閉じた」)。完了の条件が既定の文と一致しなければ算定しない(ADR-0173 決定2)。
+ * 期間は今日(含む)から単位期間の長さで遡って切り、窓に収まる整数個だけ数える。完了が 0 の期間も除かない
+ */
+export function completionThroughput({ doneCondition, units = [], today, periodDays, windowMonths }) {
+  if (doneCondition == null) return { computable: false, reason: '企画書の欄「作業単位の完了の条件」が無い' };
+  if (!isDefaultDoneCondition(doneCondition)) return { computable: false, reason: '完了の条件が既定の文と一致しない。算定できない(一致する案件でだけ算定する。ADR-0173)' };
+  if (!periodDays) return { computable: false, reason: '企画書の欄「単位期間の長さ」を「N日」「N週間」で読めない' };
+  const end = dayNum(today);
+  const start = dayNum(monthsBefore(today, windowMonths));
+  const n = Math.floor((end - start + 1) / periodDays);
+  const periods = [];
+  for (let j = 0; j < n; j++) {
+    const to = end - (n - 1 - j) * periodDays;
+    const from = to - periodDays + 1;
+    periods.push({ from: dayStr(from), to: dayStr(to), completed: 0, notCompleted: 0 });
+  }
+  for (const u of units) {
+    if (!u?.closedAt) continue;
+    const d = dayNum(u.closedAt);
+    const p = periods.find((x) => d >= dayNum(x.from) && d <= dayNum(x.to));
+    if (!p) continue;
+    if (u.completed) p.completed++;
+    else p.notCompleted++;
+  }
+  const counts = periods.map((p) => p.completed);
+  return { computable: true, periodDays, windowMonths, periods, n, min: n ? Math.min(...counts) : null, max: n ? Math.max(...counts) : null, notCompleted: periods.reduce((a, p) => a + p.notCompleted, 0) };
+}
+
+/**
+ * 到達の見込み(必達基準2。7.7.3)。remainingUnits は未完了の SC-M の作業単位の個数、remainingPeriods は比べる残りの期間(単位期間の数。
+ * 確定した期日からの導出は機械が読まない=呼び出す側が与える。無ければ区分は算定できない)。費用の組は IMPL-0499(採用者)が入力する
+ * 区分: 甲(遅い側の端でも収まる)/ 乙(遅い側は超え、速い側は収まる)/ 丙(速い側でも超える)/ 算定できない / 対象外
+ */
+export function reachForecast({ throughput, remainingUnits, remainingPeriods = null }) {
+  const base = { remainingUnits, remainingPeriods, min: throughput?.min ?? null, max: throughput?.max ?? null, n: throughput?.n ?? 0, slow: null, fast: null };
+  if (!throughput?.computable) return { ...base, klass: '算定できない', reason: throughput?.reason ?? '完了スループットを算定できない' };
+  if (!Number.isInteger(remainingUnits)) return { ...base, klass: '算定できない', reason: '未完了の SC-M の個数を読めない' };
+  if (remainingUnits === 0) return { ...base, klass: '対象外', reason: `未完了の SC-M(ラベル ${SC_M_LABEL})が 0 件(SC-M を置かない場合を含む)` };
+  if (throughput.n < FORECAST_MIN_PERIODS) return { ...base, klass: '算定できない', reason: `窓の中の単位期間が ${throughput.n} 個で、${FORECAST_MIN_PERIODS} 個に満たない` };
+  // 完了 0 の期間があれば遅い側の端は無限(null)。速い側が 0 でも同じ
+  const slow = throughput.min > 0 ? Math.ceil(remainingUnits / throughput.min) : null;
+  const fast = throughput.max > 0 ? Math.ceil(remainingUnits / throughput.max) : null;
+  const out = { ...base, slow, fast };
+  if (!Number.isInteger(remainingPeriods) || remainingPeriods < 0) return { ...out, klass: '算定できない', reason: '比べる残りの期間の入力が無い(--remaining-periods N。期間の組の区分だけ。費用の組は IMPL-0499)' };
+  if (slow !== null && slow <= remainingPeriods) return { ...out, klass: '甲', reason: '遅い側の端でも残りに収まる' };
+  if (fast !== null && fast <= remainingPeriods) return { ...out, klass: '乙', reason: '遅い側の端は残りを超えるが、速い側の端は収まる' };
+  return { ...out, klass: '丙', reason: '速い側の端でも残りを超える' };
+}
+
+/**
+ * SC-M ラベルの付け外しの履歴から、未完了の個数・確定時の個数・確定後の追加と削除の累計を数える(7.6。IMPL-0614)。
+ * items: { number, open, events: [{ type: 'labeled'|'unlabeled', at }] }(SC-M ラベルの履歴だけ)。
+ * 確定の日(confirmedOn。S0 の初回は G-1、その後はステージ移行ゲート)以前の履歴で確定時の状態を定める。SC-P・SC-B へ移すこと
+ * (ラベルを外すこと)と分割して外すことは削除に数える。完了による閉じは削除に数えない(ラベルを外さない限り)
+ */
+export function scMChanges(items, confirmedOn) {
+  let baseline = 0;
+  let added = 0;
+  let removed = 0;
+  let remaining = 0;
+  for (const it of items ?? []) {
+    const ev = [...(it.events ?? [])].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    let on = false;
+    for (const e of ev) {
+      const before = String(e.at).slice(0, 10) <= confirmedOn;
+      if (e.type === 'labeled') {
+        on = true;
+        if (!before) added++;
+      } else if (e.type === 'unlabeled') {
+        on = false;
+        if (!before) removed++;
+      }
+    }
+    if (ev.some((e) => String(e.at).slice(0, 10) <= confirmedOn)) {
+      // 確定の日までの履歴で最後がラベルありなら、確定時の SC-M
+      const upto = ev.filter((e) => String(e.at).slice(0, 10) <= confirmedOn);
+      if (upto[upto.length - 1].type === 'labeled') baseline++;
+    }
+    if (on && it.open) remaining++;
+  }
+  return { baseline, added, removed, remaining };
+}
+
+/** SC-M の変動率 = (追加 + 削除)の累計 ÷ 確定時の個数。確定時が 0 件なら null */
+export function scMVariationRate({ baseline, added, removed }) {
+  return baseline > 0 ? (added + removed) / baseline : null;
+}
+
+/** 見込みの報告の Issue の節「材料の集計」へ置く文面(IMPL-0377・0614)。評価と発火の判断は書かない */
+export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null }) {
+  const L = ['### 材料の集計(機械の出力。評価と発火の判断は価値責任者が行う。合否に使わない)'];
+  if (!throughput?.computable) {
+    L.push(`- 実測スループット: 算定できない(${throughput?.reason ?? '入力が無い'})`);
+  } else {
+    L.push(`- 実測スループット: 窓 ${throughput.windowMonths} か月・単位期間 ${throughput.periodDays} 日 × ${throughput.n} 期。完了した作業単位の個数は期ごとに ${throughput.periods.map((p) => `${p.from}〜${p.to}: ${p.completed}`).join(' / ') || 'なし'}(最小 ${throughput.min ?? '—'}・最大 ${throughput.max ?? '—'})`);
+    L.push(`- 同じ期間に閉じたが完了に当たらない作業単位: ${throughput.notCompleted} 件(完了の理由で閉じていない、または既定ブランチへ取り込んだ PR が closes で結び付かない)`);
+  }
+  if (forecast) {
+    const f = forecast;
+    L.push(`- 残る作業単位(未完了の SC-M): ${Number.isInteger(f.remainingUnits) ? `${f.remainingUnits} 件` : '読めない'}`);
+    const edge = (v) => (v === null ? (f.klass === '算定できない' || f.klass === '対象外' ? '—' : '果てしない(完了 0 の期がある)') : `${v} 期`);
+    L.push(`- 残る期間の見込み: 遅い側 ${edge(f.slow)} / 速い側 ${edge(f.fast)}。比べる残り ${Number.isInteger(f.remainingPeriods) ? `${f.remainingPeriods} 期` : '(入力なし)'}`);
+    L.push(`- 区分(期間の組): ${f.klass}(${f.reason})。費用の組は採用者の入力(IMPL-0499)が無いため算定しない`);
+  }
+  if (changes) {
+    const rate = scMVariationRate(changes);
+    L.push(`- SC-M の変動率: ${rate === null ? '算定できない(確定時の SC-M が 0 件、または確定の日の入力なし)' : `${Math.round(rate * 1000) / 10}%`}(確定の日 ${confirmedOn ?? '—'} 以降の追加 ${changes.added} 件・削除 ${changes.removed} 件の累計 ÷ 確定時 ${changes.baseline} 件。SC-P・SC-B へ移すこと、分割して外すことは削除に数える)`);
+  }
+  return L.join('\n');
+}
+
+// ---- --pickup が止めた件数(IMPL-0500) ----
+export const PICKUP_UNDECIDED = 'pit-in: pickup-undecided';
+/** 作業単位の Issue へ残す宣言行(1行)。結果を書くだけで、判定には読まない(#359 の重の裁定5) */
+export const pickupUndecidedLine = (day, label) => `${PICKUP_UNDECIDED} ${day} ${label ?? '(無し)'}`;
+/** 宣言行を残す Issue の番号(Issue #N・PR #N・#N の指定)。F-NNN や類型だけの指定は null */
+export function pickupIssueNumber(target) {
+  const t = parsePickupTarget(target);
+  return t?.issue ?? t?.pr ?? null;
+}
+/** コメントの一覧から宣言行を作業単位(Issue の番号)ごとに数える。comments: { issue, body } */
+export function countPickupUndecided(comments) {
+  const re = new RegExp(`^${PICKUP_UNDECIDED} \\d{4}-\\d{2}-\\d{2} \\S+\\s*$`, 'm');
+  const by = {};
+  for (const c of comments ?? []) {
+    if (re.test(String(c?.body ?? ''))) by[c.issue] = (by[c.issue] ?? 0) + 1;
+  }
+  return by;
+}
+/** 書けなかった記録(1行1件の JSON)の件数 */
+export const countUnwrittenPickup = (text) => String(text ?? '').split(/\r?\n/).filter((l) => l.trim().startsWith('{')).length;
+const UNWRITTEN_PICKUP = path.join(ROOT, 'evidence', 'pickup-undecided-unwritten.jsonl');
+
+/** 止めたとき、作業単位の Issue へ宣言行を1行コメントする。書けなければ手元の記録へ数える。戻り値: 'written' | 'unwritten' */
+export function recordPickupUndecided({ label, target, day = localDay(), network = true, run = null, appendFile = null }) {
+  const n = pickupIssueNumber(target);
+  const line = pickupUndecidedLine(day, label);
+  const gh = run ?? ((args) => execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 }));
+  let why = null;
+  if (!network) why = '--offline のため書いていない';
+  else if (!n) why = '作業単位の Issue の番号を指定から導けない';
+  else {
+    try {
+      gh(['issue', 'comment', String(n), '--body', line]);
+      return 'written';
+    } catch (e) {
+      why = `コメントを書けない(${String(e.message).split('\n')[0].slice(0, 80)})`;
+    }
+  }
+  const rec = JSON.stringify({ day, label, target, why });
+  if (appendFile) appendFile(rec);
+  else {
+    try {
+      fs.mkdirSync(path.dirname(UNWRITTEN_PICKUP), { recursive: true });
+      fs.appendFileSync(UNWRITTEN_PICKUP, `${rec}\n`);
+    } catch {
+      /* 手元にも残せないときは、出力に理由を出して終える(件数は欠ける) */
+    }
+  }
+  return 'unwritten';
+}
+
+/** /pit に出す行: 作業単位ごとの宣言行の件数と、書けなかった件数。合否に使わない */
+export function pickupUndecidedNote({ byIssue = {}, unwritten = 0, readFailed = null }) {
+  const entries = Object.entries(byIssue);
+  const total = entries.reduce((a, [, c]) => a + c, 0);
+  const parts = [`--pickup が「判定できない」で止めた件数(合否に使わない表示): ${entries.length ? `${total} 件(${entries.map(([i, c]) => `#${i}: ${c}`).join(' / ')})` : '0 件'}`];
+  if (unwritten) parts.push(`宣言行を書けず手元に数えた件数(evidence/pickup-undecided-unwritten.jsonl): ${unwritten} 件`);
+  if (readFailed) parts.push(`宣言行を読めない(${readFailed})`);
+  return parts.join('。');
+}
+
+// ---- GitHub から材料を読む(gh api。--offline では呼ばない。この試験では確かめていない) ----
+function ghJson(args) {
+  return JSON.parse(execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000, maxBuffer: 64 * 1024 * 1024 }));
+}
+
+/** 窓の開始日以降に閉じた Issue(PR を除く)と、closes で結び付いて既定ブランチへ取り込んだ PR の有無から completed を決める */
+export function fetchClosedUnits({ sinceDay, base }) {
+  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number closedAt stateReason closedByPullRequestsReferences(first:5,includeClosedPrs:true){nodes{merged baseRefName}}}}}}';
+  const out = [];
+  let after = null;
+  const repo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }).trim();
+  for (let page = 0; page < 20; page++) {
+    const args = ['api', 'graphql', '-f', `query=${q}`, '-f', `q=repo:${repo} is:issue is:closed closed:>=${sinceDay}`];
+    if (after) args.push('-f', `after=${after}`);
+    const r = ghJson(args).data.search;
+    for (const n of r.nodes) {
+      if (!n?.number) continue;
+      const prs = n.closedByPullRequestsReferences?.nodes ?? [];
+      const completed = n.stateReason === 'COMPLETED' && prs.some((p) => p.merged && (p.baseRefName === base || `origin/${p.baseRefName}` === base));
+      out.push({ number: n.number, closedAt: n.closedAt, completed });
+    }
+    if (!r.pageInfo.hasNextPage) break;
+    after = r.pageInfo.endCursor;
+  }
+  return out;
+}
+
+/** SC-M ラベルの付け外しの履歴(全状態の Issue) */
+export function fetchScMItems() {
+  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number state timelineItems(first:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{__typename ...on LabeledEvent{createdAt label{name}} ...on UnlabeledEvent{createdAt label{name}}}}}}}}';
+  const repo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }).trim();
+  const items = [];
+  let after = null;
+  for (let page = 0; page < 20; page++) {
+    const args = ['api', 'graphql', '-f', `query=${q}`, '-f', `q=repo:${repo} is:issue label:"${SC_M_LABEL}"`];
+    if (after) args.push('-f', `after=${after}`);
+    const r = ghJson(args).data.search;
+    for (const n of r.nodes) {
+      if (!n?.number) continue;
+      const events = (n.timelineItems?.nodes ?? []).filter((e) => e.label?.name === SC_M_LABEL).map((e) => ({ type: e.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', at: e.createdAt }));
+      items.push({ number: n.number, open: n.state === 'OPEN', events });
+    }
+    if (!r.pageInfo.hasNextPage) break;
+    after = r.pageInfo.endCursor;
+  }
+  return items;
+}
+
+/** 宣言行を持つコメント(作業単位ごとの件数を数える材料) */
+export function fetchPickupComments() {
+  const raw = execFileSync('gh', ['api', '--paginate', 'repos/{owner}/{repo}/issues/comments', '--jq', '.[] | select(.body | contains("pit-in: pickup-undecided")) | {issue: (.issue_url | split("/") | last | tonumber), body: .body}'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+  return raw.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+}
+
+/**
+ * /pit の「フロー」の節の材料を集める(computeNext から呼ぶ)。S0 の初回は企画書の欄、ステージ移行ゲートの後はその判定記録の欄を
+ * 読む定めだが、判定記録に完了の条件の欄が無い(様式 04 は B20 の後)ため、通過したステージ移行ゲートの記録がある案件は算定できないとする
+ */
+export function flowSection({ config, records, today, network, forecastInput = {} }) {
+  const lines = [];
+  const briefPath = path.join(ROOT, 'docs/project-brief.md');
+  let brief = null;
+  try {
+    brief = fs.readFileSync(briefPath, 'utf8');
+  } catch {
+    /* 企画書が無い */
+  }
+  let throughput;
+  let units = [];
+  const win = observationWindowAt(config, today);
+  if (brief == null) throughput = { computable: false, reason: '企画書(docs/project-brief.md)が無い' };
+  else if (passed(records, 'sg')) throughput = { computable: false, reason: 'ステージ移行ゲートの判定記録の「完了の条件」の欄を読む処理が無い(様式の欄は未整備)。企画書の欄は、移行の後の条件を表さないため使わない' };
+  else if (!network) throughput = { computable: false, reason: '--offline のため GitHub を読んでいない' };
+  else {
+    const dc = doneConditionOf(brief);
+    const pd = unitPeriodDaysOf(brief);
+    if (isDefaultDoneCondition(dc) && pd) {
+      try {
+        units = fetchClosedUnits({ sinceDay: monthsBefore(today, win), base: defaultBranchOf(git) ?? 'main' });
+      } catch (e) {
+        units = null;
+        throughput = { computable: false, reason: `閉じた作業単位を読めない(${String(e.message).split('\n')[0].slice(0, 80)})` };
+      }
+    }
+    if (!throughput) throughput = completionThroughput({ doneCondition: dc, units, today, periodDays: pd, windowMonths: win });
+  }
+  let remainingUnits = null;
+  let changes = null;
+  if (network && throughput.computable) {
+    try {
+      const items = fetchScMItems();
+      changes = scMChanges(items, forecastInput.confirmedOn ?? '0000-00-00');
+      remainingUnits = changes.remaining;
+    } catch (e) {
+      lines.push(`SC-M の履歴を読めない(${String(e.message).split('\n')[0].slice(0, 80)})`);
+    }
+  }
+  const forecast = reachForecast({ throughput, remainingUnits, remainingPeriods: forecastInput.remainingPeriods ?? null });
+  if (!forecastInput.confirmedOn) changes = null;
+  return { text: flowReportText({ throughput, forecast, changes, confirmedOn: forecastInput.confirmedOn ?? null }), lines, throughput, forecast };
+}
+
 function renderFull(r, roleFilter = null) {
   const L = ['# 次の一手(scripts/gate/next.mjs。状態から機械が導出)', ''];
   if (r.summary) {
@@ -1606,6 +1932,12 @@ function renderFull(r, roleFilter = null) {
   if (r.notes?.length) {
     L.push('## 注記(段階を止めない)');
     for (const n of r.notes) L.push(`- ${n}`);
+    L.push('');
+  }
+  if (r.flow || r.pickupUndecided) {
+    L.push('## フロー(表示のみ。合否に使わない)');
+    if (r.flow) L.push(r.flow);
+    if (r.pickupUndecided) L.push(`- ${r.pickupUndecided}`);
     L.push('');
   }
   const terms = glossaryFor(L.join('\n'), r.gateLabels ?? {});
@@ -1714,11 +2046,25 @@ function main() {
       c = { decision: 'undetermined', label, target, reason: `判定記録を読めない(${String(e.message).split('\n')[0].slice(0, 120)})。推測で着手しない`, issues: [] };
     }
     console.log(renderPickup(c));
+    // 判定できずに止めたとき、作業単位の Issue へ宣言行を1行残す(IMPL-0500)。書けなければ件数を別に数える。判定には使わない
+    if (c.decision === 'undetermined') {
+      const w = recordPickupUndecided({ label, target, network: !local });
+      console.log(w === 'written' ? '- 止めた記録: 作業単位の Issue へ宣言行を1行残した(/pit が数えて出す。合否に使わない)' : '- 止めた記録: 宣言行を書けなかったため、手元の件数に数えた(/pit が別に出す)');
+    }
     process.exit(PICKUP_EXIT[c.decision]);
   }
   // --today YYYY-MM-DD: 期限との比較に使う日(試験用。無ければ手元の今日)
   const ti = argv.indexOf('--today');
-  const r = computeNext({ fetch: !local, network: !local, ...(ti >= 0 && argv[ti + 1] ? { today: argv[ti + 1] } : {}) });
+  // --remaining-periods N(比べる残りの期間。単位期間の数)と --confirmed YYYY-MM-DD(SC-M を確定した日)は、到達の見込みの入力。
+  // 確定した期日からの導出や記録の自由な文は、機械が読まない
+  const flag = (name) => {
+    const i = argv.indexOf(name);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const rp = flag('--remaining-periods');
+  const cf = flag('--confirmed');
+  const forecastInput = { remainingPeriods: rp !== undefined && /^\d+$/.test(rp) ? Number(rp) : null, confirmedOn: /^\d{4}-\d{2}-\d{2}$/.test(cf ?? '') ? cf : null };
+  const r = computeNext({ fetch: !local, network: !local, forecastInput, ...(ti >= 0 && argv[ti + 1] ? { today: argv[ti + 1] } : {}) });
   const ri = argv.indexOf('--role');
   if (ri >= 0) {
     const roleId = argv[ri + 1];

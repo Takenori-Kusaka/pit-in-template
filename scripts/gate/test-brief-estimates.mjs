@@ -1,6 +1,6 @@
 // 当初の見積りの保存と、見積りと実績の差の記録の検査(brief-estimates.mjs、check-g1、出荷の証跡の集約)の試験。
 // process-compass #416 / ADR-0093(標準 第7章 7.7.9 の要求事項3・4)
-import { g1EstimateBlank, g1EstimateChanges, briefVersionOf, estimateGapBlank } from './brief-estimates.mjs';
+import { g1EstimateBlank, g1EstimateChanges, briefVersionOf, estimateGapBlank, DEFAULT_DONE_CONDITION, doneConditionOf, isDefaultDoneCondition, unitPeriodDaysOf } from './brief-estimates.mjs';
 import { isFilledValue } from './config.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -90,6 +90,17 @@ const g1Record = (ver) => ['# ゲート判定記録', '', '| 項目 | 値 |', '|
   r = W.g1();
   check('入口: 参照した企画書の版が無ければ、確かめられないことを出す', r.out.includes('確かめられません') && !r.out.includes('書き換えられています'), r.out);
   fs.rmSync(W.dir, { recursive: true, force: true });
+}
+
+// IMPL-0374: 完了の条件の欄の読み(既定の文との完全な一致だけを見る。文の意味は読まない)
+{
+  const row = (v) => `- 作業単位の完了の条件: ${v}
+- 単位期間の長さ: 2週間
+`;
+  check('IMPL-0374:ok 既定の文と一致する欄は既定として読む', isDefaultDoneCondition(doneConditionOf(row(DEFAULT_DONE_CONDITION))));
+  check('IMPL-0374:ng 別の文の欄は既定として読まない', !isDefaultDoneCondition(doneConditionOf(row('作業単位を指す変更が取り込まれ、受入基準を満たした記録がある'))));
+  check('IMPL-0374:ng 様式のままの欄(<…>)・欄なしは既定として読まない', !isDefaultDoneCondition(doneConditionOf(row('<閉じた者の申告以外の記録で示せる条件>'))) && !isDefaultDoneCondition(doneConditionOf('欄なし')));
+  check('IMPL-0374:ok 単位期間の長さを日数へ読む(2週間=14、3日=3)。読めない書き方は null', unitPeriodDaysOf(row('x')) === 14 && unitPeriodDaysOf('- 単位期間の長さ: 3日') === 3 && unitPeriodDaysOf('- 単位期間の長さ: 隔週') === null);
 }
 
 console.log(`test-brief-estimates: ${passed} passed, ${failed} failed`);

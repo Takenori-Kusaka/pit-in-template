@@ -16,6 +16,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
+import { completionThroughput, reachForecast } from './next.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -128,6 +130,24 @@ const reachLines = (out) => out.split('\n').filter((l) => /到達の見込み/.t
   check('ステージ移行ゲートの記録には、到達の見込みの検査を掛けない(#415 の M2-9)', !ls.some((l) => /sg-2026-10-20\.md/.test(l)), ls.join('\n'));
 }
 
+
+// ---- 到達の見込みの算定(IMPL-0377。純粋関数。GitHub を読む部分は確かめていない) ----
+{
+  const D = DEFAULT_DONE_CONDITION;
+  const thr = (counts) => ({ computable: true, n: counts.length, min: Math.min(...counts), max: Math.max(...counts), periods: counts.map((c) => ({ completed: c })) });
+  const ngCond = completionThroughput({ doneCondition: '別の文', units: [], today: '2026-11-18', periodDays: 14, windowMonths: 2 });
+  check('IMPL-0377:ng 完了の条件が既定の文と違う案件(IMPL-0374 で算定できない)は、算定できない組', reachForecast({ throughput: ngCond, remainingUnits: 5, remainingPeriods: 9 }).klass === '算定できない');
+  check('IMPL-0377:ng 窓の中の単位期間が 3 つに満たなければ算定できない', reachForecast({ throughput: thr([2, 3]), remainingUnits: 5, remainingPeriods: 9 }).klass === '算定できない');
+  check('IMPL-0377:ng 入力の無い組(比べる残りの期間なし)は算定できない。端は出す', (() => { const r = reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: 8 }); return r.klass === '算定できない' && r.slow === 4 && r.fast === 2; })());
+  check('IMPL-0377:ng 未完了の SC-M の個数を読めなければ算定できない', reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: null, remainingPeriods: 5 }).klass === '算定できない');
+  check('IMPL-0377:ok 未完了の SC-M が 0 件(SC-M なし)は対象外', reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: 0, remainingPeriods: 5 }).klass === '対象外');
+  // 未完了 8 件、スループット 最小 2・最大 4 → 遅い側 4 期・速い側 2 期
+  check('IMPL-0377:ok 甲: 遅い側の端でも残りに収まる(残り 4 期)', reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: 8, remainingPeriods: 4 }).klass === '甲');
+  check('IMPL-0377:ok 乙: 遅い側は超え、速い側は収まる(残り 3 期)', reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: 8, remainingPeriods: 3 }).klass === '乙');
+  check('IMPL-0377:ok 丙: 速い側でも残りを超える(残り 1 期)', reachForecast({ throughput: thr([2, 3, 4]), remainingUnits: 8, remainingPeriods: 1 }).klass === '丙');
+  check('IMPL-0377:ok 完了 0 の期がある窓は遅い側が果てしなく、甲にならない(乙。速い側は収まる)', (() => { const r = reachForecast({ throughput: thr([0, 3, 4]), remainingUnits: 8, remainingPeriods: 3 }); return r.klass === '乙' && r.slow === null; })());
+  check('IMPL-0377:ok 全期が完了 0 なら丙', reachForecast({ throughput: thr([0, 0, 0]), remainingUnits: 8, remainingPeriods: 99 }).klass === '丙');
+}
 console.log('');
 if (failures) {
   console.error(`test-reach-forecast-record: ${failures}/${checks} 件が失敗`);

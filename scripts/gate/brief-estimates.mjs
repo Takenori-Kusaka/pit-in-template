@@ -79,3 +79,40 @@ export function estimateGapBlank(recordText, isFilled) {
     return !r || !isFilled(r[1]);
   });
 }
+
+// ---- 完了スループットの集計の入力(標準 第2章 2.10.2 要求事項4・5。IMPL-0374 / ADR-0173) ----
+
+/**
+ * 既定の完了の条件の文(ADR-0173 決定2)。企画書の欄「作業単位の完了の条件」がこの文と完全に一致する案件でだけ、
+ * next.mjs は完了スループットを算定する。意味が同じでも文が違えば算定しない(文の意味は機械が読まない)
+ */
+export const DEFAULT_DONE_CONDITION = '既定ブランチへ取り込んだ PR が closes で結び付き、完了の理由で閉じた作業単位';
+
+/** 企画書の行「- <見出し>: <値>」の値(前後の空白と ** を除く)。行が無ければ null */
+function bulletValue(text, label) {
+  const re = new RegExp(`^\\s*[-*]\\s*${label}\\s*[:：]\\s*(.*)$`, 'm');
+  const m = String(text ?? '').match(re);
+  return m ? unstar(m[1]).trim() : null;
+}
+
+/** 企画書の欄「作業単位の完了の条件」の値。欄が無ければ null */
+export function doneConditionOf(briefText) {
+  return bulletValue(briefText, '作業単位の完了の条件');
+}
+
+/** 完了の条件が既定の文と完全に一致するか(NFKC・前後の空白・末尾の句点だけは同一視する) */
+export function isDefaultDoneCondition(value) {
+  if (value == null) return false;
+  const norm = (s) => nfkc(s).replace(/[。.]$/, '');
+  return norm(value) === norm(DEFAULT_DONE_CONDITION);
+}
+
+/** 企画書の欄「単位期間の長さ」を日数へ。「N日」「N週間」「N週」だけを読む(それ以外は null)。 */
+export function unitPeriodDaysOf(briefText) {
+  const v = bulletValue(briefText, '単位期間の長さ');
+  if (v == null) return null;
+  const m = nfkc(v).match(/^(\d+)\s*(日|週間|週)$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n > 0 ? n * (m[2] === '日' ? 1 : 7) : null;
+}

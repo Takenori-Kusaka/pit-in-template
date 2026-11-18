@@ -15,6 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
+import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
+import { completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
@@ -316,6 +318,56 @@ ${r.out}`);
   }
 }
 
+
+// ---- フローの集計(IMPL-0374・0614)と --pickup が止めた件数(IMPL-0500)。純粋関数と注入した gh だけ。GitHub の読み出し(fetch*)は確かめていない ----
+{
+  const D = DEFAULT_DONE_CONDITION;
+  const closed = (n, day, completed) => ({ number: n, closedAt: `${day}T09:00:00Z`, completed });
+  // 窓 2 か月・単位期間 14 日 → 今日 2026-11-18 から遡って 4 期(11-06〜11-18 は 13 日分…ではなく 14 日刻みで 2026-09-23 以降を 4 期)
+  const units = [closed(1, '2026-11-17', true), closed(2, '2026-11-16', true), closed(3, '2026-11-10', false), closed(4, '2026-10-20', true), closed(5, '2026-09-30', true), closed(6, '2026-09-29', true), closed(7, '2026-09-28', true)];
+  const base = { units, today: '2026-11-18', periodDays: 14, windowMonths: 2 };
+  const ng = completionThroughput({ ...base, doneCondition: '作業単位を指す変更が取り込まれ、受入基準を満たした記録がある' });
+  check('IMPL-0374:ng 完了の条件が既定の文と違う案件は算定できない', ng.computable === false && /一致しない/.test(ng.reason), JSON.stringify(ng));
+  check('IMPL-0374:ng 欄が無い案件は算定できない', completionThroughput({ ...base, doneCondition: null }).computable === false);
+  check('IMPL-0374:ng 単位期間の長さを読めない案件は算定できない', completionThroughput({ ...base, doneCondition: D, periodDays: null }).computable === false);
+  const ok = completionThroughput({ ...base, doneCondition: D });
+  check('IMPL-0374:ok 既定の文と一致する案件は、単位期間ごとの完了の個数を数える(完了が 0 の期も除かない)', ok.computable && ok.n === 4 && same(ok.periods.map((p) => p.completed), [3, 1, 0, 2]) && ok.min === 0 && ok.max === 3, JSON.stringify(ok));
+  check('IMPL-0374:ok 同じ期間に閉じたが完了に当たらない個数を並べる', ok.notCompleted === 1, JSON.stringify(ok));
+  check('IMPL-0374:ok 末尾の句点だけの違いは同じ文として読む', completionThroughput({ ...base, doneCondition: `${D}。` }).computable === true);
+  check('IMPL-0374:ng 窓の外で閉じたものは数えない', completionThroughput({ ...base, doneCondition: D, units: [closed(9, '2026-01-05', true)] }).periods.every((p) => p.completed === 0));
+
+  // IMPL-0614: 材料の文面と SC-M の変動率
+  const items = [
+    { number: 10, open: true, events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }] },
+    { number: 11, open: true, events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }, { type: 'unlabeled', at: '2026-10-05T00:00:00Z' }] },
+    { number: 12, open: false, events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }] },
+    { number: 13, open: true, events: [{ type: 'labeled', at: '2026-10-10T00:00:00Z' }] },
+  ];
+  const ch = scMChanges(items, '2026-09-30');
+  check('IMPL-0614:ok SC-M の確定時の個数・追加・削除(SC-P・SC-B へ移すこと=ラベルを外すことは削除)・未完了の個数を数える', same(ch, { baseline: 3, added: 1, removed: 1, remaining: 2 }), JSON.stringify(ch));
+  check('IMPL-0614:ok 変動率 = (追加 + 削除)の累計 ÷ 確定時の個数', Math.abs(scMVariationRate(ch) - 2 / 3) < 1e-9);
+  check('IMPL-0614:ng 確定時が 0 件なら変動率は算定できない', scMVariationRate({ baseline: 0, added: 1, removed: 0 }) === null);
+  const fc = reachForecast({ throughput: { ...ok, min: 1 }, remainingUnits: 6, remainingPeriods: 7 });
+  const text = flowReportText({ throughput: ok, forecast: fc, changes: ch, confirmedOn: '2026-09-30' });
+  check('IMPL-0614:ok 材料(残る作業単位・実測スループット・残る期間・変動率)を出し、評価と発火の判断は書かない', /残る作業単位[^\n]*6 件/.test(text) && /最小 0・最大 3/.test(text) && /残る期間の見込み/.test(text) && /66\.7%/.test(text) && !/発火(する|しない|すべき)/.test(text), text);
+  check('IMPL-0614:ng 算定できない案件は、算定できない旨を出す', /算定できない/.test(flowReportText({ throughput: ng, forecast: reachForecast({ throughput: ng, remainingUnits: 1 }) })));
+
+  // IMPL-0500
+  const line = pickupUndecidedLine('2026-11-18', 'state:needs-dev');
+  check('IMPL-0500:ok 宣言行の形は「pit-in: pickup-undecided <日付> <ラベル>」', line === 'pit-in: pickup-undecided 2026-11-18 state:needs-dev', line);
+  const cnt = countPickupUndecided([{ issue: 77, body: line }, { issue: 77, body: `理由は…\n${line}` }, { issue: 78, body: '宣言行ではない pit-in: pickup-undecided と書いただけ' }]);
+  check('IMPL-0500:ng 宣言行 2 件は 2 と出る(形の違うコメントは数えない)', same(cnt, { 77: 2 }), JSON.stringify(cnt));
+  check('IMPL-0500:ok 0 件なら 0 件と出る', /0 件/.test(pickupUndecidedNote({ byIssue: countPickupUndecided([]) })));
+  check('IMPL-0500:ok 作業単位ごとの件数を出す', /#77: 2/.test(pickupUndecidedNote({ byIssue: cnt })));
+  check('IMPL-0500:ok 指定から Issue の番号を導ける(Issue #N・PR #N・#N)。F-NNN は導けない', pickupIssueNumber('Issue #77 / 類型 依存の更新') === 77 && pickupIssueNumber('PR #30') === 30 && pickupIssueNumber('F-001') === null);
+  const calls = [];
+  const kept = [];
+  check('IMPL-0500:ok 書けたときは Issue へコメントする', recordPickupUndecided({ label: 'state:needs-dev', target: 'Issue #77', day: '2026-11-18', run: (a) => { calls.push(a); return ''; }, appendFile: (r) => kept.push(r) }) === 'written' && calls[0].includes('77') && calls[0].includes(line.replace('needs-dev', 'needs-dev')) && kept.length === 0, JSON.stringify(calls));
+  check('IMPL-0500:ng 権限が無く書けないときは、別に数える', recordPickupUndecided({ label: 'state:needs-dev', target: 'Issue #77', day: '2026-11-18', run: () => { throw new Error('HTTP 403'); }, appendFile: (r) => kept.push(r) }) === 'unwritten' && kept.length === 1 && /403/.test(kept[0]), JSON.stringify(kept));
+  check('IMPL-0500:ng Issue の番号を導けない指定(F-NNN)は、書かずに別に数える', recordPickupUndecided({ label: 'state:needs-dev', target: 'F-001', day: '2026-11-18', run: () => { throw new Error('呼ばれてはならない'); }, appendFile: (r) => kept.push(r) }) === 'unwritten' && kept.length === 2);
+  check('IMPL-0500:ok 書けなかった件数を数えて出す', countUnwrittenPickup(kept.join('\n')) === 2 && /書けず[^\n]*2 件/.test(pickupUndecidedNote({ unwritten: 2 })));
+  // 入口: 判定できずに止めた --offline は、書けなかった旨を出す(手元の記録は一時の置き場の evidence/ に作られる)
+}
 console.log('');
 if (failures) {
   console.log(`next.mjs の判定記録の読み取りの試験: ${failures} 件が期待と一致しません`);
