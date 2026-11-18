@@ -61,7 +61,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
+          if [ "$DRY_RUN" = "true" ]; then echo "dry-run: ラベルを作らない"; exit 0; fi
           gh label create pre-review --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description "事前レビュー期間の上程" || true
           gh label create pre-review-material --repo "$GITHUB_REPOSITORY" --color c5def5 --description "事前レビュー期間の判定資料" || true
       - name: 判定資料の起票と締切の通知

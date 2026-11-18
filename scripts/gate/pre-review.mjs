@@ -59,7 +59,11 @@ export function parseIssueForm(body) {
 }
 
 /** 記名(@login)を読む。電子メールの `@ドメイン` と、チームの `@組織/名前` は login に数えない */
-const loginsOf = (text) => [...String(text ?? '').matchAll(/(?<![A-Za-z0-9._%+-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?![A-Za-z0-9-]*\/)/g)].map((m) => m[1]);
+const rawLoginTokens = (text) => [...String(text ?? '').matchAll(/(?<![A-Za-z0-9._%+-])@([A-Za-z0-9_-]+)(?![A-Za-z0-9_-]|\/)/g)].map((m) => m[1]);
+/** GitHub の login は英数字とハイフンだけ(先頭は英数字、39 文字まで)。成り立たない綴り(`bob_x` など)は login と読まない */
+const isLogin = (t) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(t);
+const loginsOf = (text) => rawLoginTokens(text).filter(isLogin);
+const badLoginsOf = (text) => rawLoginTokens(text).filter((t) => !isLogin(t));
 
 /** 起票者の GitHub 上の関係のうち、機械が対象にするもの(公開リポジトリで外部の者の起票を対象にしない) */
 export const TRUSTED_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
@@ -164,6 +168,10 @@ export function readProposal(issue, { config, holidays = new Set() }) {
   if (!out.T) out.problems.push('判定予定日 T を読めない(YYYY-MM-DD)');
   else if (!isBusinessDay(out.T, holidays)) out.cautions.push(`判定予定日 T(${out.T})が営業日ではない(土日・祝日。祝日は ${HOLIDAYS_FILE} がある場合だけ数える)。意図した日かを起案者が確かめる(各時点は T から営業日を遡って求める)`);
   if (t.target === 'gate' && !/^G-[1-8]$/.test(norm(fields[FIELDS.gate]))) out.problems.push('工程ゲートの欄を読めない(G-1〜G-8)');
+  for (const f of [FIELDS.author, FIELDS.reviewers]) {
+    const bad = badLoginsOf(fields[f]);
+    if (bad.length) out.cautions.push(`${f}の欄に login として成り立たない綴り(${bad.map((b) => '@' + b).join('・')})がある(login は英数字とハイフンだけ)。読まずに外す`);
+  }
   out.author = loginsOf(fields[FIELDS.author])[0] ?? null;
   if (!out.author) out.problems.push('起案者を読めない(欄に @login を書く)');
   const named = uniq(loginsOf(fields[FIELDS.reviewers]));

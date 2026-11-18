@@ -233,6 +233,8 @@ check('工程ゲートの欄が G-1〜G-8 でなければ対象にせず注意�
 const sat = plan({ issues: [issue({ body: form({ '判定予定日 T': '2026-11-28' }) })], now: at('2026-11-24') });
 check('T が営業日でないときは注意に出す(通知は止めない)', sat.notes.some((n) => /営業日ではない/.test(n)));
 const rp = readProposal(issue({ body: form({ 指名レビュア: '@bob bob@example.com @org/team @carol-x' }) }), { config });
+const rpBad = readProposal(issue({ body: form({ 指名レビュア: '@bob_x @bob/ @carol' }) }), { config });
+check('login として成り立たない綴り(bob_x)は読まず、注意に出す', JSON.stringify(rpBad.reviewers) === '["carol"]' && rpBad.cautions.some((c) => /@bob_x/.test(c)), JSON.stringify(rpBad.reviewers));
 check('記名は電子メールのドメイン・チーム名を login に数えない', JSON.stringify(rp.reviewers) === '["bob","carol-x"]', JSON.stringify(rp.reviewers));
 
 // 判定資料の探索・一覧に締切後の通知を載せる
