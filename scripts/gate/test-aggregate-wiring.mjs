@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import { makeRepo, buildCfg, checker, lineWith, seatsOf } from './e2e-fixture.mjs';
 import { METHOD_COLUMNS } from './check-safety-record.mjs';
+import { localDay } from './config.mjs';
 
 const { check, finish } = checker();
 const FROM = ['--from', 'base', '--to', 'HEAD'];
@@ -263,7 +264,7 @@ if (want('0628 0612 0669')) {
   const ROW = (id, target, approver) => `| ${id} | 例外 | ${target} | ファストトラック(短縮: G-6) 急ぎ | 障害 | 再発 | 2026-12-31 まで。回収責任者 ${NAMES(2)} | 未返却 | ${NAMES(1)} | ${approver} |`;
   const scene = ({ approver, b2 = null, quota = '2' }) => {
     r.resetTo('base');
-    const day = new Date().toISOString().slice(0, 10);
+    const day = localDay(); // 入口(generate-profile.mjs --change)が変化点を刻む実行日(ローカル)と同じ。UTC の日付だと日付の境で食い違う
     const R = { id: 'pay-1', person: NAMES(2), paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: NAMES(1) };
     const fired = r.runChange({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: NAMES(3), at: day } });
     r.commitAll('chore: restriction');
