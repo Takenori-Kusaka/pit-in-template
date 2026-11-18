@@ -72,7 +72,8 @@
 //      段落にトレーラ ADR が無い、または指す判断記録が context/decisions/ に無ければ失敗させる(事業ステージ S0 では
 //      失敗させず注意として出す。2.6 のステージ表)。申告で外す経路は置かない。規則が無い・規則のパスが追跡中の
 //      ファイルに1件も当たらない構成は、未宣言として「長期的な決定を検出できない」と出す。decisionRules を変える
-//      PR の下限は R2 とし、decisionRules と製品のコードを同じ PR で変えたら失敗させる。G-3 の判定記録への到達と、
+//      PR の下限は R2 とし、decisionRules と製品のコードを同じ PR で変えたら失敗させる。G-3 の判定記録への到達は
+//      IMPL-0972 が確かめる(基底ブランチ・記録用ブランチの様式、または宣言行 G-3: 通過 を持つ名簿の人のレビュー)。
 //      判断記録の中身は確かめない
 //   6. 停止の申し立て(標準 第7章 7.11): 受信箱のラベル `state:stop-requested` が付いた PR(付けた履歴のある PR を
 //      含む)は、基底ブランチに成立した解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」)が無い限り失敗させる。
@@ -130,6 +131,7 @@ import {
   isFilledValue,
   dueDayOf,
   resolveSigner,
+  CODEOWNERS_PLACES,
   findPersonByAccount,
   identifyAccount,
   findPerson,
@@ -183,7 +185,7 @@ import {
   idMigrationRoster,
   controlApprovalBacking,
 } from './material-attribution.mjs';
-import { judgeOfForm } from './records.mjs';
+import { judgeOfForm, parseDeclaration, readRecordsBranch } from './records.mjs';
 import { isClosedState } from './exception-expiry.mjs';
 import { codeownersProblems } from './roster-ids.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
@@ -1015,12 +1017,17 @@ export function decisionRuleHits(rules, changes, tracked = null) {
 
 /**
  * 判断記録の G-3 の判定記録への到達(標準 第2章 2.6 要求事項4。IMPL-0972)。トレーラ ADR が指す判断記録ごとに、次のどちらかを要する。
- *   (i) 基底ブランチの docs/gates/*.md に、ゲート欄が G-3、欄「判定した判断記録(G-3 のみ)」が当該 ADR、結果が「通過」の記録がある
- *   (ii) 当該の判断記録を入れた PR(基底へ入っていれば最後に変えた PR、この PR の中で足したものならこの PR)に、名簿の人で AI の名義でない者の承認がある
+ *   (i) G-3 の判定記録の様式がある。読む先は基底ブランチの docs/gates/*.md と、記録用ブランチ records の records/gates/*.md の両方。
+ *       ゲート欄が G-3、欄「判定した判断記録(G-3 のみ)」が当該 ADR、結果が「通過」。記録用ブランチの様式は、判定者の記名が名簿の人
+ *       (AI の名義でない)へ対応づくものに限る(誰でも様式を置けるため。records.mjs の g1PassState と同じ)
+ *   (ii) 宣言行 `G-3: 通過` を 1 行目に持つレビュー(状態は問わない。recording.md「G-3 の受け皿」)で、書き手が名簿の人で AI の名義でないもの。
+ *       読む先は、当該の判断記録を入れた PR(この PR の中で足したものならこの PR のレビュー、基底へ入っていれば最後に変えた PR の写し
+ *       records/reviews/pr-<N>.json)。宣言行の無い承認は取り込みの事務であり、G-3 の判定記録に数えない
  * 判定した版と取り込む版の一致は確かめない(IMPL-0523)。判定の中身は G-3 の判定者が確かめる。
- * 戻り値は ADR ごとの { id, ok, how, why }
+ * 読めない(ホスティングの記録を引けない、記録用ブランチを読めない)ときは失敗にせず ok: null で返す(呼び出し側は注意に出す)。
+ * recordsBranch は記録用ブランチの読み(readRecordsBranch の戻り値)を返す関数。戻り値は ADR ごとの { id, ok, how, why }
  */
-export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting = null, reviews = null }) {
+export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting = null, reviews = null, recordsBranch = null }) {
   const nf = (v) => String(v ?? '').normalize('NFKC').trim();
   const rowOf = (text, key) => {
     for (const line of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
@@ -1029,16 +1036,46 @@ export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting =
     }
     return null;
   };
+  const formPasses = (text) => {
+    if (!/G-?3/.test(rowOf(text, 'ゲート') ?? '')) return null;
+    if (rowOf(text, '結果') !== '通過') return null;
+    const m = /ADR-(\d{1,5})/.exec(rowOf(text, '判定した判断記録') ?? '');
+    return m ? String(Number(m[1])).padStart(4, '0') : null;
+  };
   const files = (git(['ls-tree', '--name-only', policyRef, 'docs/gates/']) ?? '').split('\n').map((f) => f.trim()).filter((f) => f.endsWith('.md'));
   const passed = new Set();
   for (const f of files) {
     const text = git(['show', `${policyRef}:${f}`]);
-    if (!text) continue;
-    if (!/G-?3/.test(rowOf(text, 'ゲート') ?? '')) continue;
-    if (rowOf(text, '結果') !== '通過') continue;
-    const m = /ADR-(\d{1,5})/.exec(rowOf(text, '判定した判断記録') ?? '');
-    if (m) passed.add(String(Number(m[1])).padStart(4, '0'));
+    const id = text ? formPasses(text) : null;
+    if (id) passed.add(id);
   }
+  let branch;
+  const branchOf = () => {
+    if (branch === undefined) {
+      try {
+        branch = typeof recordsBranch === 'function' ? recordsBranch() : recordsBranch;
+      } catch (e) {
+        branch = { available: false, reason: `記録用ブランチを読めない(${e?.message ?? e})`, gates: [], reviews: new Map() };
+      }
+      branch = branch ?? { available: false, reason: '記録用ブランチを読む手段が無い', gates: [], reviews: new Map() };
+    }
+    return branch;
+  };
+  // 記録用ブランチの様式。判定者の記名が名簿の人へ対応づき、AI の名義でないものに限る
+  let branchPassed = null;
+  const branchForms = () => {
+    if (branchPassed) return branchPassed;
+    branchPassed = new Set();
+    const b = branchOf();
+    if (!b?.available) return branchPassed;
+    for (const g of b.gates ?? []) {
+      const id = formPasses(g.text);
+      if (!id) continue;
+      const judge = judgeOfForm(g.text);
+      if (judge && !aiNameBlocked(config, judge) && resolveSigner(config, judge)) branchPassed.add(id);
+    }
+    return branchPassed;
+  };
   const humanApprovers = (list) => {
     const out = [];
     for (const x of list) {
@@ -1049,29 +1086,39 @@ export function decisionG3Reach({ git, policyRef, config, ids, fileOf, hosting =
     }
     return out;
   };
-  const prApprovers = () => {
+  // 宣言行 G-3: 通過 を持つレビューの書き手(状態は問わない。取り下げ・保留中は除く)。同じ書き手の最後の G-3 の宣言を採る
+  const declarers = (list) => {
     const last = new Map();
-    for (const r of Array.isArray(reviews) ? reviews : []) {
-      const ref = accountRefOf(r);
+    for (const r of Array.isArray(list) ? list : []) {
+      const d = parseDeclaration(r?.body);
       const state = String(r?.state ?? '').toUpperCase();
-      if (!ref.login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-      last.set(ref.id !== null ? `#${ref.id}` : ref.login, { ref: { login: ref.login, id: ref.id }, approved: state === 'APPROVED' && hasWriteAssociation(r) !== false && !r.author?.is_bot });
+      if (!d || d.gate !== 'G-3' || ['DISMISSED', 'PENDING'].includes(state)) continue;
+      const ref = accountRefOf(r);
+      if (!ref.login) continue;
+      last.set(ref.id !== null ? `#${ref.id}` : ref.login, { ref, ok: d.result === '通過' && hasWriteAssociation(r) !== false && !r.author?.is_bot });
     }
-    return humanApprovers([...last.values()].filter((v) => v.approved).map((v) => v.ref));
+    return humanApprovers([...last.values()].filter((v) => v.ok).map((v) => v.ref));
   };
   return ids.map((id) => {
     if (passed.has(id)) return { id, ok: true, how: '基底ブランチの G-3 の判定記録(通過)' };
+    if (branchForms().has(id)) return { id, ok: true, how: '記録用ブランチの G-3 の判定記録(通過。判定者の記名が名簿の人)' };
     const file = fileOf(id);
     const inBase = file ? Boolean(git(['cat-file', '-e', `${policyRef}:${file}`]) !== null && git(['show', `${policyRef}:${file}`]) !== null) : false;
     if (inBase) {
       const sha = lastCommitOfFile(git, policyRef, file);
       const info = sha && hosting ? hosting.prOfCommit(sha) : null;
-      if (!info) return { id, ok: false, why: '基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR の記録もホスティングから読めない' };
-      const who = info.number == null ? [] : humanApprovers(Array.isArray(info.approvers) ? info.approvers : []);
-      return who.length ? { id, ok: true, how: `判断記録を入れた PR #${info.number} の名簿の人の承認(${who.join(', ')})` } : { id, ok: false, why: `基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR${info.number != null ? ` #${info.number}` : ''}に名簿の人(AI の名義でない)の承認が無い` };
+      if (!info) return { id, ok: null, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録を入れた PR の記録もホスティングから読めないため、確かめられない' };
+      if (info.number == null) return { id, ok: false, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録は PR を経ずに入っている(宣言行つきのレビューを持つ PR が無い)' };
+      const b = branchOf();
+      if (!b?.available) return { id, ok: null, why: `基底ブランチに G-3 の判定記録が無く、判断記録を入れた PR #${info.number} のレビューの写しを読めないため、確かめられない(${b?.reason ?? '記録用ブランチを読めない'})` };
+      const copy = b.reviews?.get(info.number) ?? null;
+      const who = copy ? declarers((copy.reviews ?? []).map((r) => ({ ...r, author: r.author ?? r.user }))) : [];
+      return who.length
+        ? { id, ok: true, how: `判断記録を入れた PR #${info.number} の宣言行 G-3: 通過 のレビュー(${who.join(', ')})` }
+        : { id, ok: false, why: `基底ブランチと記録用ブランチに G-3 の判定記録が無く、判断記録を入れた PR #${info.number} に宣言行 \`G-3: 通過\` を持つ名簿の人(AI の名義でない)のレビューが無い` };
     }
-    const who = prApprovers();
-    return who.length ? { id, ok: true, how: `この PR の名簿の人の承認(${who.join(', ')})` } : { id, ok: false, why: '基底ブランチに G-3 の判定記録が無く、この PR に名簿の人(AI の名義でない)の承認も無い' };
+    const who = declarers(reviews);
+    return who.length ? { id, ok: true, how: `この PR の宣言行 G-3: 通過 のレビュー(${who.join(', ')})` } : { id, ok: false, why: '基底ブランチと記録用ブランチに G-3 の判定記録が無く、この PR に宣言行 `G-3: 通過` を持つ名簿の人(AI の名義でない)のレビューも無い' };
   });
 }
 
@@ -1999,13 +2046,16 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
         fileOf: (id) => `context/decisions/${present.find((f) => f.startsWith(`${id}-`) && f.endsWith('.md'))}`,
         hosting: prHosting,
         reviews: pr.reviews ?? null,
+        recordsBranch: pr.recordsBranch !== undefined ? pr.recordsBranch : () => readRecordsBranch({ cwd: root, fetch: true }),
       });
       result.decisionRules.g3Reach = reach;
-      const bad = reach.filter((x) => !x.ok);
+      const unread = reach.filter((x) => x.ok === null);
+      if (unread.length) result.notices.push(`判断記録の G-3 の判定への到達: ${unread.map((x) => `ADR-${x.id}(${x.why})`).join(' / ')}。失敗にはしない(読めない記録を理由に採用者の PR を止めない)`);
+      const bad = reach.filter((x) => x.ok === false);
       if (bad.length) {
         const msg =
           `判断記録の G-3 の判定への到達: ${bad.map((x) => `ADR-${x.id}(${x.why})`).join(' / ')}。判断記録は取り込む前に技術設計判断(G-3)の判定を受ける(標準 第2章 2.6 要求事項4)。` +
-          '基底ブランチの docs/gates/ に G-3 の判定記録(欄「判定した判断記録(G-3 のみ)」に ADR 番号、結果「通過」)を置くか、判断記録を入れる PR で名簿の人が承認する。' +
+          '基底ブランチの docs/gates/ か記録用ブランチの records/gates/ に G-3 の判定記録(欄「判定した判断記録(G-3 のみ)」に ADR 番号、結果「通過」)を置くか、判断記録を入れる PR で名簿の人が宣言行 `G-3: 通過` を1行目に書いたレビューを出す(状態は問わない。宣言行の無い承認は数えない)。' +
           '判定した版と取り込む版の一致は確かめない(IMPL-0523)。判定の中身は G-3 の判定者が確かめる';
         if (stage === 'S0') result.notices.push(`${msg}。事業ステージ S0 のため失敗させない(2.6 のステージ表)`);
         else result.errors.push(msg);
@@ -2026,12 +2076,14 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
 
   // --- 7d. 所有者の無い領域と部署名だけの指名(IMPL-0211。ADR-0200)。基底(既定ブランチ)の CODEOWNERS を読む ---
   if (policyConfigured) {
-    const co = codeownersProblems(policyConfig, atPolicy('.github/CODEOWNERS'), all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])));
+    // GitHub と同じ順に探し、最初に見つけたもの(効いているもの)を検査する
+    const coPlace = CODEOWNERS_PLACES.find((f) => atPolicy(f) !== null) ?? null;
+    const co = codeownersProblems(policyConfig, coPlace ? atPolicy(coPlace) : null, all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), CODEOWNERS_PLACES);
     result.codeowners = co;
     if (co.problems.length) {
       result.errors.push(
-        `CODEOWNERS: ${co.problems.join(' / ')}。所有者は名簿の人の個人のログイン名で書く(部署名・グループ名だけの指名を認めない)。` +
-          '部署名・グループ名の実質(チームの構成員が誰か)は確かめない。型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /)で読み、最後に当たった行が勝つ'
+        `CODEOWNERS(${coPlace ?? "無し"}): ${co.problems.join(' / ')}。所有者は名簿の人の個人のログイン名で書く(部署名・グループ名だけの指名を認めない)。` +
+          '部署名・グループ名の実質(チームの構成員が誰か)は確かめない。型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /。末尾が /* の型は直下のファイルだけ)で読み、どれかの行に当たるかを見る'
       );
     }
   }

@@ -209,7 +209,7 @@ export function preflight(root = ROOT) {
     if (!isTemplate) asset('codeowners', 'コードオーナーの定め', co.effective, `既存の CODEOWNERS(パス ${patterns.length} 行)。テンプレートの CODEOWNERS と置き換えるか、残して並存させるか(効くのは1か所だけ)を決める`);
   }
   if (co.owner.length) {
-    stop('codeowners-owner', co.effective, `${co.effective} に雛形の所有者 @OWNER が残っている(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられない。誤りは CODEOWNERS の画面と API に出るが、PR の失敗としては出ない`, '@OWNER を実在のアカウントかチームへ置き換える(人が決める)');
+    stop('codeowners-owner', co.effective, `${co.effective} に雛形の所有者 @OWNER が残っている(${co.owner.join('・')} 行目)。@OWNER は不明な所有者として扱われ、コードオーナーが割り当てられない。誤りは CODEOWNERS の画面と API に出るが、PR の失敗としては出ない`, '@OWNER を名簿(people[].accounts)の人の個人のログイン名(チームを書くときは個人と併記する)へ置き換える(人が決める)');
   }
 
   // --- 止める: フックの登録 ---

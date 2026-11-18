@@ -30,7 +30,9 @@ import { readRecordsBranch, parseCopy } from './records.mjs';
 //   (i) 行の所有者に置き字 `@OWNER` が残る
 //   (ii) 行の所有者が `@org/team` の形(チーム)だけである
 //   (iii) 個人の所有者のログイン名が、名簿(people[].accounts)の人へ対応づかない
-//   (iv) 変更したファイルが、どの行の型にも当たらない(最後に当たった行が勝つ規則で、当たる行の有無を見る)
+//   (iv) 変更したファイルが、どの行の型にも当たらない(どれかの行に当たるかを見る。所有者の無い行は別に (ii)・(iii) で落とす)
+// 読むのは基底ブランチの CODEOWNERS。GitHub と同じく .github/CODEOWNERS・CODEOWNERS・docs/CODEOWNERS を順に探し、最初に見つけた
+// 1つを検査する(CODEOWNERS_PLACES。config.mjs)。3か所のどれにも無いときだけ「所有者を定義していない」として失敗にする
 // 部署名・グループ名の実質(チームの構成員が誰か)は確かめない。個人のログイン名が名簿の人であることまでを見る。
 // 型は gitignore の書式の部分集合(*・**・?・先頭と末尾の /)を読む。否定(!)・文字クラス・エスケープは読まない。
 // 時計を読まない。ログイン名の照合は名簿のログイン名だけで行う(CODEOWNERS に数値の識別子が無いため)
@@ -55,6 +57,8 @@ export function codeownersMatch(pattern, file) {
   let p = String(pattern ?? '');
   if (!p) return false;
   const anchored = p.startsWith('/') || p.replace(/\/$/, '').includes('/');
+  // 末尾が /*(** でない)の型は、そのディレクトリ直下のファイルだけに当たる(GitHub の CODEOWNERS。下の階層へ広げない)
+  const shallow = /\/\*$/.test(p);
   p = p.replace(/^\//, '').replace(/\/$/, '');
   let body = '';
   for (let i = 0; i < p.length; i++) {
@@ -71,7 +75,7 @@ export function codeownersMatch(pattern, file) {
     else if (c === '?') body += '[^/]';
     else body += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   }
-  const re = new RegExp(`^${anchored ? '' : '(?:.*/)?'}${body}(?:/.*)?$`);
+  const re = new RegExp(`^${anchored ? '' : '(?:.*/)?'}${body}${shallow ? '' : '(?:/.*)?'}$`);
   return re.test(String(file ?? '').replace(/\\/g, '/'));
 }
 
@@ -86,8 +90,8 @@ function ownerKind(o) {
  * CODEOWNERS(基底ブランチの版の本文)と変更したファイルから、失敗にする問題の一覧を返す。text が null なら、ファイルが無い問題を返す。
  * 戻り値: { problems: string[], rows: number }
  */
-export function codeownersProblems(config, text, files = []) {
-  if (text === null || text === undefined) return { problems: ['.github/CODEOWNERS が基底ブランチに無い(所有者を定義していない)'], rows: 0 };
+export function codeownersProblems(config, text, files = [], searched = ['.github/CODEOWNERS']) {
+  if (text === null || text === undefined) return { problems: [`CODEOWNERS が基底ブランチに無い(検査した所在: ${searched.join('・')}。所有者を定義していない)`], rows: 0 };
   const rows = parseCodeowners(text);
   const problems = [];
   for (const r of rows) {

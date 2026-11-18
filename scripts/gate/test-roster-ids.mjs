@@ -220,6 +220,7 @@ check('要素: 識別子の無いアカウントを数える(/pit と roster-ids
   check('CODEOWNERS の型: / を含まない型はどの階層でも当たる', m('*.md', 'docs/a.md') && m('docs', 'a/docs/b.md') && !m('*.md', 'a.mdx'));
   check('CODEOWNERS の型: 途中に / を含む型は根に固定する', m('docs/gates/', 'docs/gates/g1.md') && !m('docs/gates/', 'x/docs/gates/g1.md'));
   check('CODEOWNERS の型: ** は階層をまたぐ', m('**/test/*.js', 'a/b/test/x.js') && m('src/**', 'src/a/b.js'));
+  check('CODEOWNERS の型: 末尾が /* の型は直下だけに当たる(下の階層へ広げない)', m('docs/*', 'docs/a.md') && !m('docs/*', 'docs/a/b.md') && m('docs/**', 'docs/a/b.md'));
   const cfg = { people: [{ id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1 }] }] };
   const ok = codeownersProblems(cfg, '# コメント\n* @yamada # 末尾のコメント\n', ['src/a.js']);
   check('CODEOWNERS: 名簿の人の login とコメントを読み、問題が無い', ok.problems.length === 0 && ok.rows === 1, JSON.stringify(ok));

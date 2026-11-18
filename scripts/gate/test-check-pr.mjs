@@ -75,6 +75,8 @@ write('test/old.test.js', "test('old', () => {\n  expect(true).toBe(true);\n});\
 git('add', '-A');
 git('commit', '-q', '-m', 'chore: base');
 
+// 記録用ブランチを読めない環境(既定。試験では fetch を試さない)
+const NO_RECORDS = { available: false, reason: '試験: 記録用ブランチが無い', gates: [], reviews: new Map() };
 let failures = 0;
 let n = 0;
 // 効力を持つ記録(台帳の行・解除の記録)を基底ブランチへ入れた PR の記録(ホスティングの代役。process-compass #380)。
@@ -86,7 +88,7 @@ function scenario(name, pr, mutate, expect) {
   mutate();
   git('add', '-A');
   git('commit', '-q', '--allow-empty', '-m', `change ${n}`);
-  const prIn = { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, ...(typeof pr === 'function' ? pr() : pr) };
+  const prIn = { number: 100 + n, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, recordsBranch: NO_RECORDS, ...(typeof pr === 'function' ? pr() : pr) };
   // PR の作成者の数値の識別子(PR_AUTHOR_ID)。場面が作成者を替えたら、その作成者の識別子
   if (prIn.authorId === undefined) prIn.authorId = UID[prIn.author] ?? null;
   const r = analyzePr({ root: TMP, base: 'main', pr: prIn });
@@ -651,7 +653,7 @@ scenario('判断記録の要否: トレーラ ADR が指す判断記録が conte
 }, failsWith(/ADR-0007\)が context\/decisions\/ に無い/));
 rewindBase();
 // IMPL-0384:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-scenario('判断記録の要否: トレーラ ADR が実在する判断記録を指せば通る(「ADR-1」の書き方も 4 桁へ読む)', { body: ADR_BODY('ADR-1'), reviews: [APPROVE('suzuki')] }, () => {
+scenario('判断記録の要否: トレーラ ADR が実在する判断記録を指せば通る(「ADR-1」の書き方も 4 桁へ読む)', { body: ADR_BODY('ADR-1'), reviews: [APPROVE('suzuki', { body: 'G-3: 通過\n\n確かめた' })] }, () => {
   withDecisionRules(API_RULE);
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
@@ -750,13 +752,59 @@ scenario('判断記録の G-3 への到達: 基底に G-3 通過の記録があ�
 }, passes((r) => (r.decisionRules?.g3Reach?.[0]?.ok ? [] : ['到達を確かめていない'])));
 rewindBase();
 rewindBase();
-// IMPL-0972:ok
-scenario('判断記録の G-3 への到達: 判断記録を入れた PR に名簿の人の承認がある', { body: ADR_BODY('ADR-0001'), reviews: [APPROVE('sato')] }, () => {
+const DECL = (login, body = 'G-3: 通過\n\n選択肢を比べた', extra = {}) => ({ author: { login, id: UID[login], is_bot: false }, state: 'COMMENTED', body, ...extra });
+const decisionSetup = () => {
   withDecisionRules(API_RULE);
   write('src/api/handler.js', lines(5, 'h'));
   write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
-}, passes((r) => (r.decisionRules?.g3Reach?.[0]?.ok ? [] : ['承認を数えていない'])));
+};
+const reachOk = (msg) => passes((r) => (r.decisionRules?.g3Reach?.[0]?.ok === true ? [] : [msg]));
+const reachNg = failsWith(/判断記録の G-3 の判定への到達: ADR-0001/);
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 名簿の人の承認だけで宣言行が無い(取り込みの事務は G-3 に数えない)', { body: ADR_BODY('ADR-0001'), reviews: [APPROVE('sato')] }, decisionSetup, reachNg);
 rewindBase();
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: この PR に名簿の人の宣言行 G-3: 通過 のレビューがある', { body: ADR_BODY('ADR-0001'), reviews: [APPROVE('sato', { body: 'G-3: 通過\n\n選択肢を比べた' })] }, decisionSetup, reachOk('宣言行つきのレビューを数えていない'));
+rewindBase();
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: 作成者本人の判定者が COMMENT で出した宣言行を数える', { body: ADR_BODY('ADR-0001'), reviews: [DECL('yamada')] }, decisionSetup, reachOk('作成者本人の COMMENT を数えていない'));
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 宣言行が差し戻しなら通過に数えない', { body: ADR_BODY('ADR-0001'), reviews: [DECL('sato', 'G-3: 差し戻し\n\n版が古い')] }, decisionSetup, reachNg);
+rewindBase();
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: 記録用ブランチの様式(判定者の記名が名簿の人)を読む', { body: ADR_BODY('ADR-0001'), recordsBranch: { available: true, reason: null, gates: [{ file: 'records/gates/g3-api-shape.md', text: G3_REC('ADR-0001') }], reviews: new Map() } }, decisionSetup, reachOk('記録用ブランチの様式を読んでいない'));
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 記録用ブランチの様式の判定者の記名が名簿の人へ対応づかない', { body: ADR_BODY('ADR-0001'), recordsBranch: { available: true, reason: null, gates: [{ file: 'records/gates/g3-api-shape.md', text: G3_REC('ADR-0001').replace('鈴木 一郎', '知らない 人') }], reviews: new Map() } }, decisionSetup, reachNg);
+rewindBase();
+// 基底へ入っている判断記録(入れた PR の写しで宣言行を読む)
+const withBaseAdr = () => {
+  withDecisionRules(API_RULE);
+  write('context/decisions/0001-public-api-shape.md', '# ADR-0001: 公開インタフェースの形\n');
+  advanceBase('adr-0001');
+  write('src/api/handler.js', lines(5, 'h'));
+};
+const COPY = (reviews) => ({ available: true, reason: null, gates: [], reviews: new Map([[5, { pr: 5, reviews }]]) });
+const copyReview = (login, state, body) => ({ id: 1, user: { login, id: UID[login] }, state, body });
+const inPr5 = { prOfCommit: () => ({ number: 5, author: 'yamada', authorId: UID.yamada, approvers: [acct('sato')] }) };
+// IMPL-0972:ok
+scenario('判断記録の G-3 への到達: 基底の判断記録は、入れた PR の写しの宣言行(状態は問わない)で受ける', { body: ADR_BODY('ADR-0001'), hostingLookup: inPr5, recordsBranch: COPY([copyReview('sato', 'COMMENTED', 'G-3: 通過\n\n確かめた')]) }, withBaseAdr, reachOk('写しの宣言行を数えていない'));
+rewindBase();
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 基底の判断記録を入れた PR の写しに、宣言行の無い承認だけがある', { body: ADR_BODY('ADR-0001'), hostingLookup: inPr5, recordsBranch: COPY([copyReview('sato', 'APPROVED', 'よさそう')]) }, withBaseAdr, reachNg);
+rewindBase();
+rewindBase();
+// IMPL-0972:ng
+scenario('判断記録の G-3 への到達: 基底の判断記録が PR を経ずに入り、様式も無い', { body: ADR_BODY('ADR-0001'), hostingLookup: { prOfCommit: () => ({ number: null, author: 'yamada', approvers: [] }) } }, withBaseAdr, failsWith(/判断記録の G-3 の判定への到達: ADR-0001.*PR を経ずに/));
+rewindBase();
+rewindBase();
+// IMPL-0972:ok(読めないときは失敗にせず注意に出す)
+scenario('判断記録の G-3 への到達: 記録用ブランチを読めないときは失敗にせず「確かめられない」と出す', { body: ADR_BODY('ADR-0001'), hostingLookup: inPr5 }, withBaseAdr, passes(noticedEarly(/判断記録の G-3 の判定への到達: ADR-0001.*確かめられない/)));
+rewindBase();
+rewindBase();
+
 scenario('判断記録の G-3 への到達: 事業ステージ S0 では失敗させず注意に出す', { body: ADR_BODY('ADR-0001') }, () => {
   withDecisionRules(API_RULE, { answers: { 'q-biz-phase': 'poc' } });
   write('src/api/handler.js', lines(5, 'h'));
@@ -857,7 +905,7 @@ const withOwners = (text) => {
   write('.github/CODEOWNERS', text);
   advanceBase('codeowners');
 };
-const coFails = (re) => failsWith(/CODEOWNERS: /, (r) => (r.codeowners?.problems.some((p) => re.test(p)) ? [] : [`${re} の問題が出ていない: ${JSON.stringify(r.codeowners)}`]));
+const coFails = (re) => failsWith(/CODEOWNERS\(/, (r) => (r.codeowners?.problems.some((p) => re.test(p)) ? [] : [`${re} の問題が出ていない: ${JSON.stringify(r.codeowners)}`]));
 // IMPL-0211:ng(違反と適合の対。標準の実装マーク)
 scenario('CODEOWNERS: 置き字 * @OWNER が残る', {}, () => {
   withOwners('* @OWNER\n');
@@ -888,6 +936,22 @@ scenario('CODEOWNERS: 名簿の人の login で全体を覆い、深い型が後
   write('src/a.js', lines(21));
   write('docs/notes.md', '# メモ\n');
 }, passes((r) => (r.codeowners?.rows === 3 ? [] : ['行を読めていない'])));
+rewindBase();
+
+// IMPL-0211:ok
+scenario('CODEOWNERS: 根の CODEOWNERS だけを置く採用者も通る(GitHub の探索順の2番目)', {}, () => {
+  fs.rmSync(path.join(TMP, '.github/CODEOWNERS'));
+  write('CODEOWNERS', '* @yamada\n');
+  advanceBase('codeowners-root');
+  write('src/a.js', lines(21));
+}, passes((r) => (r.codeowners?.rows === 1 ? [] : ['根の CODEOWNERS を読んでいない'])));
+rewindBase();
+// IMPL-0211:ng
+scenario('CODEOWNERS: 3か所のどれにも無ければ、検査した所在を示して失敗にする', {}, () => {
+  fs.rmSync(path.join(TMP, '.github/CODEOWNERS'));
+  advanceBase('codeowners-none');
+  write('src/a.js', lines(21));
+}, coFails(/基底ブランチに無い.*\.github\/CODEOWNERS・CODEOWNERS・docs\/CODEOWNERS/));
 rewindBase();
 
 // ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)

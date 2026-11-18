@@ -28,7 +28,7 @@ node scripts/gate/preflight.mjs
 
 | 出力 | 行うこと |
 | --- | --- |
-| `[止める]` 雛形の所有者 `@OWNER` | 利用者に、`CODEOWNERS` の所有者(実在のアカウントかチーム)を決めてもらう。所有者を推測で書かない |
+| `[止める]` 雛形の所有者 `@OWNER` | 利用者に、`CODEOWNERS` の所有者(名簿の人の個人のログイン名。チームは個人と併記する)を決めてもらう。所有者を推測で書かない |
 | `[止める]` フックの登録が無い | `node scripts/init/generate-profile.mjs --merge-hooks` を提示する(既存の登録は残す) |
 | `[止める]` そのほか(`CLAUDE.md` の常駐の規則、`CODEOWNERS` の置き場の重なり、既定ブランチへの push の契機の形(`push-trigger`。旧版の `gate-g5.yml`・`gate-g5-push.yml` の欠け)、`gate-g5.yml` の欠け、一覧に無い資産) | 出力の「直し方」を利用者へ示す。既定ブランチの名(`main` でないこと)では止めない。点検の結果を変えるために点検のスクリプトを書き換えない |
 | `[告げる]` 既存の統制の資産(既存の `CODEOWNERS`、共通の祖先の無い履歴の根のコミットを含む) | `node scripts/gate/preflight.mjs --draft > docs/adoption-inventory.md` で一覧の下書きを作る。扱い(取り込む・置き換える・残して並存する・対象外とする)と、確定した者・確定日は、技術判断の席の責任者が書く |
