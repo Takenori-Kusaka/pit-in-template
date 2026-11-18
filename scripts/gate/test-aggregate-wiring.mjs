@@ -374,4 +374,33 @@ const form04 = (r, over) => {
   r.done();
 }
 
+
+// IMPL-0523 の宣言行の経路(F-03): G-3 の通過を、PR の宣言行のレビュー(`G-3: 通過`)で受けた判断記録
+{
+  const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
+  const ADR = (body, st = '採用') => `# ADR-0007 試験\n\n- 状態: ${st}\n- 置き換える決定: なし\n\n## 決定\n\n${body}\n`;
+  const scene = (c2text, reviewOnC1) => {
+    r.resetTo('base');
+    r.write('context/decisions/0007-test.md', ADR('初版'));
+    const c1 = r.commitAll('docs: adr 0007 draft');
+    r.write('context/decisions/0007-test.md', c2text);
+    const c2 = r.commitAll('docs: adr 0007 (#3)');
+    const copy = {
+      pr: 3, number: 3, default_branch: 'main', title: 'adr', body: '', author: { login: 'acc1', id: 9001 }, base: { ref: 'main' }, head_sha: c2, merge_commit_sha: c2, merged_at: '2026-11-02T00:00:00Z',
+      reviews: [{ id: 21, user: { login: 'acc5', id: 9005, type: 'User' }, state: 'COMMENTED', author_association: 'MEMBER', body: 'G-3: 通過\n\nADR-0007 を確認した', commit_id: reviewOnC1 ? c1 : c2, submitted_at: '2026-11-01T00:00:00Z' }],
+    };
+    r.write('docs/records/reviews/pr-3.json', JSON.stringify(copy));
+    r.commitAll('docs: copy');
+    return agg(r);
+  };
+  const MIS = /G-3 で判定した版.*から本文が変わっています/;
+  const ng = scene(ADR('書き換え'), true);
+  check('IMPL-0523:ng 集約(宣言行): レビューした版の後に PR の中で本文を変えると不一致(欠落)。版は宣言行のレビューの commit_id', hit(ng.gaps, MIS).length === 1 && /不一致 1/.test(lineWith(ng.report, '判断記録の再検査')), JSON.stringify(ng.gaps.filter((g) => /ADR-0007/.test(g))));
+  const okState = scene(ADR('初版', '非推奨'), true);
+  check('IMPL-0523:ok 集約(宣言行): 状態の行だけの変更は一致', hit(okState.gaps, MIS).length === 0 && /一致 1 \/ 不一致 0/.test(lineWith(okState.report, '判断記録の再検査')));
+  const okHead = scene(ADR('書き換え'), false);
+  check('IMPL-0523:ok 集約(宣言行): マージ時の head のレビューなら版はマージコミットで、一致', hit(okHead.gaps, MIS).length === 0 && /一致 1 \/ 不一致 0/.test(lineWith(okHead.report, '判断記録の再検査')));
+  r.done();
+}
+
 finish();
