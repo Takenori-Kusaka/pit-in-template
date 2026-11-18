@@ -33,6 +33,18 @@ check('IMPL-0175:ok 項目の集合は変わらない(入れ替えるだけ。�
 const weeks = ['2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23', '2026-11-30', '2026-12-07', '2026-12-14', '2026-12-21'];
 const orders = new Set(weeks.map((day) => JSON.stringify(order({ day }).items)));
 check('IMPL-0175:ok 週が変われば並びが変わる(8週で 2 通り以上、隣り合う週が同じ並びなのは半数未満)', orders.size >= 2 && weeks.slice(1).filter((day, i) => same(order({ day }).items, order({ day: weeks[i] }).items)).length < 4, orders.size);
+{
+  // 隣り合う週は常に違う並びになる(項目 2・3・4 個、2026 年の全週。年またぎを含む)
+  const mondays = Array.from({ length: 106 }, (_, k) => new Date(Date.parse('2026-01-05T00:00:00Z') + k * 7 * 24 * 3600 * 1000).toISOString().slice(0, 10));
+  for (const n of [2, 3, 4]) {
+    const its = items.slice(0, n);
+    const seq = mondays.map((day) => orderItems(its, { ...base, day }).items);
+    const bad = seq.filter((s, i) => i > 0 && same(s, seq[i - 1])).length;
+    check(`IMPL-0175:ng 項目 ${n} 個で、隣り合う週が同じ並びになる週は無い(106 週)`, bad === 0, bad);
+  }
+}
+check('IMPL-0175:ok 同じ週は日が違っても同じ並び(連鎖を使っても決定的)', same(order({ day: '2026-11-17' }).items, order({ day: '2026-11-21' }).items));
+check('IMPL-0175:ok 起点(2000-01-03)より前の日付は保証しないと理由に書いて並べる', /保証しない/.test(order({ day: '1999-12-01' }).reason));
 check('IMPL-0175:ok 対象・ゲートが違えば種が変わる', !same(order({ target: 'PR-124' }).items, r1.items) || !same(order({ gate: 'G-3' }).items, r1.items));
 check('IMPL-0175:ng R3 は回さない(入力の順のまま)', same(order({ risk: 'R3' }).items, items) && order({ risk: 'R3' }).rotated === false);
 check('IMPL-0175:ok R1 は回す', order({ risk: 'R1' }).rotated === true);

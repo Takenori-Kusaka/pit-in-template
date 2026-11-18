@@ -5,8 +5,9 @@
 //   - 見出し・欄・項目の文は変えない。入れ替えるのは項目の順だけで、項目の番号や識別(「基準2」など)は付け替えない
 //   - /human-verify の検証の順序は検証の論理であり、回さない(このスクリプトの対象外)
 //   - リスク区分 R3 は回さない(摩擦を一律に課さない。5.7.5 の2点目)
-//   - 同じ入力(ゲート・対象・リスク区分・ISO 週・項目)なら必ず同じ並びになる。時計は読まず、日付は引数で渡す
-// 慣れが遅れる効果は機械で確かめない(EV で開示する)。合否を持たない。
+//   - 同じ入力(ゲート・対象・リスク区分・ISO 週・項目)なら必ず同じ並びになる。隣り合う週で並びが同じにならないよう、同じになる週は回転して変える
+//     (項目が同じ集合のまま続く間の保証。項目の数や文が週の間で変われば、その週の間は保証しない)。関数は時計を読まず、日付は引数で渡す(命令行で --date を省くと今日(UTC)を使う)
+// 回すのは並びだけである。表現・強調は回さない(降ろしていない。標準 5.7.5 の「並び・表現・強調」のうち表現・強調は人が変える)。慣れが遅れる効果は機械で確かめない(EV で開示する)。合否を持たない。
 //
 // 使い方: node scripts/gate/review-order.mjs --gate G-6 --target PR-123 --risk R2 [--date YYYY-MM-DD] < 項目の一覧
 //   項目は行頭から始まる塊ごと(字下げした行・空行は直前の項目の続き)。--date を省くと今日(UTC)の日付を使う
@@ -72,13 +73,49 @@ export function orderItems(items, { gate, target, risk, day }) {
   const week = isoWeekOf(day);
   if (NOT_ROTATED.includes(risk)) return { items: [...items], rotated: false, week, reason: `${risk} は回さない(5.7.5)` };
   if (items.length < 2) return { items: [...items], rotated: false, week, reason: '項目が1つ以下' };
-  const next = stream(`${gate}|${target.trim()}|${week}`);
+  const tgt = target.trim();
+  const mon = mondayOf(day);
+  const first = (mon - EPOCH_MONDAY) / WEEK_MS;
+  if (first < 0) return { items: shuffled(items, gate, tgt, week), rotated: true, week, reason: `ISO 週 ${week} の種で並べた(${EPOCH_DAY} より前の日付のため、前の週との違いは保証しない)` };
+  // 起点の週から現在の週まで順に決める。前の週の並びと同じになるときは、同じにならない最初の回転へ替える(週ごとに並びが変わることを決定的に保証する)
+  let prev = null;
+  let out = null;
+  for (let k = 0; k <= first; k++) {
+    const w = isoWeekOf(new Date(EPOCH_MONDAY + k * WEEK_MS).toISOString().slice(0, 10));
+    const base = shuffled(items, gate, tgt, w);
+    out = base;
+    if (prev && same(base, prev)) {
+      for (let r = 1; r < base.length; r++) {
+        const cand = [...base.slice(r), ...base.slice(0, r)];
+        if (!same(cand, prev)) {
+          out = cand;
+          break;
+        }
+      }
+    }
+    prev = out;
+  }
+  return { items: out, rotated: true, week, reason: `ISO 週 ${week} の種で並べた(前の週と同じ並びになるときは回転して変える。項目の文が同一のものがあるときを除く)` };
+}
+
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+const EPOCH_DAY = '2000-01-03'; // 月曜
+const EPOCH_MONDAY = Date.parse(`${EPOCH_DAY}T00:00:00Z`);
+const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+/** その日を含む週の月曜(UTC の暦)の時刻 */
+function mondayOf(day) {
+  const d = new Date(`${day}T00:00:00Z`);
+  return d.getTime() - ((d.getUTCDay() + 6) % 7) * 24 * 3600 * 1000;
+}
+/** 種(ゲート・対象・ISO 週)からの一様なシャッフル */
+function shuffled(items, gate, tgt, week) {
+  const next = stream(`${gate}|${tgt}|${week}`);
   const out = [...items];
   for (let i = out.length - 1; i > 0; i--) {
     const j = next() % (i + 1);
     [out[i], out[j]] = [out[j], out[i]];
   }
-  return { items: out, rotated: true, week, reason: `ISO 週 ${week} の種で並べた` };
+  return out;
 }
 
 /** 行の列を項目の塊にする(行頭が空白でも空行でもない行が、新しい項目の始まり) */

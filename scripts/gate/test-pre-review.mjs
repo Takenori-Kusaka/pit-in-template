@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseHolidays } from './business-days.mjs';
-import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER, materialPrOf, requiredOwners, publishedAtOf, withPublishedAt, fetchPrFiles } from './pre-review.mjs';
+import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER, materialPrOf, prRefOf, fetchPrCreated, requiredOwners, publishedAtOf, withPublishedAt, fetchPrFiles } from './pre-review.mjs';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -266,7 +266,8 @@ check('IMPL-0217:ok どの行にも当たらないファイルは unowned に出
 const rq = reqPlan();
 const rqBody = rq.actions.find((a) => a.key.startsWith('required:'))?.body ?? '';
 check('IMPL-0217:ng CODEOWNERS の所有者が指名レビュアに無ければ、必須応答として記載し、含まれない者を示す', /必須応答/.test(rqBody) && /@bob @dave @carol/.test(rqBody) && /指名レビュアに含まれていません: @dave。/.test(rqBody) && /通知先: @dave$/m.test(rqBody), rqBody);
-check('IMPL-0217:ok 強制は作らない旨(判定へ進めない扱いは未決)を書く', /判定へ進めない扱いは、機械では決めていません/.test(rqBody) && /PR 上のレビューは読みません/.test(rqBody));
+check('IMPL-0217:ok 条文は有効で、機械が止めないのは強制の機械化が未決のためだと書く(条文の要求を未決と読ませない)', /3\.10\.9 は、必須応答の者の記名の応答が揃うまで判定へ進めないと定めています/.test(rqBody) && /機械はこれを止めません\(止める強制の機械化は未決\)/.test(rqBody) && !/扱いは、機械では決めていません/.test(rqBody) && /PR 上のレビューは読みません/.test(rqBody));
+check('IMPL-0217:ok 判定資料への転記は起案者が行い、機械の記載は上程の Issue に置くと書く', /判定資料\(3\.10\.3\)への転記は起案者が行います/.test(rqBody) && /判定資料の本文は編集しません/.test(rqBody));
 const allNom = reqPlan({ fields: { 指名レビュア: '@bob @carol @dave @boss' } });
 check('IMPL-0217:ok 全員が指名レビュアに含まれていれば、含まれない者を示さない', (() => { const b = allNom.actions.find((a) => a.key.startsWith('required:')).body; return /全員が指名レビュアに含まれています/.test(b) && /通知先:\s*$/m.test(b); })());
 check('IMPL-0217:ok 起案者本人は必須応答に数えない', !/@alice/.test(reqPlan({ plan: { codeownersText: '* @alice @bob\n' } }).actions.find((a) => a.key.startsWith('required:')).body.split('\n')[0].split(':').slice(1).join(':')));
@@ -279,7 +280,7 @@ check('IMPL-0217:ok 同じ必須応答の記載は重ねて出さない(冪等)'
 const missPlan = (comments) => plan({ issues: [withPr({ comments, fields: { 指名レビュア: '@bob @carol @dave @boss' } })], now: at('2026-11-26'), prFiles: { 77: ['src/a.ts', 'docs/x.md'] }, codeownersText: coText });
 const miss = missPlan([cm('bob', op(), at('2026-11-22'))]).actions.find((a) => a.key.startsWith('required-miss'));
 check('IMPL-0217:ng 締切で記名の応答が無い必須の者(dave・carol)を、0219 の宛先(節6 の判定する者 @boss)へ通知する', Boolean(miss) && /^@boss /.test(miss.body.split('\n')[1]) && /無い必須応答の者がいます: @dave @carol/.test(miss.body) && !/通知先:.*@bob/.test(miss.body), miss?.body);
-check('IMPL-0217:ng 通知は判定を止めない旨を書く(強制しない)', /判定を止めません/.test(miss?.body ?? ''));
+check('IMPL-0217:ng 通知は判定を止めない旨を書く(条文は有効・機械化は未決)', /機械はこれを止めません\(止める強制の機械化は未決\)/.test(miss?.body ?? '') && /定めていますが/.test(miss?.body ?? '') && !/この通知は判定を止めません/.test(miss?.body ?? ''));
 check('IMPL-0217:ok 全員が記名で応答していれば通知しない', !missPlan(['bob', 'carol', 'dave', 'boss'].map((l) => cm(l, op(), at('2026-11-22')))).actions.some((a) => a.key.startsWith('required-miss')));
 check('IMPL-0217:ok 締切の前には通知しない', !plan({ issues: [withPr()], now: at('2026-11-24'), prFiles: { 77: ['src/a.ts'] }, codeownersText: coText }).actions.some((a) => a.key.startsWith('required-miss')));
 check('IMPL-0217:ok AI の名義(bot)の所有者は必須応答に数えない', !/ci-bot/.test(reqPlan({ plan: { codeownersText: '* @ci-bot @bob\n' } }).actions.find((a) => a.key.startsWith('required:')).body.split('\n')[0]));
@@ -312,6 +313,46 @@ check('変更ファイルの読み取り: 改名前のパスも含める。読�
 const ghCalls = [];
 fetchPrFiles((args) => { ghCalls.push(args.join(' ')); return '[[]]'; }, 'o/r', 77);
 check('変更ファイルの読み取りは読み取りの API だけ', ghCalls.length === 1 && /repos\/o\/r\/pulls\/77\/files/.test(ghCalls[0]) && !/-X/.test(ghCalls[0]));
+
+// ---- 突合 1巡目の直し ----
+check('M-3 別のリポジトリの PR の URL は、このリポジトリの同じ番号と読まない(repo を渡したとき)', materialPrOf('https://github.com/other/repo/pull/77', 'o/r') === null && materialPrOf('https://github.com/O/R/pull/77', 'o/r') === 77 && materialPrOf('PR #5', 'o/r') === 5 && prRefOf('https://github.com/other/repo/pull/77', 'o/r').foreign === 'https://github.com/other/repo/pull/77');
+{
+  const fp = plan({ issues: [withPr({ fields: { 判定資料の所在: 'https://github.com/other/repo/pull/77' } })], now: at('2026-11-23'), prFiles: { 77: ['src/a.ts'] }, codeownersText: coText, repo: 'o/r' });
+  check('M-3 別のリポジトリの PR は必須応答を導出せず、注意に出す', !fp.actions.some((a) => a.key.startsWith('required')) && fp.notes.some((n) => /別のリポジトリの PR/.test(n)), JSON.stringify(fp.notes));
+}
+const ow2 = requiredOwners('* dev@example.com @bob\n', ['a.ts']);
+check('L-1 電子メールの所有者は個人に解決できないと注意に出す', JSON.stringify(ow2.emails) === JSON.stringify(['dev@example.com']) && JSON.stringify(ow2.logins) === JSON.stringify(['bob']) && plan({ issues: [withPr()], now: at('2026-11-23'), prFiles: { 77: ['a.ts'] }, codeownersText: '* dev@example.com @bob\n' }).notes.some((n) => /電子メール\(dev@example\.com\)/.test(n)));
+check('L-2 後の行が所有者の無い行なら、unowned に出す', JSON.stringify(requiredOwners('* @bob\nsrc/gen/\n', ['src/gen/x.ts']).unowned) === JSON.stringify(['src/gen/x.ts']));
+{
+  const k1 = reqPlan().actions.find((a) => a.key.startsWith('required:')).key;
+  const k2 = reqPlan({ fields: { 指名レビュア: '@bob @carol @dave @boss' } }).actions.find((a) => a.key.startsWith('required:')).key;
+  const k3 = reqPlan({ fields: { 指名レビュア: '@bob @boss' } }).actions.find((a) => a.key.startsWith('required:')).key;
+  check('L-3 指名レビュアを直して未指名の者が変われば、新しい記載の印になる', k1 !== k3 && k2 !== k3 && /:missing=/.test(k1) && !/:missing=/.test(k2), [k1, k2, k3].join(' | '));
+}
+// H-1 0830: 判定資料の所在だけで公開した上程
+const locIssue = (created) => issue({ body: form({ 判定資料の所在: PR_URL }), createdAt: created });
+{
+  const lateLoc = plan({ issues: [locIssue(at('2026-11-24'))], now: at('2026-11-25'), prFiles: { 77: ['src/a.ts'] }, prCreated: { 77: at('2026-11-20') }, codeownersText: coText, ledgerText: ledgerHead, repo: 'o/r' });
+  const shL = lateLoc.actions.find((a) => a.key.startsWith('shortened'));
+  check('H-1 IMPL-0830:ng 所在(同じリポジトリの PR)だけの上程でも、上程の作成が期日より遅ければ短縮として通知する(下限であることを書く)', Boolean(shL) && /下限/.test(shL.body), JSON.stringify(lateLoc.notes));
+  const prLate = plan({ issues: [locIssue(at('2026-11-10'))], now: at('2026-11-25'), prFiles: { 77: ['src/a.ts'] }, prCreated: { 77: at('2026-11-24') }, codeownersText: coText, ledgerText: ledgerHead, repo: 'o/r' });
+  check('H-1 IMPL-0830:ng 所在の PR の作成が期日より遅くても短縮として通知する', prLate.actions.some((a) => a.key.startsWith('shortened')));
+  const okLoc = plan({ issues: [locIssue(at('2026-11-10'))], now: at('2026-11-25'), prFiles: { 77: ['src/a.ts'] }, prCreated: { 77: at('2026-11-11') }, codeownersText: coText, ledgerText: ledgerHead, repo: 'o/r' });
+  check('H-1 IMPL-0830:ok 下限が期日以前なら通知せず、「公開の時点を確かめていない」を出す', !okLoc.actions.some((a) => a.key.startsWith('shortened')) && okLoc.notes.some((n) => /公開の時点を確かめていない/.test(n) && /所在の欄を書いた時刻は読めない/.test(n)), JSON.stringify(okLoc.notes));
+  const ext = plan({ issues: [issue({ body: form({ 判定資料の所在: 'https://example.com/doc' }), createdAt: at('2026-11-24') })], now: at('2026-11-25'), ledgerText: ledgerHead, repo: 'o/r' });
+  check('H-1 IMPL-0830:ng 読めない所在(外部の URL)は検出せず、「公開の時点を確かめていない」を出す', !ext.actions.some((a) => a.key.startsWith('shortened')) && ext.notes.some((n) => /公開の時点を確かめていない/.test(n) && /外部の URL/.test(n)), JSON.stringify(ext.notes));
+  const lateMat = plan({ issues: [issue()], materials: [{ number: 9, title: pubTitle, body: '', publishedAt: at('2026-11-24') }], now: at('2026-11-25'), ledgerText: ledgerHead });
+  check('H-1 判定資料の Issue があれば、その公開の時刻を使う(従来どおり)', lateMat.actions.some((a) => a.key.startsWith('shortened')));
+  const noAt = plan({ issues: [issue()], materials: [{ number: 9, title: pubTitle, body: '' }], now: at('2026-11-25'), ledgerText: ledgerHead });
+  check('H-1 公開の時刻を読めない資料は、確かめていないと出す', noAt.notes.some((n) => /公開の時点を確かめていない/.test(n)));
+}
+{
+  const evGh = () => '[[]]';
+  const wm = withPublishedAt(evGh, 'o/r', [{ number: 9, title: pubTitle, body: '', createdAt: '2026-11-24T01:00:00Z' }]);
+  check('H-1 草案の印を外した履歴が無い非草案の資料は、作成の時刻を公開の時刻にする。履歴を読めなければ足さない', wm[0].publishedAt === '2026-11-24T01:00:00Z' && withPublishedAt(() => { throw new Error('x'); }, 'o/r', [{ number: 9, title: pubTitle, body: '', createdAt: '2026-11-24T01:00:00Z' }])[0].publishedAt === undefined);
+  const prc = fetchPrCreated(() => JSON.stringify([{ created_at: '2026-11-20T00:00:00Z' }]), 'o/r', 77);
+  check('所在の PR の作成の時刻の読み取り(読み取りの API だけ。読めなければ null)', prc === '2026-11-20T00:00:00Z' && fetchPrCreated(() => { throw new Error('404'); }, 'o/r', 77) === null);
+}
 
 // ---- TZ に依らない ----
 if (process.argv.includes('--emit')) {

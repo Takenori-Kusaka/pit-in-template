@@ -4,7 +4,8 @@
 //   (i)  欠陥の台帳(docs/defect-ledger.md)の節「是正の記録」のうち、四半期の窓の中の日付で、対象が検査装置
 //        (scripts/gate/・.github/workflows/ のパス、または実行の記録にあるワークフロー・ジョブの名)を含む行
 //   (ii) GitHub Actions の実行の記録から、ワークフロー・ジョブごとの失敗の回数と最後の失敗の日
-// 合否に使わない。削除の候補を機械が選ばない。読み出せないとき(権限・保持期間)は「読めない」と出し、0 件と読み違えさせない。
+// 合否に使わない。削除の候補を機械が選ばない。読み出せないとき(権限)は「読めない」と出し、0 件と読み違えさせない。
+// 一覧の上限(1,000 件)に達した・総数より少ない場合は「一部しか読めていない」と出し、保持期間で窓の前半が欠けた可能性(最も古い実行が窓の始まりより後)も出す。数を確定の値にしない。
 // 失敗した実行だけを詳しく読む(ジョブごとの失敗は、失敗した実行のジョブの記録から数える)。窓は UTC の暦で、時計は読まない(--now を渡さない)。
 //
 // 使い方: node scripts/gate/enforcement-inventory.mjs --quarter 2026Q4 [--repo owner/name]
@@ -19,7 +20,9 @@ import { ghCli, json } from './review-queue.mjs';
 export const DEFECT_FILE = 'docs/defect-ledger.md';
 export const CORRECTION_HEADING = '是正の記録';
 /** 検査装置のパス(対象の欄にこの語があれば、検査装置を対象とする行とみなす) */
-export const DEVICE_PATHS = ['scripts/gate/', '.github/workflows/'];
+/** GitHub の REST API が絞り込みつきの実行の一覧で返す上限 */
+export const RUNS_API_CAP = 1000;
+export const DEVICE_PATHS =['scripts/gate/', '.github/workflows/'];
 
 /** 四半期 'YYYYQn' の始まりと終わり(UTC の暦の日)。読めなければ null */
 export function quarterWindow(q) {
@@ -70,13 +73,21 @@ export function parseCorrections(text) {
 /** 対象の欄が検査装置を含むか。パスの語か、実行の記録にあるワークフロー・ジョブの名(names)を含む */
 export function isDeviceTarget(target, names = []) {
   const t = String(target ?? '');
-  return DEVICE_PATHS.some((p) => t.includes(p)) || names.some((n) => n && t.includes(n));
+  return DEVICE_PATHS.some((p) => t.includes(p)) || names.some((n) => nameIn(t, n));
+}
+
+/** 名が語として現れるか(前後が英数字・ハイフン・下線でない)。部分一致で製品の是正の行を検査装置の行に数えない */
+export function nameIn(text, name) {
+  if (!name) return false;
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9_-])${esc}(?![A-Za-z0-9_-])`).test(String(text ?? ''));
 }
 
 /** 実行の記録から、ワークフローごと・ジョブごとの失敗の回数と最後の失敗の日を数える(純関数)。runs: { id, name, path, conclusion, created_at }[]、jobsOf(run): { name, conclusion }[] */
 export function tally(runs, jobsOf) {
   const workflows = new Map();
   const jobs = new Map();
+  let jobsUnread = 0;
   for (const r of runs) {
     const wf = String(r.path ?? '').replace(/@.*$/, '') || r.name || '(名前なし)';
     const w = workflows.get(wf) ?? { workflow: wf, name: r.name ?? '', runs: 0, failures: 0, lastFailure: null };
@@ -86,7 +97,9 @@ export function tally(runs, jobsOf) {
     const day = String(r.created_at ?? '').slice(0, 10);
     w.failures++;
     if (day && (!w.lastFailure || day > w.lastFailure)) w.lastFailure = day;
-    for (const j of jobsOf(r) ?? []) {
+    const jl = jobsOf(r);
+    if (jl === null || jl === undefined) jobsUnread++;
+    for (const j of jl ?? []) {
       if (j.conclusion !== 'failure') continue;
       const key = `${wf}\u0000${j.name}`;
       const e = jobs.get(key) ?? { workflow: wf, job: j.name, failures: 0, lastFailure: null };
@@ -96,7 +109,7 @@ export function tally(runs, jobsOf) {
     }
   }
   const byName = (a, b) => (a.workflow + (a.job ?? '')).localeCompare(b.workflow + (b.job ?? ''));
-  return { workflows: [...workflows.values()].sort(byName), jobs: [...jobs.values()].sort(byName) };
+  return { workflows: [...workflows.values()].sort(byName), jobs: [...jobs.values()].sort(byName), jobsUnread };
 }
 
 /** 実行の記録を窓の中(UTC の暦)で読む。読めなければ { error }。gh は差し替えられる */
@@ -104,7 +117,9 @@ export function fetchRuns(gh, repo, win) {
   try {
     const pages = json(gh, [`repos/${repo}/actions/runs?created=${win.from}..${win.to}&per_page=100`]);
     const runs = pages.flatMap((p) => (Array.isArray(p?.workflow_runs) ? p.workflow_runs : []));
-    return { runs: runs.map((r) => ({ id: r.id, name: r.name, path: r.path, conclusion: r.conclusion, created_at: r.created_at })) };
+    const totals = pages.map((p) => p?.total_count).filter((n) => Number.isInteger(n));
+    const total = totals.length ? Math.max(...totals) : null;
+    return { runs: runs.map((r) => ({ id: r.id, name: r.name, path: r.path, conclusion: r.conclusion, created_at: r.created_at })), total };
   } catch (e) {
     return { error: String(e?.stderr ?? e?.message ?? e).split('\n')[0].slice(0, 200) };
   }
@@ -148,9 +163,17 @@ export function inventory({ window: win, ledgerText, runsResult, jobsOf }) {
   if (runsResult?.error) lines.push(`読めない: 実行の記録を読み出せませんでした(${runsResult.error})。権限(Actions の読み取り)か保持期間の外の可能性があります。失敗が 0 件という意味ではありません。`, '');
   else if (!done.workflows.length) lines.push('窓の中の実行の記録が 0 件でした(保持期間の外の実行は一覧に出ません)。', '');
   else {
+    const rl = runsResult.runs;
+    const got = rl.length;
+    const total = runsResult.total ?? null;
+    const capped = got >= RUNS_API_CAP;
+    const short = total !== null && total > got;
+    if (capped || short) lines.push(`**一部しか読めていません**: 実行の記録の一覧は 1 回の絞り込みで ${RUNS_API_CAP} 件までしか返りません。読めた ${got} 件${total !== null ? `(応答の総数 ${total} 件)` : ''}。以下の失敗・実行の数は確定の値ではなく、少なく出ている可能性があります。`, '');
+    const oldest = rl.map((r) => String(r.created_at ?? '').slice(0, 10)).filter(Boolean).sort()[0];
+    if (oldest && oldest > win.from) lines.push(`注意: 読めた最も古い実行は ${oldest} で、窓の始まり ${win.from} より後です。実行の記録の保持期間(既定 90 日)で窓の前半が欠けているか、その期間は実行が無かったかを、この出力からは区別できません。数を確定の値として読まないでください。`, '');
     const rowsOf = (workflowPath, jobName) =>
       matched
-        .filter((r) => r.target.includes(workflowPath) || (jobName && r.target.includes(jobName)))
+        .filter((r) => r.target.includes(workflowPath) || (jobName && nameIn(r.target, jobName)))
         .map((r) => `${r.line} 行目`)
         .join('、') || '—';
     lines.push('| ワークフロー | ジョブ | 失敗 | 実行 | 最後の失敗の日(UTC) | 対応する是正の行 |', '| --- | --- | --- | --- | --- | --- |');
@@ -161,6 +184,8 @@ export function inventory({ window: win, ledgerText, runsResult, jobsOf }) {
     lines.push('');
   }
   lines.push('- ジョブの失敗は、失敗した実行のジョブの記録から数えます。ジョブの記録を読めなかった実行は、ワークフローの失敗にだけ数えます。');
+  if (done.jobsUnread > 0) lines.push(`- ジョブの記録を読めなかった失敗した実行: ${done.jobsUnread} 件。ジョブごとの失敗は、この分だけ少なく出ています。`);
+  lines.push('- 実行の一覧は各実行の最新の試行の結論だけを持ちます。再実行で成功した失敗(run_attempt が 2 以上)は数えません。');
   lines.push('- 是正の行との対応は、対象の欄にワークフローのパス、またはジョブの名が書かれているかの文字列の一致です。意味は読んでいません。');
   lines.push('- 失敗が多い・少ないことは、検査の要否を示しません。働いていない検査(失敗が一度も無い)かどうかは、人が判断します。', '');
   return lines.join('\n');
