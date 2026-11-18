@@ -3454,3 +3454,47 @@ export function codeownersState(root = ROOT) {
   }
   return { places, effective, owner };
 }
+
+// --- IMPL-0738: CL1 以上と規制業は、未達の種類を問わず出荷しない(第8章 テーラリングの表。ADR-0218) ---
+
+/** G-3 の未達の条件(generate-profile.mjs の detectUnmet と、下の導き直しが共有する 1 つの関数)。 */
+export function g3UnmetCondition(answers, stack) {
+  return stack === 'undetermined' && answers?.['q-biz-phase'] !== 'poc';
+}
+
+/** G-3 の未達の記載(detectUnmet が unmet[] へ入れる形と、導き直しの欠落の文が同じ値を使う)。 */
+export function g3UnmetEntry() {
+  return {
+    gate: 'g3',
+    label: 'G-3 技術設計判断',
+    reason: 'MVP構築（S1以降）フェーズに入っていますが、技術スタックが未確定（undetermined）のままです',
+    whyNotAi: '技術スタックの決定および技術設計の判断は、AIに意思決定を委譲することができない極めて重要な設計・技術判断です。',
+    compensation: [],
+    reviewSourcing: null,
+    howToResolve: [
+      '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, python-poetry, python-uv, go, none）を決定する',
+      '決定したスタックを、/process-change(種別 settings の settings.stack)で構成へ反映する。process.config.json を手で編集しない',
+    ],
+  };
+}
+
+/**
+ * 出荷を止める未達。CL1 以上か規制業のとき、構成の unmet[] と、回答とスタックから導き直した G-3 の未達の和を返す。
+ * 構成の手書き(unmet: [] など)に頼らない。CL0 で規制業でない案件は空(開示と G-8 の受容で出荷できる)。
+ */
+export function unmetShipBlockers(config) {
+  const a = config?.answers ?? {};
+  const applies = ['cl1', 'cl2', 'cl3'].includes(a['q-criticality']) || a['q-quality'] === 'quality-regulated';
+  if (!applies) return [];
+  const out = [...(config?.unmet ?? [])];
+  if (g3UnmetCondition(a, config?.adapters?.stack ?? 'none') && !out.some((u) => u.gate === 'g3')) out.push(g3UnmetEntry());
+  return out;
+}
+
+/** 集約の記載の欠落の文。止まるのは出荷判定(集約の exit 1)で、マージは止めない。 */
+export function unmetShipGaps(config) {
+  return unmetShipBlockers(config).map((u) =>
+    `未達のゲートがあります: ${u.label ?? u.gate}(${u.reason ?? '理由の記録なし'})。CL1 以上の案件と規制業の案件は、未達の種類を問わず、未達を解くまで出荷しません。` +
+      `例外承認は未達を解きません(第8章、第7章 7.3)。解き方: ${(u.howToResolve ?? [])[0] ?? '未達の理由の記録を確かめてください'}`
+  );
+}

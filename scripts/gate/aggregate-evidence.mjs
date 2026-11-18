@@ -133,6 +133,7 @@ import {
   standardEdition,
   deviationCategory,
   enforcedApprovalFindings,
+  unmetShipGaps,
 } from './config.mjs';
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText } from './judgement-records.mjs';
@@ -853,7 +854,7 @@ export function copyCoverage(prNumbers, copies) {
  */
 export const OFF_DEFAULT_MERGE_LIMIT_TEXT =
   'PR を経ない push による取り込み(手元で上の層を下の層へ git merge して git push する経路を含む)は、承認レビューの写しが作られないため拾いません。' +
-  '写しの base.ref は、マージの時点の PR の基底です。マージの前に基底を付け替えた経過は見ません。検出は合否・出荷の失敗に使いません';
+  '写しの base.ref は、マージの時点の PR の基底です。マージの前に基底を付け替えた経過は見ません。この検出の一覧は合否・出荷の失敗に使いません(層の合わさりの承認の数え方は、別に IMPL-0498 が定めます)';
 
 /**
  * 既定ブランチ以外へ取り込んだマージの、マージの後の検出(IMPL-0248。process-compass #360 H-4)。出荷の範囲の写し(record-copy の
@@ -891,6 +892,68 @@ export function offDefaultMerges({ copies, inRange = () => true, missing = [], s
   }
   out.status = out.detected.length ? 'detected' : out.unconfirmed.length ? 'unconfirmed' : 'none';
   return out;
+}
+
+/**
+ * 層の合わさり(IMPL-0498。ADR-0218)。既定ブランチ以外へ取り込んだ層 X のうち、その層の承認が無いものが、
+ * 既定ブランチへ入った PR Y の先頭(head_sha)の祖先なら、Y を層ごとの確認に数えない(IMPL-0250)。
+ *   copies  PR 番号 → { copy }(mergeRecordSources の copies)
+ *   git     (args) => { status, out }。例外を投げない
+ * 判定が要るのは承認の無い X があるときだけ。そのときに限り、Y ごとに `git fetch --no-tags origin refs/pull/<Y>/head` を行う
+ * (ブランチを消す運用では、取得しないと Y の先頭を読めない)。
+ *   祖先である                                   → stackedLayer(数えない)
+ *   Y の先頭があり、浅い取得でなく、祖先でない    → 数える(X の版が無い場合を含む)
+ *   浅い取得、または Y の先頭を取得できない        → stackedUnconfirmed(数えない側へ倒す)
+ * 見逃す場面: 層を取り込んだ後に rebase した変更(祖先でなくなる)。patch-id などの近似は偽陽性が出るため採らない
+ */
+export function stackedLayerCheck({ copies, git, defaultBranch = null } = {}) {
+  const out = { verdicts: new Map(), unapprovedLayers: 0, fetched: 0 };
+  if (!copies || typeof git !== 'function') return out;
+  const entries = [...copies].map(([n, e]) => [n, e?.copy ?? null]).filter(([, c]) => c).sort((x, y) => x[0] - y[0]);
+  const defOf = (c) => (typeof c.default_branch === 'string' && c.default_branch.trim() ? c.default_branch.trim() : (defaultBranch ?? null));
+  const baseOf = (c) => (typeof c.base?.ref === 'string' && c.base.ref.trim() ? c.base.ref.trim() : null);
+  const sha = (v) => (typeof v === 'string' && /^[0-9a-f]{7,40}$/i.test(v.trim()) ? v.trim() : null);
+  const at = (c) => Date.parse(c.merged_at ?? '');
+  const layers = entries.filter(([, c]) => {
+    const def = defOf(c);
+    const base = baseOf(c);
+    return def && base && base !== def && sha(c.merge_commit_sha) && approvalCountOfCopy(c) === 0;
+  });
+  out.unapprovedLayers = layers.length;
+  if (!layers.length) return out;
+  const shallow = git(['rev-parse', '--is-shallow-repository']).out === 'true';
+  for (const [n, y] of entries) {
+    const def = defOf(y);
+    const base = baseOf(y);
+    const head = sha(y.head_sha);
+    if (!def || !base || base !== def) continue;
+    const before = layers.filter(([m, x]) => m !== n && (Number.isNaN(at(x)) || Number.isNaN(at(y)) ? m < n : at(x) < at(y)));
+    if (!before.length) continue;
+    if (shallow || !head) {
+      out.verdicts.set(n, { reason: 'stackedUnconfirmed', detail: shallow ? '浅い取得で履歴を読めない' : '写しに head_sha が無い', layers: before.map(([m]) => m) });
+      continue;
+    }
+    if (git(['cat-file', '-e', `${head}^{commit}`]).status !== 0) {
+      out.fetched++;
+      git(['fetch', '--no-tags', 'origin', `refs/pull/${n}/head`]);
+    }
+    if (git(['cat-file', '-e', `${head}^{commit}`]).status !== 0) {
+      out.verdicts.set(n, { reason: 'stackedUnconfirmed', detail: `PR #${n} の先頭を取得できない`, layers: before.map(([m]) => m) });
+      continue;
+    }
+    const hit = before.find(([, x]) => git(['merge-base', '--is-ancestor', sha(x.merge_commit_sha), head]).status === 0);
+    if (hit) out.verdicts.set(n, { reason: 'stackedLayer', detail: `承認の無い層 #${hit[0]}(基底 ${baseOf(hit[1])})が先頭の祖先`, layers: [hit[0]] });
+  }
+  return out;
+}
+
+/** stackedLayerCheck の結果を、保証の開示の1行にする。数えなかった件数・未確認の件数・見逃す場面を出す */
+export function stackedLayerText(r) {
+  if (!r) return '未確認(記録なし)';
+  const v = [...(r.verdicts ?? new Map()).values()];
+  const stacked = v.filter((x) => x.reason === 'stackedLayer').length;
+  const unconfirmed = v.filter((x) => x.reason === 'stackedUnconfirmed').length;
+  return `承認の無い層 ${r.unapprovedLayers ?? 0} 件。確認ありに数えなかった PR ${stacked} 件、履歴を読めず数えなかった PR ${unconfirmed} 件。層を取り込んだ後に rebase した変更は見つかりません`;
 }
 
 /** offDefaultMerges の結果を、保証の開示の表の1升の文にする(値だけ。評価の語を足さない) */
@@ -1485,6 +1548,22 @@ if (isMain) {
     baseGates: gateDetails.map((g) => ({ file: g.file, text: fs.readFileSync(path.join(ROOT, g.file), 'utf8') })),
   });
 
+  // 層の合わさり(IMPL-0498)。承認の無い層があるときだけ、PR ごとに refs/pull/N/head を取得して祖先を調べる
+  const stackedLayers = stackedLayerCheck({
+    copies: recordSources.copies,
+    git: (args) => {
+      try {
+        return { status: 0, out: execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
+      } catch (e) {
+        return { status: typeof e.status === 'number' ? e.status : 1, out: '' };
+      }
+    },
+    defaultBranch: (() => {
+      const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+      return sym ? sym.replace(/^refs\/remotes\/origin\//, '') : null;
+    })(),
+  });
+
   // --- コミットのトレーラ ------------------------------------------------------
 
   const trailerFormat =
@@ -1711,6 +1790,8 @@ if (isMain) {
   const UNCONFIRMED = {
     recordNotFound: '承認記録を取得できない',
     noApproval: '人のアカウントによる承認がない',
+    stackedLayer: '承認の無い下の層が、この PR の先頭の祖先である(層の合わさりは、層ごとの確認に数えない。IMPL-0498)',
+    stackedUnconfirmed: '承認の無い下の層があり、この PR の先頭との祖先の関係を読めない(浅い取得、または先頭を取得できない。数えない側へ倒す。IMPL-0498)',
     aiOrBot: 'AI・bot のアカウントによる承認だけである(検出の層。承認に数えない)',
     approverUnmapped: '承認者を名簿と対応づけられない(組織上の任命権者は確認者に数えない)',
     approverIsInstructor: '承認者が、作成を指示した者である',
@@ -1731,6 +1812,8 @@ if (isMain) {
   const NOT_COUNTED_CODE = {
     recordNotFound: 'record-not-found',
     noApproval: 'no-approval-record',
+    stackedLayer: 'stacked-layer',
+    stackedUnconfirmed: 'stacked-layer-unconfirmed',
     aiOrBot: 'ai-or-bot',
     approverUnmapped: 'approver-not-in-roster',
     approverIsInstructor: 'approver-instructed',
@@ -2329,7 +2412,10 @@ if (isMain) {
     // 承認は、取り込んだ PR の先頭の版に対するものだけを数える(#296)。PR の記録に先頭が無ければ、版を確かめられない。
     // PR の記録(gh)が無く写しで対応づけた PR は、写しの head(record-copy.yml の head_sha)を先頭とする(#321 との統合)
     const headOid = api ? (api.headRefOid ?? null) : (headOfCopy(copyEntry?.copy) ?? null);
-    const independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid, prLabel: `PR #${n} の承認` });
+    let independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid, prLabel: `PR #${n} の承認` });
+    // 層の合わさり(IMPL-0498): 承認の無い下の層が先頭の祖先なら、確認ありに数えない
+    const stackedVerdict = stackedLayers.verdicts.get(n);
+    if (independent.counted && stackedVerdict) independent = { ...independent, counted: false, reason: stackedVerdict.reason, reasonText: `${UNCONFIRMED[stackedVerdict.reason]}(${stackedVerdict.detail})`, by: [], byLogins: [] };
     const { last } = lastReviewStates(reviews, headOid);
     const humanApproverAccounts = [...last.values()].filter((v) => v.state === 'APPROVED' && !isAiLogin(v.login, v.bot)).map((v) => ({ login: v.login, id: v.id ?? null }));
     // 効力を持つ記録・様式の帰属に使う承認者は、ホスティングの記録(REST)から読む。読めなければ G-6 に数えた承認者
@@ -3172,6 +3258,8 @@ if (isMain) {
   }
   // 出荷できない状態(CL1 以上・規制業で体制が3名を割った)。出荷の判定を通さない
   if (config.shipBlocked) gaps.push(`出荷できない状態です(${config.shipBlocked.since} から): ${config.shipBlocked.reason}`);
+  // 未達のまま出荷しない(CL1 以上・規制業。種類を問わない。手書きの構成に頼らず G-3 の未達を導き直す。IMPL-0738)
+  for (const g of unmetShipGaps(config)) gaps.push(g);
 
   // 責任者が未記入の席は、誰が結果責任を負うかを示せない。記録の欠落として扱う(D-0 節1)
   const blankSeats = (config.seats ?? []).filter((s) => !s.accountable).map((s) => s.name ?? s.role);
@@ -5114,6 +5202,8 @@ if (isMain) {
     range: copyRange,
     // 既定ブランチ以外へ取り込んだマージ(マージの後の検出。合否に使わない。process-compass #360 H-4 / IMPL-0248)
     offDefaultMerges: offDefault,
+    // 層の合わさり(IMPL-0498): 確認ありに数えなかった PR と未確認の件数
+    stackedLayers: { unapprovedLayers: stackedLayers.unapprovedLayers, fetched: stackedLayers.fetched, verdicts: [...stackedLayers.verdicts].map(([pr, v]) => ({ pr, ...v })), text: stackedLayerText(stackedLayers) },
     mismatches: recordSources.mismatches.map((m) => m.text),
     copyFindings: [...prs, ...recordPrs].flatMap((p) => p.copy?.findings ?? []),
     // 「検証方法と結果」の節が、写しと今の本文で食い違う PR(所見の件数。合否に使わない。#333)
@@ -6245,7 +6335,8 @@ if (isMain) {
       );
       // 既定ブランチ以外へ取り込んだマージ(手動のスタックの中間の層のマージ。マージの後の検出。合否に使わない。process-compass #360 H-4 / IMPL-0248)
       R.push(
-        `| 既定ブランチ以外へ取り込んだマージ(写しの base.ref。検出あり / 0 件 / 未確認。合否・出荷の失敗に使わない) | ${offDefaultMergesText(rc.offDefaultMerges)} | ${prevRc((r) => (r.offDefaultMerges ? (r.offDefaultMerges.status === 'detected' ? `検出あり ${r.offDefaultMerges.detected.length} 件` : r.offDefaultMerges.status === 'none' ? '0 件' : '未確認') : null))} |`
+        `| 既定ブランチ以外へ取り込んだマージ(写しの base.ref。検出あり / 0 件 / 未確認。合否・出荷の失敗に使わない) | ${offDefaultMergesText(rc.offDefaultMerges)} | ${prevRc((r) => (r.offDefaultMerges ? (r.offDefaultMerges.status === 'detected' ? `検出あり ${r.offDefaultMerges.detected.length} 件` : r.offDefaultMerges.status === 'none' ? '0 件' : '未確認') : null))} |`,
+        `| 層の合わさり(承認の無い下の層が先頭の祖先である PR は確認ありに数えない。IMPL-0498) | ${stackedLayerText(rc.stackedLayers)} | — |`,
       );
       if (rc.writers) {
         // 記録用ブランチへ書き込める主体(構成ごとの固定の文)と、履歴の走査の件数。外へ渡す開示にも同じ文を載せる(process-compass #379 / IMPL-0439)

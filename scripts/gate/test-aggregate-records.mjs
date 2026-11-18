@@ -47,12 +47,14 @@ import {
   r2G6UnmetOf,
   r2G6UnmetLine,
   inputRecordGaps,
+  stackedLayerCheck,
+  stackedLayerText,
 } from './aggregate-evidence.mjs';
 import { stopFindings } from './check-pr.mjs';
 import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
-import { ROOT, sealChangeLog } from './config.mjs';
+import { ROOT, sealChangeLog, unmetShipGaps } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -661,6 +663,96 @@ const config = {
   });
   check('IMPL-0638:ok 併記あり・期間の外・G-6 は未達にしない', good.unmet.length === 0 && good.checked === 1, JSON.stringify(good));
   check('IMPL-0638:ok 期間が日付として読めない行は「確認できない」と出し、未達にしない', good.unconfirmed.some((u) => /価値責任者/.test(u)) && good.unmet.length === 0, JSON.stringify(good.unconfirmed));
+}
+
+// IMPL-0738(CL1 以上と規制業は、未達の種類を問わず集約の欠落に数える。手書きの構成でも G-3 の未達を導き直す)
+{
+  const BASE = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-biz-phase': 'growth', 'q-team-size': 'size-3-5', 'q-external-reviewer': 'reviewer-yes' };
+  const quiet = (fn) => { const log = console.log; console.log = () => {}; try { return fn(); } finally { console.log = log; } };
+  const built = (over, stack) => {
+    const answers = { ...BASE, ...over };
+    try { return quiet(() => buildConfig(answers, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, stack }).config); } catch { return null; }
+  };
+  const gapsOf = (cfg) => unmetShipGaps(cfg);
+  const cl1 = built({ 'q-criticality': 'cl1' }, 'undetermined');
+  check('IMPL-0738:ok(前提) 構成を作れて G-3 が未達になる', Boolean(cl1) && (cl1.unmet ?? []).some((u) => u.gate === 'g3'), JSON.stringify(cl1?.unmet?.map((u) => u.gate)));
+  check('IMPL-0738:ng CL1 × G-3 未達は欠落', gapsOf(cl1).length === 1 && /G-3/.test(gapsOf(cl1)[0]), JSON.stringify(gapsOf(cl1)));
+  const reg = built({ 'q-quality': 'quality-regulated' }, 'undetermined');
+  check('IMPL-0738:ng CL0 × 規制業 × G-3 未達は欠落', gapsOf(reg).length === 1, JSON.stringify(gapsOf(reg)));
+  const hand = cl1 ? JSON.parse(JSON.stringify(cl1)) : null;
+  if (hand) { hand.unmet = []; hand.gates.g3.state = 'omitted'; }
+  check('IMPL-0738:ng 手で unmet: []・g3: omitted と書いてもスタック未確定なら欠落(導き直す)', hand && gapsOf(hand).length === 1, JSON.stringify(hand && gapsOf(hand)));
+  check('IMPL-0738:ok CL0 × 標準 × G-3 未達は欠落にしない(開示と G-8 の受容)', gapsOf(built({}, 'undetermined')).length === 0);
+  check('IMPL-0738:ok CL1 × スタック確定は欠落なし', gapsOf(built({ 'q-criticality': 'cl1' }, 'node')).length === 0);
+  check('IMPL-0738:ok CL1 × PoC × スタック未確定は欠落なし', gapsOf(built({ 'q-criticality': 'cl1', 'q-biz-phase': 'poc' }, 'undetermined')).length === 0);
+  // 典型の初期状態で出荷が永久に止まらない(P1 の固定): スタックが確定している(node・none)か PoC なら、CL・事業段階・体制の組のすべてで欠落が出ない
+  const stuck = [];
+  for (const cl of ['cl0', 'cl1', 'cl2', 'cl3']) for (const phase of ['poc', 'mvp', 'growth']) for (const stack of ['node', 'none', 'undetermined']) {
+    const c = built({ 'q-criticality': cl, 'q-biz-phase': phase }, stack);
+    if (!c) continue;
+    const resolved = stack !== 'undetermined' || phase === 'poc';
+    if (resolved && unmetShipGaps(c).length) stuck.push(`${cl}/${phase}/${stack}`);
+  }
+  check('IMPL-0738:ok スタックが確定しているか PoC なら、CL0〜3 × 事業段階のどの組でも欠落が出ない(永久に止まらない)', stuck.length === 0, stuck.join(', '));
+  check('IMPL-0738:ng 欠落の文に未達の名と解き方の先頭が入る', /G-3 技術設計判断/.test(gapsOf(cl1)[0] ?? '') && /技術的な検証/.test(gapsOf(cl1)[0] ?? ''), gapsOf(cl1)[0]);
+}
+
+// IMPL-0498(層の合わさり: 承認の無い下の層が、既定ブランチへ入った PR の先頭の祖先なら、その PR を確認ありに数えない)
+// 使い捨ての git リポジトリで動かす。GitHub の実機(refs/pull/N/head の公開・verify ジョブ)では確かめていない
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stk-'));
+  const run = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const up = path.join(tmp, 'up');
+  fs.mkdirSync(up);
+  run(up, 'init', '-q', '-b', 'main');
+  const commit = (cwd, f, m) => { fs.writeFileSync(path.join(cwd, f), m + '\n'); run(cwd, 'add', '-A'); run(cwd, 'commit', '-q', '-m', m); return run(cwd, 'rev-parse', 'HEAD'); };
+  commit(up, 'a.txt', 'c0');
+  run(up, 'checkout', '-q', '-b', 'L1'); commit(up, 'l1.txt', 'c1');
+  run(up, 'checkout', '-q', '-b', 'L2'); commit(up, 'l2.txt', 'c2');
+  run(up, 'checkout', '-q', '-b', 'L3'); commit(up, 'l3.txt', 'c3');
+  run(up, 'checkout', '-q', 'L2'); run(up, 'merge', '-q', '--no-ff', '-m', 'merge L3 into L2', 'L3');
+  const mX = run(up, 'rev-parse', 'HEAD');
+  run(up, 'checkout', '-q', 'L1'); run(up, 'merge', '-q', '--no-ff', '-m', 'merge L2 into L1', 'L2');
+  const yHead = run(up, 'rev-parse', 'HEAD');
+  run(up, 'update-ref', 'refs/pull/2/head', yHead);
+  // 無関係な Y: 既定ブランチから別に切った変更
+  run(up, 'checkout', '-q', 'main'); run(up, 'checkout', '-q', '-b', 'other'); const otherHead = commit(up, 'o.txt', 'other');
+  run(up, 'update-ref', 'refs/pull/3/head', otherHead);
+  run(up, 'checkout', '-q', 'main');
+  const clone = (name, ...opt) => { const d = path.join(tmp, name); run(tmp, 'clone', '-q', '--no-tags', '--single-branch', '--branch', 'main', ...opt, 'file://' + up.split(path.sep).join('/'), d); return d; };
+  const gitOf = (cwd) => { const calls = []; const f = (args) => { calls.push(args.join(' ')); const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); return { status: r.status ?? 1, out: (r.stdout ?? '').trim() }; }; f.calls = calls; return f; };
+  const copy = (n, over = {}) => ({ copy: { number: n, base: { ref: 'main' }, default_branch: 'main', head_sha: null, merge_commit_sha: null, merged_at: `2026-11-0${n}T00:00:00Z`, reviews: [], ...over } });
+  const approved = [{ user: { login: 'someone', id: 5 }, state: 'APPROVED' }];
+  const mk = (over = {}) => new Map([
+    [1, copy(1, { base: { ref: 'L2' }, merge_commit_sha: mX, ...(over.x ?? {}) })],
+    [2, copy(2, { head_sha: yHead, ...(over.y ?? {}) })],
+    [3, copy(3, { head_sha: otherHead })],
+  ]);
+  const full = clone('full');
+  const g1 = gitOf(full);
+  const r1 = stackedLayerCheck({ copies: mk(), git: g1 });
+  check('IMPL-0498:ng 手動のスタック(承認の無い X が Y の先頭の祖先)は数えない(refs/pull/N/head を取得して判定)', r1.verdicts.get(2)?.reason === 'stackedLayer', JSON.stringify([...r1.verdicts]));
+  check('IMPL-0498:ok 無関係な Y(X が祖先でない)は数える', !r1.verdicts.has(3), JSON.stringify([...r1.verdicts]));
+  check('IMPL-0498:ok 取得は承認の無い X があるときだけ、Y ごとに refs/pull/<Y>/head を --no-tags で行う', g1.calls.filter((c) => /^fetch /.test(c)).every((c) => /--no-tags origin refs\/pull\/\d+\/head/.test(c)) && g1.calls.some((c) => /refs\/pull\/2\/head/.test(c)), g1.calls.join(' | '));
+  const g2 = gitOf(full);
+  const r2 = stackedLayerCheck({ copies: mk({ x: { reviews: approved } }), git: g2 });
+  check('IMPL-0498:ok X に有効な承認がある層は数える(取得もしない)', r2.verdicts.size === 0 && !g2.calls.some((c) => /^fetch /.test(c)), JSON.stringify([...r2.verdicts]) + g2.calls.join('|'));
+  const lower = new Map([[1, copy(1, { base: { ref: 'main' }, merge_commit_sha: mX })], [2, copy(2, { head_sha: yHead })]]);
+  const g3 = gitOf(full);
+  const r3 = stackedLayerCheck({ copies: lower, git: g3 });
+  check('IMPL-0498:ok 下から順に既定ブランチへ入れるスタック(X の基底も既定ブランチ)は数える', r3.verdicts.size === 0 && !g3.calls.some((c) => /^fetch /.test(c)));
+  const shallow = clone('shallow', '--depth', '1');
+  const r4 = stackedLayerCheck({ copies: mk(), git: gitOf(shallow) });
+  check('IMPL-0498:ng 浅い取得は数えない(未確認)', r4.verdicts.get(2)?.reason === 'stackedUnconfirmed', JSON.stringify([...r4.verdicts]));
+  const r5 = stackedLayerCheck({ copies: mk({ y: { head_sha: '0123456789012345678901234567890123456789' } }), git: gitOf(clone('nohead')) });
+  check('IMPL-0498:ng Y の head を取得できないときは数えない(未確認)', r5.verdicts.get(2)?.reason === 'stackedUnconfirmed', JSON.stringify([...r5.verdicts]));
+  const r6 = stackedLayerCheck({ copies: mk({ x: { merge_commit_sha: '1111111111111111111111111111111111111111' } }), git: gitOf(clone('xmissing')) });
+  check('IMPL-0498:ok Y の head があり X の版が無いときは数える', !r6.verdicts.has(2), JSON.stringify([...r6.verdicts]));
+  const late = mk({ x: { merged_at: '2026-11-09T00:00:00Z' } });
+  const r7 = stackedLayerCheck({ copies: late, git: gitOf(full) });
+  check('IMPL-0498:ok Y のマージより後に入った X は候補にしない', r7.verdicts.size === 0, JSON.stringify([...r7.verdicts]));
+  check('IMPL-0498:ok 開示の行に、数えなかった件数・未確認の件数・見逃す場面(取り込みの後の rebase)を出す', /承認の無い層 1 件/.test(stackedLayerText(r1)) && /数えなかった PR 1 件/.test(stackedLayerText(r1)) && /履歴を読めず数えなかった PR 2 件/.test(stackedLayerText(r4)) && /rebase/.test(stackedLayerText(r1)), stackedLayerText(r1));
+  fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 console.log('');

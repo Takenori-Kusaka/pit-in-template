@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
+import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { DETECTION_UNVERIFIED, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
@@ -525,20 +526,9 @@ export function detectUnmet(answers, gates, stack, { reviewerIsAuthor = null, so
     });
   }
 
-  if (stack === 'undetermined' && answers['q-biz-phase'] !== 'poc') {
+  if (g3UnmetCondition(answers, stack)) {
     if (gates.g3) gates.g3.state = 'unmet';
-    unmet.push({
-      gate: 'g3',
-      label: 'G-3 技術設計判断',
-      reason: 'MVP構築（S1以降）フェーズに入っていますが、技術スタックが未確定（undetermined）のままです',
-      whyNotAi: '技術スタックの決定および技術設計の判断は、AIに意思決定を委譲することができない極めて重要な設計・技術判断です。',
-      compensation: [],
-      reviewSourcing: null,
-      howToResolve: [
-        '技術的な検証（S0探索）を終え、採用する技術スタック（node, python, python-poetry, python-uv, go, none）を決定する',
-        '決定したスタックを、/process-change(種別 settings の settings.stack)で構成へ反映する。process.config.json を手で編集しない',
-      ],
-    });
+    unmet.push(g3UnmetEntry());
   }
   return unmet;
 }
