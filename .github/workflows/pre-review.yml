@@ -9,6 +9,8 @@
 # 営業日の祝日は .github/business-holidays.txt(任意)から読み、無ければ土日だけを除き、出力に「祝日を数えていない」と書きます。
 # 月次の集計の宛先は、リポジトリの変数 PRE_REVIEW_METRICS_ISSUE(指標の Issue の番号)です。未設定なら出力だけで書き込みません。
 #
+# 対象は、起票者の関係が OWNER・MEMBER・COLLABORATOR の Issue だけです(外部の者の起票で、機械が記名の通知を出さないため)。
+# 通知の印は、機械(github-actions[bot])のコメントのものだけを読みます。人が印を書いても通知は止まりません。
 # 2026-11-18 時点で、このワークフローは実際の GitHub 上で実行して確かめていません。
 # 有効化の前に、試験用のリポジトリで `workflow_dispatch` を dry-run(下の入力)で流して確かめてください。
 
@@ -55,6 +57,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .github/gate-node-version
+      - name: ラベルを作る(無いリポジトリでは、様式で起票してもラベルが付かず、何も起きないため)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          gh label create pre-review --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description "事前レビュー期間の上程" || true
+          gh label create pre-review-material --repo "$GITHUB_REPOSITORY" --color c5def5 --description "事前レビュー期間の判定資料" || true
       - name: 判定資料の起票と締切の通知
         env:
           GH_TOKEN: ${{ github.token }}

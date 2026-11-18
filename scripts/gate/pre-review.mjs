@@ -23,8 +23,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, loadConfig, aiAccountCheck, dedicatedSeatOf } from './config.mjs';
-import { addBusinessDays, dayOf, isRealDate, loadHolidays, DEFAULT_OFFSET_MINUTES } from './business-days.mjs';
-import { escalationTarget, ghCli } from './review-queue.mjs';
+import { addBusinessDays, dayOf, isRealDate, isBusinessDay, loadHolidays, HOLIDAYS_FILE, DEFAULT_OFFSET_MINUTES } from './business-days.mjs';
+import { escalationTarget, ghCli, json, BOT_LOGIN } from './review-queue.mjs';
 
 const D0_FILE = 'docs/D-0-governance.md';
 export const MARKER = 'pit-in:pre-review';
@@ -58,7 +58,13 @@ export function parseIssueForm(body) {
   return out;
 }
 
-const loginsOf = (text) => [...String(text ?? '').matchAll(/@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/g)].map((m) => m[1]);
+/** 記名(@login)を読む。電子メールの `@ドメイン` と、チームの `@組織/名前` は login に数えない */
+const loginsOf = (text) => [...String(text ?? '').matchAll(/(?<![A-Za-z0-9._%+-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?![A-Za-z0-9-]*\/)/g)].map((m) => m[1]);
+
+/** 起票者の GitHub 上の関係のうち、機械が対象にするもの(公開リポジトリで外部の者の起票を対象にしない) */
+export const TRUSTED_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+/** 月は YYYY-MM(月次の集計の引数) */
+export const isMonth = (v) => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(v ?? ''));
 const uniq = (list) => [...new Map(list.map((l) => [l.toLowerCase(), l])).values()];
 
 /**
@@ -125,7 +131,9 @@ export function opinionGaps(op) {
 }
 
 const OWN_MARK = new RegExp(`<!-- ${MARKER}`);
-const hasKey = (comments, key) => (comments ?? []).some((c) => typeof c.body === 'string' && c.body.includes(`<!-- ${MARKER} ${key} -->`));
+/** 印は機械(github-actions)のコメントのものだけを読む。人が印を書いて通知を止めたり、一覧の時刻を偽ったりできないようにする */
+export const isMachine = (c) => Boolean(c?.bot) && c.login === BOT_LOGIN;
+const hasKey = (comments, key) => (comments ?? []).some((c) => isMachine(c) && typeof c.body === 'string' && c.body.includes(`<!-- ${MARKER} ${key} -->`));
 const stamp = (key, text) => `<!-- ${MARKER} ${key} -->\n${text}`;
 
 /** 起案者の応答の宣言行 `応答: <意見のコメントの URL>` が結ぶ意見のコメントの id の集合(0216) */
@@ -147,17 +155,23 @@ export function readProposal(issue, { config, holidays = new Set() }) {
   const t = targetOf(fields);
   const risk = riskOf(fields);
   const T = norm(fields[FIELDS.due]);
-  const out = { number: issue.number, fields, ...t, risk, T: isRealDate(T) ? T : null, problems: [] };
+  const out = { number: issue.number, fields, ...t, risk, T: isRealDate(T) ? T : null, problems: [], cautions: [] };
   if (!t.target) return out;
+  if (issue.association !== undefined && !TRUSTED_ASSOCIATIONS.includes(issue.association)) {
+    return { ...out, target: null, reason: `起票者の関係(${issue.association || '不明'})が OWNER・MEMBER・COLLABORATOR ではないため、対象にしない(外部の者の起票で機械が通知を出さないため)` };
+  }
   if (!risk) out.problems.push('リスク区分を読めない(R1〜R3)');
   if (!out.T) out.problems.push('判定予定日 T を読めない(YYYY-MM-DD)');
+  else if (!isBusinessDay(out.T, holidays)) out.cautions.push(`判定予定日 T(${out.T})が営業日ではない(土日・祝日。祝日は ${HOLIDAYS_FILE} がある場合だけ数える)。意図した日かを起案者が確かめる(各時点は T から営業日を遡って求める)`);
+  if (t.target === 'gate' && !/^G-[1-8]$/.test(norm(fields[FIELDS.gate]))) out.problems.push('工程ゲートの欄を読めない(G-1〜G-8)');
   out.author = loginsOf(fields[FIELDS.author])[0] ?? null;
+  if (!out.author) out.problems.push('起案者を読めない(欄に @login を書く)');
   const named = uniq(loginsOf(fields[FIELDS.reviewers]));
   out.aiReviewers = named.filter((l) => isAiActor(config, { login: l }));
   out.reviewers = named.filter((l) => !out.aiReviewers.includes(l));
   if (!out.reviewers.length) out.problems.push('指名レビュアを読めない(@login)');
   if (out.risk && out.T) out.timeline = timelineOf(out.T, risk, holidays);
-  const humans = (issue.comments ?? []).filter((c) => !OWN_MARK.test(c.body ?? '') && !isAiActor(config, c));
+  const humans = (issue.comments ?? []).filter((c) => !(isMachine(c) && OWN_MARK.test(c.body ?? '')) && !isAiActor(config, c));
   out.opinions = humans
     .map((c) => ({ c, op: parseOpinion(c.body) }))
     .filter((x) => x.op && x.c.login?.toLowerCase() !== out.author?.toLowerCase())
@@ -178,6 +192,7 @@ const mention = (l) => `@${l}`;
 const draftBody = (p) =>
   [
     `<!-- ${MARKER} material of=#${p.number} -->`,
+    '> 先頭の行(HTML コメント)と題名の「判定資料: #番号」は、機械がこの資料を見つける目印です。消さないでください。',
     `> **草案です。** 起案者が内容を確定したら、題名の先頭の「${DRAFT_PREFIX.trim()}」を外してください。外すまで「公開」に数えません。`,
     `> 対象: #${p.number} / 判定予定日 T: ${p.T} / リスク区分(申請 Issue の記載): ${p.risk}`,
     '> 各項目の中身は起案者が書きます。機械は見出しを置いただけで、記載の内容を埋めていません(標準 3.10.3)。経緯の記述は評価対象にしません。',
@@ -204,7 +219,9 @@ const draftBody = (p) =>
     '',
   ].join('\n');
 
-const materialOf = (materials, n) => (materials ?? []).find((m) => new RegExp(`<!-- ${MARKER} material of=#${n} -->`).test(m.body ?? '')) ?? null;
+/** 判定資料の Issue を探す。本文の印か、題名の `判定資料: #N`(起案者が本文の先頭の印を消しても、もう1件起票しない) */
+const materialOf = (materials, n) =>
+  (materials ?? []).find((m) => new RegExp(`<!-- ${MARKER} material of=#${n} -->`).test(m.body ?? '') || new RegExp(`判定資料: #${n}(?!\\d)`).test(m.title ?? '')) ?? null;
 
 /** 判定資料が公開されているか。資料の Issue があり題名に草案の印が無いか、申請 Issue の「判定資料の所在」が書かれている */
 export function publishedState(p, materials) {
@@ -217,7 +234,7 @@ export function publishedState(p, materials) {
 
 /** 一覧(0213): 誰がいつ通知を受け、いつ最初に応答したか。通知は印つきの通知コメントの「通知先:」の行から読む */
 export function ledgerBody(p, { issue, materials, nowDay, holidaysNote }) {
-  const notices = (issue.comments ?? []).filter((c) => /<!-- pit-in:pre-review notice:/.test(c.body ?? ''));
+  const notices = (issue.comments ?? []).filter((c) => isMachine(c) && /<!-- pit-in:pre-review (?:notice|measure)[: ]/.test(c.body ?? ''));
   const noticedAt = new Map();
   for (const c of notices) {
     const line = /^通知先:\s*(.*)$/m.exec(c.body ?? '')?.[1] ?? '';
@@ -272,6 +289,7 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
       notes.push(`#${issue.number}: ${p.problems.join('・')}。起票・通知をしない`);
       continue;
     }
+    for (const c of p.cautions) notes.push(`#${issue.number}: ${c}`);
     const tl = p.timeline;
     const push = (key, text) => {
       if (!hasKey(issue.comments, key) && !actions.some((a) => a.issue === issue.number && a.key === key)) actions.push({ kind: 'comment', issue: issue.number, key, body: stamp(key, text) });
@@ -292,17 +310,21 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
         '意見は雛形(`賛否:`・`理由:`・`代替案または充足条件:`)で書いてください。賛否の欄が書かれたコメントを応答として数えます。',
       ].join('\n');
     if (waiting.length) {
-      if (nowDay >= tl.notice2Day && nowDay < tl.notice1Day) push('notice:n2', noticeText('2営業日前'));
+      // 鍵に締切の日を含める: T を改めて締切が動いたら、新しい締切で一度ずつ出る(同じ締切では重ねて出さない)
+      if (nowDay >= tl.notice2Day && nowDay < tl.notice1Day) push(`notice:n2:${tl.deadlineDay}`, noticeText('2営業日前'));
       if (nowDay >= tl.notice1Day && nowDay <= tl.deadlineDay) {
         const escLine = esc.login ? `\nD-0 節6「ゲート判定・会議体の決定が期限を超過」の判定する者: ${mention(esc.login)}` : '';
-        push('notice:n1', `${noticeText('前営業日')}${escLine}`);
+        push(`notice:n1:${tl.deadlineDay}`, `${noticeText('前営業日')}${escLine}`);
       }
       if (nowDay > tl.deadlineDay && nowDay <= p.T) {
-        const effect = p.risk === 'R1' ? 'R1 は応答が揃うまで判定へ進めません(標準 3.10.5)。' : '不応答は記録します(標準 3.10.5)。';
+        const effect =
+          p.risk === 'R1'
+            ? 'R1 は応答が揃うまで判定へ進めません(標準 3.10.5)。3.9.3 の措置(D-0 表3 に記名した者への通知と、代理の指名)を、宛先の方はお願いします。'
+            : `${p.risk} は 3.10.5 により異議なしとして判定へ進めます(R2 は不応答を記録)。必須応答ロール(3.10.9)を含む案件は R1 と同じ扱いで、3.9.3 の措置(D-0 表3 に記名した者への通知と、代理の指名)が要るかを、宛先の方が判断してください。`;
         const escTo = esc.login ? `${mention(esc.login)} ` : '';
         push(
-          'measure',
-          `${escTo}意見の受付の締切(${tl.deadlineDay})を過ぎても未応答の指名レビュアがいます: ${waiting.map(mention).join(' ')}\n${effect}3.9.3 の措置(D-0 表3 に記名した者への通知と、代理の指名)を、宛先の方はお願いします。指名は人が行います。自動の再割り当てはしません。\n通知先: ${waiting.map(mention).join(' ')}`,
+          `measure:${tl.deadlineDay}`,
+          `${escTo}意見の受付の締切(${tl.deadlineDay})を過ぎても未応答の指名レビュアがいます: ${waiting.map(mention).join(' ')}\n${effect}指名は人が行います。自動の再割り当てはしません。\n通知先: ${waiting.map(mention).join(' ')}`,
         );
       }
     }
@@ -316,7 +338,7 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
 
     // 0213 一覧(1件のコメントを更新する。内容が変わらなければ何もしない)
     if (nowDay >= tl.publishDay) {
-      const existing = (issue.comments ?? []).find((c) => (c.body ?? '').includes(`<!-- ${MARKER} ledger -->`));
+      const existing = (issue.comments ?? []).find((c) => isMachine(c) && (c.body ?? '').includes(`<!-- ${MARKER} ledger -->`));
       const strip = (b) => String(b ?? '').replace(/（自動。[^）]*時点）|\(自動。[^)]*時点\)/, '');
       const full = ledgerBody(p, { issue, materials, nowDay, holidaysNote });
       if (!existing) actions.push({ kind: 'comment', issue: issue.number, key: 'ledger', body: full });
@@ -378,10 +400,9 @@ export function metricsBody(m) {
 
 // ---- GitHub からの読み取りと書き込み(差し替えられる) ----
 
-const parse = (gh, args) => {
-  const t = gh(['api', '--paginate', ...args]).trim();
-  return JSON.parse(t.startsWith('[') ? t.replace(/\]\s*\[/g, ',') : `[${t}]`);
-};
+// ページ送りは `gh api --paginate --slurp`(ページごとの配列を平らにする。本文の中の文字列は触らない。review-queue.mjs の json)
+const parse = json;
+const commentOf = (c) => ({ id: c.id, body: c.body ?? '', login: c.user?.login ?? '', userId: c.user?.id ?? null, bot: c.user?.type === 'Bot', at: c.created_at });
 
 /** ラベルつきの Issue(PR を除く)をコメントつきで読む。gh は差し替えられる */
 export function fetchIssues(gh, repo, { label, state = 'all' }) {
@@ -392,7 +413,8 @@ export function fetchIssues(gh, repo, { label, state = 'all' }) {
     title: i.title,
     body: i.body ?? '',
     labels: (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name)),
-    comments: parse(gh, [`repos/${repo}/issues/${i.number}/comments?per_page=100`]).map((c) => ({ id: c.id, body: c.body ?? '', login: c.user?.login ?? '', userId: c.user?.id ?? null, bot: c.user?.type === 'Bot', at: c.created_at })),
+    association: i.author_association ?? '',
+    comments: parse(gh, [`repos/${repo}/issues/${i.number}/comments?per_page=100`]).map(commentOf),
   }));
 }
 
@@ -419,6 +441,16 @@ export function applyActions(gh, repo, actions, { dry = false } = {}) {
   return lines;
 }
 
+/** now の暦の月の前の月(YYYY-MM)。now を読めなければ null */
+export function previousMonth(now, offset = DEFAULT_OFFSET_MINUTES) {
+  const day = dayOf(now, offset);
+  if (!day) return null;
+  const d = new Date(Date.parse(day));
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 7);
+}
+
 function main(argv) {
   const mode = argv.find((a) => a === 'notify' || a === 'metrics') ?? 'notify';
   const opt = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
@@ -434,13 +466,8 @@ function main(argv) {
   const hol = loadHolidays(ROOT);
   const issues = fetchIssues(ghCli, repo, { label: LABEL, state: mode === 'metrics' ? 'all' : 'open' });
   if (mode === 'metrics') {
-    const month = opt('--month') ?? (() => {
-      const d = new Date(Date.parse(dayOf(now, offset)) );
-      d.setUTCDate(1);
-      d.setUTCMonth(d.getUTCMonth() - 1);
-      return d.toISOString().slice(0, 7);
-    })();
-    if (!/^d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    const month = opt('--month') ?? previousMonth(now, offset);
+    if (!isMonth(month)) {
       console.error(`--month は YYYY-MM で渡してください: ${month}`);
       process.exit(2);
     }
@@ -453,7 +480,7 @@ function main(argv) {
       console.log('注意: 指標の Issue(PRE_REVIEW_METRICS_ISSUE)が未設定のため、出力だけで書き込まない');
       return;
     }
-    const existing = parse(ghCli, [`repos/${repo}/issues/${target}/comments?per_page=100`]).map((c) => ({ body: c.body ?? '' }));
+    const existing = parse(ghCli, [`repos/${repo}/issues/${target}/comments?per_page=100`]).map(commentOf);
     if (hasKey(existing, `metrics:${month}`)) {
       console.log(`${month} の集計は指標の Issue #${target} に既にある。書かない`);
       return;
@@ -466,6 +493,7 @@ function main(argv) {
   const d0 = path.join(ROOT, D0_FILE);
   const d0Text = fs.existsSync(d0) ? fs.readFileSync(d0, 'utf8') : '';
   const r = planNotify({ issues, materials, now, config, d0Text, holidays: hol.days, offsetMinutes: offset, holidaysNote: hol.note });
+  if (!issues.length) console.log(`注意: ラベル ${LABEL} の開いている Issue が無い(様式で起票していないか、ラベルが付いていない)`);
   for (const n of r.notes) console.log(`注意: ${n}`);
   for (const l of applyActions(ghCli, repo, r.actions, { dry })) console.log(l);
   console.log(`実行 ${r.actions.length} 件。措置(代理の指名)・判定資料の内容の確定・意見の採否は人が行う。実物の GitHub では確かめていない(束 B21 単位11・12)。`);

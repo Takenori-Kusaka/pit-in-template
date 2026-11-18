@@ -111,6 +111,5 @@ node scripts/gate/next.mjs
 - 記録用ブランチ、出荷の PR、記録だけの PR に残る承認(転記の確認と帰属の確認): `.github/rulesets/README.md`
 - 基準を満たさないまま進めるときの経路: `reference/exception-paths.md`
 - 事前レビュー期間で非同期のまま決めてはならない対立が起きたとき(同期の場へ上げる・判定を保留にする・結論を元のスレッドへ戻す): `reference/sync-escalation.md`
-- レビューの指名先を確保できないとき: 新しい判定依頼を作らず、起案者へ差し戻す(同時保有の上限を超えた通知は `scripts/gate/review-queue.mjs`。標準 第4章「レビュー SLA と滞留の措置」)
 - 様式: `templates/04-gate-record.md`(補助ファイル: `.claude/skills/artifact/artifacts/04-gate-record.md`)
 - [第4章 ゲートと判定基準](https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/)
