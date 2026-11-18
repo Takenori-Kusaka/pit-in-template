@@ -138,7 +138,7 @@ import {
   unmetShipGaps,
   derivedUnmet,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
@@ -2948,11 +2948,28 @@ if (isMain) {
   }
   // 区分「類似検知」の返却の目安の超過(IMPL-1008。G-7 基準8)。延長の行の成立は IMPL-0786 と同じ条件
   // (有効・期限内、承認した者が名簿の人で AI の名義でない、理由と期限が記入されている)で渡す
-  for (const x of lapsedSimilarRows(exceptionRows, exceptionDay, (_sim, e) => {
+  // 延長の承認者が、検知した変更の作成を指示した者本人なら成立させない(IMPL-0786 と同じ条件。F-09)。対象を変更へ解決できない延長は
+  // 成立に数え、件数を項目7 に出す
+  const unverifiedExtensions = new Set();
+  const instructorIdsOfTarget = (target) => {
+    const t = String(target ?? '');
+    const p = [...prs, ...recordPrs].find((x) => refersToPr(t, x.number));
+    if (p) return p.g6.independent.unresolvedInstructors?.length ? null : p.g6.independent.instructors.map((n) => personKey(config, n));
+    const c = commits.find((x) => commitRefers(x.hash)(t));
+    if (c) {
+      const ci = commitInstructors(c);
+      return ci.unresolved.length ? null : [...ci.known.keys()];
+    }
+    return null;
+  };
+  for (const x of lapsedSimilarRows(exceptionRows, exceptionDay, (sim, e) => {
     if (!ACTIVE_EXCEPTION_STATES.includes(e.state.replace(/\*/g, '').normalize('NFKC').trim())) return false;
     if (exceptionStanding(e, exceptionDay) !== 'active') return false;
     if (!filled(e.approver) || aiNameBlocked(config, e.approver) || !resolveSigner(config, e.approver)) return false;
     if (!filled(e.content) || (e.reason !== null && !filled(e.reason))) return false;
+    const verdict = extensionVerdict({ approverId: resolveSigner(config, e.approver)?.id ?? null, instructorIds: instructorIdsOfTarget(sim.target) });
+    if (verdict === 'self') return false;
+    if (verdict === 'unverified') unverifiedExtensions.add(e.id);
     return !!dueDayOf(e.due);
   })) gaps.push(lapsedSimilarGapText(x, exceptionDay));
   for (const x of gateExceptions.rejected) {
@@ -4558,6 +4575,7 @@ if (isMain) {
       fastTrack: fastTrackMetricsText(fastTrackMetrics({ rows, changeTotal: changesTotal, defectText, inRange: (r) => inRangeTarget(r.target) })),
       restricted: { count: restricted.found.length, unmarked: restricted.unmarked, unconfirmed: restricted.unconfirmed },
       quota: exceptionQuotaText({ briefText, used, usedReadable }),
+      unverifiedExtensions: unverifiedExtensions.size,
     };
   })();
 
@@ -6820,6 +6838,7 @@ if (isMain) {
     R.push(`- ${A.exceptionUse.fastTrack}`);
     R.push(`- 制限された状態での例外決裁(7.9.4)の行: ${A.exceptionUse.restricted.count} 件(うち印の無い行 ${A.exceptionUse.restricted.unmarked.length} 件${A.exceptionUse.restricted.unmarked.length ? ': ' + A.exceptionUse.restricted.unmarked.join(', ') : ''}。印の無い行は欠落にしない)${A.exceptionUse.restricted.unconfirmed.length ? ` / 承認した者が B-2 の決定者かを確認できない ${A.exceptionUse.restricted.unconfirmed.join(', ')}` : ''}`);
     R.push(`- ${A.exceptionUse.quota}`);
+    if (A.exceptionUse.unverifiedExtensions) R.push(`- 指示者と照合できない延長 ${A.exceptionUse.unverifiedExtensions} 件(類似検知の対象を変更の作成を指示した者へ解決できず、承認者との照合をしていない。IMPL-1008)`);
     R.push(`- ${A.judgementRecords.reach.text}`);
     R.push(`- ${A.judgementRecords.inventory.text}`);
     R.push(`- 指示資産(CLAUDE.md・.claude)の最終変更: ${A.generation.instructionAssets}`);

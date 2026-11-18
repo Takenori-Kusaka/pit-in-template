@@ -148,6 +148,16 @@ export function lapsedSimilarRows(rows, day, isValidExtension = () => false) {
   return out;
 }
 
+/**
+ * 延長の承認者と、検知した変更の作成を指示した者の照合(IMPL-1008。IMPL-0786 と同じ条件。F-09)。
+ *   instructorIds: 対象の変更の指示者の識別子の一覧。対象を変更へ解決できない・指示者を特定できないときは null
+ *   self: 承認者が指示者本人(延長に数えない) / unverified: 照合できない(延長に数え、件数を項目7 に出す) / ok
+ */
+export function extensionVerdict({ approverId, instructorIds }) {
+  if (!Array.isArray(instructorIds)) return 'unverified';
+  return approverId && instructorIds.includes(approverId) ? 'self' : 'ok';
+}
+
 /** 期限を過ぎた類似検知の行の欠落の文 */
 export function lapsedSimilarGapText(x, day) {
   const why = x.readable ? `返却の目安(${x.due})を突合の日(${day})が過ぎ、未返却のままです` : `返却の目安(${x.due})が日付として読めず、期限を比べられません。期限のない記録は認めません`;

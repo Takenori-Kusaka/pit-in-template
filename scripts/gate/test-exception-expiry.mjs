@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, extensionVerdict, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -414,6 +414,17 @@ if (process.platform === 'win32') {
   const d = scene(['G-4 F-001'], { 'g4-f001.md': form('G-4 機能仕様承認', 'F-001 / 1a2b3c4', '差し戻し') });
   check('集約 IMPL-0996:ok G-4 F-001 の判定記録(差し戻し)がある行は、欠落に出ず、例外承認として数える', gapOf(d.ev, new RegExp(`${d.id(0)}\\(G-4 F-001\\)`)).length === 0 && shows(d.ev, `${d.id(0)}(G-4 F-001)`), JSON.stringify(d.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   w.done();
+}
+
+// ---- F-09 延長の成立に、検知した変更の作成を指示した者との照合を足す(IMPL-0786 と同じ条件)
+{
+  const sim9 = ledger(simRow('D-095', 'PR #95', '2026-11-01', '未返却'));
+  const ex9 = (approver) => `| D-096 | 例外 | D-095 | 類似検知の延長 | 処理に日数が要る | 不具合 | 2026-12-31 | 未返却 | 名簿 甲 | ${approver} |\n`;
+  const mkValid = (instructorIds) => (_s, e) => extensionVerdict({ approverId: e.approver === '名簿 乙' ? 'p-otsu' : 'p-kou', instructorIds }) !== 'self';
+  const all = sim9 + ex9('名簿 乙');
+  check('IMPL-1008:ng 指示者本人(乙)が承認した延長は成立せず、類似検知を欠落に返す', lapsedSimilarRows(rowsOf(all), DAY, mkValid(['p-otsu'])).map((x) => x.id).join() === 'D-095', lapsedSimilarRows(rowsOf(all), DAY, mkValid(['p-otsu'])).map((x) => x.id).join());
+  check('IMPL-1008:ok 指示者でない別の人(乙)が承認した延長は成立する', lapsedSimilarRows(rowsOf(all), DAY, mkValid(['p-kou'])).length === 0);
+  check('IMPL-1008:ok 対象を指示者へ解決できない延長は unverified(成立に数え、件数を表示する)', extensionVerdict({ approverId: 'p-otsu', instructorIds: null }) === 'unverified' && lapsedSimilarRows(rowsOf(all), DAY, mkValid(null)).length === 0);
 }
 
 // ---- 段 1 の直し(束 B20 突合 1巡目 F-05・F-10・F-11・F-12)
