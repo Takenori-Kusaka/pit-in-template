@@ -1689,26 +1689,31 @@ export function scMChanges(items, confirmedOn) {
   let added = 0;
   let removed = 0;
   let remaining = 0;
+  // 出来事の時刻(UTC)は手元の暦の日付に直して、手元の暦の確定の日と比べる(fetchClosedUnits と同じ暦)
+  const dayOf = (t) => {
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? String(t).slice(0, 10) : localDay(d);
+  };
   for (const it of items ?? []) {
     const ev = [...(it.events ?? [])].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    // 確定の日以前に閉じた Issue は、確定時には完了済みで母集団に入らず、その後のラベルの整理は追加にも削除にも数えない
+    const closedBefore = Boolean(it.closedAt) && dayOf(it.closedAt) <= confirmedOn;
     let on = false;
     for (const e of ev) {
-      const before = String(e.at).slice(0, 10) <= confirmedOn;
+      const before = dayOf(e.at) <= confirmedOn;
       if (e.type === 'labeled') {
         on = true;
-        if (!before) added++;
+        if (!before && !closedBefore) added++;
       } else if (e.type === 'unlabeled') {
         on = false;
-        if (!before) removed++;
+        if (!before && !closedBefore) removed++;
       }
     }
-    if (ev.some((e) => String(e.at).slice(0, 10) <= confirmedOn)) {
-      // 確定の日までの履歴で最後がラベルありなら、確定時の SC-M
-      const upto = ev.filter((e) => String(e.at).slice(0, 10) <= confirmedOn);
-      // 確定の日以前に閉じた Issue は、確定時には完了済みで母集団に入らない
-      if (upto[upto.length - 1].type === 'labeled' && !(it.closedAt && String(it.closedAt).slice(0, 10) <= confirmedOn)) baseline++;
-    }
-    if (on && it.open) remaining++;
+    const upto = ev.filter((e) => dayOf(e.at) <= confirmedOn);
+    // 確定の日までの履歴で最後がラベルありなら、確定時の SC-M
+    if (upto.length && upto[upto.length - 1].type === 'labeled' && !closedBefore) baseline++;
+    // ラベルの検索で返った Issue(hasLabel)は、出来事が読めなくても今ラベルが付いている
+    if ((on || it.hasLabel) && it.open) remaining++;
   }
   return { baseline, added, removed, remaining };
 }
@@ -1719,7 +1724,7 @@ export function scMVariationRate({ baseline, added, removed }) {
 }
 
 /** 見込みの報告の Issue の節「材料の集計」へ置く文面(IMPL-0377・0614)。評価と発火の判断は書かない */
-export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null }) {
+export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null, changesError = null }) {
   const L = ['### 材料の集計(機械の出力。評価と発火の判断は価値責任者が行う。合否に使わない)'];
   if (!throughput?.computable) {
     L.push(`- 実測スループット: 算定できない(${throughput?.reason ?? '入力が無い'})`);
@@ -1733,6 +1738,9 @@ export function flowReportText({ throughput, forecast, changes = null, confirmed
     const edge = (v) => (v === null ? (f.klass === '算定できない' || f.klass === '対象外' ? '—' : '果てしない(完了 0 の期がある)') : `${v} 期`);
     L.push(`- 残る期間の見込み: 遅い側 ${edge(f.slow)} / 速い側 ${edge(f.fast)}。比べる残り ${Number.isInteger(f.remainingPeriods) ? `${f.remainingPeriods} 期` : '(入力なし)'}`);
     L.push(`- 区分(期間の組): ${f.klass}(${f.reason})。費用の組は採用者の入力(IMPL-0499)が無いため算定しない`);
+  }
+  if (!changes && changesError) {
+    L.push(`- SC-M の変動率: 算定できない(SC-M の履歴を読めない: ${changesError})`);
   }
   if (changes) {
     const rate = scMVariationRate(changes);
@@ -1824,6 +1832,7 @@ export function fetchClosedUnits({ sinceDay, base }) {
       out.push({ number: n.number, closedAt: localDay(new Date(n.closedAt)), completed }); // 手元の日付に直す(today と同じ暦で期へ分ける)
     }
     if (!r.pageInfo.hasNextPage) break;
+    if (page === 19) throw new Error('検索の上限(20 ページ)に達し、欠かずに読めない');
     after = r.pageInfo.endCursor;
   }
   return out;
@@ -1836,10 +1845,10 @@ export function fetchClosedUnits({ sinceDay, base }) {
  * 1件の履歴が 100 件を超えるときは、黙って欠かずに読めないと出す
  */
 export function fetchScMItems({ confirmedOn = null, run = ghJson, repo = null } = {}) {
-  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number state closedAt timelineItems(first:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){pageInfo{hasNextPage} nodes{__typename ...on LabeledEvent{createdAt label{name}} ...on UnlabeledEvent{createdAt label{name}}}}}}}}';
+  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){issueCount pageInfo{hasNextPage endCursor}nodes{...on Issue{number state closedAt timelineItems(first:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){pageInfo{hasNextPage} nodes{__typename ...on LabeledEvent{createdAt label{name}} ...on UnlabeledEvent{createdAt label{name}}}}}}}}';
   const repoName = repo ?? execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }).trim();
   const queries = [`repo:${repoName} is:issue label:"${SC_M_LABEL}"`];
-  if (confirmedOn) queries.push(`repo:${repoName} is:issue updated:>=${confirmedOn}`);
+  if (confirmedOn) queries.push(`repo:${repoName} is:issue updated:>=${confirmedOn} -label:"${SC_M_LABEL}"`); // 今付いている Issue は1つ目の検索で読む(範囲を狭める)
   const byNumber = new Map();
   for (const query of queries) {
     let after = null;
@@ -1847,13 +1856,16 @@ export function fetchScMItems({ confirmedOn = null, run = ghJson, repo = null } 
       const args = ['api', 'graphql', '-f', `query=${q}`, '-f', `q=${query}`];
       if (after) args.push('-f', `after=${after}`);
       const r = run(args).data.search;
+      if (r.issueCount > 1000) throw new Error('検索の結果が上限(1000 件)を超え、欠かずに読めない');
       for (const n of r.nodes) {
         if (!n?.number || byNumber.has(n.number)) continue;
         if (n.timelineItems?.pageInfo?.hasNextPage) throw new Error(`#${n.number} のラベルの出来事が 100 件を超える`);
         const events = (n.timelineItems?.nodes ?? []).filter((e) => e.label?.name === SC_M_LABEL).map((e) => ({ type: e.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', at: e.createdAt }));
-        if (events.length) byNumber.set(n.number, { number: n.number, open: n.state === 'OPEN', closedAt: n.closedAt ?? null, events });
+        const hasLabel = query === queries[0];
+        if (events.length || hasLabel) byNumber.set(n.number, { number: n.number, open: n.state === 'OPEN', closedAt: n.closedAt ?? null, events, hasLabel });
       }
       if (!r.pageInfo.hasNextPage) break;
+      if (page === 19) throw new Error('検索の上限(20 ページ)に達し、欠かずに読めない');
       after = r.pageInfo.endCursor;
     }
   }
@@ -1900,18 +1912,20 @@ export function flowSection({ config, records, today, network, forecastInput = {
   }
   let remainingUnits = null;
   let changes = null;
+  let changesError = null;
   if (network && throughput.computable) {
     try {
       const items = fetchScMItems({ confirmedOn: forecastInput.confirmedOn ?? null });
       changes = scMChanges(items, forecastInput.confirmedOn ?? '0000-00-00');
       remainingUnits = changes.remaining;
     } catch (e) {
-      lines.push(`SC-M の履歴を読めない(${String(e.message).split('\n')[0].slice(0, 80)})`);
+      changesError = String(e.message).split('\n')[0].slice(0, 80);
+      lines.push(`SC-M の履歴を読めない(${changesError})`);
     }
   }
   const forecast = reachForecast({ throughput, remainingUnits, remainingPeriods: forecastInput.remainingPeriods ?? null });
   if (!forecastInput.confirmedOn) changes = null;
-  return { text: flowReportText({ throughput, forecast, changes, confirmedOn: forecastInput.confirmedOn ?? null }), lines, throughput, forecast };
+  return { text: flowReportText({ throughput, forecast, changes, confirmedOn: forecastInput.confirmedOn ?? null, changesError: forecastInput.confirmedOn ? changesError : null }), lines, throughput, forecast };
 }
 
 function renderFull(r, roleFilter = null) {

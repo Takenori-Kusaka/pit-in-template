@@ -354,7 +354,7 @@ ${r.out}`);
   const fakeRun = (args) => {
     const q = args[args.indexOf('-f', 3) + 1];
     seen.push(q);
-    const nodes = /label:"SC-M"/.test(q)
+    const nodes = /is:issue label:"SC-M"/.test(q)
       ? [node(10, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z')]), node(12, 'CLOSED', [ev('labeled', '2026-09-01T00:00:00Z')], '2026-09-10T00:00:00Z')]
       : [node(10, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z')]), node(11, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z'), ev('unlabeled', '2026-10-05T00:00:00Z')])];
     return { data: { search: { pageInfo: { hasNextPage: false }, nodes } } };
@@ -362,7 +362,32 @@ ${r.out}`);
   const fetched = fetchScMItems({ confirmedOn: '2026-09-30', run: fakeRun, repo: 'o/r' });
   const ch2 = scMChanges(fetched, '2026-09-30');
   check('IMPL-0614:ng ラベルを外した Issue(検索の結果に入らない)も、更新の検索から拾って削除に数える', fetched.some((i) => i.number === 11) && ch2.removed === 1 && ch2.baseline === 2, JSON.stringify(ch2));
-  check('IMPL-0614:ok 確定の日以前に閉じた Issue は確定時の母集団に入れない', ch2.baseline === 2 && !fetched.find((i) => i.number === 12 && ch2.baseline === 3));
+  check('IMPL-0614:ok 確定の日以前に閉じた Issue は確定時の母集団に入れない', ch2.baseline === 2 && fetched.some((i) => i.number === 12));
+  check('IMPL-0614:ok 更新の検索は今付いている Issue を除く(範囲を狭める)', seen.some((q) => /updated:>=2026-09-30 -label:"SC-M"/.test(q)));
+  // 中2: 確定の日以前に閉じた Issue のラベルの整理は、追加にも削除にも数えない
+  const tidy = scMChanges([
+    { number: 30, open: true, events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }] },
+    { number: 31, open: false, closedAt: '2026-09-10T00:00:00Z', events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }, { type: 'unlabeled', at: '2026-10-05T00:00:00Z' }] },
+    { number: 32, open: false, closedAt: '2026-09-12T00:00:00Z', events: [{ type: 'labeled', at: '2026-10-06T00:00:00Z' }] },
+  ], '2026-09-30');
+  check('IMPL-0614:ng 確定の日以前に閉じた Issue のラベルの整理を、追加・削除に数えない', tidy.baseline === 1 && tidy.added === 0 && tidy.removed === 0, JSON.stringify(tidy));
+  // 低1: 出来事の時刻は手元の暦の日付で比べる(確定の日の前日の UTC の夜が手元で確定の日の翌日に当たる場合)
+  const lateUtc = new Date(2026, 9, 1, 8, 30).toISOString();
+  const lc = scMChanges([{ number: 40, open: true, events: [{ type: 'labeled', at: '2026-09-01T00:00:00Z' }, { type: 'unlabeled', at: lateUtc }] }], '2026-09-30');
+  check('IMPL-0614:ok 出来事の時刻を手元の暦に直して比べる(手元の 10-01 08:30 は確定の後の削除)', lc.removed === 1 && lc.baseline === 1, JSON.stringify(lc));
+  // 低3: 出来事が読めなくても、ラベルの検索で返った開いた Issue は残る個数に数える
+  const noEv = scMChanges([{ number: 41, open: true, hasLabel: true, events: [] }], '2026-09-30');
+  check('IMPL-0614:ok 出来事が読めなくても今ラベルが付いた開いた Issue は残る個数に数える', noEv.remaining === 1, JSON.stringify(noEv));
+  // 中1: 検索の上限は、黙って落とさず読めないと出す
+  const pageRun = () => ({ data: { search: { issueCount: 5000, pageInfo: { hasNextPage: true, endCursor: 'c' }, nodes: [] } } });
+  let cap = null;
+  try { fetchScMItems({ confirmedOn: '2026-09-30', repo: 'o/r', run: pageRun }); } catch (e) { cap = e.message; }
+  check('IMPL-0614:ng 検索が上限の 1000 件を超えたら、黙って小さく出さず読めないと出す', /上限/.test(cap ?? ''), String(cap));
+  let cap2 = null;
+  try { fetchScMItems({ confirmedOn: null, repo: 'o/r', run: () => ({ data: { search: { issueCount: 900, pageInfo: { hasNextPage: true, endCursor: 'c' }, nodes: [] } } }) }); } catch (e) { cap2 = e.message; }
+  check('IMPL-0614:ng ページの上限(20 ページ)に達して続きがあれば、読めないと出す', /20 ページ/.test(cap2 ?? ''), String(cap2));
+  const errText = flowReportText({ throughput: ng, forecast: null, changes: null, confirmedOn: '2026-09-30', changesError: '検索の結果が上限' });
+  check('IMPL-0614:ng 履歴を読めないとき、変動率は算定できないと理由つきで出す', /変動率: 算定できない\(SC-M の履歴を読めない: 検索の結果が上限/.test(errText), errText);
   check('IMPL-0614:ok 同じ Issue は重ねて数えない', fetched.filter((i) => i.number === 10).length === 1 && seen.length === 2);
   let big = null;
   try { fetchScMItems({ confirmedOn: null, repo: 'o/r', run: () => ({ data: { search: { pageInfo: { hasNextPage: false }, nodes: [{ number: 5, state: 'OPEN', timelineItems: { pageInfo: { hasNextPage: true }, nodes: [] } }] } } }) }); } catch (e) { big = e.message; }
