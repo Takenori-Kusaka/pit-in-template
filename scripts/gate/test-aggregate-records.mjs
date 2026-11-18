@@ -54,7 +54,7 @@ import { stopFindings } from './check-pr.mjs';
 import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
-import { ROOT, sealChangeLog, unmetShipGaps } from './config.mjs';
+import { ROOT, sealChangeLog, unmetShipGaps, derivedUnmet } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -745,15 +745,51 @@ const config = {
   const gapsOf = (cfg) => unmetShipGaps(cfg);
   const cl1 = built({ 'q-criticality': 'cl1' }, 'undetermined');
   check('IMPL-0738:ok(前提) 構成を作れて G-3 が未達になる', Boolean(cl1) && (cl1.unmet ?? []).some((u) => u.gate === 'g3'), JSON.stringify(cl1?.unmet?.map((u) => u.gate)));
-  check('IMPL-0738:ng CL1 × G-3 未達は欠落', gapsOf(cl1).length === 1 && /G-3/.test(gapsOf(cl1)[0]), JSON.stringify(gapsOf(cl1)));
+  // 案B(所有者の決定 2026-11-18): 止めるのは人の確認の未達。G-3 など体制に由来しない未達は止めず、開示の未達に出す
+  check('IMPL-0738:ok CL1 × G-3 未達は欠落にしない(開示と G-8 の受容。案 A は採らない)', gapsOf(cl1).length === 0, JSON.stringify(gapsOf(cl1)));
+  check('IMPL-0738:ok CL1 × G-3 未達は開示の未達に出る', derivedUnmet(cl1).some((u) => u.gate === 'g3'), JSON.stringify(derivedUnmet(cl1).map((u) => u.gate)));
   const reg = built({ 'q-quality': 'quality-regulated' }, 'undetermined');
-  check('IMPL-0738:ng CL0 × 規制業 × G-3 未達は欠落', gapsOf(reg).length === 1, JSON.stringify(gapsOf(reg)));
+  check('IMPL-0738:ok CL0 × 規制業 × G-3 未達は欠落にしない', gapsOf(reg).length === 0 && derivedUnmet(reg).some((u) => u.gate === 'g3'), JSON.stringify(gapsOf(reg)));
   const hand = cl1 ? JSON.parse(JSON.stringify(cl1)) : null;
   if (hand) { hand.unmet = []; hand.gates.g3.state = 'omitted'; }
-  check('IMPL-0738:ng 手で unmet: []・g3: omitted と書いてもスタック未確定なら欠落(導き直す)', hand && gapsOf(hand).length === 1, JSON.stringify(hand && gapsOf(hand)));
+  check('IMPL-0738:ok 手で unmet: []・g3: omitted と書いても、導き直した G-3 が開示の未達に出る(欠落には数えない)', hand && gapsOf(hand).length === 0 && derivedUnmet(hand).some((u) => u.gate === 'g3'), JSON.stringify(hand && derivedUnmet(hand).map((u) => u.gate)));
   check('IMPL-0738:ok CL0 × 標準 × G-3 未達は欠落にしない(開示と G-8 の受容)', gapsOf(built({}, 'undetermined')).length === 0);
   check('IMPL-0738:ok CL1 × スタック確定は欠落なし', gapsOf(built({ 'q-criticality': 'cl1' }, 'node')).length === 0);
   check('IMPL-0738:ok CL1 × PoC × スタック未確定は欠落なし', gapsOf(built({ 'q-criticality': 'cl1', 'q-biz-phase': 'poc' }, 'undetermined')).length === 0);
+  // 人の確認の未達(G-6)は止める。手書きの構成の unmet[] に載る
+  const g6Entry = { gate: 'g6', label: 'G-6 独立レビュー', reason: '作成を指示した本人以外の確認者がいない', howToResolve: ['作成を指示した本人以外の確認者を名簿と席へ置く'] };
+  const withUnmet = (cfg, list) => (cfg ? { ...JSON.parse(JSON.stringify(cfg)), unmet: list } : null);
+  const cl1Node = built({ 'q-criticality': 'cl1' }, 'node');
+  const cl1G6 = withUnmet(cl1Node, [g6Entry]);
+  check('IMPL-0738:ng CL1 × G-6 未達は欠落(文に未達の名と解き方の先頭)', gapsOf(cl1G6).length === 1 && /G-6 独立レビュー/.test(gapsOf(cl1G6)[0]) && /確認者を名簿と席へ置く/.test(gapsOf(cl1G6)[0]), JSON.stringify(gapsOf(cl1G6)));
+  const regG6 = withUnmet(built({ 'q-quality': 'quality-regulated' }, 'node'), [g6Entry]);
+  check('IMPL-0738:ng CL0 × 規制業 × G-6 未達は欠落', gapsOf(regG6).length === 1, JSON.stringify(gapsOf(regG6)));
+  check('IMPL-0738:ok CL0 × 標準 × G-6 未達は欠落にしない(開示と G-8 の受容)', gapsOf(withUnmet(built({}, 'node'), [g6Entry])).length === 0);
+  check('IMPL-0738:ng 表に無い gate の値は止める側に倒す(手書きの構成)', gapsOf(withUnmet(cl1Node, [{ gate: 'x9', label: '未知の未達', reason: 'r' }])).length === 1);
+  check('IMPL-0738:ng 止める未達と G-3 が並ぶとき、止める未達の分だけが欠落になる', gapsOf(withUnmet(cl1, [g6Entry, ...(cl1?.unmet ?? [])])).length === 1);
+  // G-2(価値責任者を置かない委託。集約が様式 08 から導く)は extra で渡す
+  const g2Entry = { gate: 'g2', label: 'G-2 要件合意(価値責任者を置かない委託。様式 08)', reason: '価値責任者を置かない', howToResolve: ['価値責任者を置く'] };
+  check('IMPL-0738:ng CL1 × 委託 × 「置かない」は欠落', unmetShipGaps(cl1Node, { extra: [g2Entry] }).length === 1 && /G-2/.test(unmetShipGaps(cl1Node, { extra: [g2Entry] })[0]));
+  check('IMPL-0738:ng 規制業 × 委託 × 「置かない」は欠落', unmetShipGaps(built({ 'q-quality': 'quality-regulated' }, 'node'), { extra: [g2Entry] }).length === 1);
+  check('IMPL-0738:ok CL0 × 標準 × 委託 × 「置かない」は欠落にしない', unmetShipGaps(built({}, 'node'), { extra: [g2Entry] }).length === 0);
+  // IMPL-0638 の併記の未達(範囲の中の判定だけが止める)
+  {
+    const rsAll = [
+      { file: 'in', gate: 'G-3 判断記録', judge: '名簿 甲', judgedAt: '2026-11-01 10:00', coSign: '', inRange: true },
+      { file: 'out', gate: 'G-3 判断記録', judge: '名簿 甲', judgedAt: '2026-11-02 10:00', coSign: '', inRange: false },
+    ];
+    const d0c = ['## 9. 代行者(代理者)と後継', '', '**暫定任命の期間(標準 第3章 3.4.1)**', '',
+      '| 役割 | 暫定任命の対象(責任者 / 代理者) | 暫定任命の期間(開始日〜満了日) | 満了時の扱い | 延長の決裁 |', '| --- | --- | --- | --- | --- |',
+      '| 技術判断者 | 責任者 | 2026-10-01〜2026-12-31 | 任命を解く | |', ''].join('\n');
+    const idm = new Map([['名簿 甲', 'p1']]);
+    const pg = JR.provisionalGaps({ d0Text: d0c, records: rsAll, resolve: (n) => idm.get(String(n ?? '').trim()) ?? null, isAi: () => false, holderOf: () => 'p1', roleOfGate: () => ['技術判断者'] });
+    const cos = JR.cosignShipEntries(pg.unmet);
+    check('IMPL-0738:ng CL1 × 範囲の中の判定に併記なし(IMPL-0638)は欠落', cos.length === 1 && unmetShipGaps(cl1Node, { extra: cos }).length === 1 && /in/.test(cos[0].label), JSON.stringify(cos));
+    check('IMPL-0738:ok CL1 × 範囲の外の判定に併記なしは欠落にしない', !cos.some((c) => /out/.test(c.label)) && pg.unmet.length === 2);
+    check('IMPL-0738:ok CL0 × 標準 × 範囲の中の併記なしは欠落にしない', unmetShipGaps(built({}, 'node'), { extra: cos }).length === 0);
+    const unread = JR.provisionalGaps({ d0Text: d0c.replace('2026-10-01〜2026-12-31', 'いつか'), records: rsAll, resolve: (n) => idm.get(String(n ?? '').trim()) ?? null, isAi: () => false, holderOf: () => 'p1', roleOfGate: () => ['技術判断者'] });
+    check('IMPL-0738:ok CL1 × 併記の期間が読めない行は欠落にしない(確認できないと表示)', JR.cosignShipEntries(unread.unmet).length === 0 && unread.unconfirmed.length === 1 && /確認できない/.test(JR.provisionalUnmetText(unread) ?? ''), JSON.stringify(unread));
+  }
   // 典型の初期状態で出荷が永久に止まらない(P1 の固定): スタックが確定している(node・none)か PoC なら、CL・事業段階・体制の組のすべてで欠落が出ない
   const stuck = [];
   for (const cl of ['cl0', 'cl1', 'cl2', 'cl3']) for (const phase of ['poc', 'mvp', 'growth']) for (const stack of ['node', 'none', 'undetermined']) {
@@ -763,8 +799,7 @@ const config = {
     if (resolved && unmetShipGaps(c).length) stuck.push(`${cl}/${phase}/${stack}`);
   }
   check('IMPL-0738:ok スタックが確定しているか PoC なら、CL0〜3 × 事業段階のどの組でも欠落が出ない(永久に止まらない)', stuck.length === 0, stuck.join(', '));
-  check('IMPL-0738:ng 欠落の文に未達の名と解き方の先頭が入る', /G-3 技術設計判断/.test(gapsOf(cl1)[0] ?? '') && /技術的な検証/.test(gapsOf(cl1)[0] ?? ''), gapsOf(cl1)[0]);
-}
+  }
 
 // IMPL-0498(層の合わさり: 承認の無い下の層が、既定ブランチへ入った PR の先頭の祖先なら、その PR を確認ありに数えない)
 // 使い捨ての git リポジトリで動かす。GitHub の実機(refs/pull/N/head の公開・verify ジョブ)では確かめていない

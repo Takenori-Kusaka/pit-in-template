@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -414,6 +414,29 @@ if (process.platform === 'win32') {
   const d = scene(['G-4 F-001'], { 'g4-f001.md': form('G-4 機能仕様承認', 'F-001 / 1a2b3c4', '差し戻し') });
   check('集約 IMPL-0996:ok G-4 F-001 の判定記録(差し戻し)がある行は、欠落に出ず、例外承認として数える', gapOf(d.ev, new RegExp(`${d.id(0)}\\(G-4 F-001\\)`)).length === 0 && shows(d.ev, `${d.id(0)}(G-4 F-001)`), JSON.stringify(d.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   w.done();
+}
+
+// ---- 段 1 の直し(束 B20 突合 1巡目 F-05・F-10・F-11・F-12)
+{
+  // IMPL-1008:ng 状態を「失効」と書いても期限超過の類似検知を止める(F-05)
+  const simL = ledger(simRow('D-090', 'PR #90', '2026-11-01', '失効'), simRow('D-091', 'PR #91', '2026-11-01', '返却済み(2026-11-02)'));
+  check('IMPL-1008:ng 状態「失効」の期限超過の類似検知は 1 件返す', lapsedSimilarRows(rowsOf(simL), DAY).map((x) => x.id).join() === 'D-090', lapsedSimilarRows(rowsOf(simL), DAY).map((x) => x.id).join());
+  check('IMPL-1008:ok 状態「返却済み」の類似検知は 0 件', lapsedSimilarRows(rowsOf(ledger(simRow('D-091', 'PR #91', '2026-11-01', '返却済み(2026-11-02)'))), DAY).length === 0);
+  // IMPL-0787:ng 区分を変えて期限を延ばしても検出する(F-11)
+  const k0 = ledger(row('D-092', 'PR #92', '2026-12-01', '未返却'));
+  const k1 = ledger(simRow('D-092', 'PR #92', '2027-03-01', '未返却').replace('| 類似検知 |', '| 前提の受容 |'));
+  check('IMPL-0787:ng 区分を例外から別の区分へ変えて期限を延ばした行を返す', extendedDueRows({ startText: k0, endText: k1 }).extended.map((x) => x.id).join() === 'D-092', JSON.stringify(extendedDueRows({ startText: k0, endText: k1 })));
+  const k2 = ledger(simRow('D-092', 'PR #92', '2026-12-01', '未返却').replace('| 類似検知 |', '| 前提の受容 |'));
+  check('IMPL-0787:ok 区分を変えても期限が同じなら返さない', extendedDueRows({ startText: k0, endText: k2 }).extended.length === 0);
+  // IMPL-0612:ng 下線の強調の印を読む(F-12)
+  check('IMPL-0612:ng 下線で囲んだ印 __ファストトラック(短縮: G-5)__ を印として読む', fastTrackMarkOf('__ファストトラック(短縮: G-5)__ 内容')?.scope === 'G-5', JSON.stringify(fastTrackMarkOf('__ファストトラック(短縮: G-5)__ 内容')));
+  // IMPL-0612:ng 発生率の分子は範囲の変更へ対応づく印の行に限る(F-10)
+  const exr = (id, target) => ({ id, kind: '例外', target, content: 'ファストトラック(短縮: G-6) 急ぎ', state: '未返却', due: '2026-12-31', approver: '名簿 乙' });
+  const five = [exr('D-1', 'PR #1'), exr('D-2', 'PR #2'), exr('D-3', 'PR #3'), exr('D-4', 'PR #4'), exr('D-5', 'PR #5')];
+  const mm = fastTrackMetrics({ rows: five, changeTotal: 2, inRange: (r) => r.target === 'PR #1' });
+  const tx = fastTrackMetricsText(mm);
+  check('IMPL-0612:ng 印 5 件・範囲に対応 1 件・変更 2 件で発生率 50%(250% にしない)', mm.markedInRange === 1 && /発生率 50%/.test(tx) && !/250%/.test(tx), tx);
+  check('IMPL-0612:ok 全体 5 件の表示と、範囲へ対応づかない行 4 件の併記が残る', /印のある行 5 件/.test(tx) && /範囲へ対応づかない行 4 件/.test(tx), tx);
 }
 
 console.log(`\n${checks - failures}/${checks} 合格`);

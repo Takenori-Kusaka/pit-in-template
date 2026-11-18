@@ -136,9 +136,10 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
   unmetShipGaps,
+  derivedUnmet,
 } from './config.mjs';
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
-import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText } from './judgement-records.mjs';
+import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
@@ -3265,8 +3266,7 @@ if (isMain) {
   }
   // 出荷できない状態(CL1 以上・規制業で体制が3名を割った)。出荷の判定を通さない
   if (config.shipBlocked) gaps.push(`出荷できない状態です(${config.shipBlocked.since} から): ${config.shipBlocked.reason}`);
-  // 未達のまま出荷しない(CL1 以上・規制業。種類を問わない。手書きの構成に頼らず G-3 の未達を導き直す。IMPL-0738)
-  for (const g of unmetShipGaps(config)) gaps.push(g);
+  // 未達のまま出荷しない(CL1 以上・規制業の、人の確認の未達。呼び出しは判定記録の読みの後。IMPL-0738)
 
   // 安全関連部の検証の記録(G-7 基準7。附属書F F.7。IMPL-1007・0925・0927・0934)。記載の欠落の検査のみ。内容の妥当性は確かめていない
   const safetyRecord = checkSafetyRecord({ root: ROOT, config, day: exceptionDay });
@@ -3785,8 +3785,9 @@ if (isMain) {
 
   // --- 未達(隠す経路を持たない) --------------------------------------------
 
-  const unmet = (config.unmet ?? []).map((u) => ({
+  const unmet = derivedUnmet(config).map((u) => ({
     gate: u.gate,
+    howToResolve: u.howToResolve ?? [],
     label: u.label ?? u.gate,
     reason: u.reason,
     compensation: u.compensation ?? [],
@@ -3794,9 +3795,9 @@ if (isMain) {
     compensationNote: typeof u.compensationNote === 'string' && u.compensationNote ? u.compensationNote : null,
     reviewSourcing: u.reviewSourcing ?? null,
   }));
-  // 発注側が価値責任者を置かない委託(様式 08 の値「置かない」)は、要件合意(G-2)を未達として表示する。欠落には数えない(IMPL-0755)
+  // 発注側が価値責任者を置かない委託(様式 08 の値「置かない」)は、要件合意(G-2)を未達として表示する。CL0 で規制業でない案件は表示だけ。CL1 以上と規制業は IMPL-0738 が欠落に数える(IMPL-0755)
   if (valueOwner.applies && valueOwner.state === 'not-placed') {
-    unmet.push({ gate: 'g2', label: 'G-2 要件合意(価値責任者を置かない委託。様式 08)', reason: valueOwner.text, compensation: [], compensationNote: null, reviewSourcing: null });
+    unmet.push({ gate: 'g2', label: 'G-2 要件合意(価値責任者を置かない委託。様式 08)', reason: valueOwner.text, compensation: [], compensationNote: null, reviewSourcing: null, howToResolve: ['価値責任者を置く(様式 08)'] });
   }
 
   // --- 安全重要度の判定の確認(D-0 節16。標準 第8章 軸E「判定の記録と確認」、第4章 G-7「保証の開示」項目1。process-compass #373 / IMPL-0450) ---
@@ -4493,11 +4494,12 @@ if (isMain) {
     const b2 = (d0Text.split(/\r?\n/).find((l) => /^\|\s*B-2\s*\|/.test(l))?.split('|')[2] ?? '').normalize('NFKC').trim();
     const seatName = !b2 || b2.startsWith('<') || /該当なし/.test(b2) ? 'biz-approver' : b2;
     const seat = (config.seats ?? []).find((s) => s.role === seatName || (s.name && s.name === seatName));
-    const holder = seat?.accountable ?? null;
+    // 席が引けないとき、決定者の欄が名簿の人の氏名ならその人を決定者とする(決定可能に引ける。IMPL-0628)
+    const holderId = seat?.accountable ? personKey(config, seat.accountable) : seatName === 'biz-approver' ? null : (resolveSigner(config, seatName)?.id ?? null);
     const isDecider = (approver) => {
-      if (!holder) return null;
+      if (!holderId) return null;
       const p = resolveSigner(config, approver);
-      return p ? personKey(config, holder) === p.id : false;
+      return p ? holderId === p.id : false;
     };
     const restricted = restrictedStateExceptions({ rows, units: changeUnits, isDecider });
     for (const g of restricted.gaps) gaps.push(g);
@@ -4518,7 +4520,7 @@ if (isMain) {
     const briefText = exists('docs/project-brief.md') ? fs.readFileSync(path.join(ROOT, 'docs/project-brief.md'), 'utf8') : '';
     const defectText = exists(DEFECT_FILE) ? fs.readFileSync(path.join(ROOT, DEFECT_FILE), 'utf8') : null;
     return {
-      fastTrack: fastTrackMetricsText(fastTrackMetrics({ rows, changeTotal: changesTotal, defectText })),
+      fastTrack: fastTrackMetricsText(fastTrackMetrics({ rows, changeTotal: changesTotal, defectText, inRange: (r) => inRangeTarget(r.target) })),
       restricted: { count: restricted.found.length, unmarked: restricted.unmarked, unconfirmed: restricted.unconfirmed },
       quota: exceptionQuotaText({ briefText, used, usedReadable }),
     };
@@ -4840,13 +4842,15 @@ if (isMain) {
       d0Text,
       records: gateRecordList.map((r) => {
         const text = fs.readFileSync(path.join(ROOT, r.file), 'utf8');
-        return { file: r.file, gate: r.gate, judge: rowValue(text, '判定者'), judgedAt: r.judgedAt, coSign: rowValue(text, '確認済みの者の併記', false) };
+        return { file: r.file, gate: r.gate, judge: rowValue(text, '判定者'), judgedAt: r.judgedAt, coSign: rowValue(text, '確認済みの者の併記', false), inRange: !recordsInRange || recordsInRange.has(r.file) };
       }),
       resolve: (n) => resolveSigner(config, n)?.id ?? null,
       isAi: (n) => aiNameBlocked(config, n),
       holderOf,
       roleOfGate,
     });
+    // 止める未達(IMPL-0738): 設定の未達、G-2(価値責任者を置かない委託)、範囲の中の併記の未達。G-3 など体制に由来しない未達は開示だけ
+    for (const g of unmetShipGaps(config, { extra: [...unmet.filter((u) => u.gate === 'g2'), ...cosignShipEntries(provisional.unmet)] })) gaps.push(g);
     return { reach: { text: reachCountsText(reach), total: reach.total, unreadable: reach.unreadable.length }, inventory, provisional: { text: provisionalUnmetText(provisional), unmet: provisional.unmet.length, checked: provisional.checked, unconfirmed: provisional.unconfirmed } };
   })();
 

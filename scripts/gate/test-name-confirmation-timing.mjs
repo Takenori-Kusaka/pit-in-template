@@ -95,6 +95,8 @@ try {
   fs.writeFileSync(cfgPath, JSON.stringify(sealChangeLog(blank), null, 2) + '\n');
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
   fs.copyFileSync(path.join(dir, 'templates/00-d0-governance.md'), path.join(dir, 'docs/D-0-governance.md'));
+  // 附属書F F.2 の Q1 を「いいえ」に記入する(未記入の D-0 は委任を止める。#434 / IMPL-0919)
+  fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), fs.readFileSync(path.join(dir, 'docs/D-0-governance.md'), 'utf8').replace(/(\| 附属書F F\.2 の回答 \|)[^\n]*/, '$1 いいえ。人身への危害は生じない |'));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: init');
   git('tag', 'blank');

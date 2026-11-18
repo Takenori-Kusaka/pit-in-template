@@ -201,17 +201,27 @@ export function provisionalGaps({ d0Text, records, resolve, isAi, holderOf, role
       else if (isAi(co)) why = '併記が AI の名義';
       else if (!resolve(co)) why = '併記が名簿の人でない';
       else if (resolve(co) === judgeId) why = '併記が判定者本人';
-      if (why) unmet.push({ file: r.file, role: row.role, why });
+      if (why) unmet.push({ file: r.file, role: row.role, why, inRange: r.inRange !== false });
     }
   }
   return { unmet, unconfirmed, checked };
 }
 
-/** 未達の表示の文(項目1)。止めない */
+/** 未達の表示の文(項目1)。CL1 以上と規制業は範囲の中の未達で出荷を止める(IMPL-0738) */
 export function provisionalUnmetText(res) {
   if (!res.unmet.length && !res.unconfirmed.length && !res.checked) return null;
-  const head = `暫定任命の期間中の判定(第3章 3.4.1): 対象 ${res.checked} 件のうち未達 ${res.unmet.length} 件(止めない)`;
+  const head = `暫定任命の期間中の判定(第3章 3.4.1): 対象 ${res.checked} 件のうち未達 ${res.unmet.length} 件(CL1 以上と規制業は、出荷の範囲の中の未達で出荷を止める)`;
   const list = res.unmet.map((u) => `${u.file}(${u.role}: ${u.why})`).join('、');
   const un = res.unconfirmed.length ? `。確認できない: ${res.unconfirmed.join(' / ')}` : '';
   return `${head}${list ? `: ${list}` : ''}${un}`;
+}
+
+/** 出荷を止める併記の未達(IMPL-0738)。出荷の範囲の中の判定だけを、集約の欠落へ渡す形にする */
+export function cosignShipEntries(unmet) {
+  return (unmet ?? []).filter((u) => u.inRange).map((u) => ({
+    gate: 'provisional-cosign',
+    label: `暫定任命の判定の併記(${u.file})`,
+    reason: `${u.role}: ${u.why}`,
+    howToResolve: ['確認済みの者の併記を置いた判定記録を起こし直す(第3章 3.4.1)'],
+  }));
 }

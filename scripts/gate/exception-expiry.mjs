@@ -105,7 +105,8 @@ export function extendedDueRows({ startText, endText }) {
   if (!startText || !String(startText).trim()) return { unverifiable: true, extended: [] };
   const kinds = ['例外', '類似検知'];
   const start = ledgerOf(startText).filter((r) => kinds.includes(r.kind));
-  const endById = new Map(ledgerOf(endText).filter((r) => kinds.includes(r.kind)).map((r) => [r.id, r]));
+  // 終点の行は区分で絞らない(区分を変えて期限を延ばしても見つける。IMPL-0787)
+  const endById = new Map(ledgerOf(endText).map((r) => [r.id, r]));
   const extended = [];
   for (const s of start) {
     const e = endById.get(s.id);
@@ -137,7 +138,7 @@ export function lapsedSimilarRows(rows, day, isValidExtension = () => false) {
   const ex = all.filter((r) => r.kind === '例外');
   const out = [];
   for (const r of all.filter((x) => x.kind === '類似検知')) {
-    if (isClosedState(r) || stateOf(r).startsWith('失効')) continue;
+    if (isClosedState(r)) continue;
     const due = dueDayOf(r.due);
     if (due && due >= day) continue;
     const idRe = new RegExp(`(^|[^\\d])${r.id}(?!\\d)`);
@@ -162,7 +163,7 @@ export function lapsedSimilarGapText(x, day) {
  * 印を書かない行は、機械が当該の種類の行として見分けられない(印の付け忘れは機械で捕まえない)。check-pr.mjs と集約が同じ関数を使う
  */
 export function fastTrackMarkOf(content) {
-  const t = String(content ?? '').normalize('NFKC').replace(/[*`]/g, '').trim();
+  const t = String(content ?? '').normalize('NFKC').replace(/[*`_]/g, '').trim();
   const m = /^ファストトラック\s*[(（]\s*短縮\s*[:：]\s*([^)）]*)[)）]/.exec(t);
   return m ? { scope: m[1].trim() } : null;
 }
@@ -188,10 +189,12 @@ function sameChange(target, cause) {
  *   原因の変更の欄が空欄の件数を併記する(空欄は結べない。結べた件数は下限であり、楽観へ偏る)
  * 印の付け忘れは数えられない。会議体へ報告するふるまいは見ない
  */
-export function fastTrackMetrics({ rows, changeTotal, defectText = null }) {
+export function fastTrackMetrics({ rows, changeTotal, defectText = null, inRange = null }) {
   const marked = (rows ?? []).filter((r) => r.kind === '例外' && fastTrackMarkOf(r.content));
   const closed = marked.filter((r) => isClosedState(r)).length;
-  const out = { marked: marked.length, closed, changeTotal: changeTotal ?? 0, defects: null };
+  // 発生率の分子は、範囲の変更へ対応づく印の行に限る(分母と範囲を揃える。IMPL-0612)。inRange を渡さなければ全体
+  const markedInRange = inRange ? marked.filter((r) => inRange(r)).length : marked.length;
+  const out = { marked: marked.length, markedInRange, outOfRange: marked.length - markedInRange, closed, changeTotal: changeTotal ?? 0, defects: null };
   if (defectText == null) return out;
   const lines = String(defectText).split(/\r?\n/).filter((l) => /^\s*\|/.test(l));
   const hi = lines.findIndex((l) => l.includes('原因の変更') && l.includes('処分'));
@@ -221,7 +224,7 @@ export function fastTrackMetricsText(m) {
   const d = m.defects;
   const defect = d == null ? '欠陥の台帳が無く、適用後の欠陥は数えていない' : !d.readable ? '欠陥の台帳の表を読めず、適用後の欠陥は数えていない' : '適用後の欠陥: 確定した欠陥 ' + d.confirmed + ' 件のうち、原因の変更を印の行の対象と結べた ' + d.linked + ' 件 / 原因の変更の欄が空欄で結べない ' + d.causeBlank + ' 件(空欄は結べないため、結べた件数は楽観へ偏る)';
   return (
-    'ファストトラック(7.4)の指標: 印のある行 ' + m.marked + ' 件(範囲の変更 ' + m.changeTotal + ' 件に対する発生率' + pct(m.marked, m.changeTotal) + ') / 回収完了 ' + m.closed + ' 件(回収完了率' + pct(m.closed, m.marked) + ') / ' + defect +
+    'ファストトラック(7.4)の指標: 印のある行 ' + m.marked + ' 件(うち範囲の変更へ対応づく ' + (m.markedInRange ?? m.marked) + ' 件 / 範囲へ対応づかない行 ' + (m.outOfRange ?? 0) + ' 件。範囲の変更 ' + m.changeTotal + ' 件に対する発生率' + pct(m.markedInRange ?? m.marked, m.changeTotal) + ') / 回収完了 ' + m.closed + ' 件(回収完了率' + pct(m.closed, m.marked) + ') / ' + defect +
     '。印の付け忘れは数えられず、会議体への報告のふるまいは見ない'
   );
 }

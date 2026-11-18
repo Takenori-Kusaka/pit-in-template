@@ -285,7 +285,7 @@ export function claimStatus(config, { kbSource = null, ignoreEnd = false } = {})
       ? [{ label: `判定記録の置き場の履歴の書き換えと削除を、ホスティングの規則で止めていない(${recordsProtectionState(config).detail})`, derived: 'records-protection' }]
       : []),
   ];
-  const unmet = (config?.unmet ?? []).map((u) => u.label ?? u.gate);
+  const unmet = derivedUnmet(config).map((u) => u.label ?? u.gate);
   const blockers = [];
   // 作業中の版は、適用の表明に限り、コミットとともに名指せる。2つの適合の主張は発行した版を要する(第1章 1.10.2・1.10.3)
   if (!edition) blockers.push(`従う版が作業中の版です。適用の表明は作業中の版をコミットとともに名指せますが、適合の主張と逸脱を伴う適合の主張は発行した版を要します(第1章 1.10.3)`);
@@ -3456,7 +3456,7 @@ export function codeownersState(root = ROOT) {
   return { places, effective, owner };
 }
 
-// --- IMPL-0738: CL1 以上と規制業は、未達の種類を問わず出荷しない(第8章 テーラリングの表。ADR-0218) ---
+// --- IMPL-0738: CL1 以上と規制業は、人の確認の未達を解くまで出荷しない(第8章 テーラリングの表。ADR-0218) ---
 
 /** G-3 の未達の条件(generate-profile.mjs の detectUnmet と、下の導き直しが共有する 1 つの関数)。 */
 export function g3UnmetCondition(answers, stack) {
@@ -3479,23 +3479,33 @@ export function g3UnmetEntry() {
   };
 }
 
-/**
- * 出荷を止める未達。CL1 以上か規制業のとき、構成の unmet[] と、回答とスタックから導き直した G-3 の未達の和を返す。
- * 構成の手書き(unmet: [] など)に頼らない。CL0 で規制業でない案件は空(開示と G-8 の受容で出荷できる)。
- */
-export function unmetShipBlockers(config) {
-  const a = config?.answers ?? {};
-  const applies = ['cl1', 'cl2', 'cl3'].includes(a['q-criticality']) || a['q-quality'] === 'quality-regulated';
-  if (!applies) return [];
+// IMPL-0738: 止める未達の範囲の唯一の所在(第8章 テーラリングの表。ADR-0218)
+export const UNMET_SHIP_SCOPE = Object.freeze({
+  g2: 'stop', // 価値責任者を置かない委託
+  g6: 'stop', // 独立した人の確認者を置けない
+  'provisional-cosign': 'stop', // 暫定任命の判定の併記が無い
+  g3: 'disclose', // 体制に由来しない。開示の表示にとどめる
+});
+export const unmetStopsShip = (u) => UNMET_SHIP_SCOPE[u?.gate] !== 'disclose';
+
+/** 開示に出す未達。構成の unmet[] と、回答とスタックから導き直した G-3 の和。CL に依らない */
+export function derivedUnmet(config) {
   const out = [...(config?.unmet ?? [])];
-  if (g3UnmetCondition(a, config?.adapters?.stack ?? 'none') && !out.some((u) => u.gate === 'g3')) out.push(g3UnmetEntry());
+  if (g3UnmetCondition(config?.answers ?? {}, config?.adapters?.stack ?? 'none') && !out.some((u) => u.gate === 'g3')) out.push(g3UnmetEntry());
   return out;
 }
 
+/** 出荷を止める未達。CL1 以上か規制業のとき、開示の未達のうち止める範囲のものと extra を返す。CL0 で規制業でない案件は空 */
+export function unmetShipBlockers(config, { extra = [] } = {}) {
+  const a = config?.answers ?? {};
+  const applies = ['cl1', 'cl2', 'cl3'].includes(a['q-criticality']) || a['q-quality'] === 'quality-regulated';
+  return applies ? [...derivedUnmet(config), ...extra].filter(unmetStopsShip) : [];
+}
+
 /** 集約の記載の欠落の文。止まるのは出荷判定(集約の exit 1)で、マージは止めない。 */
-export function unmetShipGaps(config) {
-  return unmetShipBlockers(config).map((u) =>
-    `未達のゲートがあります: ${u.label ?? u.gate}(${u.reason ?? '理由の記録なし'})。CL1 以上の案件と規制業の案件は、未達の種類を問わず、未達を解くまで出荷しません。` +
+export function unmetShipGaps(config, opts = {}) {
+  return unmetShipBlockers(config, opts).map((u) =>
+    `未達のゲートがあります: ${u.label ?? u.gate}(${u.reason ?? '理由の記録なし'})。CL1 以上の案件と規制業の案件は、人の確認の未達を解くまで出荷しません。` +
       `例外承認は未達を解きません(第8章、第7章 7.3)。解き方: ${(u.howToResolve ?? [])[0] ?? '未達の理由の記録を確かめてください'}`
   );
 }
