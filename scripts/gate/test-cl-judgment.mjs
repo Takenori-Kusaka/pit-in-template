@@ -641,6 +641,10 @@ try {
     check(`IMPL-0919:ok F.2「${v}」は偽(いいえ)`, q(v) === false, String(q(v)));
   }
   check('IMPL-0919:ok 「はい。…」は真', q('はい。搬送機の停止の制御を持つ') === true);
+  // R2-03: 判定の状態の側も、値の違う 2 行の Q1 を「いいえ」と読まない
+  const conflictText = sec('| 判定した区分 | CL1 |\n| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | はい |');
+  check('IMPL-0919:ng 値の違う 2 行は、判定の状態でも Q1 を読めない(f2q1 が null)', clJudgmentState(configOf({}), { text: conflictText }).f2q1 === null, String(clJudgmentState(configOf({}), { text: conflictText }).f2q1));
+  check('IMPL-0919:ok 同じ値の 2 行は、判定の状態でも Q1 を読める(false)', clJudgmentState(configOf({}), { text: sec('| 判定した区分 | CL1 |\n| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | いいえ |') }).f2q1 === false);
   check('IMPL-0919:ok 同じ値の 2 行は読める', readF2Q1Text(sec('| 附属書F F.2 の回答 | いいえ |\n| 附属書F F.2 の回答 | いいえ |')) === false);
 }
 

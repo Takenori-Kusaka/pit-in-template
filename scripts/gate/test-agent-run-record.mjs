@@ -190,6 +190,14 @@ function repo() {
   W2.commit('feat: leave asset change', 'sess-n');
   const v2 = W2.trailer('Agent-Assets')[0] ?? '';
   check('IMPL-1019:ng 指示資産の変更を未コミットで残したコミットは assets=dirty', /; assets=dirty;/.test(v2), v2);
+  // IMPL-1019:ng(開始の時点で指示資産が dirty だった実行は、途中で変えず、そのコミットに含めても dirty を引き継ぐ。R2-05 m11)
+  const Wd = repo();
+  Wd.touch('CLAUDE.md', '# 開始の前から未コミット\n');
+  Wd.record('sess-p');
+  Wd.git('add', '-A');
+  Wd.commit('feat: start was dirty', 'sess-p');
+  const vd = Wd.trailer('Agent-Assets')[0] ?? '';
+  check('IMPL-1019:ng 開始の時点で dirty だった実行は、コミットの時点で変更が残っていなくても assets=dirty を引き継ぐ', Wd.readRecord('sess-p')?.assets === 'dirty' && /; assets=dirty;/.test(vd) && !vd.includes('start='), `${JSON.stringify(Wd.readRecord('sess-p'))} ${vd}`);
   // IMPL-1019:ok(変更なし → clean。start= は付かない)
   const W3 = repo();
   W3.record('sess-o');

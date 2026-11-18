@@ -147,6 +147,8 @@ for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)',
     check('適用 違反: Q1 はい(CL1)は適用', checkSafetyRecord({ root: tmp, config: { answers: { 'q-criticality': 'cl1' } } }).applies);
     fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), d0('未定', 'CL1'));
     check('適用 違反: Q1 が読めないときは適用として扱う', checkSafetyRecord({ root: tmp, config: { answers: { 'q-criticality': 'cl1' } } }).applies);
+    fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), d0('いいえ', 'CL1') + '| 附属書F F.2 の回答 | はい |\n');
+    check('適用 違反: F.2 の行が「いいえ」「はい」と食い違えば Q1 を読めず、適用として扱う(R2-03)', checkSafetyRecord({ root: tmp, config: { answers: { 'q-criticality': 'cl1' } } }).applies);
     fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), d0('いいえ', 'CL2'));
     check('適用 違反: CL2 は Q1 いいえでも適用', checkSafetyRecord({ root: tmp, config: { answers: { 'q-criticality': 'cl1' } } }).applies);
     fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), d0('いいえ', 'CL1'));

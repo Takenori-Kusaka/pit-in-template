@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, parseLedger, resolveSigner, aiNameBlocked } from './config.mjs';
-import { parseClRecord, classOf, f2Q1Of } from './cl-judgment.mjs';
+import { parseClRecord, classOf, f2Q1OfParsed } from './cl-judgment.mjs';
 import { exceptionStanding } from './exception-expiry.mjs';
 
 export const SAFETY_RECORD_FILE = 'docs/safety-risk-assessment.md';
@@ -195,7 +195,7 @@ export function checkSafetyRecord({ root = ROOT, config = null, day = null } = {
   if (d0 !== null) {
     const p = parseClRecord(d0);
     if (p.present) {
-      q1 = f2Q1Of(p.values.f2);
+      q1 = f2Q1OfParsed(p);
       classes.push(classOf(p.values.cls));
     }
   }

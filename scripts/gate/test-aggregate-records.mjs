@@ -749,7 +749,7 @@ const config = {
   check('IMPL-0638:ok 期間が日付として読めない行は「確認できない」と出し、未達にしない', good.unconfirmed.some((u) => /価値責任者/.test(u)) && good.unmet.length === 0, JSON.stringify(good.unconfirmed));
 }
 
-// IMPL-0738(CL1 以上と規制業は、未達の種類を問わず集約の欠落に数える。手書きの構成でも G-3 の未達を導き直す)
+// IMPL-0738(CL1 以上と規制業は、人の確認の未達を集約の欠落に数える。G-3 は開示だけ。手書きの構成でも G-3 の未達を導き直す)
 {
   const BASE = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-biz-phase': 'growth', 'q-team-size': 'size-3-5', 'q-external-reviewer': 'reviewer-yes' };
   const quiet = (fn) => { const log = console.log; console.log = () => {}; try { return fn(); } finally { console.log = log; } };

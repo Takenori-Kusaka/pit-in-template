@@ -39,6 +39,7 @@ if (want('0738')) {
   check('IMPL-0738:ok 集約: CL1 × G-3 未達は欠落にならず、保証の開示に G-3 の未達が出る', hit(g3.gaps, HOLD).length === 0 && /G-3/.test(lineWith(g3.report, '未達')), lineWith(g3.report, 'G-3').slice(0, 300));
   const hand = run(withUnmet(undetermined, []));
   check('IMPL-0738:ok 集約: 手で unmet: [] と書いても、導き直した G-3 が開示の未達に出る(欠落にはならない)', hit(hand.gaps, HOLD).length === 0 && /G-3/.test(lineWith(hand.report, '未達')), lineWith(hand.report, '未達').slice(0, 300));
+  check('IMPL-0738:ok 集約: 手で unmet: [] と書いても、evidence.unmet と「未達のゲート」の表の行に G-3 が残る(R2-05 m01)', Array.isArray(hand.evidence?.unmet) && hand.evidence.unmet.some((u) => u.gate === 'g3') && /^\| G-3[^|]*\|/m.test(hand.report), JSON.stringify(hand.evidence?.unmet?.map((u) => u.gate)));
   const std = run(withUnmet(buildCfg({}, { stack: 'node' }), [G6]));
   check('IMPL-0738:ok 集約: CL0 × 標準 × G-6 未達は欠落にならず、開示に出る', hit(std.gaps, HOLD).length === 0 && /G-6/.test(lineWith(std.report, '未達')));
   // 委託 × 価値責任者を置かない(IMPL-0755)
@@ -90,6 +91,15 @@ if (want('0638 0667')) {
   check('IMPL-0638:ok 集約: 併記があれば欠落にならない', !hit(ok.gaps, HOLD).some((g) => /併記/.test(g)), JSON.stringify(ok.gaps.filter((g) => /併記/.test(g))));
   check('IMPL-0638:ok 集約: 併記のない判定は保証の開示にも出る', /併記/.test(lineWith(ng.report, '暫定任命')), lineWith(ng.report, '暫定任命').slice(0, 200));
 
+  // R2-05 m03: 範囲の外の判定の併記の未達では出荷を止めない(併記の記録は範囲の外。開示には残る)
+  r.resetTo('base');
+  withD0Row('| 技術判断者(Tech Lead) | 責任者 | 2026-10-01〜2026-12-31 | 任命を解く | |');
+  r.write('docs/gates/g3-adr-0001.md', g3(''));
+  r.commitAll('docs: G-3 (範囲の外)');
+  r.git('tag', '-f', 'mid');
+  r.commitAll('chore: after');
+  const outside = r.runAggregate(['--from', 'mid', '--to', 'HEAD']);
+  check('IMPL-0638:ok 集約: 併記のない判定が範囲の外の記録なら、出荷を止めない(R2-05 m03)', !hit(outside.gaps, HOLD).some((g) => /併記/.test(g)), JSON.stringify(outside.gaps.filter((g) => /併記/.test(g))));
   // IMPL-0667: 必達基準の判定(乙の継続)の回数
   const reach = (i, over = {}) => form04(r, { ゲート: '必達基準の判定', 対象: `ステージ ${i}`, 判定者: '名簿 丁', 判定日時: `2026-0${i}-01 10:00`, 結果: '通過', 区分: '期間 乙 / 案件 乙', 判定: '継続', ...over });
   const reachScene = (n, over) => {
@@ -403,8 +413,63 @@ if (want('0523')) {
   check('IMPL-0523:ng 集約(宣言行): レビューした版の後に PR の中で本文を変えると不一致(欠落)。版は宣言行のレビューの commit_id', hit(ng.gaps, MIS).length === 1 && /不一致 1/.test(lineWith(ng.report, '判断記録の再検査')), JSON.stringify(ng.gaps.filter((g) => /ADR-0007/.test(g))));
   const okState = scene(ADR('初版', '非推奨'), true);
   check('IMPL-0523:ok 集約(宣言行): 状態の行だけの変更は一致', hit(okState.gaps, MIS).length === 0 && /一致 1 \/ 不一致 0/.test(lineWith(okState.report, '判断記録の再検査')));
+  // R2-05 m04: 席の責任者でない者の宣言行のレビューは、判定として数えない
+  const asOther = (login, id) => {
+    r.resetTo('base');
+    r.write('context/decisions/0007-test.md', ADR('初版'));
+    const c1 = r.commitAll('docs: adr 0007 (#3)');
+    r.write('docs/records/reviews/pr-3.json', JSON.stringify({ pr: 3, number: 3, default_branch: 'main', title: 'adr', body: '', author: { login: 'acc1', id: 9001 }, base: { ref: 'main' }, head_sha: c1, merge_commit_sha: c1, merged_at: '2026-11-02T00:00:00Z', reviews: [{ id: 22, user: { login, id, type: 'User' }, state: 'COMMENTED', author_association: 'MEMBER', body: 'G-3: 通過\n\nADR-0007 を確認した', commit_id: c1,submitted_at: '2026-11-01T00:00:00Z' }] }));
+    r.commitAll('docs: copy');
+    return agg(r);
+  };
+  const seat = asOther('acc5', 9005);
+  const notSeat = asOther('acc2', 9002);
+  const cnt = (a) => a.evidence?.assurance?.records?.inRange?.judgements;
+  check('IMPL-0523:ok 集約(宣言行): 席の責任者(技術判断者)本人の G-3 は範囲の判定に 1 件数える', cnt(seat) === 1 && (seat.evidence?.assurance?.records?.g24?.notJudge ?? []).length === 0, JSON.stringify(seat.evidence?.assurance?.records?.inRange));
+  check('IMPL-0523:ng 集約(宣言行): 席の責任者でない名簿の人の G-3 は範囲の判定に数えず、判定者でないと出す(R2-05 m04)', cnt(notSeat) === 0 && (notSeat.evidence?.assurance?.records?.g24?.notJudge ?? []).length === 1, JSON.stringify(notSeat.evidence?.assurance?.records?.inRange));
   const okHead = scene(ADR('書き換え'), false);
   check('IMPL-0523:ok 集約(宣言行): マージ時の head のレビューなら版はマージコミットで、一致', hit(okHead.gaps, MIS).length === 0 && /一致 1 \/ 不一致 0/.test(lineWith(okHead.report, '判断記録の再検査')));
+  r.done();
+}
+
+// ---------------------------------------------------------------- IMPL-0612(ファストトラックの指標は範囲の変更に絞る。R2-05 m07)
+if (want('0612')) {
+  const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
+  const HEAD = '# 技術負債台帳\n\n| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
+  r.resetTo('base');
+  r.write('src/a.js', 'export const a = 1;\n');
+  r.commitAll('fix: a\n\nRisk: R2\nVerification: 手元で試験を実行し、通過を確かめた');
+  const hash = r.git('rev-parse', 'HEAD').slice(0, 8);
+  const row = (id, target) => `| ${id} | 例外 | ${target} | ファストトラック(短縮: G-6) 急ぎ | 障害 | 再発 | 2026-12-31 まで。回収責任者 名簿 丙 | 未返却 | 名簿 乙 | 名簿 戊 |\n`;
+  r.write('docs/debt-ledger.md', HEAD + row('D-10', `コミット ${hash}`) + row('D-11', 'PR #901') + row('D-12', 'PR #902'));
+  r.commitAll('docs: ledger');
+  const a = agg(r);
+  check('IMPL-0612:ng 集約: 印のある 3 行のうち範囲の変更へ対応づくのは 1 行で、残り 2 行は範囲へ対応づかない行に数える', /印のある行 3 件\(うち範囲の変更へ対応づく 1 件 \/ 範囲へ対応づかない行 2 件/.test(lineWith(a.report, 'ファストトラック(7.4)の指標')), lineWith(a.report, 'ファストトラック(7.4)の指標').slice(0, 300));
+  r.done();
+}
+
+// ---------------------------------------------------------------- IMPL-1008(類似検知の延長。指示者本人の延長は成立しない。R2-02・R2-05 の m06)
+if (want('1008')) {
+  const AUTHOR = '名簿 甲';
+  const OTHER = '名簿 戊';
+  const r = makeRepo({ config: buildCfg({}, { stack: 'node' }), userName: AUTHOR });
+  const HEAD = '# 技術負債台帳\n\n| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
+  const GAP = /類似検知 D-095/;
+  // 直接のコミット(PR を経ない)を対象とする類似検知を、approver が延長する
+  const scene = (approver, via = 'commit') => {
+    r.resetTo('base');
+    r.write('src/a.js', 'export const a = 1;\n');
+    r.commitAll('fix: a\n\nRisk: R2\nVerification: 手元で試験を実行し、通過を確かめた');
+    const hash = r.git('rev-parse', 'HEAD').slice(0, 8);
+    const target = via === 'commit' ? `コミット ${hash}` : 'PR #95';
+    r.write('docs/debt-ledger.md', `${HEAD}| D-095 | 類似検知 | ${target} | 類似の疑い | 当該の変更単位で処理できない | 不具合 | 2026-11-01 | 未返却 | ${OTHER} | — |\n| D-096 | 例外 | D-095 | 類似検知の延長 | 処理に日数が要る | 不具合 | 2026-12-31 | 未返却 | ${OTHER} | ${approver} |\n`);
+    r.commitAll('docs: ledger');
+    return agg(r);
+  };
+  const self = scene(AUTHOR);
+  check('IMPL-1008:ng 集約: コミットの作者本人が承認した延長は成立せず、類似検知が欠落になる(R2-02)', hit(self.gaps, GAP).length === 1 && !/指示者と照合できない延長/.test(self.report), JSON.stringify(self.gaps.filter((g) => /D-095/.test(g))) + lineWith(self.report, '照合できない').slice(0, 200));
+  const other = scene(OTHER);
+  check('IMPL-1008:ok 集約: コミットの作者でも開発者の席でもない別の人が承認した延長は成立し、欠落にならない(R2-02)', hit(other.gaps, GAP).length === 0 && !/指示者と照合できない延長/.test(other.report), JSON.stringify(other.gaps.filter((g) => /D-095/.test(g))) + lineWith(other.report, '照合できない').slice(0, 200));
   r.done();
 }
 

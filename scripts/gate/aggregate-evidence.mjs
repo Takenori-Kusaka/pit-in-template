@@ -2955,7 +2955,7 @@ if (isMain) {
     const t = String(target ?? '');
     const p = [...prs, ...recordPrs].find((x) => refersToPr(t, x.number));
     if (p) return p.g6.independent.unresolvedInstructors?.length ? null : p.g6.independent.instructors.map((n) => personKey(config, n));
-    const c = commits.find((x) => commitRefers(x.hash)(t));
+    const c = trailers.find((x) => commitRefers(x.hash)(t));
     if (c) {
       const ci = commitInstructors(c);
       return ci.unresolved.length ? null : [...ci.known.keys()];

@@ -142,6 +142,12 @@ export function f2Q1Of(value) {
   return null;
 }
 
+/** parseClRecord の結果から Q1 を読む。F.2 の行が食い違うときは読めない(null)。3 か所の読み手がこれを使う(R2-03) */
+export function f2Q1OfParsed(p) {
+  if (!p?.present || p.conflicts?.f2) return null;
+  return f2Q1Of(p.values.f2);
+}
+
 /** 段の欄から 1〜4 を読む。読めなければ null */
 export function stepOf(value) {
   const m = String(value ?? '').normalize('NFKC').match(/段\s*([1-4])/);
@@ -156,8 +162,7 @@ export function readF2Q1Text(text) {
   if (text === null || text === undefined) return null;
   const p = parseClRecord(text);
   if (!p.present) return null;
-  if (p.conflicts?.f2) return null;
-  return f2Q1Of(p.values.f2);
+  return f2Q1OfParsed(p);
 }
 
 /** 案件の D-0 を読んで F.2 の Q1 を返す(D-0 が無ければ null) */
@@ -365,7 +370,7 @@ export function clJudgmentState(config, { text = null, gateRecords = [], root = 
       }
     }
   }
-  const f2q1 = parsed.present && isFilledValue(v.f2) ? f2Q1Of(v.f2) : null;
+  const f2q1 = parsed.present && isFilledValue(v.f2) ? f2Q1OfParsed(parsed) : null;
   if (parsed.present && isFilledValue(v.f2) && f2q1 === null) recordProblems.push(`安全重要度の判定の記録の「附属書F F.2 の回答」を、Q1 の答え(はい / いいえ)で始めてください(${v.f2.slice(0, 40)})`);
 
   // 構成の回答 q-f2-q1(Q1 の写し。初期化の回答は仮の答え)と D-0 表10 の食い違い(IMPL-1016。ADR-0171 決定2)。正本は D-0。
