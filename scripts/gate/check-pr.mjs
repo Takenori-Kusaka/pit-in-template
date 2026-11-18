@@ -184,6 +184,7 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm } from './records.mjs';
+import { isClosedState } from './exception-expiry.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
 
@@ -737,6 +738,18 @@ export function specFindings(pr, { exists }) {
  * (A) で裏づけた行は、PR の先頭の台帳(headLedgerText)にある行でもよい。ctx を渡さない呼び出しは帰属を確かめられず、行を数えない
  */
 export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
+  // 台帳の行の印(ADR-0200 決定2): 区分「例外」の行の内容の先頭が `ファストトラック(短縮: <ゲート>)` の行をファストトラックの適用とする。
+  // 印を書かない行は、機械が当該の種類の行として見分けられない(印の付け忘れは機械で捕まえない)
+  const fastTrackMarkOf = (content) => {
+    const m = /^ファストトラック[((]\s*短縮\s*[::]\s*([^))]*)[))]/.exec(String(content ?? '').normalize('NFKC').trim());
+    return m ? { scope: m[1].trim() } : null;
+  };
+  const fastTrackForbidden = (ft) => {
+    const out = [];
+    if (/(^|[^A-Za-z0-9])G-?[45](?!\d)/i.test(ft.scope)) out.push(`ファストトラックの短縮の対象(${ft.scope})が G-4・G-5 を名指す(7.4 の限定列挙の外。G-4・G-5 は短縮できない)`);
+    if (/認証|認可|データ保全/.test(ft.scope)) out.push('ファストトラックの短縮の対象が認証・認可・データ保全の検証を含む(7.4 の限定列挙の外)');
+    return out;
+  };
   const matched = [];
   const rejected = [];
   const backing = {};
@@ -758,6 +771,13 @@ export function exceptionFor(ledgerText, prNumber, config, prAuthor, ctx = {}) {
     }
     if (!refers(r.target)) continue;
     const why = [];
+    // ファストトラック(7.4)の行の限定列挙と乱用の制約1(IMPL-0567・IMPL-0610。ADR-0200)。印の無い行は見分けられない
+    const ft = fastTrackMarkOf(r.content);
+    if (ft) {
+      why.push(...fastTrackForbidden(ft));
+      const open = baseRows.filter((b) => b.id !== r.id && b.kind === '例外' && fastTrackMarkOf(b.content) && !isClosedState(b));
+      if (open.length) why.push(`未回収のファストトラックの行 ${open.map((b) => b.id).join(', ')} が残る間は、同一の案件で新たに使えない(7.4 の制約1。返却済み・取り下げの行は数えない)`);
+    }
     if (!ACTIVE_EXCEPTION_STATES.includes(r.state.replace(/\*/g, '').normalize('NFKC').trim())) why.push(`状態が有効を示す値でない(${r.state || '未記入'})`);
     if (!isFilledValue(r.approver)) why.push('承認した者が未記入');
     else {
@@ -1670,7 +1690,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     size.exception = ex;
     if (ex.matched.length) {
       size.exceptionApproved = true;
-      result.notices.push(`size:over: ${size.over.join('、')}。台帳の例外承認(${ex.matched.map((id) => `${id}。帰属: ${ex.backing?.[id] ?? '—'}`).join(' / ')})が有効なため、規模の確認は要さない。判定完了時間と変更規模を記録し、較正の母集団に含める`);
+      result.notices.push(`size:over: ${size.over.join('、')}。台帳の例外承認(${ex.matched.map((id) => `${id}。帰属: ${ex.backing?.[id] ?? '—'}`).join(' / ')})が有効なため、規模の確認は要さない。判定完了時間と変更規模を記録し、較正の母集団に含める。内容の先頭に印「ファストトラック(短縮: <ゲート>)」の無い行は、7.4 の禁止対象かを機械は見分けられない(ADR-0200)`);
     } else {
       const att = sizeAttestationOf(pr.body);
       if (ex.rejected.length) result.notices.push(`size:over: 台帳の例外承認の行は有効でない(${ex.rejected.join(' / ')})。規模の超過は例外承認でなく規模の確認で扱う`);

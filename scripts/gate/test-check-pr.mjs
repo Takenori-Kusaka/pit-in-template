@@ -26,8 +26,8 @@ const read = (rel) => fs.readFileSync(path.join(TMP, rel), 'utf8');
 const lines = (n, prefix = 'line') => Array.from({ length: n }, (_, i) => `export const ${prefix}${i} = ${i};`).join('\n') + '\n';
 
 const LEDGER_HEAD = '# 技術負債台帳\n\n| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
-const exceptionRow = (id, pr, { state = '未返却', approver = '鈴木 一郎' } = {}) =>
-  `| ${id} | 例外 | PR #${pr} | 変更規模の上限(400行)を超える | 一括の移行で分割すると単独で動かない | 移行後の不具合 | 2026-12-31 まで。回収責任者 佐藤 花子 | ${state} | 山田 太郎 | ${approver} |\n`;
+const exceptionRow = (id, pr, { state = '未返却', approver = '鈴木 一郎', content = '変更規模の上限(400行)を超える' } = {}) =>
+  `| ${id} | 例外 | PR #${pr} | ${content} | 一括の移行で分割すると単独で動かない | 移行後の不具合 | 2026-12-31 まで。回収責任者 佐藤 花子 | ${state} | 山田 太郎 | ${approver} |\n`;
 const RISK = (v = 'R3') => `## リスク区分\n\n<!-- R1: 事後の取り消しを前提にできない / R2 / R3 -->\n\n${v}\n\n`;
 const BODY = (trailers = 'Spec: F-001 / Task-1', risk = RISK()) => `## 変更の概要\n\n説明\n\n## 作成を指示した者\n\n山田 太郎\n\n${risk}## トレーラ(スカッシュのメッセージの末尾になる。消さない)\n\n${trailers}\n`;
 
@@ -806,6 +806,49 @@ scenario('再判定: 根拠が「該当なし」', {}, () => {
   withD0('該当なし');
   write('specs/F-001/spec.md', SPEC_AC_CHANGED());
 }, passes());
+rewindBase();
+
+// ---------------------------------------------------------------- ファストトラックの行(7.4)の限定列挙と乱用の制約1(IMPL-0567・IMPL-0610。ADR-0200)
+const withFtLedger = (...rows) => {
+  write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7) + rows.join(''));
+  advanceBase('ft-ledger');
+};
+const FT = (gate) => 'ファストトラック(短縮: ' + gate + ')';
+const exRejected = (re) => (r) => (r.size?.exception?.rejected.some((x) => re.test(x)) ? [] : ['拒否の理由が出ていない: ' + JSON.stringify(r.size?.exception)]);
+const exMatched = (id) => (r) => (r.size?.exception?.matched.includes(id) ? [] : [id + ' が対応づいていない: ' + JSON.stringify(r.size?.exception)]);
+// IMPL-0567:ng(違反と適合の対。標準の実装マーク)
+scenario('ファストトラック: 短縮の対象が G-5 の行は例外承認に対応づけない', { number: 21 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: FT('G-5') }));
+  write('src/big.js', lines(450, 'x'));
+}, (r) => [...exRejected(/G-4・G-5 を名指す/)(r), ...(r.size?.exception?.matched.includes('D-002') ? ['対応づいている'] : [])]);
+rewindBase();
+// IMPL-0567:ng
+scenario('ファストトラック: 短縮の対象が認可の検証の行は対応づけない', { number: 21 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: FT('認可の検証') }));
+  write('src/big.js', lines(450, 'x'));
+}, exRejected(/認証・認可・データ保全/));
+rewindBase();
+// IMPL-0567:ok
+scenario('ファストトラック: 短縮の対象が G-6 の行は対応づく', { number: 21 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: FT('G-6') }));
+  write('src/big.js', lines(450, 'x'));
+}, exMatched('D-002'));
+rewindBase();
+// IMPL-0567:ok
+scenario('ファストトラック: 印の無い一般の例外の行は従来どおり対応づく(印の無い行は見分けられない旨を出す)', { number: 7 }, () => {
+  write('src/big.js', lines(450, 'x'));
+}, passes(noticedEarly(/印「ファストトラック\(短縮: <ゲート>\)」の無い行は.*見分けられない\(ADR-0200\)/)));
+// IMPL-0610:ng
+scenario('ファストトラック: 未回収の印の行 D-002 があり、新しい印の行 D-003 を使う', { number: 22 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: FT('G-6') }), exceptionRow('D-003', 22, { content: FT('G-6') }));
+  write('src/big.js', lines(450, 'x'));
+}, exRejected(/未回収のファストトラックの行 D-002/));
+rewindBase();
+// IMPL-0610:ok
+scenario('ファストトラック: D-002 が返却済みなら新しい印の行 D-003 を使える', { number: 22 }, () => {
+  withFtLedger(exceptionRow('D-002', 21, { content: FT('G-6'), state: '返却済み(2026-11-01)' }), exceptionRow('D-003', 22, { content: FT('G-6') }));
+  write('src/big.js', lines(450, 'x'));
+}, exMatched('D-003'));
 rewindBase();
 
 // ---------------------------------------------------------------- 停止の申し立て(第7章 7.11。#288)
