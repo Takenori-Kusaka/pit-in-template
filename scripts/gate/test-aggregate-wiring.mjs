@@ -14,9 +14,12 @@ const FROM = ['--from', 'base', '--to', 'HEAD'];
 const agg = (r) => r.runAggregate(FROM);
 const hit = (gaps, re) => gaps.filter((g) => re.test(g));
 const HOLD = /出荷しません/;
+// 変異の確認で場面を絞る(WIRING_ONLY=0738,0498 のように IMPL 番号を並べる)。指定が無ければ全場面を流す
+const ONLY = (process.env.WIRING_ONLY ?? '').split(',').filter(Boolean);
+const want = (tags) => !ONLY.length || tags.split(' ').some((t) => ONLY.includes(t));
 
 // ---------------------------------------------------------------- IMPL-0738(人の確認の未達は CL1 以上と規制業で出荷を止める。G-3 は開示だけ)
-{
+if (want('0738')) {
   const G6 = { gate: 'g6', label: 'G-6 独立レビュー', reason: '作成を指示した本人以外の確認者がいない', howToResolve: ['作成を指示した本人以外の確認者を名簿と席へ置く'] };
   const cl1 = buildCfg({ 'q-criticality': 'cl1' }, { stack: 'node' });
   const r = makeRepo({ config: cl1 });
@@ -65,7 +68,7 @@ const form04 = (r, over) => {
 };
 
 // ---------------------------------------------------------------- 判定記録の読み(IMPL-0638 暫定任命の併記・IMPL-0667 必達基準の回数)
-{
+if (want('0638 0667')) {
   const r = makeRepo({ config: buildCfg({ 'q-criticality': 'cl1' }, { stack: 'node' }) });
   const withD0Row = (row) => {
     const lines = r.read('docs/D-0-governance.md').replace(/\r\n/g, '\n').split('\n');
@@ -106,7 +109,7 @@ const form04 = (r, over) => {
 
 
 // ---------------------------------------------------------------- IMPL-0523(判断記録の再検査)・IMPL-0498(層の合わさり)
-{
+if (want('0523')) {
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
   const ADR = (n, body, extra = '') => `# ADR-${n} 試験\n\n- 状態: 採用\n- 置き換える決定: ${extra || 'なし'}\n\n## 決定\n\n${body}\n`;
   const adrFile = 'context/decisions/0007-test.md';
@@ -156,7 +159,7 @@ const form04 = (r, over) => {
   r.done();
 }
 
-{
+if (want('0498')) {
   // IMPL-0498: 承認の無い下の層(基底が既定ブランチでない)が、既定ブランチへ入った PR の先頭の祖先なら、その PR を確認ありに数えない
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
   const stack = (xReviews) => {
@@ -191,7 +194,7 @@ const form04 = (r, over) => {
 
 
 // ---------------------------------------------------------------- IMPL-1007・0925・0927・0934(安全関連部の検証の記録。基準7)
-{
+if (want('1007 0925 0927 0934')) {
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }), d0Q1: 'はい。制動の制御部を含む' });
   const GOOD_ITEMS = {
     安全関連部の切り分け: '制動の制御部。入出力の境界で切り分けた',
@@ -240,7 +243,7 @@ const form04 = (r, over) => {
 }
 
 // ---------------------------------------------------------------- IMPL-0628・0612・0669(第7章の行使。項目7)
-{
+if (want('0628 0612 0669')) {
   const NAMES = (i) => `名簿 ${'甲乙丙丁戊己'[i]}`;
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }), userName: NAMES(1) });
   const BRIEF = (quota) => r.read('templates/06-project-brief.md').replace(/\r\n/g, '\n').split('\n').map((l) => (l.startsWith('| 例外の枠') ? `| 例外の枠(事業ステージあたり) | ${quota} |` : l)).join('\n');
@@ -278,7 +281,7 @@ const form04 = (r, over) => {
 
 
 // ---------------------------------------------------------------- 開示の行(IMPL-0622・0739・0683・0710・R1-15)
-{
+if (want('0622 0739 0683')) {
   const r = makeRepo({ config: buildCfg({ 'q-biz-phase': 'mvp' }, { stack: 'node' }) });
   // IMPL-0622: S1 以降は、案件に関与していない者による点検(棚卸し)の記録が無ければ注意を出す。記録があれば経過日数を出す
   const none = agg(r);
@@ -309,7 +312,7 @@ const form04 = (r, over) => {
   r.done();
 }
 
-{
+if (want('0710')) {
   // IMPL-0710: 基準集合の確定者と導入承認者が同一人物
   const seats = seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4', 'ai-ops': 'p5' });
   const r = makeRepo({ config: buildCfg({}, { stack: 'node', seats }) });
@@ -330,7 +333,7 @@ const form04 = (r, over) => {
 }
 
 // ---------------------------------------------------------------- IMPL-0743・1019(実行の記録の集計)
-{
+if (want('0743')) {
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
   const SHA = 'a'.repeat(64);
   const ai = (name, trailers = '') => {
@@ -361,7 +364,7 @@ const form04 = (r, over) => {
   r.resetTo('base');
   r.done();
 }
-{
+if (want('1019')) {
   // IMPL-1019: 実行の記録(.claude/agent-runs/<id>.json)が JSON として読めても値が不正なら、unknown(unreadable-run-record)
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
   const val = (rec) => {
@@ -376,7 +379,7 @@ const form04 = (r, over) => {
 
 
 // IMPL-0523 の宣言行の経路(F-03): G-3 の通過を、PR の宣言行のレビュー(`G-3: 通過`)で受けた判断記録
-{
+if (want('0523')) {
   const r = makeRepo({ config: buildCfg({}, { stack: 'node' }) });
   const ADR = (body, st = '採用') => `# ADR-0007 試験\n\n- 状態: ${st}\n- 置き換える決定: なし\n\n## 決定\n\n${body}\n`;
   const scene = (c2text, reviewOnC1) => {
