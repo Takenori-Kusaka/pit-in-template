@@ -166,10 +166,10 @@ export function materialPrOf(text, repo = null) {
   return prRefOf(text, repo).number;
 }
 
-/** 所在の PR の読み。{ number, foreign }。URL の owner/repo が repo と違えば number は null で foreign に URL を入れる(repo を渡さないときは照らさない) */
+/** 所在の PR の読み。{ number, foreign }。スキームの有無に依らず owner/repo を照らす(スキームの無い github.com/o/r/pull/N も同じ)。URL の owner/repo が repo と違えば number は null で foreign に URL を入れる(repo を渡さないときは照らさない) */
 export function prRefOf(text, repo = null) {
   const t = norm(text);
-  const u = /https?:\/\/[^/\s]+\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?!\d)/i.exec(t);
+  const u = /(?:https?:\/\/)?(?:[^/\s]+\/)?([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?!\d)/i.exec(t);
   if (u) {
     if (repo && `${u[1]}/${u[2]}`.toLowerCase() !== String(repo).toLowerCase()) return { number: null, foreign: u[0] };
     return { number: Number(u[3]), foreign: null };

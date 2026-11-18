@@ -316,6 +316,7 @@ check('変更ファイルの読み取りは読み取りの API だけ', ghCalls.
 
 // ---- 突合 1巡目の直し ----
 check('M-3 別のリポジトリの PR の URL は、このリポジトリの同じ番号と読まない(repo を渡したとき)', materialPrOf('https://github.com/other/repo/pull/77', 'o/r') === null && materialPrOf('https://github.com/O/R/pull/77', 'o/r') === 77 && materialPrOf('PR #5', 'o/r') === 5 && prRefOf('https://github.com/other/repo/pull/77', 'o/r').foreign === 'https://github.com/other/repo/pull/77');
+check('M-3b スキームの無い別のリポジトリの URL も読まない。同じリポジトリのものは読む', materialPrOf('github.com/other/repo/pull/77', 'o/r') === null && prRefOf('github.com/other/repo/pull/77', 'o/r').foreign === 'github.com/other/repo/pull/77' && materialPrOf('github.com/o/r/pull/77', 'o/r') === 77 && materialPrOf('[x](https://github.com/other/repo/pull/77)', 'o/r') === null && materialPrOf('<https://github.com/o/r/pull/9>', 'o/r') === 9 && materialPrOf('/pull/12', 'o/r') === 12);
 {
   const fp = plan({ issues: [withPr({ fields: { 判定資料の所在: 'https://github.com/other/repo/pull/77' } })], now: at('2026-11-23'), prFiles: { 77: ['src/a.ts'] }, codeownersText: coText, repo: 'o/r' });
   check('M-3 別のリポジトリの PR は必須応答を導出せず、注意に出す', !fp.actions.some((a) => a.key.startsWith('required')) && fp.notes.some((n) => /別のリポジトリの PR/.test(n)), JSON.stringify(fp.notes));
