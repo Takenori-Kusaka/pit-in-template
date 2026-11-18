@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { addBusinessDays, businessDaysBetween, dayOf, isBusinessDay, parseHolidays, loadHolidays, HOLIDAYS_UNCOUNTED_NOTE } from './business-days.mjs';
-import { queueActions, riskLabelAction, parseDeadlines, escalationTarget, seatLogin, fetchSnapshot, DEFAULT_DEADLINES } from './review-queue.mjs';
+import { queueActions, riskLabelAction, parseDeadlines, escalationTarget, seatLogin, fetchSnapshot, isApproved, DEFAULT_DEADLINES } from './review-queue.mjs';
 import { isProseDocument } from './check-pr.mjs';
 
 let failures = 0;
@@ -88,6 +88,7 @@ const t1 = queueActions({ ...base, prs: [mk({ requestedTeams: ['core'] })] });
 check('IMPL-0680:ng チームだけの指名で個人の指名を求める', t1.actions.some((x) => x.key === 'team-only' && /個人/.test(x.body)));
 const t2 = queueActions({ ...base, prs: [mk({ requestedTeams: ['core'], requests: [{ login: 'rev1', at: NOW }] })] });
 check('IMPL-0680:ok 個人の指名があれば出ない', !t2.actions.some((x) => x.key === 'team-only'));
+check('IMPL-0680:ng 判定は requested_reviewers を見る(事象が欠けても、個人の指名が無ければ出る)', queueActions({ ...base, prs: [mk({ requestedTeams: ['core'], requests: [{ login: 'rev1', at: NOW }], requestedReviewers: [] })] }).actions.some((x) => x.key === 'team-only') && !queueActions({ ...base, prs: [mk({ requestedTeams: ['core'], requests: [], requestedReviewers: ['rev1'] })] }).actions.some((x) => x.key === 'team-only'));
 
 // 0681(応答2営業日。月曜 09:00 JST の指名 → 期限は水曜まで。水曜は期限内。木曜に超過)
 const rq = [{ login: 'rev1', at: '2026-11-16T00:00:00Z' }];
@@ -101,7 +102,13 @@ const late2 = queueActions({ ...base, now: '2026-11-24T03:00:00Z', prs: [mk({ re
 const n2 = late2.actions.find((x) => /^nudge2:/.test(x.key));
 check('IMPL-0681:ng 2倍の超過で D-0 節6 の宛先へ記名で通知', Boolean(n2) && /@boss/.test(n2.body));
 check('IMPL-0681:ok 応答済みなら催促しない', !queueActions({ ...base, now: '2026-11-24T03:00:00Z', prs: [mk({ requests: rq, reviews: [{ login: 'Rev1', state: 'COMMENTED', at: NOW }] })] }).actions.some((x) => /^nudge/.test(x.key)));
-check('IMPL-0681:ok 同じ通知は2回出さない(印)', queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ requests: rq, comments: [{ body: nudge.body }] })] }).actions.every((x) => x.key !== nudge.key));
+check('IMPL-0681:ok 同じ通知は2回出さない(印)', queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ requests: rq, comments: [{ body: nudge.body, login: 'github-actions[bot]' }] })] }).actions.every((x) => x.key !== nudge.key));
+check('IMPL-0681:ng 印は機械(github-actions)のコメントだけを数える(人が印を書いても通知は止まらない)', queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ requests: rq, comments: [{ body: nudge.body, login: 'someone' }] })] }).actions.some((x) => x.key === nudge.key));
+check('IMPL-0681:ok 催促の文に、祝日を数えていない旨が出る', /祝日を数えていない/.test(queueActions({ ...base, now: '2026-11-19T03:00:00Z', holidaysNote: HOLIDAYS_UNCOUNTED_NOTE, prs: [mk({ requests: rq })] }).actions.find((x) => /^nudge:/.test(x.key)).body));
+// 依頼の付け直し: 過去のレビューは、新しい依頼への応答に数えない
+const re = [{ login: 'rev1', at: '2026-11-09T00:00:00Z' }];
+check('IMPL-0681:ng 付け直した依頼では、過去のレビューを応答に数えず、催促が出る', queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ requests: re, reviews: [{ login: 'rev1', state: 'COMMENTED', at: '2026-11-02T00:00:00Z' }] })] }).actions.some((x) => /^nudge:/.test(x.key)));
+check('IMPL-0681:ok 依頼より後のレビューは応答に数える', !queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ requests: re, reviews: [{ login: 'rev1', state: 'COMMENTED', at: '2026-11-10T00:00:00Z' }] })] }).actions.some((x) => /^nudge:/.test(x.key)));
 check('IMPL-0681:ok 祝日は営業日に数えない', !queueActions({ ...base, now: '2026-11-19T03:00:00Z', holidays: new Set(['2026-11-17']), prs: [mk({ requests: rq })] }).actions.some((x) => /^nudge:/.test(x.key)));
 check('IMPL-0681:ok ドラフトは対象にしない', queueActions({ ...base, now: '2026-11-24T03:00:00Z', prs: [mk({ draft: true, requests: rq })] }).actions.length === 0);
 
@@ -118,10 +125,20 @@ check('宛先を解決できないときは記名なしで出し、注意に書�
   return r.actions.some((x) => x.key === 'judge-overdue') && r.notes.some((n) => /宛先を解決できない/.test(n));
 })());
 
+// 判定完了時間の起点と終点(第4章「2つの時刻を分ける」)
+const J = { ...base, now: '2026-11-18T03:00:00Z' };
+check('IMPL-0979:ng 差し戻し(CHANGES_REQUESTED)が承認の後に付けば、確定とみなさず通知が出る', queueActions({ ...J, prs: [mk({ reviews: [{ login: 'x', state: 'APPROVED', at: '2026-11-11T00:00:00Z' }, { login: 'x', state: 'CHANGES_REQUESTED', at: '2026-11-12T00:00:00Z' }] })] }).actions.some((x) => x.key === 'judge-overdue'));
+check('IMPL-0979:ng ボットの承認では確定とみなさない', queueActions({ ...J, prs: [mk({ reviews: [{ login: 'dependabot[bot]', state: 'APPROVED', at: '2026-11-11T00:00:00Z', bot: true }] })] }).actions.some((x) => x.key === 'judge-overdue'));
+check('IMPL-0979:ng 書き込み権限のない者の承認・古い commit の承認は確定とみなさない', queueActions({ ...J, prs: [mk({ reviews: [{ login: 'x', state: 'APPROVED', at: '2026-11-11T00:00:00Z', assoc: 'NONE' }] })] }).actions.some((x) => x.key === 'judge-overdue') && queueActions({ ...J, prs: [mk({ headSha: 'b', reviews: [{ login: 'x', state: 'APPROVED', at: '2026-11-11T00:00:00Z', commit: 'a' }] })] }).actions.some((x) => x.key === 'judge-overdue'));
+check('IMPL-0979:ok 書き込み権限のある者の最新の commit への承認は確定', isApproved(mk({ headSha: 'b', reviews: [{ login: 'x', state: 'APPROVED', at: '2026-11-11T00:00:00Z', assoc: 'MEMBER', commit: 'b' }] })));
+check('IMPL-0979:ng 起点は最初のレビュー依頼。作成が古くても、依頼が新しければ期限内', !queueActions({ ...J, prs: [mk({ createdAt: '2026-11-02T00:00:00Z', firstRequestAt: '2026-11-17T00:00:00Z' })] }).actions.some((x) => x.key === 'judge-overdue') && queueActions({ ...J, prs: [mk({ createdAt: '2026-11-17T00:00:00Z', firstRequestAt: '2026-11-10T00:00:00Z' })] }).actions.some((x) => x.key === 'judge-overdue'));
+
 // 0682(上限3)
 const heavy = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }] }));
 const h = queueActions({ ...base, prs: heavy });
 check('IMPL-0682:ng 4件目の指名で知らせる(指名は外さない)', h.actions.filter((x) => x.key === 'load:busy').length === 1 && h.actions.find((x) => x.key === 'load:busy').pr === 4);
+const reHeavy = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }], reviews: [{ login: 'busy', state: 'COMMENTED', at: '2026-11-01T00:00:00Z' }] }));
+check('IMPL-0682:ng 付け直した依頼は、過去のレビューがあっても同時保有に数える', queueActions({ ...base, prs: reHeavy }).actions.some((x) => x.key === 'load:busy'));
 check('IMPL-0682:ok 3件目までは出ない', !queueActions({ ...base, prs: heavy.slice(0, 3) }).actions.some((x) => x.key === 'load:busy'));
 check('IMPL-0682:ok 上限は引数で変えられる', queueActions({ ...base, loadLimit: 2, prs: heavy.slice(0, 3) }).actions.some((x) => x.key === 'load:busy'));
 
@@ -135,20 +152,27 @@ const rules = config.riskFloor.rules;
 const ra = riskLabelAction({ pr: mk({ changes: [{ path: 'src/auth/login.js', status: 'modified' }] }), rules });
 check('IMPL-0212:ng R1 規則に当たる PR に risk/R1 が付く', ra?.label === 'risk/R1');
 check('IMPL-0212:ok 当たらなければ risk/R3', riskLabelAction({ pr: mk({ changes: [{ path: 'src/b.js', status: 'added' }] }), rules })?.label === 'risk/R3');
+const authChange = [{ path: 'src/auth/login.js', status: 'modified' }];
+check('IMPL-0212:ng 機械が付けた risk/R3 は、下限が R1 に上がれば R1 へ引き上げる(R3 を外す)', (() => { const a = riskLabelAction({ pr: mk({ labels: ['risk/R3'], machineRiskLabels: ['risk/R3'], changes: authChange }), rules }); return a?.label === 'risk/R1' && a.remove?.[0] === 'risk/R3'; })());
+check('IMPL-0212:ok 機械が付けたラベルを、下げる方へは変えない', riskLabelAction({ pr: mk({ labels: ['risk/R1'], machineRiskLabels: ['risk/R1'], changes: [{ path: 'src/b.js', status: 'added' }] }), rules }) === null);
+check('IMPL-0212:ok 人が付けたラベルには、下限が厳しくても触れない', riskLabelAction({ pr: mk({ labels: ['risk/R3'], machineRiskLabels: [], changes: authChange }), rules }) === null);
 check('IMPL-0212:ok 既存の risk/* のラベルを上書きしない', riskLabelAction({ pr: mk({ labels: ['risk/R2'], changes: [{ path: 'src/auth/login.js', status: 'modified' }] }), rules }) === null);
 
 // 読み取りの整形(固定の応答)
+let slurped = true;
 const canned = (args) => {
+  if (!args.includes('--slurp') || !args.includes('--paginate')) slurped = false;
   const p = args[args.length - 1];
-  if (/pulls\?state=open/.test(p)) return JSON.stringify([{ number: 7, draft: false, created_at: '2026-11-10T00:00:00Z', requested_reviewers: [{ login: 'rev1' }], requested_teams: [{ slug: 'core' }], labels: [{ name: 'risk/R2' }] }]);
-  if (/issues\/7\/events/.test(p)) return JSON.stringify([{ event: 'review_requested', requested_reviewer: { login: 'rev1' }, created_at: '2026-11-16T00:00:00Z' }]) + JSON.stringify([{ event: 'ready_for_review', created_at: '2026-11-11T00:00:00Z' }]);
-  if (/pulls\/7\/files/.test(p)) return JSON.stringify([{ filename: 'a.md', status: 'modified' }]);
-  if (/pulls\/7\/reviews/.test(p)) return '[]';
-  if (/issues\/7\/comments/.test(p)) return JSON.stringify([{ body: 'x' }]);
+  if (/pulls\?state=open/.test(p)) return JSON.stringify([[{ number: 7, draft: false, created_at: '2026-11-10T00:00:00Z', requested_reviewers: [{ login: 'rev1' }], requested_teams: [{ slug: 'core' }], labels: [{ name: 'risk/R2' }], head: { sha: 'h1' } }]]);
+  if (/issues\/7\/events/.test(p)) return JSON.stringify([[{ event: 'review_requested', requested_reviewer: { login: 'rev1' }, created_at: '2026-11-16T00:00:00Z' }, { event: 'labeled', label: { name: 'risk/R2' }, actor: { login: 'github-actions[bot]' }, created_at: '2026-11-10T00:00:00Z' }], [{ event: 'ready_for_review', created_at: '2026-11-11T00:00:00Z' }]]);
+  if (/pulls\/7\/files/.test(p)) return JSON.stringify([[{ filename: 'a.md', status: 'modified' }]]);
+  if (/pulls\/7\/reviews/.test(p)) return '[[]]';
+  if (/issues\/7\/comments/.test(p)) return JSON.stringify([[{ body: 'x[a][b]', user: { login: 'github-actions[bot]' } }]]);
   throw new Error(`想定外: ${p}`);
 };
 const snap = fetchSnapshot((a) => canned(a), 'o/r');
-check('読み取り: ページ連結の応答と事象を PR の記録へ整える', snap.length === 1 && snap[0].requests[0].login === 'rev1' && snap[0].readyAt === '2026-11-11T00:00:00Z' && snap[0].requestedTeams[0] === 'core' && snap[0].labels[0] === 'risk/R2', JSON.stringify(snap));
+check('読み取り: ページ連結の応答と事象を PR の記録へ整える', snap.length === 1 && snap[0].requests[0].login === 'rev1' && snap[0].readyAt === '2026-11-11T00:00:00Z' && snap[0].requestedTeams[0] === 'core' && snap[0].labels[0] === 'risk/R2' && snap[0].firstRequestAt === '2026-11-16T00:00:00Z' && snap[0].headSha === 'h1' && snap[0].machineRiskLabels[0] === 'risk/R2' && snap[0].requestedReviewers[0] === 'rev1' && snap[0].comments[0].body === 'x[a][b]' && snap[0].comments[0].login === 'github-actions[bot]', JSON.stringify(snap));
+check('読み取り: --paginate --slurp で呼び、本文の中の ][ を壊さない', slurped);
 
 console.log(failures ? `\nレビューの滞留の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\nレビューの滞留の試験: ${checks} 件が期待と一致しました`);
 process.exit(failures ? 1 : 0);

@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { flowActions, percentile, startOf, fetchUnits } from './flow-observation.mjs';
+import { isCompletedUnit } from './next.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -37,7 +38,9 @@ const few = flowActions({ open: [unit({})], closed: closedOf(9), now: NOW, confi
 check('IMPL-0283:ok 標本が足りない → 算定できない・通知なし', few.actions.length === 0 && few.thresholdMs === null && few.notes.some((n) => /算定できない/.test(n)));
 check('IMPL-0283:ok 最小の標本数は引数で変えられる', flowActions({ open: [unit({})], closed: closedOf(5), now: NOW, config, minSample: 5 }).actions.length === 1);
 check('IMPL-0283:ok 窓の外に閉じたものは数えない', flowActions({ open: [unit({})], closed: closedOf(10).map((c) => ({ ...c, closedAt: iso(t0 - 200 * DAY), startAt: iso(t0 - 201 * DAY) })), now: NOW, config }).thresholdMs === null);
-check('IMPL-0283:ok 同じ超過で2回目は出さない', flowActions({ open: [unit({ comments: [{ body: r.actions[0].body }] })], closed: closedOf(10), now: NOW, config }).actions.length === 0);
+check('IMPL-0283:ok 観測の窓は月数(単位8 と同じ読み方)。既定は config の observationWindow', flowActions({ open: [unit({})], closed: closedOf(10).map((c) => ({ ...c, closedAt: iso(t0 - 100 * DAY), startAt: iso(t0 - 105 * DAY) })), now: NOW, config, windowMonths: 6 }).thresholdMs === 5 * DAY && flowActions({ open: [unit({})], closed: closedOf(10).map((c) => ({ ...c, closedAt: iso(t0 - 100 * DAY), startAt: iso(t0 - 105 * DAY) })), now: NOW, config, windowMonths: 2 }).thresholdMs === null);
+check('IMPL-0283:ok 同じ超過で2回目は出さない', flowActions({ open: [unit({ comments: [{ body: r.actions[0].body, login: 'github-actions[bot]' }] })], closed: closedOf(10), now: NOW, config }).actions.length === 0);
+check('IMPL-0283:ng 印は機械のコメントだけを数える(人が印を書いても通知は止まらない)', flowActions({ open: [unit({ comments: [{ body: r.actions[0].body, login: 'someone' }] })], closed: closedOf(10), now: NOW, config }).actions.length === 1);
 const noOwner = flowActions({ open: [unit({})], closed: closedOf(10), now: NOW, config: { ...config, seats: [] } });
 check('価値責任者を解決できなければ担当者だけを記名し、注意に書く', noOwner.actions.length === 1 && !/@alice/.test(noOwner.actions[0].body) && noOwner.notes.some((n) => /価値責任者/.test(n)));
 check('着手の時点が無い作業単位は数えない', flowActions({ open: [unit({ startAt: null })], closed: closedOf(10), now: NOW, config }).actions.length === 0);
@@ -52,17 +55,31 @@ check('着手の時点: 最初の PR が開かれた時点(Issue の参照・ラ
 check('着手の時点: PR が無ければ state:in-progress を最初に付けた時点', startOf([tl[0], { event: 'labeled', label: { name: 'state:in-progress' }, created_at: '2026-11-09T00:00:00Z' }]) === '2026-11-05T00:00:00Z');
 check('着手の時点: どちらも無ければ null', startOf([{ event: 'labeled', label: { name: 'bug' }, created_at: '2026-11-05T00:00:00Z' }]) === null);
 
-// 読み取りの整形(固定の応答。PR と、完了以外の理由で閉じた Issue は数えない)
+// 着手の時点: 同じリポジトリの PR に限り、Issue の作成より前には遡らない(M4)
+const xr = (created, full) => ({ event: 'cross-referenced', source: { issue: { pull_request: {}, created_at: created, repository: { full_name: full } } } });
+check('着手の時点: Issue の作成より前に作られた PR の言及は、Issue の作成の時点を下限にする', startOf([xr('2026-01-01T00:00:00Z', 'o/r')], { repo: 'o/r', issueCreatedAt: '2026-11-01T00:00:00Z' }) === '2026-11-01T00:00:00Z');
+check('着手の時点: 他のリポジトリの PR は数えない', startOf([xr('2026-11-02T00:00:00Z', 'x/y')], { repo: 'o/r', issueCreatedAt: '2026-11-01T00:00:00Z' }) === null);
+check('着手の時点: Issue より後に作られた同じリポジトリの PR はその時点', startOf([xr('2026-11-05T00:00:00Z', 'o/r')], { repo: 'o/r', issueCreatedAt: '2026-11-01T00:00:00Z' }) === '2026-11-05T00:00:00Z');
+
+// 読み取りの整形(固定の応答。PR・完了以外の理由で閉じた Issue・PR が既定ブランチへ取り込まれていない Issue は数えない)
+let slurped = true;
 const canned = (args) => {
   const p = args[args.length - 1];
-  if (/issues\?state=open/.test(p)) return JSON.stringify([{ number: 5, assignees: [{ login: 'bob' }] }, { number: 6, pull_request: {} }]);
-  if (/issues\?state=closed/.test(p)) return JSON.stringify([{ number: 8, state_reason: 'completed', closed_at: '2026-11-10T00:00:00Z' }, { number: 9, state_reason: 'not_planned', closed_at: '2026-11-10T00:00:00Z' }]);
-  if (/issues\/\d+\/timeline/.test(p)) return JSON.stringify([{ event: 'labeled', label: { name: 'state:in-progress' }, created_at: '2026-11-01T00:00:00Z' }]);
-  if (/issues\/5\/comments/.test(p)) return JSON.stringify([{ body: 'x' }]);
+  if (args[1] === 'graphql') {
+    const node = (number, stateReason, merged, base) => ({ number, createdAt: '2026-11-01T00:00:00Z', closedAt: '2026-11-10T00:00:00Z', stateReason, closedByPullRequestsReferences: { nodes: [{ merged, baseRefName: base }] } });
+    return JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false }, nodes: [node(8, 'COMPLETED', true, 'main'), node(9, 'NOT_PLANNED', true, 'main'), node(10, 'COMPLETED', false, 'main'), node(11, 'COMPLETED', true, 'dev')] } } });
+  }
+  if (!args.includes('--slurp')) slurped = false;
+  if (p === "repos/o/r") return JSON.stringify([{ default_branch: 'main' }]);
+  if (p.includes("issues?state=open")) return JSON.stringify([[{ number: 5, created_at: '2026-10-01T00:00:00Z', assignees: [{ login: 'bob' }] }, { number: 6, pull_request: {} }]]);
+  if (p.includes("/timeline")) return JSON.stringify([[{ event: 'labeled', label: { name: 'state:in-progress' }, created_at: '2026-11-01T00:00:00Z' }]]);
+  if (p.includes("issues/5/comments")) return JSON.stringify([[{ body: 'x', user: { login: 'bob' } }]]);
   throw new Error(`想定外: ${p}`);
 };
 const u = fetchUnits((a) => canned(a), 'o/r', { now: NOW });
-check('読み取り: PR と完了以外の理由で閉じた Issue を除き、着手の時点を付ける', u.open.length === 1 && u.open[0].startAt === '2026-11-01T00:00:00Z' && u.closed.length === 1 && u.closed[0].number === 8, JSON.stringify(u));
+check('読み取り: PR と完了でない Issue を除き(完了の判定は next.mjs と同じ)、着手の時点を付ける', u.open.length === 1 && u.open[0].startAt === '2026-11-01T00:00:00Z' && u.closed.length === 1 && u.closed[0].number === 8 && u.closed[0].closedAt === '2026-11-10T00:00:00Z' && u.truncated === false, JSON.stringify(u));
+check('読み取り: --paginate --slurp で呼ぶ', slurped);
+check('完了の判定は next.mjs の isCompletedUnit と同じ', isCompletedUnit({ stateReason: 'COMPLETED', prs: [{ merged: true, baseRefName: 'main' }], base: 'main' }) && !isCompletedUnit({ stateReason: 'COMPLETED', prs: [], base: 'main' }));
 
 // TZ に依らない
 const snippet = "import('./scripts/gate/flow-observation.mjs').then(m=>{const D=86400000,n=Date.parse('2026-11-18T00:00:00Z');const c=Array.from({length:10},(_,i)=>({number:i,startAt:new Date(n-(i+2)*D).toISOString(),closedAt:new Date(n-D).toISOString()}));const r=m.flowActions({open:[{number:1,startAt:'2026-10-01T00:00:00Z',assignees:[],comments:[]}],closed:c,now:'2026-11-18T00:00:00Z',config:{}});console.log(JSON.stringify([r.thresholdMs,r.actions.length]))})";

@@ -1815,6 +1815,11 @@ function ghJson(args) {
   return JSON.parse(execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000, maxBuffer: 64 * 1024 * 1024 }));
 }
 
+/** 完了した作業単位か: 完了の理由で閉じ、closes で結び付いた PR が既定ブランチへ取り込まれている。flow-observation.mjs も同じ判定を使う(定義を二つにしない) */
+export function isCompletedUnit({ stateReason, prs = [], base }) {
+  return stateReason === 'COMPLETED' && prs.some((p) => p.merged && (p.baseRefName === base || `origin/${p.baseRefName}` === base));
+}
+
 /** 窓の開始日以降に閉じた Issue(PR を除く)と、closes で結び付いて既定ブランチへ取り込んだ PR の有無から completed を決める */
 export function fetchClosedUnits({ sinceDay, base }) {
   const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number closedAt stateReason closedByPullRequestsReferences(first:5,includeClosedPrs:true){nodes{merged baseRefName}}}}}}';
@@ -1828,7 +1833,7 @@ export function fetchClosedUnits({ sinceDay, base }) {
     for (const n of r.nodes) {
       if (!n?.number) continue;
       const prs = n.closedByPullRequestsReferences?.nodes ?? [];
-      const completed = n.stateReason === 'COMPLETED' && prs.some((p) => p.merged && (p.baseRefName === base || `origin/${p.baseRefName}` === base));
+      const completed = isCompletedUnit({ stateReason: n.stateReason, prs, base });
       out.push({ number: n.number, closedAt: localDay(new Date(n.closedAt)), completed }); // 手元の日付に直す(today と同じ暦で期へ分ける)
     }
     if (!r.pageInfo.hasNextPage) break;

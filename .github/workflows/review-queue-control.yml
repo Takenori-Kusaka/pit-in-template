@@ -27,13 +27,12 @@ on:
         type: boolean
         default: true
 
+# 権限はジョブごとに絞る(下の各ジョブ)。ここでは読み取りだけ
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 concurrency:
-  group: review-queue-control-${{ github.event.pull_request.number || github.run_id }}
+  group: review-queue-control-${{ github.event.pull_request.number || 'queue' }}
   cancel-in-progress: false
 
 jobs:
@@ -42,6 +41,9 @@ jobs:
     name: review-queue
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,6 +57,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REVIEW_LOAD_LIMIT: ${{ vars.REVIEW_LOAD_LIMIT }}
+          # UTC からの差(分)。空なら日本時間の 540。固定の差で、夏時間には対応しない
+          REVIEW_UTC_OFFSET_MINUTES: ${{ vars.REVIEW_UTC_OFFSET_MINUTES }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
@@ -68,6 +72,9 @@ jobs:
     name: risk-label
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       # 既定ブランチを checkout する。ref へ PR の先頭(head)を指定してはならない
       - uses: actions/checkout@v4

@@ -15,7 +15,7 @@
 // 日付・時刻は引数で渡し、時計を読まない。暦の日は business-days.mjs(UTC の暦、明示した差で直す)で求める。
 //
 // 使い方: node scripts/gate/review-queue.mjs [queue|risk] [--pr N] [--dry-run] [--now ISO] [--offset-minutes 540]
-//   環境変数: GITHUB_REPOSITORY, GH_TOKEN, REVIEW_LOAD_LIMIT(既定3)
+//   環境変数: GITHUB_REPOSITORY, GH_TOKEN, REVIEW_LOAD_LIMIT(既定3), REVIEW_UTC_OFFSET_MINUTES(既定 540。固定の差で、夏時間には対応しない)
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -135,13 +135,16 @@ export function hoursGateOf(files, deadlines) {
   return null;
 }
 
-const hasMarker = (pr, key) => (pr.comments ?? []).some((c) => typeof c.body === 'string' && c.body.includes(`<!-- ${MARKER} ${key} -->`));
+/** 重複を防ぐ印は、機械(github-actions)のコメントのものだけを数える。人が印を書いて通知を止められないようにする */
+export const BOT_LOGIN = 'github-actions[bot]';
+export const isBotComment = (c) => String(c?.login ?? '').toLowerCase() === BOT_LOGIN;
+const hasMarker = (pr, key) => (pr.comments ?? []).some((c) => isBotComment(c) && typeof c.body === 'string' && c.body.includes(`<!-- ${MARKER} ${key} -->`));
 const stamp = (key, text) => `<!-- ${MARKER} ${key} -->\n${text}`;
 const mention = (login) => (login ? `@${login}` : null);
 
 /**
  * 滞留の通知を決める(純関数)。
- * pr: { number, draft, createdAt, readyAt, files[], requestedTeams[], requests:[{login, at}], reviews:[{login, state, at}], comments:[{body}] }
+ * pr: { number, draft, createdAt, readyAt, firstRequestAt, files[], requestedTeams[], requestedReviewers[], requests:[{login, at}], reviews:[{login, state, at, bot, assoc, commit}], headSha, comments:[{body, login}] }
  * 戻り値: { actions: [{ pr, key, body }], notes: [] }
  */
 export function queueActions({ prs, now, config, d0Text, holidays = new Set(), loadLimit = DEFAULT_LOAD_LIMIT, offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null }) {
@@ -158,7 +161,12 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
     if (!hasMarker(pr, key) && !actions.some((a) => a.pr === pr.number && a.key === key)) actions.push({ pr: pr.number, key, body: stamp(key, text) });
   };
   const open = prs.filter((p) => !p.draft);
-  const respondedBy = (pr, login) => (pr.reviews ?? []).some((r) => r.login?.toLowerCase() === login.toLowerCase());
+  // 応答は、その指名(依頼)の時刻より後のレビューに限る。付け直した依頼では、過去のレビューを応答に数えない
+  const respondedBy = (pr, login, since = null) => {
+    const sinceMs = Date.parse(since);
+    return (pr.reviews ?? []).some((r) => r.login?.toLowerCase() === login.toLowerCase() && r.state !== 'PENDING' && (!Number.isFinite(sinceMs) || Date.parse(r.at) > sinceMs));
+  };
+  const hn = holidaysNote ? ` ※${holidaysNote}` : '';
   const escLine = esc.login ? `${mention(esc.login)} ` : '';
   const g6 = deadlines['G-6'];
 
@@ -166,7 +174,7 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
   const held = new Map();
   for (const pr of open) {
     for (const rq of pr.requests ?? []) {
-      if (respondedBy(pr, rq.login)) continue;
+      if (respondedBy(pr, rq.login, rq.at)) continue;
       const k = rq.login.toLowerCase();
       if (!held.has(k)) held.set(k, []);
       held.get(k).push({ pr: pr.number, at: rq.at, login: rq.login });
@@ -176,51 +184,85 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
     list.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.pr - b.pr);
     list.slice(loadLimit).forEach((h) => {
       const pr = open.find((p) => p.number === h.pr);
-      push(pr, `load:${h.login.toLowerCase()}`, `@${h.login} への未応答の指名が ${list.length} 件あり、同時保有の上限(${loadLimit})を超えています。指名先を確保できないときは、起案者へ差し戻します(/gate の手引き)。指名は外していません。`);
+      push(pr, `load:${h.login.toLowerCase()}`, `@${h.login} への未応答の指名が ${list.length} 件あり、同時保有の上限(${loadLimit})を超えています。指名先を確保できないときは、起案者へ差し戻します。指名は外していません。${hn}`);
     });
   }
 
   for (const pr of open) {
     // 0680
-    if ((pr.requestedTeams ?? []).length && !(pr.requests ?? []).length) {
+    if ((pr.requestedTeams ?? []).length && !(pr.requestedReviewers ?? pr.requests ?? []).length) {
       push(pr, 'team-only', `レビューの依頼がチーム(${pr.requestedTeams.join(', ')})だけで、個人の指名がありません。応答の期限を数える宛先が無いため、個人のレビュアを指名してください。`);
     }
     // 0681(G-6。応答)
     for (const rq of pr.requests ?? []) {
-      if (respondedBy(pr, rq.login)) continue;
+      if (respondedBy(pr, rq.login, rq.at)) continue;
       const startDay = dayOf(rq.at, offsetMinutes);
       if (!startDay || !nowDay) continue;
       const due = addBusinessDays(startDay, g6.responseBd, holidays);
       const due2 = addBusinessDays(startDay, g6.responseBd * 2, holidays);
-      if (nowDay > due) push(pr, `nudge:${rq.login.toLowerCase()}:${rq.at}`, `@${rq.login} さん、指名から ${g6.responseBd} 営業日(${due} まで)を過ぎても応答がありません。レビューの応答をお願いします。自動の再割り当ては行いません。`);
-      if (nowDay > due2) push(pr, `nudge2:${rq.login.toLowerCase()}:${rq.at}`, `${escLine}@${rq.login} への指名が、応答の期限の2倍(${due2} まで)を過ぎても未応答です。D-0 節6「ゲート判定・会議体の決定が期限を超過」の対応をお願いします。`);
+      if (nowDay > due) push(pr, `nudge:${rq.login.toLowerCase()}:${rq.at}`, `@${rq.login} さん、指名から ${g6.responseBd} 営業日(${due} まで)を過ぎても応答がありません。レビューの応答をお願いします。自動の再割り当ては行いません。${hn}`);
+      if (nowDay > due2) push(pr, `nudge2:${rq.login.toLowerCase()}:${rq.at}`, `${escLine}@${rq.login} への指名が、応答の期限の2倍(${due2} まで)を過ぎても未応答です。D-0 節6「ゲート判定・会議体の決定が期限を超過」の対応をお願いします。${hn}`);
     }
     // 判定の期限(0979)
-    const approved = (pr.reviews ?? []).some((r) => r.state === 'APPROVED');
-    if (approved) continue;
-    const startAt = pr.readyAt ?? pr.createdAt;
+    if (isApproved(pr)) continue;
+    // 起点は最初のレビュー依頼(第4章「2つの時刻を分ける」: レビュー依頼から判定の確定まで)。無ければ ready にした時点、無ければ作成の時点
+    const startAt = pr.firstRequestAt ?? pr.readyAt ?? pr.createdAt;
     const hg = hoursGateOf(pr.files ?? [], deadlines);
     let overdueText = null;
     if (hg) {
       const due = Date.parse(startAt) + deadlines[hg].hours * 3600000;
       if (Number.isFinite(due) && nowMs > due) overdueText = `${hg} の判定の期限(${deadlines[hg].hours} 時間)`;
-    } else {
+    }
+    if (!overdueText) {
       const sd = dayOf(startAt, offsetMinutes);
       if (sd && nowDay > addBusinessDays(sd, g6.judgeBd, holidays)) overdueText = `G-6 の判定の期限(${g6.judgeBd} 営業日)`;
     }
     if (overdueText) {
-      push(pr, 'judge-overdue', `${escLine}この PR は ${overdueText}を過ぎても判定が付いていません。D-0 節6 の宛先として、代理の判定者の指名をお願いします。期限を超えた者が宛先と同じ人のときは、組織上の任命権者が指名します(D-0 節6 の注記)。指名は人が行います。自動承認はしません。`);
+      push(pr, 'judge-overdue', `${escLine}この PR は ${overdueText}を過ぎても判定が付いていません。D-0 節6 の宛先として、代理の判定者の指名をお願いします。期限を超えた者が宛先と同じ人のときは、組織上の任命権者が指名します(D-0 節6 の注記)。指名は人が行います。自動承認はしません。${hn}`);
     }
   }
   return { actions, notes };
 }
 
-/** 一次判定のリスク区分のラベル(0212)。risk/* が既にあれば何もしない */
+/**
+ * 判定が確定したか(判定完了時間の終点の近似)。レビュアごとの最新の判定の状態(APPROVED・CHANGES_REQUESTED・DISMISSED)が APPROVED で、
+ * ボットでなく、書き込み権限のある者(author_association が OWNER・MEMBER・COLLABORATOR。分からなければ数える)で、
+ * 最新の commit に付いたもの(commit_id が分からなければ数える)。aggregate-evidence.mjs の承認の数え方に寄せた近似で、同じではない
+ */
+export function isApproved(pr) {
+  const last = new Map();
+  for (const r of pr.reviews ?? []) {
+    if (!['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) continue;
+    const k = String(r.login ?? '').toLowerCase();
+    const prev = last.get(k);
+    if (!prev || !(Date.parse(r.at) < Date.parse(prev.at))) last.set(k, r);
+  }
+  return [...last.values()].some((r) => {
+    if (r.state !== 'APPROVED') return false;
+    if (r.bot || /\[bot\]$/i.test(r.login ?? '')) return false;
+    if (r.assoc && !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(r.assoc)) return false;
+    if (pr.headSha && r.commit && r.commit !== pr.headSha) return false;
+    return true;
+  });
+}
+
+/**
+ * 一次判定のリスク区分のラベル(0212)。risk/* が無ければ、区分の下限のラベルを付ける。
+ * 機械(github-actions)が付けたラベルだけは、下限が厳しくなったとき(R3 から R1 など)に下限へ引き上げる。下げない。人が付けたラベルには触れない
+ * pr.machineRiskLabels: 機械が付けた risk/* の名前(事象の actor から求める)
+ */
 export function riskLabelAction({ pr, rules }) {
-  if ((pr.labels ?? []).some((l) => /^risk\//.test(l))) return null;
+  const present = (pr.labels ?? []).filter((l) => /^risk\//.test(l));
+  const machine = new Set(pr.machineRiskLabels ?? []);
+  if (present.length && !present.every((l) => machine.has(l))) return null;
   const kinds = { added: 'add', modified: 'modify', removed: 'delete', renamed: 'rename', copied: 'add', changed: 'modify' };
   const changes = (pr.changes ?? []).map((c) => ({ path: c.path, from: c.from, kind: kinds[c.status] ?? 'modify' }));
   const { floor } = riskFloorOf(rules, changes);
+  if (present.length) {
+    const rank = (l) => Number(/(\d)$/.exec(l)?.[1]);
+    const stricter = present.every((l) => Number(String(floor).replace(/\D/g, '')) < rank(l));
+    return stricter ? { pr: pr.number, label: `risk/${floor}`, remove: present } : null;
+  }
   return { pr: pr.number, label: `risk/${floor}` };
 }
 
@@ -229,11 +271,8 @@ export function riskLabelAction({ pr, rules }) {
 export function ghCli(args, { input = null } = {}) {
   return execFileSync('gh', args, { encoding: 'utf8', input: input ?? undefined, stdio: [input === null ? 'ignore' : 'pipe', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 }
-const json = (gh, args) => {
-  const t = gh(['api', '--paginate', ...args]).trim();
-  // --paginate は配列を連結して出す(][ で繋がる)。単一のオブジェクトは配列に包む
-  return JSON.parse(t.startsWith('[') ? t.replace(/\]\s*\[/g, ',') : `[${t}]`);
-};
+/** --paginate --slurp はページごとの配列を配列に包んで出す。平らにして返す(本文の中の文字列は触らない) */
+export const json = (gh, args) => JSON.parse(gh(['api', '--paginate', '--slurp', ...args]).trim() || '[]').flatMap((x) => (Array.isArray(x) ? x : [x]));
 
 /** 開いた PR を読み、queueActions の入力へ整える。gh は差し替えられる */
 export function fetchSnapshot(gh, repo, { only = null } = {}) {
@@ -241,6 +280,11 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
   return list.map((p) => {
     const n = p.number;
     const events = json(gh, [`repos/${repo}/issues/${n}/events?per_page=100`]);
+    const firstRequestAt = events.filter((e) => e.event === 'review_requested').map((e) => e.created_at).filter((t) => Number.isFinite(Date.parse(t))).sort().at(0) ?? null;
+    const machineRiskLabels = [...new Set(events.filter((e) => e.event === 'labeled' && /^risk\//.test(e.label?.name ?? '')).map((e) => e.label.name))].filter((name) => {
+      const last = events.filter((e) => e.event === 'labeled' && e.label?.name === name).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)).at(-1);
+      return String(last?.actor?.login ?? '').toLowerCase() === BOT_LOGIN;
+    });
     const latest = new Map();
     for (const e of events.filter((x) => x.event === 'review_requested' && x.requested_reviewer?.login)) latest.set(e.requested_reviewer.login.toLowerCase(), { login: e.requested_reviewer.login, at: e.created_at });
     const requests = [...latest.values()];
@@ -254,12 +298,16 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
       draft: Boolean(p.draft),
       createdAt: p.created_at,
       readyAt: ready,
+      firstRequestAt,
+      headSha: p.head?.sha ?? null,
+      machineRiskLabels,
+      requestedReviewers: (p.requested_reviewers ?? []).map((u) => u.login),
       files: files.map((f) => f.filename),
       changes: files.map((f) => ({ path: f.filename, from: f.previous_filename ?? null, status: f.status })),
       requestedTeams: (p.requested_teams ?? []).map((t) => t.slug),
       requests: requests.filter((r) => stillRequested.has(r.login.toLowerCase())),
-      reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, at: r.submitted_at })),
-      comments: comments.map((c) => ({ body: c.body })),
+      reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, at: r.submitted_at, bot: r.user?.type === 'Bot', assoc: r.author_association ?? null, commit: r.commit_id ?? null })),
+      comments: comments.map((c) => ({ body: c.body, login: c.user?.login ?? '' })),
       labels: (p.labels ?? []).map((l) => l.name),
     };
   });
@@ -267,6 +315,9 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
 
 export function postComment(gh, repo, n, body) {
   gh(['api', '-X', 'POST', `repos/${repo}/issues/${n}/comments`, '--input', '-'], { input: JSON.stringify({ body }) });
+}
+export function removeLabel(gh, repo, n, label) {
+  gh(['api', '-X', 'DELETE', `repos/${repo}/issues/${n}/labels/${encodeURIComponent(label)}`]);
 }
 export function addLabel(gh, repo, n, label) {
   gh(['api', '-X', 'POST', `repos/${repo}/issues/${n}/labels`, '--input', '-'], { input: JSON.stringify({ labels: [label] }) });
@@ -282,7 +333,9 @@ function main(argv) {
   }
   const dry = argv.includes('--dry-run');
   const now = opt('--now') ?? new Date().toISOString();
-  const offset = opt('--offset-minutes') !== null ? Number(opt('--offset-minutes')) : DEFAULT_OFFSET_MINUTES;
+  // UTC からの差(分)。引数、環境変数 REVIEW_UTC_OFFSET_MINUTES(リポジトリの変数)、既定(日本時間 +540)の順。固定の差で、夏時間には対応しない
+  const envOffset = String(process.env.REVIEW_UTC_OFFSET_MINUTES ?? '').trim();
+  const offset = opt('--offset-minutes') !== null ? Number(opt('--offset-minutes')) : envOffset !== '' && Number.isFinite(Number(envOffset)) ? Number(envOffset) : DEFAULT_OFFSET_MINUTES;
   const config = loadConfig();
   const only = opt('--pr');
   const prs = fetchSnapshot(ghCli, repo, { only });
@@ -291,7 +344,10 @@ function main(argv) {
       const a = riskLabelAction({ pr, rules: config.riskFloor?.rules });
       if (!a) continue;
       console.log(`PR #${a.pr}: 一次判定のラベル ${a.label}${dry ? '(dry-run)' : ''}`);
-      if (!dry) addLabel(ghCli, repo, a.pr, a.label);
+      if (!dry) {
+        addLabel(ghCli, repo, a.pr, a.label);
+        for (const old of a.remove ?? []) removeLabel(ghCli, repo, a.pr, old);
+      }
     }
     return;
   }
