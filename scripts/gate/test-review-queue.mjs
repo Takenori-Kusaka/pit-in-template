@@ -147,6 +147,8 @@ const prose = ['README.md', 'CLAUDE.md'];
 check('IMPL-0136:前提 試験の PR のファイルは散文のファイルである', prose.every((f) => isProseDocument(f)));
 check('IMPL-0136:ng 散文だけを変える PR の超過でも催促が出る(外すと落ちる)', queueActions({ ...base, now: '2026-11-19T03:00:00Z', prs: [mk({ files: prose, requests: rq })] }).actions.some((x) => /^nudge:/.test(x.key)));
 
+check('IMPL-0136:ok 散文だけを変える PR でも、期限内は催促が出ない', !queueActions({ ...base, prs: [mk({ files: prose, requests: rq })] }).actions.some((x) => /^nudge:/.test(x.key)));
+
 // 0212
 const rules = config.riskFloor.rules;
 const ra = riskLabelAction({ pr: mk({ changes: [{ path: 'src/auth/login.js', status: 'modified' }] }), rules });
