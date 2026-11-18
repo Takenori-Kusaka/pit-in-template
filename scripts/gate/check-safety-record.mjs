@@ -100,6 +100,8 @@ export function envProblem(env) {
 }
 
 const EXCEPTION_RE = /^例外承認\s*[:：]\s*(D-\d+)/;
+/** 例外承認の行の対象が、基準7 または安全関連部の検証の記録を指す語を含むか(語の有無だけ。意味は人が確かめる) */
+export const EXCEPTION_TARGET_RE = /基準\s*7|安全関連部の検証の記録/;
 
 /** 結果の欄の形。通れば null、通らなければ理由。ledgerRows は技術負債台帳の行(null なら例外承認の ID を確かめられない) */
 export function resultProblem(result, { ledgerRows = null, day = null, isValidApprover = null } = {}) {
@@ -112,6 +114,8 @@ export function resultProblem(result, { ledgerRows = null, day = null, isValidAp
     if (!row) return `例外承認の ID ${m[1]} が技術負債台帳の区分「例外」に無い`;
     const st = exceptionStanding(row, day ?? new Date().toISOString().slice(0, 10));
     if (st !== 'active') return `例外承認 ${m[1]} が成立していない(効力: ${st})`;
+    // 対象の欄(様式 03)が基準7 か安全関連部の検証の記録を指す語を持つこと。別のゲート・別の対象の行の流用を通さない。語の有無だけを見る
+    if (!EXCEPTION_TARGET_RE.test(norm(row.target))) return `例外承認 ${m[1]} の対象に「基準7」または「安全関連部の検証の記録」の語が無い`;
     // 承認者(様式 03 が区分「例外」の行で必須とする欄)。空欄・名簿の外・AI の名義は成立させない(R1-02)。照合の手段が無ければ確かめられないので通さない
     const who = norm(row.approver);
     if (isBlankCell(who)) return `例外承認 ${m[1]} の承認者が空欄`;
