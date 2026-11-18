@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
-import { completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
+import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
@@ -347,6 +347,26 @@ ${r.out}`);
   check('IMPL-0614:ok SC-M の確定時の個数・追加・削除(SC-P・SC-B へ移すこと=ラベルを外すことは削除)・未完了の個数を数える', same(ch, { baseline: 3, added: 1, removed: 1, remaining: 2 }), JSON.stringify(ch));
   check('IMPL-0614:ok 変動率 = (追加 + 削除)の累計 ÷ 確定時の個数', Math.abs(scMVariationRate(ch) - 2 / 3) < 1e-9);
   check('IMPL-0614:ng 確定時が 0 件なら変動率は算定できない', scMVariationRate({ baseline: 0, added: 1, removed: 0 }) === null);
+  // H-2: ラベルを外した Issue を、出来事の記録から削除に数える(gh は固定の入力に差し替える)
+  const ev = (t, at) => ({ __typename: t === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', createdAt: at, label: { name: 'SC-M' } });
+  const node = (number, state, events, closedAt = null) => ({ number, state, closedAt, timelineItems: { pageInfo: { hasNextPage: false }, nodes: events } });
+  const seen = [];
+  const fakeRun = (args) => {
+    const q = args[args.indexOf('-f', 3) + 1];
+    seen.push(q);
+    const nodes = /label:"SC-M"/.test(q)
+      ? [node(10, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z')]), node(12, 'CLOSED', [ev('labeled', '2026-09-01T00:00:00Z')], '2026-09-10T00:00:00Z')]
+      : [node(10, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z')]), node(11, 'OPEN', [ev('labeled', '2026-09-01T00:00:00Z'), ev('unlabeled', '2026-10-05T00:00:00Z')])];
+    return { data: { search: { pageInfo: { hasNextPage: false }, nodes } } };
+  };
+  const fetched = fetchScMItems({ confirmedOn: '2026-09-30', run: fakeRun, repo: 'o/r' });
+  const ch2 = scMChanges(fetched, '2026-09-30');
+  check('IMPL-0614:ng ラベルを外した Issue(検索の結果に入らない)も、更新の検索から拾って削除に数える', fetched.some((i) => i.number === 11) && ch2.removed === 1 && ch2.baseline === 2, JSON.stringify(ch2));
+  check('IMPL-0614:ok 確定の日以前に閉じた Issue は確定時の母集団に入れない', ch2.baseline === 2 && !fetched.find((i) => i.number === 12 && ch2.baseline === 3));
+  check('IMPL-0614:ok 同じ Issue は重ねて数えない', fetched.filter((i) => i.number === 10).length === 1 && seen.length === 2);
+  let big = null;
+  try { fetchScMItems({ confirmedOn: null, repo: 'o/r', run: () => ({ data: { search: { pageInfo: { hasNextPage: false }, nodes: [{ number: 5, state: 'OPEN', timelineItems: { pageInfo: { hasNextPage: true }, nodes: [] } }] } } }) }); } catch (e) { big = e.message; }
+  check('IMPL-0614:ng 出来事が 100 件を超える Issue は、黙って欠かず読めないと出す', /100 件を超える/.test(big ?? ''), String(big));
   const fc = reachForecast({ throughput: { ...ok, min: 1 }, remainingUnits: 6, remainingPeriods: 7 });
   const text = flowReportText({ throughput: ok, forecast: fc, changes: ch, confirmedOn: '2026-09-30' });
   check('IMPL-0614:ok 材料(残る作業単位・実測スループット・残る期間・変動率)を出し、評価と発火の判断は書かない', /残る作業単位[^\n]*6 件/.test(text) && /最小 0・最大 3/.test(text) && /残る期間の見込み/.test(text) && /66\.7%/.test(text) && !/発火(する|しない|すべき)/.test(text), text);

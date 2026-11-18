@@ -1672,7 +1672,7 @@ export function reachForecast({ throughput, remainingUnits, remainingPeriods = n
   const slow = throughput.min > 0 ? Math.ceil(remainingUnits / throughput.min) : null;
   const fast = throughput.max > 0 ? Math.ceil(remainingUnits / throughput.max) : null;
   const out = { ...base, slow, fast };
-  if (!Number.isInteger(remainingPeriods) || remainingPeriods < 0) return { ...out, klass: '算定できない', reason: '比べる残りの期間の入力が無い(--remaining-periods N。期間の組の区分だけ。費用の組は IMPL-0499)' };
+  if (!Number.isInteger(remainingPeriods) || remainingPeriods < 0) return { ...out, klass: '算定できない', reason: '比べる残りの期間の入力が無い、または読めない(--remaining-periods には 0 以上の整数だけを渡す。3.5 のような小数は受けない。期間の組の区分だけ。費用の組は IMPL-0499)' };
   if (slow !== null && slow <= remainingPeriods) return { ...out, klass: '甲', reason: '遅い側の端でも残りに収まる' };
   if (fast !== null && fast <= remainingPeriods) return { ...out, klass: '乙', reason: '遅い側の端は残りを超えるが、速い側の端は収まる' };
   return { ...out, klass: '丙', reason: '速い側の端でも残りを超える' };
@@ -1705,7 +1705,8 @@ export function scMChanges(items, confirmedOn) {
     if (ev.some((e) => String(e.at).slice(0, 10) <= confirmedOn)) {
       // 確定の日までの履歴で最後がラベルありなら、確定時の SC-M
       const upto = ev.filter((e) => String(e.at).slice(0, 10) <= confirmedOn);
-      if (upto[upto.length - 1].type === 'labeled') baseline++;
+      // 確定の日以前に閉じた Issue は、確定時には完了済みで母集団に入らない
+      if (upto[upto.length - 1].type === 'labeled' && !(it.closedAt && String(it.closedAt).slice(0, 10) <= confirmedOn)) baseline++;
     }
     if (on && it.open) remaining++;
   }
@@ -1820,7 +1821,7 @@ export function fetchClosedUnits({ sinceDay, base }) {
       if (!n?.number) continue;
       const prs = n.closedByPullRequestsReferences?.nodes ?? [];
       const completed = n.stateReason === 'COMPLETED' && prs.some((p) => p.merged && (p.baseRefName === base || `origin/${p.baseRefName}` === base));
-      out.push({ number: n.number, closedAt: n.closedAt, completed });
+      out.push({ number: n.number, closedAt: localDay(new Date(n.closedAt)), completed }); // 手元の日付に直す(today と同じ暦で期へ分ける)
     }
     if (!r.pageInfo.hasNextPage) break;
     after = r.pageInfo.endCursor;
@@ -1828,25 +1829,35 @@ export function fetchClosedUnits({ sinceDay, base }) {
   return out;
 }
 
-/** SC-M ラベルの付け外しの履歴(全状態の Issue) */
-export function fetchScMItems() {
-  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number state timelineItems(first:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){nodes{__typename ...on LabeledEvent{createdAt label{name}} ...on UnlabeledEvent{createdAt label{name}}}}}}}}';
-  const repo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }).trim();
-  const items = [];
-  let after = null;
-  for (let page = 0; page < 20; page++) {
-    const args = ['api', 'graphql', '-f', `query=${q}`, '-f', `q=repo:${repo} is:issue label:"${SC_M_LABEL}"`];
-    if (after) args.push('-f', `after=${after}`);
-    const r = ghJson(args).data.search;
-    for (const n of r.nodes) {
-      if (!n?.number) continue;
-      const events = (n.timelineItems?.nodes ?? []).filter((e) => e.label?.name === SC_M_LABEL).map((e) => ({ type: e.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', at: e.createdAt }));
-      items.push({ number: n.number, open: n.state === 'OPEN', events });
+/**
+ * SC-M ラベルの付け外しの履歴。ラベルの検索は今付いている Issue しか返さず、外した Issue を落とすため、
+ * 「今 SC-M が付いている Issue」と「確定の日以降に更新された Issue」(ラベルを外すと更新される)の和集合から、
+ * 出来事の記録(labeled / unlabeled)を読む。run(args) は gh の引数から JSON を返す関数で、試験では固定の入力に差し替える。
+ * 1件の履歴が 100 件を超えるときは、黙って欠かずに読めないと出す
+ */
+export function fetchScMItems({ confirmedOn = null, run = ghJson, repo = null } = {}) {
+  const q = 'query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){pageInfo{hasNextPage endCursor}nodes{...on Issue{number state closedAt timelineItems(first:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){pageInfo{hasNextPage} nodes{__typename ...on LabeledEvent{createdAt label{name}} ...on UnlabeledEvent{createdAt label{name}}}}}}}}';
+  const repoName = repo ?? execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }).trim();
+  const queries = [`repo:${repoName} is:issue label:"${SC_M_LABEL}"`];
+  if (confirmedOn) queries.push(`repo:${repoName} is:issue updated:>=${confirmedOn}`);
+  const byNumber = new Map();
+  for (const query of queries) {
+    let after = null;
+    for (let page = 0; page < 20; page++) {
+      const args = ['api', 'graphql', '-f', `query=${q}`, '-f', `q=${query}`];
+      if (after) args.push('-f', `after=${after}`);
+      const r = run(args).data.search;
+      for (const n of r.nodes) {
+        if (!n?.number || byNumber.has(n.number)) continue;
+        if (n.timelineItems?.pageInfo?.hasNextPage) throw new Error(`#${n.number} のラベルの出来事が 100 件を超える`);
+        const events = (n.timelineItems?.nodes ?? []).filter((e) => e.label?.name === SC_M_LABEL).map((e) => ({ type: e.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', at: e.createdAt }));
+        if (events.length) byNumber.set(n.number, { number: n.number, open: n.state === 'OPEN', closedAt: n.closedAt ?? null, events });
+      }
+      if (!r.pageInfo.hasNextPage) break;
+      after = r.pageInfo.endCursor;
     }
-    if (!r.pageInfo.hasNextPage) break;
-    after = r.pageInfo.endCursor;
   }
-  return items;
+  return [...byNumber.values()];
 }
 
 /** 宣言行を持つコメント(作業単位ごとの件数を数える材料) */
@@ -1891,7 +1902,7 @@ export function flowSection({ config, records, today, network, forecastInput = {
   let changes = null;
   if (network && throughput.computable) {
     try {
-      const items = fetchScMItems();
+      const items = fetchScMItems({ confirmedOn: forecastInput.confirmedOn ?? null });
       changes = scMChanges(items, forecastInput.confirmedOn ?? '0000-00-00');
       remainingUnits = changes.remaining;
     } catch (e) {
