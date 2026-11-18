@@ -220,10 +220,11 @@ if (want('1007 0925 0927 0934')) {
     f[n - 1] = [env ?? f[n - 1][0], result ?? f[n - 1][1]];
     return f;
   };
-  const LEDGER = [
+  const LEDGER_OF = (kind) => [
     '# 技術負債台帳', '', '| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    '| D-5 | 負債 | — | 試験項目2 を省く | 時間 | なし | S3 | 未返却 | 名簿 乙 | — |', '',
+    `| D-5 | ${kind} | — | 試験項目2 を省く | 時間 | なし | 2099-12-31 まで。回収責任者 名簿 丙 | 未返却 | 名簿 乙 | 名簿 戊 |`, '',
   ].join('\n');
+  const LEDGER = LEDGER_OF('負債');
   const scene = (text, ledger = null) => {
     r.resetTo('base');
     if (text !== null) r.write('docs/safety-risk-assessment.md', text);
@@ -237,7 +238,8 @@ if (want('1007 0925 0927 0934')) {
   const good = scene(render());
   check('IMPL-1007:ok 集約: 記入済みの記録なら基準7 の欠落は出ない', hit(good.gaps, B7).length === 0, JSON.stringify(good.gaps.filter((g) => /基準7/.test(g))));
   check('IMPL-0925:ng 集約: 挿入した環境が模擬環境(TBD)なら基準7 の欠落', hit(scene(render({ faults: faultsWith(1, '模擬環境(TBD)') })).gaps, /試験項目1.*挿入した環境/).length === 1);
-  check('IMPL-0927:ng 集約: 項目2 の結果が区分「負債」の行の ID を指す例外承認なら基準7 の欠落', hit(scene(render({ faults: faultsWith(2, null, '例外承認: D-5') }), LEDGER).gaps, /試験項目2.*結果/).length === 1);
+  check('IMPL-0927:ng 集約: 項目2 の結果が区分「負債」の行の ID を指す例外承認なら基準7 の欠落(承認者・期限が整っていても区分「例外」に無い)', hit(scene(render({ faults: faultsWith(2, null, '例外承認: D-5') }), LEDGER).gaps, /区分「例外」に無い/).length === 1);
+  check('IMPL-0927:ok 集約: 区分「例外」の行の ID を指す例外承認(承認者が名簿の人)なら基準7 の欠落は出ない', hit(scene(render({ faults: faultsWith(2, null, '例外承認: D-5') }), LEDGER_OF('例外')).gaps, B7).length === 0);
   check('IMPL-0934:ng 集約: 手法の表の手法の名が空欄なら基準7 の欠落', hit(scene(render({ methods: [['', 'HR', '規格X 版Y 表Z', '適用', '']] })).gaps, B7).length >= 1);
   r.done();
 }
