@@ -149,6 +149,10 @@ const BASE3 = { 'value-owner': 'a', 'tech-lead': 'c', 'dev-verifier': 'b', 'inde
   check('価値責任者: 様式 08 の氏名と席の責任者が食い違えば mismatch', valueOwnerAgreementState(v, sla('鈴木 花子')).state === 'mismatch');
   // IMPL-0462:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   const m = valueOwnerAgreementState(v, sla('山田 太郎(発注側 事業部)'));
+  // IMPL-0755:ng(違反の入力。明示の値「置かない」を通す・全角や空白の揺れを読めない)
+  check('IMPL-0755:ng 値「置かない」(全角の揺れ・前後の空白を含む)は not-placed。氏名の照合に回さない', valueOwnerAgreementState(v, sla('置かない')).state === 'not-placed' && valueOwnerAgreementState(v, sla(' 置かない ')).state === 'not-placed' && valueOwnerAgreementState(v, sla('置かない')).applies === true);
+  // IMPL-0755:ok(適合の入力。空欄・雛形は注記のまま。「置かない」を含む別の文は明示の値としない。氏名は通常どおり照合する)
+  check('IMPL-0755:ok 空欄・雛形は blank のまま、「置かないこともある」は明示の値でなく、氏名は通常どおり照合する', valueOwnerAgreementState(v, sla('')).state === 'blank' && valueOwnerAgreementState(v, sla('<発注側の氏名>')).state === 'blank' && valueOwnerAgreementState(v, sla('置かないこともある')).state === 'mismatch' && valueOwnerAgreementState(v, sla('山田 太郎')).state === 'match');
   check('価値責任者: 一致すれば match。発注側の人であることは機械では確かめていないと出す', m.state === 'match' && /機械では確かめていない/.test(m.text), JSON.stringify(m));
 }
 
@@ -303,6 +307,16 @@ const NOTICE_DAY = localDay();
   const noSlaRow = rowOf(wn);
   wn.done();
   check('集約: docs/ai-sla.md が無いとき、照合していないと保証の開示に出す', /ai-sla\.md が無い.*照合していない/.test(noSlaRow), noSlaRow);
+  // IMPL-0755:ng 値「置かない」で G-2 を未達として表示する。IMPL-0755:ok 空欄は未達にならない
+  const wp = workspace(vend, { 'docs/ai-sla.md': sla('置かない') });
+  const ap = wp.aggregate();
+  const placedRow = rowOf(wp);
+  wp.done();
+  check('集約 IMPL-0755:ng 値「置かない」で、G-2 を未達のゲートとして表示し、行にも出す(欠落にしない)', /G-2 要件合意\(価値責任者を置かない委託/.test(ap.report) && /置かない.*未達のゲートとして表示/.test(placedRow) && !/価値責任者の所属: /.test(ap.out ?? ''), placedRow);
+  const wq = workspace(vend, { 'docs/ai-sla.md': sla('') });
+  const aq = wq.aggregate();
+  wq.done();
+  check('集約 IMPL-0755:ok 空欄は G-2 を未達にしない(注記のまま)', !/G-2 要件合意\(価値責任者を置かない委託/.test(aq.report));
 }
 {
   // 範囲に触れた変更の件数は G-6 の適用に依らず数える。G-6 を適用しない体制では「0 件」と出さず、数えなかった件数を出さないと表示する(IMPL-0118・ADR-0127 決定5)

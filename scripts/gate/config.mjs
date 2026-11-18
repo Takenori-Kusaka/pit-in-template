@@ -1825,6 +1825,10 @@ export function valueOwnerAgreementState(config, slaText) {
   if (slaText == null) return { applies: true, state: 'no-sla', text: '委託・受託の構成だが、docs/ai-sla.md が無い。価値責任者(発注側が選任した者)を照らせない' };
   const line = slaText.split(/\r?\n/).find((l) => l.startsWith(`| ${VALUE_OWNER_ROW} |`));
   const cell = line ? (line.split('|')[2] ?? '').trim() : '';
+  // 明示の値「置かない」(NFKC で正規化した完全一致だけ)。発注側が価値責任者を置かない委託で、G-2 を受注側の判定で代えない(IMPL-0755)。空欄は注記のまま(ADR-0127 決定7)
+  if (cell.normalize('NFKC').trim() === '置かない') {
+    return { applies: true, state: 'not-placed', text: `docs/ai-sla.md の「${VALUE_OWNER_ROW}」が「置かない」。価値責任者が置かれないため、要件合意(G-2)は受注側の判定で代えず、未達として表示する` };
+  }
   if (!cell || cell.startsWith('<')) {
     return { applies: true, state: 'blank', text: `docs/ai-sla.md の「${VALUE_OWNER_ROW}」が空欄(雛形の記入例のまま、または旧い様式で行が無い)。次の締結・改訂で、発注側が選任した者の氏名を当事者が記入する(AI が氏名を推測で埋めない)` };
   }

@@ -1093,7 +1093,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
     // 受託・委託の構成の価値責任者(発注側が選任した者)と席の責任者の照合(process-compass #357 / ADR-0127 決定7)。
     // 空欄・食い違いを注記する。食い違いは出荷の証跡の集約が記録の欠落にする
     const vo = valueOwnerAgreementState(config, slaText);
-    if (vo.applies && vo.state !== 'match' && vo.state !== 'no-sla') result.notes.push(`${vo.text}。読む: ${READ.artifact('08-ai-sla')}`);
+    if (vo.applies && vo.state !== 'match' && vo.state !== 'no-sla' && vo.state !== 'not-placed') result.notes.push(`${vo.text}。読む: ${READ.artifact('08-ai-sla')}`);
   }
 
   // 独立レビュー(G-6)の承認者の数と記録の書式(標準 第8章 軸C 規制業・軸E CL2/CL3)。2名の体制で1名の承認を「確認あり」と

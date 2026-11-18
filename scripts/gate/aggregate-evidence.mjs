@@ -1139,6 +1139,32 @@ export function licenseScanStatus({ licenseScan, phaseStatus, aggregate }) {
   return { run: true, chosen: false, text: `実施(${licenseScan.result ?? '結果の記録なし'})` };
 }
 
+/**
+ * R2 の変更のうち、G-6(独立した人の確認)が未達のまま入ったもの(IMPL-0739)。止めず、件数を保証の開示の項目3 へ出す。
+ * changeUnits は { riskClass, independent: { counted }, label } の配列
+ */
+export function r2G6UnmetOf(changeUnits) {
+  return (changeUnits ?? []).filter((c) => c.riskClass === 'R2' && !c.independent?.counted).map((c) => c.label);
+}
+
+/** 項目3 の「G-6 未達のまま入った R2 の変更」の行(IMPL-0739)。prevText は前回の値の文 */
+export function r2G6UnmetLine(labels, prevText) {
+  const list = labels.length ? `(${labels.slice(0, 8).join(', ')}${labels.length > 8 ? ' ほか' : ''})` : '';
+  return `- G-6 未達のまま入った R2 の変更の件数(独立した人の確認を経ていない。止めない): ${labels.length} 件${list} (${prevText})`;
+}
+
+/**
+ * 保証の開示の入力になる記録の不在(IMPL-0687。第4章 G-7 基準9「記録が無く項目を導けない」)。
+ * D-0 のファイルが無い、構成の変更記録(changeLog)が空の出荷は、項目を導けない記載の欠落である。
+ * 項目の中身の妥当性は見ない。見出しと成立判定の出力が在ることは、試験(入力を欠いた出力の本文)で固定する
+ */
+export function inputRecordGaps({ d0Present, changeLogCount }) {
+  const out = [];
+  if (!d0Present) out.push('D-0(docs/D-0-governance.md)がありません。保証の開示の項目(体制と独立性・生成の条件と変化点など)を導けない記載の欠落です(第4章 G-7 基準9)');
+  if (!changeLogCount) out.push('構成の変更記録(process.config.json の changeLog)がありません。保証の開示の項目7(期間中の体制の変化点)を導けない記載の欠落です(第4章 G-7 基準9)');
+  return out;
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const config = loadConfig();
@@ -3444,6 +3470,7 @@ if (isMain) {
   if (!period && config.gates.g7?.state !== 'omitted') {
     if (!exists(handoverFile)) gaps.push('運用引き継ぎ文書(docs/handover.md)がありません');
     else for (const it of handoverInfo.items) if (handoverGapText(it)) gaps.push(handoverGapText(it));
+    gaps.push(...inputRecordGaps({ d0Present: exists('docs/D-0-governance.md'), changeLogCount: Array.isArray(config.changeLog) ? config.changeLog.length : 0 }));
     if (!exists(debtFile)) gaps.push('技術負債台帳(docs/debt-ledger.md)がありません');
     // 判定記録の有無は、当該出荷の範囲のものだけを見る。過去の出荷の1件で通さない。承認レビューの写しによる判定と、
     // 記録用ブランチの様式も記録である
@@ -3616,6 +3643,10 @@ if (isMain) {
     compensationNote: typeof u.compensationNote === 'string' && u.compensationNote ? u.compensationNote : null,
     reviewSourcing: u.reviewSourcing ?? null,
   }));
+  // 発注側が価値責任者を置かない委託(様式 08 の値「置かない」)は、要件合意(G-2)を未達として表示する。欠落には数えない(IMPL-0755)
+  if (valueOwner.applies && valueOwner.state === 'not-placed') {
+    unmet.push({ gate: 'g2', label: 'G-2 要件合意(価値責任者を置かない委託。様式 08)', reason: valueOwner.text, compensation: [], compensationNote: null, reviewSourcing: null });
+  }
 
   // --- 安全重要度の判定の確認(D-0 節16。標準 第8章 軸E「判定の記録と確認」、第4章 G-7「保証の開示」項目1。process-compass #373 / IMPL-0450) ---
   // 確認者の欠落は未達として項目1 に出し、欠落に数えない(CL0 で規制業でない案件は G-8 の受容で出荷できる)。
@@ -3858,6 +3889,8 @@ if (isMain) {
 
   // R1 の変更のうち、独立した人の確認を経ていないもの。変更ごとに例外承認の記録を要する
   const r1Unconfirmed = changeUnits.filter((c) => c.riskClass === 'R1' && !c.independent.counted).map((c) => ({ label: c.label, exceptionRecords: c.exceptionRecords }));
+  // R2 の変更のうち、G-6(独立した人の確認)が未達のまま入ったもの。止めずに件数を項目3 へ出す(IMPL-0739。リリースごとの件数)
+  const r2Unconfirmed = r2G6UnmetOf(changeUnits);
   // 例外承認の記録が対応づいたことで、欠落として扱わなかった変更(区分を問わない)。項目5 へ未回収の例外として載せる
   const exceptedChanges = changeUnits.filter((c) => c.exceptionRecords.length).map((c) => ({ label: c.label, riskClass: c.riskClass, records: c.exceptionRecords }));
   // リスク区分が未記入で、独立した人の確認を経ていない変更。R1 かどうかを機械で判定できない
@@ -4193,6 +4226,8 @@ if (isMain) {
         : 'PR 本文の自己記載だけに依る。区分を確定した者の記名は、判定記録にも PR 本文にも無い';
     })(),
     riskClassConfirmedRecords: riskConfirmed,
+    r2G6Unmet: r2Unconfirmed.length,
+    r2G6UnmetLabels: r2Unconfirmed,
     riskConfirmation,
     byMode: records.length
       ? {
@@ -6013,6 +6048,9 @@ if (isMain) {
     if (['blank', 'no-sla'].includes(A.independence.valueOwnerState)) {
       R.push('| 価値責任者の所属(第8章 軸D) | 様式 08 の価値責任者の行が空欄、または docs/ai-sla.md が無いため、照合していない。次の締結・改訂で記入する | — |');
     }
+    if (A.independence.valueOwnerState === 'not-placed') {
+      R.push('| 価値責任者の所属(第8章 軸D) | 様式 08 の価値責任者が「置かない」。要件合意(G-2)は受注側の判定で代えず、未達のゲートとして表示した | — |');
+    }
     if (A.independence.valueOwnerState === 'match') {
       R.push('| 価値責任者の所属(第8章 軸D) | 様式 08 の価値責任者と構成の席の責任者の氏名が一致した。発注側の人であることは機械では確かめていない。確かめるのは締結者と G-2 の判定者 | — |');
     }
@@ -6246,6 +6284,7 @@ if (isMain) {
     R.push(`- リスク区分の出所: ${A.changes.riskClassSource}`);
     const rcf = A.changes.riskConfirmation;
     R.push(`- R1・R2 の区分の確定者(作成を指示した者以外の名簿の人の記名): R1・R2 ${rcf.high} 件のうち確定者あり ${rcf.confirmed} 件${rcf.unconfirmed.length ? `。**確定していない区分** ${rcf.unconfirmed.join(', ')}` : ''}(G-5 が確定者の無い R1・R2 を失敗させる。区分の下限の規則に当たらない R1 相当の変更が R3 と記載される経路は残る)`);
+    R.push(r2G6UnmetLine(A.changes.r2G6UnmetLabels, prev((p) => (typeof p.changes.r2G6Unmet === 'number' ? `${p.changes.r2G6Unmet} 件` : '値なし'))));
     R.push(`- 確定の形態(当該出荷の範囲の判定記録の記載): ${bmText(bm)}(${prev((p) => bmText(p.changes.byMode))})`);
     const dg = A.changes.delegated;
     const dgb = dg.withoutPriorHumanBreakdown;

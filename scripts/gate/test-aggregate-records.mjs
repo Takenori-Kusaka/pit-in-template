@@ -43,7 +43,15 @@ import {
   reviewSupersededByLater,
   verificationSectionDiffers,
   verificationDiffText,
+  r2G6UnmetOf,
+  r2G6UnmetLine,
+  inputRecordGaps,
 } from './aggregate-evidence.mjs';
+import { stopFindings } from './check-pr.mjs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import os from 'node:os';
+import { ROOT, sealChangeLog } from './config.mjs';
+import { buildConfig } from '../init/generate-profile.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures', 'records');
@@ -490,6 +498,74 @@ const config = {
   check('G-7 の成立: 兼務の構成で価値責任者の席が未記入なら成立を確認できない', /成立を確認できない.*価値責任者の席/.test(mk(true, { 'dev-verifier': 'a', 'qa-gatekeeper': 'b' })));
   check('G-7 の成立: 兼務の構成で価値責任者が開発者と同一なら成立しない(qa-gatekeeper が別の人でも)', /^成立しない/.test(mk(true, { 'value-owner': 'a', 'dev-verifier': 'a', 'qa-gatekeeper': 'b' })));
   check('G-7 の成立: 兼務でない構成は qa-gatekeeper の席で判定する(未記入なら確認できない・同一なら成立しない)', /成立を確認できない.*出荷判定者の席/.test(mk(false, { 'value-owner': 'b', 'dev-verifier': 'a' })) && /^成立しない/.test(mk(false, { 'value-owner': 'b', 'dev-verifier': 'a', 'qa-gatekeeper': 'a' })));
+}
+
+// ---------------------------------------------------------------- 開示の表示(IMPL-0739・IMPL-0631・IMPL-0687)
+{
+  const unit = (label, riskClass, counted) => ({ label, riskClass, independent: { counted } });
+  // IMPL-0739:ng(違反の入力。G-6 未達の R2 が 2 件あるのに数えない)
+  const labels = r2G6UnmetOf([unit('PR #1', 'R2', false), unit('PR #2', 'R2', false), unit('PR #3', 'R2', true), unit('PR #4', 'R1', false), unit('PR #5', 'R3', false)]);
+  check('IMPL-0739:ng G-6 未達のまま入った R2 の変更だけを数える(確認済みの R2・R1・R3 は数えない)', labels.join() === 'PR #1,PR #2', labels.join());
+  // IMPL-0739:ok(適合の入力。行があり件数が出る。0 件も行を出す)
+  check('IMPL-0739:ok 項目3 の行に件数が出る(2 件。0 件も行を出し、止めない旨を添える)', /^- G-6 未達のまま入った R2.*止めない.*: 2 件\(PR #1, PR #2\)/.test(r2G6UnmetLine(labels, '値なし')) && /: 0 件 \(/.test(r2G6UnmetLine([], '0 件')));
+  // IMPL-0631:ng(違反の入力。ラベルの付いた PR は停止の申し立てとして保留に数える)
+  const gitNone = () => null;
+  check('IMPL-0631:ng 停止のラベル state:stop-requested が付いた PR は申し立てとして数える', stopFindings({ git: gitNone, base: 'HEAD', pr: { number: 5, labels: ['state:stop-requested'] } }).requested === true);
+  // IMPL-0631:ok(適合の入力。G-8 の異議の記入だけでは、停止の申し立ての保留にならない)
+  check('IMPL-0631:ok ラベルが無い PR は、G-8 の「出荷判定者の異議」を記入しても申し立てに数えない', stopFindings({ git: gitNone, base: 'HEAD', pr: { number: 5, labels: [], reviews: [{ state: 'COMMENTED', body: '出荷判定者の異議: 異議あり' }] } }).requested === false);
+  // IMPL-0687:ng(違反の入力。D-0 も変更記録も無いのに欠落が 0 件)
+  check('IMPL-0687:ng D-0 の不在と構成の変更記録の不在を、記載の欠落にする', inputRecordGaps({ d0Present: false, changeLogCount: 0 }).length === 2);
+  // IMPL-0687:ok(適合の入力)
+  check('IMPL-0687:ok D-0 と変更記録がそろえば欠落は出ない', inputRecordGaps({ d0Present: true, changeLogCount: 3 }).length === 0);
+}
+{
+  // 入力を欠いた出力でも、7 つの見出しと成立判定が本文つきで出る(IMPL-0687)。D-0 を取り除いた一時の置き場で集約を動かす
+  const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-agg-rec-'));
+  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
+    if (SKIP.has(e.name)) continue;
+    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
+  }
+  const co = path.join(dir, '.github/CODEOWNERS');
+  fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
+  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@example.com');
+  git('config', 'user.name', 'tester');
+  git('config', 'core.autocrlf', 'false');
+  const COMMON = { 'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free', 'q-biz-phase': 'growth', 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes' };
+  const PEOPLE = Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊己'[i]}`, accounts: [`acc${i}`] }));
+  const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p5', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
+  const log = console.log;
+  console.log = () => {};
+  let cfg;
+  try {
+    cfg = buildConfig(COMMON, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config;
+  } finally {
+    console.log = log;
+  }
+  fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(sealChangeLog(JSON.parse(JSON.stringify(cfg))), null, 2) + '\n');
+  fs.rmSync(path.join(dir, 'docs/D-0-governance.md'), { force: true });
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: init');
+  const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs', '--exception-day', '2026-11-20'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' } });
+  let ev = null;
+  let report = '';
+  try {
+    ev = JSON.parse(fs.readFileSync(path.join(dir, 'evidence/evidence.json'), 'utf8'));
+    const rf = ['evidence/report.md', 'evidence/quality-report.md'].map((f) => path.join(dir, f)).find((f) => fs.existsSync(f));
+    report = rf ? fs.readFileSync(rf, 'utf8') : '';
+  } catch {
+    // 読めなければ空
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  check('IMPL-0687:ng 集約(D-0 なし): D-0 の不在が記載の欠落に出る', (ev?.gaps ?? []).some((g) => /D-0\(docs\/D-0-governance\.md\)がありません/.test(g)), `${r.status} ${(r.stdout + r.stderr).slice(-300)}`);
+  const body = (n) => {
+    const m = new RegExp(`^### ${n}\\. .*\\n([\\s\\S]*?)(?=^### \\d\\. |^## |$(?![\\s\\S]))`, 'm').exec(report);
+    return (m?.[1] ?? '').trim();
+  };
+  check('IMPL-0687:ok 入力を欠いた出力でも、項目1〜7 の見出しが在り、本文が空でない', [1, 2, 3, 4, 5, 6, 7].every((k) => body(k).length > 0), [1, 2, 3, 4, 5, 6, 7].map((k) => `${k}:${body(k).length}`).join(' '));
+  check('IMPL-0687:ok 入力を欠いた出力でも、保証の主張の成立判定の見出しが本文つきで出る', /### 保証の主張の成立判定\n+\S/.test(report));
 }
 
 console.log('');
