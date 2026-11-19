@@ -147,7 +147,7 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
     t('通し: 説明に限界(Agent-Run の無いコミットは数えない・5.8.2 の自動の記録の代わりではない)を書く', wa.length > 0 && wa.every((l) => /Agent-Run を持つコミットだけ/.test(l) && /代わりではありません/.test(l)));
     t('通し: 欠落に数えない(::error:: の行にモデルの識別の本文が無い)', !lines(withRuns).some((l) => /::error::/.test(l) && /モデルの識別\(5\.8\.2\)/.test(l)) && !/## 欠落[\s\S]*モデルの識別\(5\.8\.2\)/.test(withRuns.report));
     const okRuns = runWith(null, [msg('d', 'Claude Opus 4.5 <noreply@anthropic.com>')]);
-    t('IMPL-1033:ok 通し(ok): Agent-Run と「Claude Opus 4.5 <…>」を持つコミットだけの実行では警告を出さない', /を出力しました/.test(okRuns.out) && !lines(okRuns).some((l) => /モデルの識別(5.8.2)/.test(l)), okRuns.out.slice(-400));
+    t('IMPL-1033:ok 通し(ok): Agent-Run と「Claude Opus 4.5 <…>」を持つコミットだけの実行では警告を出さない', /を出力しました/.test(okRuns.out) && !lines(okRuns).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)), okRuns.out.slice(-400));
     t('通し: Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
     t('通し: 品質レポートにも行A・行B を出す', /Co-Authored-By が無いコミット 1 件/.test(withRuns.report) && /数字\(版\)を含む名称が無いコミット 1 件/.test(withRuns.report));
     {
