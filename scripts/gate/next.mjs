@@ -766,31 +766,42 @@ export function defaultBranchOf(gitFn = git) {
 }
 const defaultBranch = () => defaultBranchOf(git);
 
+/** 済みのタスクに数えるトレーラの行の形(trim した後)。doneTasksOf と specOutsideLastParagraph が1つの定義を共有する */
+const DONE_SPEC_LINE = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/;
+const doneSpecTasks = (text) => String(text ?? '').split('\n').map((l) => DONE_SPEC_LINE.exec(l.trim())).filter(Boolean).map((m) => `${m[1]}/${m[2]}`);
+
 /**
  * 本文の配列から、済みのタスク `F-NNN/Task-N` の集合を作る。読むのは各本文の末尾の段落のトレーラ `Spec:` だけ
- * (手戻り率の specTrailersOf と同じ読み方。process-compass ADR-0172 決定3)
+ * (段落の読み方は手戻り率の specTrailersOf と同じ。process-compass ADR-0172 決定3)
  */
 export function doneTasksOf(bodies) {
   const done = new Set();
-  for (const body of bodies) for (const t of specTrailersOf(body)) done.add(t);
+  for (const body of bodies) for (const t of doneSpecTasks(lastParagraph(body))) done.add(t);
   return done;
 }
 
-/** 末尾の段落の外に、行頭が `Spec:` の行を持つ本文の件数。済みのタスクに数えていないコミットの件数として注記に出す */
+/**
+ * 末尾の段落の外に、済みのタスクに数える形(doneTasksOf と同じ述語)の `Spec:` 行を持つ本文の件数。
+ * 末尾の段落にあれば済みに数えたはずのコミットの件数として注記に出す(`Spec: setup` のようにタスクの形でない行は数えない)
+ */
 export function specOutsideLastParagraph(bodies) {
-  const isSpec = (l) => /^Spec:/.test(l.trim());
   let n = 0;
   for (const body of bodies) {
-    const total = String(body ?? '').split('\n').filter(isSpec).length;
-    const inLast = lastParagraph(body).split('\n').filter(isSpec).length;
-    if (total > inLast) n++;
+    if (doneSpecTasks(body).length > doneSpecTasks(lastParagraph(body)).length) n++;
   }
   return n;
 }
 
+/** 段落の外の件数から、次の一手の注記の文を作る。0 件なら null */
+export function outsideSpecNote(outside) {
+  return outside > 0
+    ? `既定ブランチのコミットのうち ${outside} 件は、トレーラ \`Spec: F-NNN / Task-N\` が本文の末尾の段落の外にあり、済みのタスクに数えていない(末尾の段落だけを読む。段落の読み方は手戻り率と同じ)`
+    : null;
+}
+
 /** 既定ブランチのコミットのトレーラ Spec: F-NNN / Task-N を集める。読めなければ null */
-function doneTasks(branch) {
-  const out = git(['log', branch, '--format=%B%x00']);
+export function doneTasks(branch, gitFn = git) {
+  const out = gitFn(['log', branch, '--format=%B%x00']);
   if (out === null) return null;
   const bodies = out.split('\0');
   return { done: doneTasksOf(bodies), outside: specOutsideLastParagraph(bodies) };
@@ -1212,7 +1223,8 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
   const branch = defaultBranch();
   const doneInfo = branch ? doneTasks(branch) : null;
   const done = doneInfo ? doneInfo.done : null;
-  if (doneInfo && doneInfo.outside > 0) result.notes.push(`既定ブランチのコミットのうち ${doneInfo.outside} 件は、トレーラ \`Spec:\` が本文の末尾の段落の外にあり、済みのタスクに数えていない(末尾の段落だけを読む。手戻り率と同じ)`);
+  const outsideNote = doneInfo ? outsideSpecNote(doneInfo.outside) : null;
+  if (outsideNote) result.notes.push(outsideNote);
   const branches = localBranches();
   let complete = 0;
 
@@ -1278,7 +1290,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
     const remaining = tasks.filter((t) => !done.has(`${f}/${t.id}`));
     if (!remaining.length) {
       complete++;
-      const step = { stage: '実装済み(既定ブランチへ取り込み済み)', kind: 'done', reason: `${tasks.length} タスクすべてにトレーラ Spec: ${f} / Task-N のコミットがある` };
+      const step = { stage: '実装済み(既定ブランチへ取り込み済み)', kind: 'done', reason: `${tasks.length} タスクすべてに、本文の末尾の段落にトレーラ Spec: ${f} / Task-N を持つコミットがある` };
       // 写しのある PR ごとの G-6 の記録の有無(記録が無い = 未判定)。段階は止めない(出荷の証跡の集約が欠落にする)
       if (isGateActive(config, 'g6')) {
         const missing = g6Status(records, copiedPrs.filter((p) => p.feature === f)).filter((s) => !s.passed);

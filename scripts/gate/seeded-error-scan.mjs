@@ -13,7 +13,7 @@
 //
 // 限界(記録にも書く): 標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash・リポジトリの squash の既定の文の設定(PR の題だけ等)は、
 // この走査では拾えない。「流出がない」とは記録しない(標準 5.6.2: 4層あっても流出しないとは記録してはならない)。
-// PR の検査(check-pr.mjs)が同じ判定(markerCommitsInRange)を import する(process-compass #356 / IMPL-0191)。
+// PR の検査(check-pr.mjs)が import するための関数 markerCommitsInRange を、ここに置いている。check-pr.mjs はまだ import していない(取り込みの前の拒否は降ろしている途中。process-compass #356 / IMPL-0191)。
 // 標識の文字列は下の定数1か所に置く。標識の形が変わるとき(標識の可視性と秘匿の審議。#356 B)は、ここだけを直す。
 
 import fs from 'node:fs';
@@ -111,10 +111,7 @@ export function scan({ cwd = process.cwd(), from, to, ledger = null, now = new D
     problems.push(`範囲 ${spec} のコミットを読めません`);
     return { record, problems };
   }
-  const commits = log.split('\x1e').filter((s) => s.trim() !== '').map((s) => {
-    const i = s.indexOf('\x1f');
-    return { sha: s.slice(0, i).trim(), body: s.slice(i + 1) };
-  });
+  const commits = parseLog(log);
   record.commitsScanned = commits.length;
   record.markerCommits = commits.filter((c) => hasMarker(c.body)).map((c) => c.sha);
   for (const sha of record.markerCommits) problems.push(`コミット ${sha.slice(0, 12)} の本文に標識 ${MARKER} があります。${FALSE_POSITIVE_HINT}`);

@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
-import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph } from './next.mjs';
+import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph, doneTasks, outsideSpecNote } from './next.mjs';
 import { specTrailersOf } from './autonomy.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, adjustmentRecordCount, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
@@ -470,6 +470,42 @@ ${r.out}`);
   const d3 = doneTasksOf([squashBody]);
   check('IMPL-0517:ok スカッシュの箇条に似た本文は、末尾の段落の Task-2 だけを数え、外の件数は 1', same([...d3], ['F-001/Task-2']) && specOutsideLastParagraph([squashBody]) === 1, JSON.stringify([...d3]));
   check('IMPL-0517:ok 3つの本文で doneTasksOf と手戻り率の specTrailersOf が一致する', [midBody, lastBody, squashBody].every((b) => same([...doneTasksOf([b])].sort(), [...new Set(specTrailersOf(b))].sort())));
+  // 突合の直し: 段落の外の件数は、末尾の段落にあれば済みに数えた形(F-NNN / Task-N)の行だけを数える
+  const setupBody = 'セットアップ\n\nSpec: setup\n\nCo-Authored-By: someone <a@example.com>';
+  check('IMPL-0517:ng 中の段落の Spec: setup は、段落の外の件数に数えない', specOutsideLastParagraph([setupBody]) === 0 && doneTasksOf([setupBody]).size === 0);
+  check('IMPL-0517:ok Spec: setup と Spec: F-001 / Task-1 の本文が混ざっても、タスクの形の1件だけを数える', specOutsideLastParagraph([setupBody, midBody]) === 1);
+  // 結線: doneTasks は偽の git の出力から { done, outside } を作る(読めなければ null)
+  const fakeLog = [lastBody, midBody, setupBody].join(String.fromCharCode(0));
+  let seenArgs = null;
+  const dt = doneTasks('main', (a) => { seenArgs = a; return fakeLog; });
+  check('IMPL-0517:ok doneTasks は git log の本文から済みのタスクと段落の外の件数を作る', dt && same([...dt.done], ['F-001/Task-1']) && dt.outside === 1 && seenArgs[0] === 'log' && seenArgs[1] === 'main', JSON.stringify(dt));
+  check('IMPL-0517:ng doneTasks は git を読めなければ null', doneTasks('main', () => null) === null);
+  check('IMPL-0517:ok 注記の文は件数から作り、0 件なら出さない。段落の読み方だけが手戻り率と同じと言う', outsideSpecNote(0) === null && /3 件/.test(outsideSpecNote(3)) && /段落の読み方は手戻り率と同じ/.test(outsideSpecNote(3)));
+  // 入口: 関数を直接呼ぶ試験では、注記を出す結線(computeNext)を外しても通る。一時の git リポジトリで /pit(next.mjs --offline)を通す
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'impl0517-entry-'));
+    try {
+      fs.cpSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..'), path.join(dir, 'scripts'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+      fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify({
+        configured: true,
+        gates: { g2: { state: 'required', label: 'G-2 要件合意' } },
+        roles: [{ id: 'value-owner', name: '価値責任者', gatesOwned: ['g2'] }],
+        seats: [{ role: 'value-owner', accountable: 'p1' }],
+        people: [],
+      }, null, 2));
+      const env = { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '', GIT_CEILING_DIRECTORIES: path.dirname(dir) };
+      const g = (args) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8', env });
+      g(['init', '-q', '-b', 'main']);
+      g(['add', '-A']);
+      g(['commit', '-q', '-m', 'a\n\nSpec: F-001 / Task-1\n\nCo-Authored-By: x <x@example.com>', '--allow-empty']);
+      const pit = () => { const r = spawnSync(process.execPath, ['scripts/gate/next.mjs', '--offline'], { cwd: dir, encoding: 'utf8', env }); return `${r.stdout ?? ''}${r.stderr ?? ''}`; };
+      check('IMPL-0517:ng 入口: 末尾の段落の外の Spec: F-001 / Task-1 は、/pit の注記に件数と理由が出る', /1 件は、トレーラ[^\n]*末尾の段落の外/.test(pit()));
+      g(['commit', '-q', '--allow-empty', '-m', 'b\n\nSpec: setup\n\nCo-Authored-By: x <x@example.com>']);
+      check('IMPL-0517:ok 入口: Spec: setup だけを段落の外に持つコミットは、件数を増やさない(1 件のまま)', /1 件は、トレーラ/.test(pit()) && !/2 件は、トレーラ/.test(pit()));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
 }
 console.log('');
 if (failures) {

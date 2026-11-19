@@ -180,7 +180,7 @@ if (process.platform === 'win32') {
 
   // IMPL-0316:ng(違反の入力: 読めた空の一覧。読めなかった場合と区別して不一致にする)
   const empty = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [] } }));
-  check('読めた空のルールセットの一覧は「不一致」(未確認でない)', empty.items.ruleset?.status === 'mismatch' && empty.code === 1, JSON.stringify(empty.items.ruleset));
+  check('読めた空のルールセットの一覧は「不一致」(未確認でない)', empty.items.ruleset?.status === 'mismatch' && empty.code === 1 && /直接の push/.test(empty.items.ruleset?.detail ?? ''), JSON.stringify(empty.items.ruleset));
   check('効いているルールセットが無ければ、バイパスの主体は対象外(確認済みに数えない)', empty.items.bypass?.status === 'notApplicable', JSON.stringify(empty.items.bypass));
   // IMPL-0316:ok(適合の入力: 権限不足で読めない場合は、理由つきの未確認)
   const denied = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' } }));
@@ -364,7 +364,7 @@ if (process.platform === 'win32') {
   check('G-6 が無効の構成でも、ルールセットの項目は対象外でなく、必須チェック gate-g5 を確かめて確認済み', ok.items.ruleset?.status === 'confirmed' && /gate-g5/.test(ok.items.ruleset?.detail ?? ''), JSON.stringify(ok.items.ruleset));
   const none = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [{ type: 'deletion', ruleset_id: 12 }] } }));
   // IMPL-0314:ng(違反の入力: G-6 が無効の構成で、gate-g5 が必須チェックに無い)
-  check('G-6 が無効の構成で gate-g5 が必須チェックに無ければ「不一致」', none.items.ruleset?.status === 'mismatch' && /gate-g5/.test(none.items.ruleset?.detail ?? ''), JSON.stringify(none.items.ruleset));
+  check('G-6 が無効の構成で gate-g5 が必須チェックに無ければ「不一致」', none.items.ruleset?.status === 'mismatch' && /gate-g5/.test(none.items.ruleset?.detail ?? '') && /直接の push/.test(none.items.ruleset?.detail ?? ''), JSON.stringify(none.items.ruleset));
   // process-compass #356 / IMPL-0191: pull_request の規則が無い構成は、状態を変えずに直接の push の欠けを詳細に出す
   check('G-6 無効・必須チェックだけの構成は、確認済みのまま、詳細に直接の push の欠けを出す(状態は変えない)', ok.items.ruleset?.status === 'confirmed' && /直接の push/.test(ok.items.ruleset?.detail ?? '') && /5.6.2 第2層/.test(ok.items.ruleset?.detail ?? ''), JSON.stringify(ok.items.ruleset));
   const withPr = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: RULES_TEAM } }));
