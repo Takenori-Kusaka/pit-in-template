@@ -15,7 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
-import { doneConditionSource, flowSection } from './next.mjs';
+import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph } from './next.mjs';
+import { specTrailersOf } from './autonomy.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, adjustmentRecordCount, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
@@ -457,6 +458,18 @@ ${r.out}`);
   check('IMPL-0500:ng Issue の番号を導けない指定(F-NNN)は、書かずに別に数える', recordPickupUndecided({ label: 'state:needs-dev', target: 'F-001', day: '2026-11-18', run: () => { throw new Error('呼ばれてはならない'); }, appendFile: (r) => kept.push(r) }) === 'unwritten' && kept.length === 2);
   check('IMPL-0500:ok 書けなかった件数を数えて出す', countUnwrittenPickup(kept.join('\n')) === 2 && /書けず[^\n]*2 件/.test(pickupUndecidedNote({ unwritten: 2 })));
   // 入口: 判定できずに止めた --offline は、書けなかった旨を出す(手元の記録は一時の置き場の evidence/ に作られる)
+
+  // IMPL-0517(次の一手の側。process-compass #441 / ADR-0172 決定3): 済みのタスクは本文の末尾の段落のトレーラ Spec: だけを数える
+  const midBody = '機能 A を足す\n\nSpec: F-001 / Task-1\n\nCo-Authored-By: someone <a@example.com>';
+  const lastBody = '機能 A を足す\n\nSpec: F-001 / Task-1';
+  const squashBody = '* 機能 A を足す\n\n  Spec: F-001 / Task-1\n\n* 機能 B を足す\n\nSpec: F-001 / Task-2';
+  const d1 = doneTasksOf([midBody]);
+  check('IMPL-0517:ng 中の段落の Spec: は済みのタスクに数えない(旧い読みは Task-1 を済みにした)', d1.size === 0 && specOutsideLastParagraph([midBody]) === 1, JSON.stringify([...d1]));
+  const d2 = doneTasksOf([lastBody]);
+  check('IMPL-0517:ok 末尾の段落の Spec: は Task-1 を済みにする(段落の外の件数は 0)', same([...d2], ['F-001/Task-1']) && specOutsideLastParagraph([lastBody]) === 0, JSON.stringify([...d2]));
+  const d3 = doneTasksOf([squashBody]);
+  check('IMPL-0517:ok スカッシュの箇条に似た本文は、末尾の段落の Task-2 だけを数え、外の件数は 1', same([...d3], ['F-001/Task-2']) && specOutsideLastParagraph([squashBody]) === 1, JSON.stringify([...d3]));
+  check('IMPL-0517:ok 3つの本文で doneTasksOf と手戻り率の specTrailersOf が一致する', [midBody, lastBody, squashBody].every((b) => same([...doneTasksOf([b])].sort(), [...new Set(specTrailersOf(b))].sort())));
 }
 console.log('');
 if (failures) {

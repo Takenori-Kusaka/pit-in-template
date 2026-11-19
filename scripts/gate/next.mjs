@@ -53,7 +53,8 @@ import { correctionGapNote } from './adoption-trial.mjs';
 import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
-import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, autonomyNoteLines, specTrailersOf } from './autonomy.mjs';
+import { lastParagraph } from './check-pr.mjs';
 import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
 import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
@@ -765,15 +766,34 @@ export function defaultBranchOf(gitFn = git) {
 }
 const defaultBranch = () => defaultBranchOf(git);
 
-/** 既定ブランチのコミットのトレーラ Spec: F-NNN / Task-N を集める */
+/**
+ * 本文の配列から、済みのタスク `F-NNN/Task-N` の集合を作る。読むのは各本文の末尾の段落のトレーラ `Spec:` だけ
+ * (手戻り率の specTrailersOf と同じ読み方。process-compass ADR-0172 決定3)
+ */
+export function doneTasksOf(bodies) {
+  const done = new Set();
+  for (const body of bodies) for (const t of specTrailersOf(body)) done.add(t);
+  return done;
+}
+
+/** 末尾の段落の外に、行頭が `Spec:` の行を持つ本文の件数。済みのタスクに数えていないコミットの件数として注記に出す */
+export function specOutsideLastParagraph(bodies) {
+  const isSpec = (l) => /^Spec:/.test(l.trim());
+  let n = 0;
+  for (const body of bodies) {
+    const total = String(body ?? '').split('\n').filter(isSpec).length;
+    const inLast = lastParagraph(body).split('\n').filter(isSpec).length;
+    if (total > inLast) n++;
+  }
+  return n;
+}
+
+/** 既定ブランチのコミットのトレーラ Spec: F-NNN / Task-N を集める。読めなければ null */
 function doneTasks(branch) {
   const out = git(['log', branch, '--format=%B%x00']);
   if (out === null) return null;
-  const done = new Set();
-  for (const body of out.split('\0')) {
-    for (const m of body.matchAll(/^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/gm)) done.add(`${m[1]}/${m[2]}`);
-  }
-  return done;
+  const bodies = out.split('\0');
+  return { done: doneTasksOf(bodies), outside: specOutsideLastParagraph(bodies) };
 }
 
 /** 出荷の判定の基準にしない記録の置き場(判定記録と証跡)。ここだけを変えるコミットは、出荷の範囲の変更に数えない */
@@ -1190,7 +1210,9 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
     ? fs.readdirSync(specsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && /^F-\d+$/.test(e.name)).map((e) => e.name).sort()
     : [];
   const branch = defaultBranch();
-  const done = branch ? doneTasks(branch) : null;
+  const doneInfo = branch ? doneTasks(branch) : null;
+  const done = doneInfo ? doneInfo.done : null;
+  if (doneInfo && doneInfo.outside > 0) result.notes.push(`既定ブランチのコミットのうち ${doneInfo.outside} 件は、トレーラ \`Spec:\` が本文の末尾の段落の外にあり、済みのタスクに数えていない(末尾の段落だけを読む。手戻り率と同じ)`);
   const branches = localBranches();
   let complete = 0;
 
