@@ -612,6 +612,46 @@ ${JSON.stringify(cbp.reworkBaseline)}`
     check('IMPL-0481:ng 決定待ちの兼務を続ける決定を、当事者である決定者の記名では受け付けない', !keepSelf.ok && keepSelf.out.includes(SELF), keepSelf.out);
     const keepOther = we.run({ summary: '続ける', people: [P[0], P[1]], seats: seatsBy([0, 0, 0, 0, 0, 0, 0, 0, 0]), keepSeparations: ['sep-shipping-business', 'sep-maintainer-ops'], decidedBy: P[1].name, reason: '試験' });
     check('#432: 同じ決定を、もう1人の記名なら受け付け、契約検査の決定待ちが消える', keepOther.ok && !/決定待ちです/.test(we.contract().out), `${keepOther.out}\n${we.contract().out}`);
+    // IMPL-0954: G・SG に当たらないゲート欄(価値責任者の調整など)も、ゲート欄の値で同じゲートを決め、決定の後の記録し直しで欠落を解く
+    {
+      const gp = await import('../init/generate-profile.mjs');
+      const cfg = we.cfg();
+      const iv = gp.separationPendingIntervals(cfg).find((x) => x.start && x.end);
+      const inside = String(iv?.start ?? '').slice(0, 16);
+      const rec = (gate, judgedAt, file) => ({ file, gate, judgedAt });
+      const probs = (rs) => gp.pendingSeparationProblems(cfg, rs).length;
+      check('IMPL-0954:前提 決定で閉じた決定待ちの区間が在る', !!iv && inside.length === 16, JSON.stringify(gp.separationPendingIntervals(cfg)));
+      check('IMPL-0954:ng 決定待ちの間の「価値責任者の調整」の記録だけなら欠落に数える', probs([rec('価値責任者の調整', inside, 'adj-1.md')]) > 0);
+      check(
+        'IMPL-0954:ok 決定の後に同じゲート欄(強調の揺れを除く)の記録があれば欠落を解く',
+        probs([rec('価値責任者の調整', inside, 'adj-1.md'), rec('**価値責任者の調整**', '2099-01-01 10:00', 'adj-2.md')]) === 0
+      );
+      check(
+        'IMPL-0954:ng 決定の後の記録が別のゲート欄(価値責任者の判断)なら欠落は解けない',
+        probs([rec('価値責任者の調整', inside, 'adj-1.md'), rec('価値責任者の判断', '2099-01-01 10:00', 'adj-3.md')]) > 0
+      );
+      check(
+        'IMPL-0954:ok(固定) G-4 は、決定の後の G-4 の記録で解け、無ければ欠落のまま',
+        probs([rec('G-4 機能仕様承認', inside, 'g4-1.md'), rec('G-4', '2099-01-01 10:00', 'g4-2.md')]) === 0 && probs([rec('G-4 機能仕様承認', inside, 'g4-1.md')]) > 0
+      );
+      check('IMPL-0954:ng(固定) G-4 の欠落は、別のゲート(G-5)の記録し直しでは解けない', probs([rec('G-4 機能仕様承認', inside, 'g4-1.md'), rec('G-5', '2099-01-01 10:00', 'g5-2.md')]) > 0);
+      // 入口(契約検査)でも同じ: 決定待ちの間の調整の記録は、決定の後の同じゲート欄の記録で解ける
+      {
+        const adjFile = (name, judgedAt) =>
+          fs.writeFileSync(
+            path.join(we.d, 'docs/gates', name),
+            `# 価値責任者の調整\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | 価値責任者の調整 |\n| 対象 | 企画書 |\n| 判定者 | 山田 太郎 |\n| 判定日時 | ${judgedAt} |\n| 結果 | 通過 |\n| 参照した D-0 の版 | 1.0 |\n`
+          );
+        fs.rmSync(path.join(we.d, 'docs/gates/g1-test.md'), { force: true });
+        adjFile('adj-in.md', inside);
+        const pend = /決定待ちの間.*記載の欠落/;
+        const before = we.contract();
+        check('IMPL-0954:ng(入口) 決定待ちの間の調整の記録は、契約検査が記載の欠落として落とす', !before.ok && pend.test(before.out), before.out);
+        adjFile('adj-after.md', '2099-01-01 10:00');
+        const after = we.contract();
+        check('IMPL-0954:ok(入口) 決定の後に同じゲート欄で記録し直せば、契約検査の欠落が解ける', !pend.test(after.out), after.out);
+      }
+    }
   } finally {
     fs.rmSync(we.d, { recursive: true, force: true });
   }

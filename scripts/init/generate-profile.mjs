@@ -1409,8 +1409,14 @@ const judgedKeyOf = (r) => {
   const t = j.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
   return t ? `${t[1]}T${t[2]}` : /^\d{4}-\d{2}-\d{2}/.test(j) ? j.slice(0, 10) : null;
 };
-/** 判定記録のゲートの識別(G-1・SG など) */
-const gateCodeOf = (r) => String(r?.gate ?? '').match(/^(G-\d+|SG(-\d+)?)/)?.[1] ?? null;
+/**
+ * 判定記録のゲートの識別(G-1・SG など)。G・SG に当たらないときは、ゲート欄の値(NFKC・前後の空白と強調を除く)を識別とする
+ * (価値責任者の調整・事業決裁者の決裁・必達基準の判定・棚卸しなど)。同じゲートかはゲート欄の値でだけ決め、対象・種別の一致は求めない
+ */
+const gateCodeOf = (r) => {
+  const g = String(r?.gate ?? '').normalize('NFKC').replace(/^[\s*_]+|[\s*_]+$/g, '');
+  return g.match(/^(G-\d+|SG(-\d+)?)/)?.[1] ?? (g || null);
+};
 /** a が b より前か後か。日付だけの側があれば日付で比べる(同じ日は ambiguous) */
 const cmpKey = (a, b) => {
   if (a.length === 10 || b.length === 10) {
