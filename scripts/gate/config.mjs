@@ -2231,6 +2231,26 @@ function missingBasis(basis) {
   return out;
 }
 
+/**
+ * 区分の下限の規則(riskFloor.rules[]。下限 R1・R2)のパスと文字列で同一のパターン(IMPL-0664。標準 第3章 3.7.4 B-4)。
+ * 標準変更カタログへ登録できる種別は R3 だけである。種別の範囲(種別を指す委任の規則の paths)が、下限 R1・R2 の規則のパターンと
+ * 同一なら、その範囲の変更は R1・R2 であり、登録の対象にならない。文字列の同一だけを見る(包含・重なりは判定しない。
+ * 重なりは、変更ごとの条件2(R3 を求める。IMPL-0663)が止める)
+ */
+export function riskFloorOverlapPatterns(config, typeId) {
+  const floor = (Array.isArray(config?.riskFloor?.rules) ? config.riskFloor.rules : [])
+    .filter((r) => ['R1', 'R2'].includes(String(r?.floor ?? '').trim().toUpperCase()))
+    .flatMap((r) => (Array.isArray(r?.paths) ? r.paths : []))
+    .filter((p) => typeof p === 'string' && p.trim())
+    .map((p) => p.normalize('NFKC').trim());
+  const mine = (Array.isArray(config?.delegation?.rules) ? config.delegation.rules : [])
+    .filter((r) => String(r?.changeType ?? '').trim() === typeId)
+    .flatMap((r) => (Array.isArray(r?.paths) ? r.paths : []))
+    .filter((p) => typeof p === 'string' && p.trim())
+    .map((p) => p.normalize('NFKC').trim());
+  return [...new Set(mine.filter((p) => floor.includes(p)))];
+}
+
 export function changeTypeProblems(config, { checkRegistrant = true, only = null, existingConfig = null } = {}) {
   const list = config.delegation?.changeTypes;
   if (list === undefined) return [];
@@ -2267,6 +2287,14 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
           'enforcement は、実行の単位(selfCorrection: 自己修正のループ / aiReviewRound: AI の確認側と作成側の往復)ごとに、停止条件を強制する手段の所在を書く。使わない単位は「該当なし(理由)」と書く。' +
           '様式の文言(<…>)、「—」「未定」「なし」などは記入として扱わない。' +
           '機械が確かめるのは記入の有無だけであり、内容は登録する者が判定する'
+      );
+    }
+    // 標準変更カタログへ登録できる種別は R3 だけ(標準 第3章 3.7.4 B-4。IMPL-0664)。区分の下限 R1・R2 の規則のパターンと同一の範囲は登録しない
+    const overlap = riskFloorOverlapPatterns(config, id);
+    if (overlap.length) {
+      out.push(
+        `${at}: 変更種別 "${id}" の範囲のパターン(${overlap.map((p) => `${p}`).join('・')})が、区分の下限 R1・R2 の規則(riskFloor.rules[])のパターンと同一である。` +
+          '標準変更カタログへ登録できる種別は R3 だけであり、R1・R2 の範囲は登録しない(標準 第3章 3.7.4)。同一の文字列だけを検査する。重なりは変更ごとの条件2(R3 を求める)が止める'
       );
     }
     if (!checkRegistrant) return;

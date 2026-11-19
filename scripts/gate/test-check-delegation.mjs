@@ -195,6 +195,13 @@ const cases = [
   ['登録の根拠の4点目が「該当なし」だけ(理由が無い)', (i) => (i.config.delegation.changeTypes[0].basis.enforcement.aiReviewRound = '該当なし'), false, ['条件2']],
   // IMPL-0834:ok
   ['登録の根拠の4点目が「該当なし(理由)」(start を呼ばない単位)', (i) => (i.config.delegation.changeTypes[0].basis.enforcement.selfCorrection = '該当なし(start を呼ぶ単位を使わない種別)'), true, []],
+  // 標準変更カタログに登録できる種別は R3 だけ(IMPL-0664)。範囲のパターンが区分の下限 R1・R2 の規則と文字列で同一なら、規則は有効でない
+  // IMPL-0664:ng
+  ['種別の範囲が区分の下限 R2 の規則のパターンと同一', (i) => { i.config.riskFloor = { rules: [{ paths: ['src/i18n/**'], floor: 'R2' }] }; }, false, ['条件2']],
+  // IMPL-0664:ng
+  ['種別の範囲が区分の下限 R1 の規則のパターンと同一', (i) => { i.config.riskFloor = { rules: [{ paths: ['src/i18n/**'], floor: 'R1' }] }; }, false, ['条件2']],
+  // IMPL-0664:ok
+  ['区分の下限の規則のパターンが種別の範囲と重ならない', (i) => { i.config.riskFloor = { rules: [{ paths: ['src/pay/**'], floor: 'R1' }] }; }, true, []],
   // 検知条件から外した欄が残る旧い構成は、読まずに受け付ける(登録の要件にも数えない)
   ['旧い構成の外した検知条件の欄は読まない', (i) => (i.config.delegation.changeTypes[0].basis.detection.duplicationRate = '旧い記入'), true, []], // retired-ok: 外した旧い欄の後方互換を試す
 ];
