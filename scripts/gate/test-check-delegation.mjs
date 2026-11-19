@@ -58,6 +58,8 @@ const cases = [
     ['条件2'],
   ]),
   ['名前の変更で、元のパスが範囲外', (i) => (i.files[0].previousPath = 'src/pay.json'), false, ['条件2']],
+  // IMPL-0594:ng(R1・R2 の変更は、種別が L3 でも委任で進まない。L3 の効果は委任の経路だけで、条件2 が R3 を求める)
+  ['リスク区分が R1', (i) => setRisk(i, 'R1'), false, ['条件2']],
   ['リスク区分が R2', (i) => setRisk(i, 'R2'), false, ['条件2']],
   ['リスク区分が未記入(選択肢のまま)', (i) => setRisk(i, 'R1 / R2 / R3'), false, ['条件2']],
   ['トレーラなし', (i) => (i.commits[0].message = 'fix: 文言\n\nSpec: F-012 / Task-3'), false, ['条件2', '条件7']],
@@ -910,6 +912,22 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+}
+
+// IMPL-0594(リスク区分ごとの最大レベル)。実行で確かめた範囲: L3 の導出(autonomyState)は種別の単位で、変更ごとのリスク区分を読まない。
+// L3 を読む箇所は委任の判定(delegation.mjs)・D-0 の表・保証の開示・次の一手の表示で、変更ごとに効くのは委任の判定だけであり、その条件2 が R3 を求める
+{
+  for (const risk of ['R1', 'R2']) {
+    // IMPL-0594:ng
+    const input = base();
+    setRisk(input, risk);
+    const judged = judgeDelegatedMerge(input);
+    check(`IMPL-0594: 種別が L3 でも、リスク区分が ${risk} の変更は委任で進まない(条件2)`, judged.autonomy?.level === 'L3' && !judged.eligible && judged.reasons.some((r) => r.startsWith('条件2')));
+  }
+  // IMPL-0594:ok
+  const okInput = base();
+  const okJudged = judgeDelegatedMerge(okInput);
+  check('IMPL-0594: リスク区分が R3 なら、同じ種別の変更が委任で進む', okJudged.autonomy?.level === 'L3' && okJudged.eligible);
 }
 
 console.log('');
