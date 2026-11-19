@@ -1142,10 +1142,43 @@ export function reviewSupersededByLater(j, judgements, spec) {
 }
 
 /**
+ * トレーラ Agent-Run を持つコミットの、モデルの識別の記録の欠け(標準 第5章 5.8.2。process-compass #326 項目6・7)。純関数。
+ * 行A: Co-Authored-By が1件も無い。行B: Co-Authored-By はあるが、名称の部分(`<…>` を除く)に数字を含むものが1つも無い。
+ * 警告であり、記録の欠落に数えない。限界: Agent-Run の無いコミットは数えない。複数コミットのスカッシュではトレーラが落ちて数えない。
+ * 人の共著者の名に数字があれば行B は通る。数字があっても版が正しいかは見ない。5.8.2 の「導出元から自動で記録」の代わりではない
+ */
+export function agentRunModelIdGaps(commits) {
+  const noCoAuthor = [];
+  const noVersion = [];
+  for (const c of commits ?? []) {
+    if (!c.agentRun) continue;
+    const cos = c.coAuthors ?? [];
+    if (!cos.length) noCoAuthor.push(c.hash);
+    else if (!cos.some((a) => /\d/.test(String(a).replace(/<[^>]*>/g, '')))) noVersion.push(c.hash);
+  }
+  return { noCoAuthor, noVersion };
+}
+
+export const MODEL_ID_LIMITS =
+  '数えるのはトレーラ Agent-Run を持つコミットだけです(無いコミット、複数コミットのスカッシュで落ちたトレーラは数えません)。' +
+  '人の共著者の名に数字があれば行B は通ります。数字があっても版が正しいかは見ません。5.8.2 の「導出元から自動で記録」の代わりではありません。記録の欠落には数えません';
+
+/** 行A・行B を、警告の行(別々)にする。件数と先頭の数件。0 件なら出さない */
+export function modelIdGapLines(gaps) {
+  const head = (l) => `${l.slice(0, 5).map((h) => String(h).slice(0, 10)).join(', ')}${l.length > 5 ? ` ほか ${l.length - 5} 件` : ''}`;
+  const out = [];
+  if (gaps.noCoAuthor.length) out.push(`モデルの識別(5.8.2): トレーラ Agent-Run があり、Co-Authored-By が無いコミット ${gaps.noCoAuthor.length} 件(${head(gaps.noCoAuthor)})。${MODEL_ID_LIMITS}`);
+  if (gaps.noVersion.length) out.push(`モデルの識別(5.8.2): トレーラ Agent-Run があり、Co-Authored-By に数字(版)を含む名称が無いコミット ${gaps.noVersion.length} 件(${head(gaps.noVersion)})。${MODEL_ID_LIMITS}`);
+  return out;
+}
+
+/**
  * 宣言と実態のずれ(標準 第3章 3.13.5)。純関数。ずれごとに { kind: 'headcount' | 'performer', text } を返す。
  * 人数は、承認者の数が宣言した規模の上限を上回る場合に限る(size-10plus など上限の無い規模と、下回る向きは検出しない)。
- * 担い手の識別は、コミットの共著者の記録と宣言したモデルの名称の部分一致で比べる。版を含まない記録と名称だけの宣言では、
- * 版の違いを検出しない。人の共著者を検出することがある。ずれは警告で、記載の欠落には数えない
+ * 担い手の識別は、コミットの共著者の記録と宣言したモデルの名称の部分一致で比べる。記録が宣言の一部分に当たる場合は通す
+ * (版を含まない記録 `Claude`、版の一部だけの記録 `Claude Opus 4`(宣言 claude-opus-4-5)、宣言の文字列に含まれる短い名を含む)。
+ * 日付つきの宣言と版の記録を一致させる向きなので、外さない。版の違いは、記録が宣言の一部分に当たらないときだけ検出する。
+ * 人の共著者を検出することがある。ずれは警告で、記載の欠落には数えない
  */
 export function declarationDrift({ sizeAnswer, sizeLabel, approvers, declaredModels, coAuthors }) {
   const out = [];
@@ -5166,6 +5199,7 @@ if (isMain) {
   })();
   const generation = {
     agentRecord,
+    modelIdGaps: agentRunModelIdGaps(trailers),
     declaredPerformers: declaredPerformers.length ? declaredPerformers : '宣言なし',
     observedCoAuthors: observedCoAuthors.length ? observedCoAuthors : NO_RECORD,
     instructionAssets: git(['log', '-1', '--format=%h %cs', to, '--', 'CLAUDE.md', '.claude']) || NO_RECORD,
@@ -6701,7 +6735,7 @@ if (isMain) {
     R.push(`| 依存の追加・更新の識別 | ${A.machineChecks.dependencyDiff} |`);
     // 集約が合否に使う検査の不備。「実施」の出所は集約の needs であり、構成にコマンドが書かれていることではない(#290)
     const aggP = A.machineChecks.aggregateProblems ?? [];
-    R.push(`| 集約 gate-g5 が合否に使う検査(G-5 の基準を実装するジョブ) | ${aggP.length ? `**不備 ${aggP.length} 件**: ${aggP.join(' / ')}` : '基準を実装するジョブはすべて集約の needs にある(基準6 は参照切れだけを確かめる。見出しのアンカー・逆引用符の中の .claude/・scripts/ 以外で始まるパス・分量の上限は確かめていない)'} |`);
+    R.push(`| 集約 gate-g5 が合否に使う検査(G-5 の基準を実装するジョブ) | ${aggP.length ? `**不備 ${aggP.length} 件**: ${aggP.join(' / ')}` : '基準を実装するジョブはすべて集約の needs にある(基準6 は参照切れだけを確かめる。見出しのアンカー・逆引用符の中の .claude/・scripts/ 以外で始まるパス・分量の上限は確かめていない)'}。過去の時点の定義は読みません(現在の gate-g5.yml を見ます)。期間中の gate-g5.yml の変更は項目1(統制の設定の変更)を見てください |`);
     // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
     // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
     R.push(`| 実環境の統制の確認(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・PR のレビューの取得・ship-evidence の成果物。確認済み / 不一致 / 未確認 / 対象外。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);
@@ -6885,6 +6919,7 @@ if (isMain) {
       if (g.switched.periods) R.push(`- 切り替えの期間(${g.switched.periods} 件)に生成された、AI の印のあるコミット ${g.switched.commits.length} 件: ${g.switched.commits.length ? g.switched.commits.slice(0, 20).join(', ') + (g.switched.commits.length > 20 ? ` ほか ${g.switched.commits.length - 20} 件` : '') : 'なし'}`);
       R.push('  - 見えないもの: git commit --no-verify、別の core.hooksPath、AI の印も付かないコミット。別のセッションの amend は元の識別子が残る。利用者の範囲の指示は版を記録できない(user-scope=unrecorded)');
     }
+    for (const l of modelIdGapLines(A.generation.modelIdGaps)) R.push(`- ${l}`);
     R.push(`- ${A.exceptionUse.fastTrack}`);
     R.push(`- 制限された状態での例外決裁(7.9.4)の行: ${A.exceptionUse.restricted.count} 件(うち印の無い行 ${A.exceptionUse.restricted.unmarked.length} 件${A.exceptionUse.restricted.unmarked.length ? ': ' + A.exceptionUse.restricted.unmarked.join(', ') : ''}。印の無い行は欠落にしない)${A.exceptionUse.restricted.unconfirmed.length ? ` / 承認した者が B-2 の決定者かを確認できない ${A.exceptionUse.restricted.unconfirmed.join(', ')}` : ''}`);
     R.push(`- ${A.exceptionUse.quota}`);
@@ -7095,7 +7130,8 @@ if (isMain) {
     R.push('');
     R.push(
       '「作成側の検証の記載」は、PR 本文の「検証方法と結果」です。レビュアの挙動要約(G-6 基準2)とは別の記録です。開発者の席の委任の範囲の変更では担い手が実行結果の証拠として書き、人確定・協働の変更では人が書きます。' +
-        '独立レビュー(G-6)の状態に依らず、記載の無い変更は欠落です。'
+        '独立レビュー(G-6)の状態に依らず、記載の無い変更は欠落です。' +
+        '「作成側の検証の記載」は、有無だけを見ます。中身は確かめません(G-6 基準6 は置き場・様式・分量の下限を問いません)。'
     );
     R.push('');
   }
@@ -7234,6 +7270,7 @@ if (isMain) {
   for (const u of unmet) warn(`未達: ${u.label} — ${u.reason}`);
   if (!clJudgment.confirmation.ok && !clJudgment.shipBlocking) warn(`未達: 安全重要度の判定の確認 — ${clJudgmentText(clJudgment)}`);
   for (const d of assurance.drift) warn(`宣言と実態のずれ: ${d}`);
+  for (const l of modelIdGapLines(assurance.generation.modelIdGaps)) warn(l);
   for (const g of gaps) fail(g);
 
   if (gaps.length) {

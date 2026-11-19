@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { declarationDrift } from './aggregate-evidence.mjs';
+import { declarationDrift, agentRunModelIdGaps } from './aggregate-evidence.mjs';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
@@ -42,6 +42,8 @@ t('担い手(違反): 別の版の共著者(宣言 claude-opus-4-5 / 共著者 C
 t('担い手(適合): 宣言と同じ版の共著者 → 0件', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Claude Opus 4.5 <noreply@anthropic.com>'] }).length === 0);
 t('担い手(偽の合格の固定): 宣言「claude」は別の版の「Claude Opus 4.5」を通す', d({ declaredModels: ['claude'], coAuthors: ['Claude Opus 4.5 <noreply@anthropic.com>'] }).length === 0);
 t('担い手(偽の合格の固定): 版の無い共著者「Claude」は宣言「claude-opus-4-5」を通す', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Claude <noreply@anthropic.com>'] }).length === 0);
+t('担い手(偽の合格の固定): 版の一部だけの共著者「Claude Opus 4」は宣言「claude-opus-4-5」を通す(宣言の一部分に当たる)', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Claude Opus 4 <noreply@anthropic.com>'] }).length === 0);
+t('担い手(偽の合格の固定): 宣言の文字列に含まれる1文字の名「a」は宣言「claude-opus-4-5」を通す', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['a <a@example.com>'] }).length === 0);
 t('担い手(偽の検出の固定): 人の共著者は検出する(人の共著者を含む場合があると文に書く)', (() => {
   const r = d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Hanako Sato <hanako@example.com>'] });
   return r.length === 1 && r[0].kind === 'performer' && /人の共著者を含む場合がある/.test(r[0].text);
@@ -70,7 +72,7 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
   };
   const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [{ login: `acc${i}`, id: 10 + i }] }));
   const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
-  const runWith = (coAuthor) => {
+  const runWith = (coAuthor, extra = []) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-drift-agg-'));
     try {
       for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
@@ -95,6 +97,11 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
       fs.writeFileSync(path.join(dir, 'src/x.js'), 'export const x = 1;\n');
       git('add', '-A');
       git('commit', '-q', '-m', `feat: x\n\nRisk: R3\nVerification: 手元で確かめた${coAuthor ? `\nCo-authored-by: ${coAuthor}` : ''}`);
+      extra.forEach((msg, i) => {
+        fs.writeFileSync(path.join(dir, `src/e${i}.js`), `export const e${i} = ${i};\n`);
+        git('add', '-A');
+        git('commit', '-q', '-m', msg);
+      });
       const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' } });
       const rd = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : '');
       return { out: `${r.stdout ?? ''}${r.stderr ?? ''}`, report: rd('evidence/quality-report.md'), external: rd('evidence/assurance-disclosure.external.md') };
@@ -114,6 +121,37 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
   t('通し N: 外部向けの開示はずれの件数だけ(ずれの文・種別を出さない)', /1 件\(内容は組織の内側の開示にある\)/.test(ng.external) && !/担い手の識別: 宣言にない/.test(ng.external) && !/種別 performer/.test(ng.external), ng.external.split('\n').filter((l) => /件\(内容/.test(l)).join('\n'));
   // IMPL-0023:ok(違反と適合の対。標準の実装マーク。process-compass #355)
   t('通し N(適合): 共著者の記録が無ければ、ずれの警告を出さない', !lines(okRun).some((l) => /宣言と実態のずれ/.test(l)) && !/宣言と実態のずれ\*\*/.test(okRun.report));
+
+  // --- モデルの識別(#326 項目6・7。トレーラ Agent-Run を持つコミットの行A・行B。警告で、欠落に数えない) ---
+  {
+    const c = (agentRun, ...coAuthors) => ({ hash: 'h'.repeat(12), agentRun, coAuthors });
+    const g = (...cs) => agentRunModelIdGaps(cs);
+    const A = (r) => r.noCoAuthor.length;
+    const B = (r) => r.noVersion.length;
+    t('行A(ng): Agent-Run あり・共著者なし → 行A に数える', A(g(c('r1'))) === 1 && B(g(c('r1'))) === 0);
+    t('行B(ng): Agent-Run あり・共著者「Claude <…>」(数字なし) → 行B に数える', B(g(c('r1', 'Claude <noreply@anthropic.com>'))) === 1 && A(g(c('r1', 'Claude <noreply@anthropic.com>'))) === 0);
+    t('行B: 角括弧の中のメールの数字は版に数えない', B(g(c('r1', 'Claude <123+x@users.noreply.github.com>'))) === 1);
+    t('行A・B(ok): Agent-Run あり・「Claude Opus 4.5 <…>」 → 数えない', A(g(c('r1', 'Claude Opus 4.5 <noreply@anthropic.com>'))) + B(g(c('r1', 'Claude Opus 4.5 <noreply@anthropic.com>'))) === 0);
+    t('行A・B(ok・限界の固定): Agent-Run なし・共著者なし → 数えない', A(g(c(null))) + B(g(c(null))) === 0);
+    t('行A・B(ok・限界の固定): Agent-Run なし・人の共著者 → 数えない', A(g(c(null, 'Hanako Sato <h@example.com>'))) + B(g(c(null, 'Hanako Sato <h@example.com>'))) === 0);
+    t('行B(ok・限界の固定): 人の共著者の名に数字があれば通る(Agent-Run あり・「Taro2」)', B(g(c('r1', 'Taro2 <t@example.com>'))) === 0);
+    t('行B(ok): 共著者の1つでも数字があれば通る', B(g(c('r1', 'Claude <x@y>', 'Claude Opus 4.5 <x@y>'))) === 0);
+    // 集約の入口(命令行)を通して、別々の警告の行が出る。欠落(::error::)には数えない
+    const msg = (n, co) => `feat: ${n}\n\nRisk: R3\nVerification: 手元で確かめた\nAgent-Run: run-${n}${co ? `\nCo-authored-by: ${co}` : ''}`;
+    const withRuns = runWith(null, [msg('a', null), msg('b', 'Claude <noreply@anthropic.com>'), msg('c', 'Claude Opus 4.5 <noreply@anthropic.com>')]);
+    const wa = lines(withRuns).filter((l) => /モデルの識別\(5\.8\.2\)/.test(l));
+    t('通し(ng): Agent-Run あり・共著者なしは行A の警告を出す(1 件)', wa.some((l) => /Co-Authored-By が無いコミット 1 件/.test(l)) && wa.every((l) => !/::error::/.test(l)), withRuns.out.slice(-500));
+    t('通し(ng): 数字の無い共著者は行B の警告を別の行で出す(1 件。計 2 行)', wa.some((l) => /数字\(版\)を含む名称が無いコミット 1 件/.test(l)) && wa.length === 2, wa.join('\n'));
+    t('通し: 説明に限界(Agent-Run の無いコミットは数えない・5.8.2 の自動の記録の代わりではない)を書く', wa.length > 0 && wa.every((l) => /Agent-Run を持つコミットだけ/.test(l) && /代わりではありません/.test(l)));
+    t('通し: 欠落に数えない(::error:: の行にモデルの識別の本文が無い)', !lines(withRuns).some((l) => /::error::/.test(l) && /モデルの識別\(5\.8\.2\)/.test(l)) && !/## 欠落[\s\S]*モデルの識別\(5\.8\.2\)/.test(withRuns.report));
+    t('通し(ok): Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
+    t('通し: 品質レポートにも行A・行B を出す', /Co-Authored-By が無いコミット 1 件/.test(withRuns.report) && /数字\(版\)を含む名称が無いコミット 1 件/.test(withRuns.report));
+    {
+      const agg = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'aggregate-evidence.mjs'), 'utf8');
+      t('項目8: 「作成側の検証の記載」の説明に、有無だけを見て中身を確かめない旨がある', /「作成側の検証の記載」は、有無だけを見ます。中身は確かめません/.test(agg));
+      t('項目9 e: 保証の開示の項目4 に、過去の時点の定義は読まない旨と項目1 を見る旨が出る', /過去の時点の定義は読みません/.test(okRun.external) && /期間中の gate-g5\.yml の変更は項目1/.test(okRun.external), okRun.external.split(String.fromCharCode(10)).filter((l) => /gate-g5/.test(l)).join(' ').slice(0, 300));
+    }
+  }
 }
 
 console.log(`\n宣言と実態のずれの試験: ${failed ? `${failed} 件が期待と一致しません` : `${total} 件が期待と一致しました`}`);
