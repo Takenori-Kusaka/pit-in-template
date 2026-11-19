@@ -112,7 +112,11 @@
               "reworkRate": "docs/metrics/2026-Q3.md の「表示文言」の行。実装計画の状態「やり直し」のタスクを、同じスクリプトが specs/*/plan.md から数える"
             },
             "rollback": "2026-09-12 の文言の取り消し(PR #88 の revert)",
-            "tests": "i18n のキー欠落は既存の単体テスト i18n.test.js で失敗する"
+            "tests": "i18n のキー欠落は既存の単体テスト i18n.test.js で失敗する",
+            "enforcement": {
+              "selfCorrection": "scripts/self-heal/start.mjs を呼ぶ(停止条件は実行基盤が強制する)",
+              "aiReviewRound": "該当なし(AI の確認側と作成側の往復を使わない種別)"
+            }
           }
         }
       ],

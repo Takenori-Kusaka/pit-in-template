@@ -73,6 +73,7 @@ const BASIS = {
   detection: { rejectionRate: 'docs/metrics/q3.md(差し戻しの件数から算出)', reworkRate: 'docs/metrics/q3.md(14日以内の書き換えの行数から算出)' },
   rollback: 'docs/rollback/2026-09.md(文言の取り消しを3回実行)',
   tests: 'tests/i18n/*.spec.ts が全キーの表示を確かめる',
+  enforcement: { selfCorrection: 'scripts/self-heal/start.mjs を呼ぶ(停止条件は実行基盤が強制する)', aiReviewRound: '該当なし(AI の確認側と作成側の往復を使わない種別)' },
 };
 const TYPES = [{ id: '表示文言', registeredBy: '鈴木 一郎', registeredAt: '2026-09-30', basis: BASIS }];
 const RULE = { id: 'DR-001', seat: 'dev-verifier', changeType: '表示文言', paths: ['src/i18n/**'], decidedBy: '山田 太郎', decidedAt: '2026-09-30', reason: '文言のレビュー待ちを無くす' };

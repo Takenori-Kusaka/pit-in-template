@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
+import { ROOT, changeTypeProblems, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
 import { l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
@@ -184,6 +184,17 @@ const cases = [
   ['5.4.6: AI自律レベルの上限が L2(構成)', (i) => (i.config.autonomy = { maxLevel: 'L2', source: 'tailoring' }), false, ['5.4.6']],
   // IMPL-0289:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: 上限の欄の無い旧い構成は回答から導く(CL0 は L3)', (i) => delete i.config.autonomy, true, []],
+  // 登録の根拠の4点目(IMPL-0834。標準 5.5.4)。実行の単位ごとの記入が無い種別の規則は有効でない(登録の検査と同じ判定)
+  // IMPL-0834:ng
+  ['登録の根拠の4点目(enforcement)が無い', (i) => delete i.config.delegation.changeTypes[0].basis.enforcement, false, ['条件2']],
+  // IMPL-0834:ng
+  ['登録の根拠の4点目の実行の単位が1つ欠ける(aiReviewRound)', (i) => delete i.config.delegation.changeTypes[0].basis.enforcement.aiReviewRound, false, ['条件2']],
+  // IMPL-0834:ng
+  ['登録の根拠の4点目が1つの文(実行の単位ごとでない)', (i) => (i.config.delegation.changeTypes[0].basis.enforcement = '停止条件は実行基盤が強制する'), false, ['条件2']],
+  // IMPL-0834:ng
+  ['登録の根拠の4点目が「該当なし」だけ(理由が無い)', (i) => (i.config.delegation.changeTypes[0].basis.enforcement.aiReviewRound = '該当なし'), false, ['条件2']],
+  // IMPL-0834:ok
+  ['登録の根拠の4点目が「該当なし(理由)」(start を呼ばない単位)', (i) => (i.config.delegation.changeTypes[0].basis.enforcement.selfCorrection = '該当なし(start を呼ぶ単位を使わない種別)'), true, []],
   // 検知条件から外した欄が残る旧い構成は、読まずに受け付ける(登録の要件にも数えない)
   ['旧い構成の外した検知条件の欄は読まない', (i) => (i.config.delegation.changeTypes[0].basis.detection.duplicationRate = '旧い記入'), true, []], // retired-ok: 外した旧い欄の後方互換を試す
 ];
@@ -912,6 +923,35 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+}
+
+// IMPL-0834: 既に登録した種別で4点目が欠けたものは、導出が止める(適用の条件の欠落。4点目を記録した時点で戻る)。新しい登録は登録の検査が拒む
+{
+  // IMPL-0834:ng
+  const old = base();
+  delete old.config.delegation.changeTypes[0].basis.enforcement;
+  const stOld = autonomyState(old.config, old.records);
+  check('IMPL-0834: 4点目の無い登録済みの種別は止まる(適用の条件の欠落)', stOld.types.length > 0 && stOld.types.every((t) => t.level === 'L1' && t.stops.some((s) => s.kind === 'enforcement')) && /4点目/.test(stopsText(stOld.types[0])));
+  // IMPL-0834:ng
+  const half = base();
+  delete half.config.delegation.changeTypes[0].basis.enforcement.selfCorrection;
+  check('IMPL-0834: 実行の単位が1つ欠けた登録済みの種別も止まる', autonomyState(half.config, half.records).types.every((t) => t.stops.some((s) => s.kind === 'enforcement')));
+  // IMPL-0834:ok
+  const okIn = base();
+  const stOk = autonomyState(okIn.config, okIn.records);
+  check('IMPL-0834: 4点目を書いた種別は止まらない(「該当なし(理由)」を含む)', stOk.types.length > 0 && stOk.types.every((t) => t.level === 'L3' && !t.stops.some((s) => s.kind === 'enforcement')));
+  // 4点目を記録した時点で戻る
+  half.config.delegation.changeTypes[0].basis.enforcement.selfCorrection = 'scripts/self-heal/start.mjs を呼ぶ';
+  check('IMPL-0834: 4点目を記録すると戻る', autonomyState(half.config, half.records).types.every((t) => t.level === 'L3'));
+  // 登録の検査(新しい登録)
+  // IMPL-0834:ng
+  const reg = base();
+  delete reg.config.delegation.changeTypes[0].basis.enforcement;
+  const id = reg.config.delegation.changeTypes[0].id;
+  const probs = changeTypeProblems(reg.config, { checkRegistrant: false, only: new Set([id]) });
+  check('IMPL-0834: 4点目の無い種別の登録を拒む', probs.some((p) => /enforcement/.test(p) && /4点/.test(p)), probs[0]?.slice(0, 80));
+  // IMPL-0834:ok
+  check('IMPL-0834: 4点目を書いた登録は拒まない', changeTypeProblems(base().config, { checkRegistrant: false }).length === 0);
 }
 
 // IMPL-0594(リスク区分ごとの最大レベル)。実行で確かめた範囲: L3 の導出(autonomyState)は種別の単位で、変更ごとのリスク区分を読まない。

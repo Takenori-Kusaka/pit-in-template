@@ -20,6 +20,7 @@ const BASIS = {
   detection: { rejectionRate: 'docs/metrics/q3.md(差し戻しの件数から算出)', reworkRate: 'docs/metrics/q3.md(14日以内の書き換えの行数から算出)' },
   rollback: 'docs/rollback/2026-09.md(文言の取り消しを3回実行)',
   tests: 'tests/i18n/*.spec.ts が全キーの表示を確かめる',
+  enforcement: { selfCorrection: 'scripts/self-heal/start.mjs を呼ぶ(停止条件は実行基盤が強制する)', aiReviewRound: '該当なし(AI の確認側と作成側の往復を使わない種別)' },
 };
 const REGISTER = (day) => ({ kind: 'mode', summary: '変更種別の登録', delegation: { changeTypes: [{ id: '表示文言', registeredBy: '名簿 戊', registeredAt: day, basis: BASIS }] }, decidedBy: '名簿 戊', reason: '表示文言を登録する' });
 const REFUSAL = /変更種別の登録は L3 の適用であり、止める案件では登録しない/;

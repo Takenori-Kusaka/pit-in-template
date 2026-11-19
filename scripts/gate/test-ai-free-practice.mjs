@@ -42,7 +42,7 @@ const PEOPLE = [
   { id: 'p0', name: '名簿 甲', accounts: ['acc0'] },
   { id: 'p1', name: '名簿 乙', accounts: ['acc1'] },
 ];
-const BASIS = { detection: { rejectionRate: '所在 A', reworkRate: '所在 B' }, rollback: 'r', tests: 't' };
+const BASIS = { detection: { rejectionRate: '所在 A', reworkRate: '所在 B' }, rollback: 'r', tests: 't', enforcement: { selfCorrection: 'e1', aiReviewRound: '該当なし(往復を使わない)' } };
 const cfgOf = (over = {}) => ({
   configured: true,
   people: PEOPLE,

@@ -2136,14 +2136,37 @@ export function broadPathReason(glob) {
  * 現在の名簿・席と照合しない(離任した人の登録を残すため。AI の名義だけを拒否する)
  */
 /**
- * 変更種別の登録の根拠(標準 第5章 5.5.4「登録の根拠の記録」)。3点の記録が無い種別は登録しない。
- * 機械が確かめるのは記入の有無だけである。内容は、登録する者が判定する
+ * 変更種別の登録の根拠(標準 第5章 5.5.4「登録の根拠の記録」)。4点の記録が無い種別は登録しない。
+ * 機械が確かめるのは記入の有無だけである。内容は、登録する者が判定する(4点目の手段が停止を強制するかも確かめない。ADR-0158)
  */
 export const CHANGE_TYPE_BASIS = [
   ['detection', '第5章 5.4.6 の第2区分の検知条件ごとの、算出の所在'],
   ['rollback', '取り消しを実行した実績の所在'],
   ['tests', '既存のテストで検出できることの根拠'],
+  ['enforcement', '第3章 3.12.10 の実行の単位ごとの、停止条件を強制する手段の所在(その単位を使わない種別は、該当なし(理由))'],
 ];
+
+/**
+ * basis.enforcement(4点目)に書く実行の単位(標準 第3章 3.12.10 の要求事項1・要求事項5)。単位ごとに、停止条件を強制する手段の所在を書く。
+ * その単位を使わない種別は「該当なし(理由)」と書く(理由を括弧で添える。「該当なし」だけは記入として扱わない)。
+ * 準拠テンプレートが強制するのは start を呼んだ自己修正の単位だけである(IMPL-0272)
+ */
+export const CHANGE_TYPE_ENFORCEMENT = [
+  ['selfCorrection', '自己修正のループ'],
+  ['aiReviewRound', 'AI の確認側と作成側の往復'],
+];
+
+/** 登録の根拠の enforcement のうち、記入のある実行の単位のキー(登録の検査と表示が同じ判定を使う) */
+export function enforcementFilled(basis) {
+  const e = basis?.enforcement;
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) return [];
+  return CHANGE_TYPE_ENFORCEMENT.map(([k]) => k).filter((k) => typeof e[k] === 'string' && isFilledValue(e[k]));
+}
+
+/** 登録の根拠の enforcement が、全ての実行の単位で記入済みか */
+export function enforcementComplete(basis) {
+  return enforcementFilled(basis).length === CHANGE_TYPE_ENFORCEMENT.length;
+}
 
 /**
  * basis.detection に書く検知条件(標準 第5章 5.4.6 の第2区分)。検知条件ごとに、算出の所在
@@ -2192,8 +2215,18 @@ function missingBasis(basis) {
       if (!filled.includes(k)) out.push([`detection.${k}`, `${label}の算出の所在`]);
     }
   }
-  for (const [k, label] of CHANGE_TYPE_BASIS.slice(1)) {
+  for (const [k, label] of CHANGE_TYPE_BASIS.slice(1, 3)) {
     if (typeof basis?.[k] !== 'string' || !isFilledValue(basis[k])) out.push([k, label]);
+  }
+  // 4点目: 実行の単位ごとに記入する。1つの文にまとめた記入は、記入なしとして扱う
+  const e = basis?.enforcement;
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) {
+    out.push(['enforcement', `${CHANGE_TYPE_BASIS[3][1]}(${CHANGE_TYPE_ENFORCEMENT.map(([k, label]) => `${k}: ${label}`).join('・')} を、それぞれ書く)`]);
+  } else {
+    const filled = enforcementFilled(basis);
+    for (const [k, label] of CHANGE_TYPE_ENFORCEMENT) {
+      if (!filled.includes(k)) out.push([`enforcement.${k}`, `${label}の、停止条件を強制する手段の所在(使わない単位は 該当なし(理由))`]);
+    }
   }
   return out;
 }
@@ -2230,7 +2263,8 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     if (missing.length) {
       out.push(
         `${at}: 変更種別 "${id}" に、登録の根拠(basis)がない(${missing.map(([k, label]) => `${k}: ${label}`).join(' / ')})。` +
-          '3点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・手戻り率)ごとに算出の所在を書く。' +
+          '4点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・手戻り率)ごとに算出の所在を書く。' +
+          'enforcement は、実行の単位(selfCorrection: 自己修正のループ / aiReviewRound: AI の確認側と作成側の往復)ごとに、停止条件を強制する手段の所在を書く。使わない単位は「該当なし(理由)」と書く。' +
           '様式の文言(<…>)、「—」「未定」「なし」などは記入として扱わない。' +
           '機械が確かめるのは記入の有無だけであり、内容は登録する者が判定する'
       );

@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
+import { enforcementComplete, CHANGE_TYPE_ENFORCEMENT } from '../gate/config.mjs';
 import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { provisionalLicenseProblems } from '../gate/license-allowlist.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
@@ -3207,8 +3208,12 @@ export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
     const reworkCell = reworkMeasured
       ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)}。${detectionComplete(t.basis) ? DETECTION_UNVERIFIED : '登録は拒否される(他の検知条件が未記入)'})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
+    // 登録の根拠の4点目(IMPL-0834。実行の単位ごとの強制の手段の所在)。記入の有無だけを確かめ、強制するかは確かめない
+    const enfCell = enforcementComplete(t.basis)
+      ? ` 4点目(停止条件を強制する手段の所在): ${CHANGE_TYPE_ENFORCEMENT.map(([k, label]) => `${label} ${cell(t.basis.enforcement[k])}`).join(' / ')}(記入の有無は機械が確かめた。手段が停止を強制するかは確かめていない)`
+      : ' 4点目(停止条件を強制する手段の所在)が未記入のため、この種別の委任は止まる(/process-change の種別 mode で記録する)';
     L.push(
-      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell} | ${where} |`
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell}。${enfCell.trim()} | ${where} |`
     );
   }
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);

@@ -13,7 +13,7 @@
 "delegation": {
   "changeTypes": [{
     "id": "表示文言", "registeredBy": "<氏名>", "registeredAt": "2026-10-01",
-    "basis": { "detection": { "rejectionRate": "<差し戻し率の算出の所在>", "reworkRate": "<手戻り率の算出の所在>" }, "rollback": "<取り消しを実行した実績の所在>", "tests": "<既存のテストで検出できることの根拠>" }
+    "basis": { "detection": { "rejectionRate": "<差し戻し率の算出の所在>", "reworkRate": "<手戻り率の算出の所在>" }, "rollback": "<取り消しを実行した実績の所在>", "tests": "<既存のテストで検出できることの根拠>", "enforcement": { "selfCorrection": "<自己修正のループの停止条件を強制する手段の所在。使わなければ 該当なし(理由)>", "aiReviewRound": "<AI の確認側と作成側の往復の停止条件を強制する手段の所在。使わなければ 該当なし(理由)>" } }
   }],
   "protectedPaths": ["src/core/**"],
   "rules": [

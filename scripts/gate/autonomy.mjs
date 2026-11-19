@@ -40,7 +40,7 @@ import path from 'node:path';
 import { reworkBaselineAt, reworkBaselineInfo } from './config.mjs';
 import { readF2Q1 } from './cl-judgment.mjs';
 import { lastParagraph } from './check-pr.mjs';
-import { detectionFilled, CHANGE_TYPE_DETECTION, ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
+import { detectionFilled, CHANGE_TYPE_DETECTION, CHANGE_TYPE_ENFORCEMENT, enforcementFilled, ROOT, observationWindowAt,observationWindowInfo, observationWindowPending, windowLengthText, OBSERVATION_WINDOW_DEFAULT, isFilledValue, isRealDay, matchGlob, NEVER_DELEGATED, localDay, aiNameBlocked, identifyAccount, numericAccountId, resolveSigner, hasWriteAssociation, dedicatedSeatOf, sharingOf } from './config.mjs';
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
@@ -69,7 +69,8 @@ export function detectionBasisText(type) {
   // 検知条件に未記入がある構成は登録の検査が拒否する。拒否される登録について「確かめた」と出さない
   if (!keys.length || keys.length < CHANGE_TYPE_DETECTION.length) return '';
   const names = CHANGE_TYPE_DETECTION.filter(([k]) => keys.includes(k)).map(([k, label]) => `${label} ${k}`).join('・');
-  return `登録の根拠(basis.detection の算出の所在: ${names}): ${DETECTION_UNVERIFIED}。内容は登録する者が登録の時に判定する。適用中のレベルが計測する手段に裏づけられているかの確認は標準の内部監査の観点23 に委ね、この出力はその結果を含まない`;
+  const enf = (type?.enforcementFilled ?? []).length === CHANGE_TYPE_ENFORCEMENT.length ? ' / 4点目(basis.enforcement の強制の手段の所在。実行の単位ごと)も同じ: 記入の有無だけを確かめ、手段が停止を強制するかは確かめていない' : '';
+  return `登録の根拠(basis.detection の算出の所在: ${names}): ${DETECTION_UNVERIFIED}${enf}。内容は登録する者が登録の時に判定する。適用中のレベルが計測する手段に裏づけられているかの確認は標準の内部監査の観点23 に委ね、この出力はその結果を含まない`;
 }
 
 export const DEFECT_FILE = 'docs/defect-ledger.md';
@@ -85,6 +86,7 @@ export const STOP_KIND = {
   unmeasurable: '適用の条件の欠落(判定できない)',
   cap: '適用の条件の欠落(上限)',
   'safety-part': '適用の条件の欠落(安全関連部)',
+  enforcement: '適用の条件の欠落(登録の根拠の4点目)',
 };
 
 /**
@@ -269,11 +271,14 @@ export function autonomyState(config, records) {
     const sp = safetyPartStop(records?.f2q1 ?? null);
     if (sp) stop('安全関連部', sp.kind, sp.reason);
     if (levelRank(cap.level) < levelRank('L3')) stop('上限', 'cap', `AI自律レベルの上限が ${cap.level} である。L3 を適用できない(${cap.reason ?? '理由の記録なし'})`);
+    // 登録の根拠の4点目(IMPL-0834。標準 5.5.4)。実行の単位ごとの記入が欠けた種別は、登録が完了していないものとして止める。記入の内容は確かめない(ADR-0158)
+    const enfMissing = CHANGE_TYPE_ENFORCEMENT.filter(([k]) => !enforcementFilled(t?.basis).includes(k));
+    if (enfMissing.length) stop('登録の根拠', 'enforcement', `登録の根拠の4点目(basis.enforcement。${enfMissing.map(([k, label]) => `${label} ${k}`).join('・')})の記入が無く、登録が完了していない。4点目を記録した時点で戻る`);
     // 登録日の無い種別は、登録の判定と事象・窓の前後を確かめられない(突合 X-9)
     if (!registeredAt) stop('記録', 'unmeasurable', '登録日(registeredAt)が無く、登録の判定と事象・窓の前後を確かめられない。登録が完了していないものとして止める');
     if (!records || !asOf) {
       stop('記録', 'unmeasurable', '検知の記録を読んでいない(判定の日が無い)。判定できないものとして止める');
-      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null, detectionFilled: detectionFilled(t?.basis) });
+      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
       continue;
     }
     const applies = (list) => list === null || list === undefined || list.includes(id);
@@ -393,7 +398,7 @@ export function autonomyState(config, records) {
     }
     // 窓の長さは、履歴を読めないときも出す(rejection が null でも)
     const windowText = asOf ? windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf))) : windowLengthText({ months: WINDOW_MONTHS, longer: false });
-    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText, detectionFilled: detectionFilled(t?.basis) });
+    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
   }
   return out;
 }
