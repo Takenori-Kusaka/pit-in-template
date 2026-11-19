@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, isFilledValue, isRealDay, nameProblems, resolveSigner, aiNameBlocked, signerKey, loadConfig, localDay, aiNameReason, personKey, personName } from './config.mjs';
+import { ROOT, parseLedger, isFilledValue, isRealDay, nameProblems, resolveSigner, aiNameBlocked, signerKey, loadConfig, localDay, aiNameReason, personKey, personName } from './config.mjs';
 
 export const POLICY_FILE = 'docs/quality-assurance-policy.md';
 export const BRIEF_FILE = 'docs/project-brief.md';
@@ -674,6 +674,33 @@ export function discouragedUnrecorded(config, d0) {
       return true;
     });
   });
+}
+
+/**
+ * 保持者が1名以下のコア機能ごとに、技術負債台帳に是正の行があるかを確かめる(標準 3.4.3 要求事項6。process-compass #348・#441・#450、ADR-0200)。
+ * ファイルを読まない純粋な関数。`core` は continuityState(...).core、`ledgerText` は技術負債台帳の本文(無ければ null)。
+ * 是正の行は、次をすべて満たす行: 区分が「負債」/ 対象が NFKC で `コア理解:` から始まり、コロンの後の名前が運用引き継ぎ文書の節2 の名前と一致 /
+ * 状態が「未返却」/ 返却の目安が空でなく「—」でない。日付の形は求めない(区分「負債」の返却の目安は時期またはステージ)。
+ * 責任者の記載と期限の中身は機械で閉じない。印(対象の先頭 `コア理解:`)の無い行は是正の行として見分けない。
+ * 結果は表示だけにする。continuityState の problems・記載の欠落・G-7 の判定には入れない(要求事項7)
+ */
+export function coreRemediationState({ core, ledgerText }) {
+  const norm = (v) => String(v ?? '').normalize('NFKC').replace(/\*/g, '').trim();
+  const out = { ledger: ledgerText === null || ledgerText === undefined ? 'absent' : 'present', missing: [], checked: [] };
+  const low = (Array.isArray(core) ? core : []).filter((c) => (c?.holders?.length ?? 0) <= 1);
+  const rows = out.ledger === 'present' ? parseLedger(ledgerText) : [];
+  const remediates = (row, name) => {
+    if (norm(row.kind) !== '負債') return false;
+    const m = /^コア理解:(.*)$/s.exec(norm(row.target));
+    if (!m || m[1].trim() !== norm(name)) return false;
+    if (norm(row.state) !== '未返却') return false;
+    return isFilledValue(row.due);
+  };
+  for (const c of low) {
+    out.checked.push(c.name);
+    if (out.ledger === 'present' && !rows.some((r) => remediates(r, c.name))) out.missing.push(c.name);
+  }
+  return out;
 }
 
 /** 非推奨の兼務の注記の文(/pit・構成の生成の出力・証跡の集約で同じ文を使う) */

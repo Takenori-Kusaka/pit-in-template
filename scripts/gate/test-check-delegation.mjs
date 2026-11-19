@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ROOT, changeTypeProblems, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
-import { l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
+import { l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -163,7 +163,8 @@ const cases = [
   ['5.4.6: AI 起因でない Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'なし', '2026-10-05')), true, []],
   ['5.4.6: AI 起因の Sev3 は止めない', (i) => i.records.defects.rows.push(sev('Sev3', 'あり', '2026-10-05')), true, []],
   ['5.4.6: 登録の判定より前の AI 起因の Sev1 は止めない(登録し直した)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-09-01')), true, []],
-  ['5.4.6: ほかの変更種別だけの AI 起因の Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05', ['決済'])), true, []],
+  // 登録した別の種別(決済)だけを指す行。登録外の ID の行は空欄と同じ扱いで止めるため、ここでは別の種別を登録しておく
+  ['5.4.6: ほかの(登録した)変更種別だけの AI 起因の Sev1 は止めない', (i) => { i.config.delegation.changeTypes.push({ ...i.config.delegation.changeTypes[0], id: '決済' }); i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05', ['決済'])); }, true, []],
   ['5.4.6: 欠陥の台帳が無い(判定できない)', (i) => (i.records.defects = { present: false, rows: [] }), false, ['5.4.6']],
   ['5.4.6: コア機能の理解保持者数が1名', (i) => (i.records.core.rows[0].holders = 1), false, ['5.4.6']],
   ['5.4.6: コア機能の理解保持者数が0名(2名から一度に減った)', (i) => (i.records.core.rows[0].holders = 0), false, ['5.4.6']],
@@ -610,6 +611,8 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
 
   // 読み方: トレーラは本文の末尾の段落だけ。計画表は「追加された行」の状態を、版ごとに読む
   check('手戻り率の読み方: トレーラは末尾の段落だけを読み、重複を1つに数える', specTrailersOf('fix: a\n\nSpec: F-001 / Task-1\nSpec: F-001 / Task-1\nSpec: F-001 / Task-2').join() === 'F-001/Task-1,F-001/Task-2' && specTrailersOf('fix: a\n\nSpec: F-001 / Task-9\n\n説明').length === 0);
+  check('手戻り率の読み方: specLinesOf は末尾の段落の Spec: 行を値の形を問わず返し、中の段落の行は返さない', JSON.stringify(specLinesOf('fix: a\n\nSpec: F-001\nSpec: setup\nCo-Authored-By: x')) === JSON.stringify(['Spec: F-001', 'Spec: setup']) && specLinesOf('fix: a\n\nSpec: F-001 / Task-1\n\nCo-Authored-By: x').length === 0);
+  check('手戻り率の読み方: specTaskOfLine は厳しい形だけを F-NNN/Task-N にする(Spec: F-001 や Spec: setup は null)', specTaskOfLine(' Spec: F-001 / Task-2 ') === 'F-001/Task-2' && specTaskOfLine('Spec: F-001') === null && specTaskOfLine('Spec: setup') === null);
   const addRow = (st, task = 'Task-3') => `diff --git a/specs/F-001/plan.md b/specs/F-001/plan.md\n--- a/specs/F-001/plan.md\n+++ b/specs/F-001/plan.md\n@@ -3 +3 @@\n+| ${task} | 内容 | 1 | \`src/**\` | — | 可 | ${st} |\n`;
   check('手戻り率の読み方: 計画表の追加された行の状態が「やり直し」のタスクだけを取り出す(着手・完了・削除は取り出さない)',
     planReworkTasks(addRow('やり直し')).join() === 'F-001/Task-3' && planReworkTasks(addRow('完了')).length === 0 &&
@@ -1020,6 +1023,51 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('K-4: 保持者2名なら、登録外の ID があっても止めないが、注記には出す', r7.a === false && r7.b === false && r7.st.coreUnregistered.length === 1);
   // IMPL-0284:ok
   check('K-4: 登録の ID だけの行は、登録外の ID の注記を出さない', r1.st.coreUnregistered.length === 0 && r2.st.coreUnregistered.length === 0 && r3.st.coreUnregistered.length === 0);
+}
+
+// 欠陥の台帳の「登録した変更種別」の列にある登録外の ID(process-compass #348・#441・#450。運用引き継ぎ文書の K-4 と同じ向き)。
+// 種別を2つ並べ、AI 起因「あり」・運用・登録日より後の Sev1 を1行置く。登録外の ID を含む行は、空欄と同じ扱い(すべての種別を止める)にする。
+{
+  const stopped = (type) => type.stops.some((s) => s.category === '第1区分' && /Sev1/.test(s.reason));
+  const run = (changeTypes, { cause = 'あり', date = '2026-10-05', registeredAtTwo = null } = {}) => {
+    const input = base();
+    const first = input.config.delegation.changeTypes[0];
+    input.config.delegation.changeTypes.push({ ...first, id: '決済', ...(registeredAtTwo ? { registeredAt: registeredAtTwo } : {}) });
+    input.records.defects.rows.push({ ...sev('Sev1', cause, date, changeTypes), phase: '運用' });
+    const st = autonomyState(input.config, input.records);
+    return { st, a: stopped(st.types.find((x) => x.id === first.id)), b: stopped(st.types.find((x) => x.id === '決済')), reasons: st.types.flatMap((x) => x.stops.map((s) => s.reason)).join('\n') };
+  };
+  const first = base().config.delegation.changeTypes[0].id;
+  // E
+  const e = run([first]);
+  check('欠陥の台帳 E: 種別1 だけを指す行は、種別1 が止まり種別2 は止まらない', e.a === true && e.b === false && e.st.defectUnregistered.length === 0);
+  // F
+  const f = run(null);
+  check('欠陥の台帳 F: 空欄の行は、両方が止まる', f.a === true && f.b === true && f.st.defectUnregistered.length === 0);
+  // G
+  const g = run(['存在しない種別']);
+  check('欠陥の台帳 G: 登録外の ID だけの行は、両方が止まる(空欄と同じ扱い)', g.a === true && g.b === true);
+  check('欠陥の台帳 G: 理由に行の ID・登録外の ID・「空欄と同じ扱い」・戻し方を出す', /BUG-9/.test(g.reasons) && /存在しない種別/.test(g.reasons) && /空欄と同じ扱い/.test(g.reasons) && /取り下げた種別の行なら/.test(g.reasons) && /行の記録は書き換えない/.test(g.reasons));
+  check('欠陥の台帳 G: defectUnregistered に行と ID を出し、次の一手の注記に出る', g.st.defectUnregistered.length === 1 && g.st.defectUnregistered[0].id === 'BUG-9' && g.st.defectUnregistered[0].ids.join() === '存在しない種別' && /BUG-9/.test(autonomyNoteLines(g.st).join('\n')) && /存在しない種別/.test(autonomyNoteLines(g.st).join('\n')));
+  // H
+  const h = run([first, '存在しない種別']);
+  check('欠陥の台帳 H: 登録の ID と登録外の ID が混ざる行は、両方が止まる', h.a === true && h.b === true);
+  const cu = run(['存在しない種別'], { cause: '特定できない' });
+  check('欠陥の台帳: 原因を特定できない行で登録外の ID のとき、両方の種別に停止がある', [cu.st.types[0], cu.st.types[1]].every((t) => t.stops.some((s) => s.kind === 'cause-unknown')));
+  const dot = run([`${first}・決済`]);
+  check('欠陥の台帳: 「種別1・種別2」は区切らず1つの登録外の ID として読み、両方が止まる', dot.a === true && dot.b === true && dot.st.defectUnregistered[0]?.ids.length === 1);
+  const withdrawn = run(['存在しない種別'], { registeredAtTwo: '2026-10-10' });
+  check('欠陥の台帳: 取り下げの後の戻し方。種別2 の登録日が事象の日より後なら、種別2 は止まらない', withdrawn.b === false);
+  const outAi = run(['存在しない種別'], { cause: 'なし' });
+  check('欠陥の台帳: AI 起因でない行は、登録外の ID があっても止めない(注記には出す)', outAi.a === false && outAi.b === false && outAi.st.defectUnregistered.length === 1);
+  const sev3 = base();
+  sev3.records.defects.rows.push({ ...sev('Sev3', 'あり', '2026-10-05', ['存在しない種別']), phase: '運用' });
+  check('欠陥の台帳: Sev3 の行の登録外の ID は止めず、注記にも出さない', autonomyState(sev3.config, sev3.records).defectUnregistered.length === 0 && autonomyState(sev3.config, sev3.records).types.every((t) => !t.stops.length));
+  // 既定の構成(登録した変更種別が無い)は、登録外の ID があっても止まる種別が無い
+  const none = base();
+  none.config.delegation.changeTypes = [];
+  none.records.defects.rows.push({ ...sev('Sev1', 'あり', '2026-10-05', ['存在しない種別']), phase: '運用' });
+  check('欠陥の台帳: 登録した変更種別が無い構成は、登録外の ID があっても止める種別が無い', autonomyState(none.config, none.records).types.length === 0);
 }
 
 // IMPL-0594(リスク区分ごとの最大レベル)。実行で確かめた範囲: L3 の導出(autonomyState)は種別の単位で、変更ごとのリスク区分を読まない。

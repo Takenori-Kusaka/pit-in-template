@@ -53,11 +53,11 @@ import { correctionGapNote } from './adoption-trial.mjs';
 import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
-import { autonomyState, readAutonomyRecords, autonomyNoteLines, specTrailersOf } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, autonomyNoteLines, specTrailersOf, specTaskOfLine } from './autonomy.mjs';
 import { lastParagraph } from './check-pr.mjs';
 import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
-import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
+import { readPolicy, continuityState, coreRemediationState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 /**
@@ -766,9 +766,8 @@ export function defaultBranchOf(gitFn = git) {
 }
 const defaultBranch = () => defaultBranchOf(git);
 
-/** 済みのタスクに数えるトレーラの行の形(trim した後)。doneTasksOf と specOutsideLastParagraph が1つの定義を共有する */
-const DONE_SPEC_LINE = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/;
-const doneSpecTasks = (text) => String(text ?? '').split('\n').map((l) => DONE_SPEC_LINE.exec(l.trim())).filter(Boolean).map((m) => `${m[1]}/${m[2]}`);
+/** 済みのタスクに数えるトレーラの行の形は、手戻り率と同じ定義(autonomy.mjs の specTaskOfLine)を共有する。doneTasksOf と specOutsideLastParagraph が使う */
+const doneSpecTasks = (text) => String(text ?? '').split('\n').map(specTaskOfLine).filter(Boolean);
 
 /**
  * 本文の配列から、済みのタスク `F-NNN/Task-N` の集合を作る。読むのは各本文の末尾の段落のトレーラ `Spec:` だけ
@@ -1458,6 +1457,25 @@ function autonomyNotes(config) {
   return out;
 }
 
+/** 作業木の技術負債台帳の本文。無ければ null */
+function localLedgerText() {
+  const p = path.join(ROOT, 'docs/debt-ledger.md');
+  try {
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** コア機能の是正の行の案内(IMPL-0645)。台帳が無ければ「確かめられない」、行が無ければ機能ごとに1行。印の無い行は見分けない旨を添える */
+export function coreRemediationNotes(core, ledgerText) {
+  const st = coreRemediationState({ core, ledgerText });
+  if (!st.checked.length) return [];
+  const mark = '印(対象の先頭 `コア理解:`)の無い行は是正の行として見分けない';
+  if (st.ledger === 'absent') return [`技術負債台帳(docs/debt-ledger.md)が無く、コア機能 ${st.checked.map((n) => `「${n}」`).join('・')} の是正の行の登録を確かめられない(標準 3.4.3 要求事項6)。${mark}`];
+  return st.missing.map((n) => `技術負債台帳に、コア機能「${n}」の是正の行(区分「負債」、対象 \`コア理解: ${n}\`、返却の目安に期限と責任者)が無い(標準 3.4.3 要求事項6)。${mark}。表示だけで、止める条件にも記載の欠落にも数えない`);
+}
+
 /**
  * 変化点の後に現れる失効・後継不在・依存先の欄の空欄・実環境の統制の未確認・席の責任者の力量の未確認を、
  * 担当の席と次に実行するものを添えて出す。出荷の集約(aggregate-evidence)と同じ関数で読む。読めないものは出さない
@@ -1560,6 +1578,9 @@ function continuityNotes(config) {
     const hint = HINT[s.state] ? HINT[s.state](s) : `${authorityOf(/代替の無い依存先/)}が解消するか D-0 節15 で受容する`;
     notes.push(`組織継続の状態「${s.state}: ${s.subject}」(${s.detail})。${acc}。次の一手: ${hint}`);
   }
+
+  // コア機能の是正の行(3.4.3 要求事項6。IMPL-0645)。作業木の技術負債台帳を読む。表示だけで、止める条件にも記載の欠落にも数えない(要求事項7)
+  notes.push(...coreRemediationNotes(ct.core, localLedgerText()));
 
   // 席の責任者本人の力量の確認(3.4.3 要求事項1)。未確認・失効を、席ごとに1つの注記へまとめて出す
   {

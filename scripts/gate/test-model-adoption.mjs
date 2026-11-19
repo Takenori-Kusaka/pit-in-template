@@ -7,7 +7,7 @@ import * as MA from './model-adoption.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { seatQualificationProblems as SQ, continuityState } from './org-assurance.mjs';
+import { seatQualificationProblems as SQ, continuityState, coreRemediationState } from './org-assurance.mjs';
 import { modelAdoptionState, answersFindings, calibrationFindings, rehearsalJudgeFindings, MODEL_ADOPTION_FILE } from './model-adoption.mjs';
 
 let failures = 0;
@@ -180,6 +180,35 @@ check('退出の予行: 較正の記録のそろった予行と、AI の採点�
 }
 
 
+
+// ---------------------------------------------------------------- コア機能の是正の行の確認(IMPL-0645。標準 3.4.3 要求事項6。process-compass #348・#441・#450)
+// 純粋な関数 coreRemediationState({ core, ledgerText })。区分「負債」・対象 `コア理解: <名前>`・状態「未返却」・返却の目安が空でなく「—」でない行だけを是正の行と数える。日付の形は求めない
+{
+  const ledger = (...rows) => ['| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |', ...rows].join(String.fromCharCode(10));
+  const row = ({ kind = '負債', target = 'コア理解: 決済', due = 'S2 移行時。責任者 佐藤 花子', state = '未返却' } = {}) => `| D-001 | ${kind} | ${target} | 決済の理解を2名にする | 人員 | 離脱 | ${due} | ${state} | 山田 太郎 | — |`;
+  const one = [{ name: '決済', holders: ['yamada'] }];
+  const st = (rows, core = one) => coreRemediationState({ core, ledgerText: ledger(...rows) });
+  // IMPL-0645:ng(違反の入力。是正の行が無い)
+  const none = st([]);
+  check('IMPL-0645:ng 保持者1名で是正の行が無ければ missing に出す', none.ledger === 'present' && none.missing.join() === '決済' && none.checked.join() === '決済', JSON.stringify(none));
+  check('IMPL-0645:ng 区分「例外」の行は是正の行に数えない', st([row({ kind: '例外' })]).missing.join() === '決済');
+  check('IMPL-0645:ng 状態「返却済み(日付)」の行は是正の行に数えない', st([row({ state: '返却済み(2026-10-01)' })]).missing.join() === '決済');
+  check('IMPL-0645:ng 返却の目安が「—」の行は是正の行に数えない', st([row({ due: '—' })]).missing.join() === '決済');
+  check('IMPL-0645:ng 返却の目安が空の行は是正の行に数えない', st([row({ due: '' })]).missing.join() === '決済');
+  check('IMPL-0645:ng 対象の印が無い行は是正の行として見分けない', st([row({ target: '決済' })]).missing.join() === '決済');
+  check('IMPL-0645:ng 別の機能の名前の行は一致しない', st([row({ target: 'コア理解: 招待' })]).missing.join() === '決済');
+  // IMPL-0645:ok
+  const ok = st([row()]);
+  check('IMPL-0645:ok 区分「負債」・対象 コア理解: 決済・未返却・返却の目安「S2 移行時。責任者 佐藤 花子」なら missing なし(日付の形を求めない)', ok.missing.length === 0 && ok.checked.join() === '決済', JSON.stringify(ok));
+  check('IMPL-0645:ok 全角のコロン コア理解：決済 も一致する', st([row({ target: 'コア理解：決済' })]).missing.length === 0);
+  check('IMPL-0645:ok 保持者2名のコア機能は checked に入らない', st([], [{ name: '決済', holders: ['a', 'b'] }]).checked.length === 0 && st([], [{ name: '決済', holders: ['a', 'b'] }]).missing.length === 0);
+  const absent = coreRemediationState({ core: one, ledgerText: null });
+  check('IMPL-0645:ok 台帳が無ければ ledger は absent(0 件と出さず、missing も空)', absent.ledger === 'absent' && absent.missing.length === 0 && absent.checked.join() === '決済', JSON.stringify(absent));
+  // continuityState の problems は変わらない(記載の欠落・G-7 の判定に流さない。要求事項7)
+  const before = JSON.stringify(continuityState(config, null, { root: TMP, day: '2026-10-10' }).problems);
+  coreRemediationState({ core: one, ledgerText: ledger() });
+  check('IMPL-0645:ok 同じ入力で continuityState の problems が変わらない', before === JSON.stringify(continuityState(config, null, { root: TMP, day: '2026-10-10' }).problems));
+}
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('');
 if (failures) {

@@ -263,6 +263,12 @@ export function autonomyState(config, records) {
   const registeredIds = new Set(types.map((t) => String(t?.id ?? '').trim()).filter(Boolean));
   const unregisteredIdsOf = (list) => (Array.isArray(list) ? [...new Set(list.map((x) => String(x ?? '').trim()).filter((x) => x && !registeredIds.has(x)))] : []);
   out.coreUnregistered = (records?.core?.present ? records.core.rows ?? [] : []).map((c) => ({ name: c.name, ids: unregisteredIdsOf(c.changeTypes) })).filter((x) => x.ids.length);
+  // 欠陥の台帳の「登録した変更種別」の列に、登録の一覧に無い ID を含む Sev1・Sev2 の行(process-compass #348・#441・#450)。
+  // 運用引き継ぎ文書の節2(K-4)と同じ向きで、空欄と同じ扱い(すべての種別を止める側)にする。書き誤りで AI 起因の事象が委任を1つも止めない経路を作らない
+  out.defectUnregistered = (records?.defects?.present ? records.defects.rows ?? [] : [])
+    .filter((d) => ['Sev1', 'Sev2'].includes(d.severity))
+    .map((d) => ({ id: d.id, ids: unregisteredIdsOf(d.changeTypes) }))
+    .filter((x) => x.ids.length);
   // 宣言行の無い CHANGES_REQUESTED(分子に入れない。件数の表示だけ)。記録を渡していない・読めないときは null(0 件と出さない)
   const undeclaredAll = records?.undeclared?.available ? (records.undeclared.items ?? []).filter((r) => isRealDay(r.date) && notAfter(r.date)) : null;
 
@@ -293,7 +299,9 @@ export function autonomyState(config, records) {
       stop('第1区分', 'unmeasurable', `${DEFECT_FILE} が無く、Sev1・Sev2 の AI 起因を確かめられない`);
     } else {
       for (const d of records.defects.rows ?? []) {
-        if (!['Sev1', 'Sev2'].includes(d.severity) || !applies(d.changeTypes)) continue;
+        if (!['Sev1', 'Sev2'].includes(d.severity)) continue;
+        const unregD = unregisteredIdsOf(d.changeTypes);
+        if (!unregD.length && !applies(d.changeTypes)) continue;
         // 停止に数えるのは、出荷の後に発生した事象(事後検証の対象)だけである。出荷前のゲートで検出した欠陥は数えない(突合 X-6)
         if (d.phase === '出荷前') continue;
         if (isRealDay(d.date) && !notAfter(d.date)) continue;
@@ -302,13 +310,15 @@ export function autonomyState(config, records) {
         const ai = cause === 'あり';
         const phaseNote = d.phase === '運用' ? '' : '。検出の時点が空欄のため、運用の事象として数える';
         const label = `${d.id || '(ID なし)'} ${d.severity}(AI 起因: ${cause || '空欄'}${phaseNote})`;
+        // 登録外の ID の行は空欄と同じ扱い。機械は書き誤りと種別の取り下げを見分けられないため、戻し方を理由に書く
+        const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る。行の記録は書き換えない` : '';
         if (!ai) {
           // 原因を特定できない事象は、原因を特定する(AI 起因を「あり」か「なし」にする)まで止める。登録し直しでは解かない(N-6 の5。突合 X-3)
-          stop('第1区分', 'cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める`);
+          stop('第1区分', 'cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`);
         } else if (!isRealDay(d.date)) {
-          stop('第1区分', 'downgrade', `${label}。発生日が無く、登録の判定との前後を確かめられない`);
+          stop('第1区分', 'downgrade', `${label}。発生日が無く、登録の判定との前後を確かめられない${unregDText}`);
         } else if (!(registeredAt && registeredAt > d.date)) {
-          stop('第1区分', 'downgrade', `${label}が ${d.date} に発生した。事象の日より後の登録の判定まで止める`);
+          stop('第1区分', 'downgrade', `${label}が ${d.date} に発生した。事象の日より後の登録の判定まで止める${unregDText}`);
         }
       }
     }
@@ -427,14 +437,20 @@ export function rejectionText(type) {
 
 // ---------------------------------------------------------------- 手戻り率(第5章 5.4.6。process-compass #348)
 
-/** 本文の末尾の段落のトレーラ `Spec: F-NNN / Task-N` を、`F-NNN/Task-N` の形で重複なく取り出す(check-pr.mjs の lastParagraph と同じ読み方) */
+/** トレーラの1行(trim した後)が `Spec: F-NNN / Task-N` の形なら `F-NNN/Task-N`、そうでなければ null。手戻り率と次の一手の済みのタスクが共有する唯一の定義 */
+export function specTaskOfLine(line) {
+  const m = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/.exec(String(line ?? '').trim());
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** 本文の末尾の段落(check-pr.mjs の lastParagraph と同じ読み方)のうち、`Spec:` で始まる行(trim した後)。値の形は問わない */
+export function specLinesOf(body) {
+  return lastParagraph(body).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('Spec:'));
+}
+
+/** 本文の末尾の段落のトレーラ `Spec: F-NNN / Task-N` を、`F-NNN/Task-N` の形で重複なく取り出す */
 export function specTrailersOf(body) {
-  const out = new Set();
-  for (const line of lastParagraph(body).split('\n')) {
-    const m = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/.exec(line.trim());
-    if (m) out.add(`${m[1]}/${m[2]}`);
-  }
-  return [...out];
+  return [...new Set(specLinesOf(body).map(specTaskOfLine).filter(Boolean))];
 }
 
 /**
@@ -1006,6 +1022,9 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   }
   for (const u of state.coreUnregistered ?? []) {
     out.push(`AI自律レベル: ${HANDOVER_FILE} の節2 のコア機能「${u.name}」の「関わる登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い)。この機能は空欄と同じ扱いで、理解保持者数が1名以下のあいだ、すべての登録した変更種別を止める`);
+  }
+  for (const u of state.defectUnregistered ?? []) {
+    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る。行の記録は書き換えない`);
   }
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
   return out;

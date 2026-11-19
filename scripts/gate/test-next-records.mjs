@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
-import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph, doneTasks, outsideSpecNote } from './next.mjs';
+import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph, doneTasks, outsideSpecNote, coreRemediationNotes } from './next.mjs';
 import { specTrailersOf } from './autonomy.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, adjustmentRecordCount, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
@@ -506,6 +506,18 @@ ${r.out}`);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+}
+
+// ---------------------------------------------------------------- コア機能の是正の行の案内(IMPL-0645。表示だけ)
+{
+  const one = [{ name: '決済', holders: ['yamada'] }];
+  const ledger = ['| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'].join(String.fromCharCode(10));
+  const missing = coreRemediationNotes(one, ledger);
+  check('IMPL-0645:ng 是正の行が無ければ、機能の名前・区分「負債」・対象 コア理解:・返却の目安に期限と責任者・印の無い行は見分けない旨を案内する', missing.length === 1 && /コア機能「決済」/.test(missing[0]) && /区分「負債」/.test(missing[0]) && /コア理解: 決済/.test(missing[0]) && /期限と責任者/.test(missing[0]) && /見分けない/.test(missing[0]), missing.join('|'));
+  const absent = coreRemediationNotes(one, null);
+  check('IMPL-0645:ng 台帳が無ければ「確かめられない」と案内する(0 件と書かない)', absent.length === 1 && /確かめられない/.test(absent[0]), absent.join('|'));
+  check('IMPL-0645:ok 保持者2名なら案内しない', coreRemediationNotes([{ name: '決済', holders: ['a', 'b'] }], ledger).length === 0);
+  check('IMPL-0645:ok コア機能の記載が無ければ案内しない', coreRemediationNotes([], ledger).length === 0);
 }
 console.log('');
 if (failures) {
