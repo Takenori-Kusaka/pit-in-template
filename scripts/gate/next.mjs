@@ -1744,6 +1744,7 @@ export function adjustmentRecordCount(records, { today, windowMonths }) {
   const seen = new Set();
   let inWindow = 0;
   let undated = 0;
+  let future = 0;
   for (const r of records ?? []) {
     const g = String(r?.gate ?? '').normalize('NFKC').replace(/\*/g, '').trim();
     if (!g.startsWith(ADJUSTMENT_GATE)) continue;
@@ -1752,9 +1753,10 @@ export function adjustmentRecordCount(records, { today, windowMonths }) {
     seen.add(key);
     const day = String(r.judgedAt ?? '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) undated++;
-    else if (day >= since && day <= today) inWindow++;
+    else if (day > today) future++;
+    else if (day >= since) inWindow++;
   }
-  return { count: inWindow, undated, windowMonths };
+  return { count: inWindow, undated, future, windowMonths };
 }
 
 export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null, changesError = null, adjustments = null }) {
@@ -1776,7 +1778,7 @@ export function flowReportText({ throughput, forecast, changes = null, confirmed
     L.push(`- SC-M の変動率: 算定できない(SC-M の履歴を読めない: ${changesError})`);
   }
   if (adjustments) {
-    L.push(`- 価値責任者の調整の判定記録(観測の窓 ${adjustments.windowMonths} か月。ゲート欄「${ADJUSTMENT_GATE}」): ${adjustments.count} 件${adjustments.undated ? `(判定日時を読めない記録 ${adjustments.undated} 件は窓の件数に入れていない)` : ''}。調整の種別(2.10.5 の表の行1〜3)は本文に書かれ、機械は読まない`);
+    L.push(`- 価値責任者の調整の判定記録(観測の窓 ${adjustments.windowMonths} か月。ゲート欄「${ADJUSTMENT_GATE}」): ${adjustments.count} 件${adjustments.undated ? `(判定日時を読めない記録 ${adjustments.undated} 件は窓の件数に入れていない)` : ''}${adjustments.future ? `(判定日時が今日より後の記録 ${adjustments.future} 件も窓の件数に入れていない。日付の誤記か時計のずれを確かめる)` : ''}。調整の種別(2.10.5 の表の行1〜3)は本文に書かれ、機械は読まない`);
   }
   if (changes) {
     const rate = scMVariationRate(changes);

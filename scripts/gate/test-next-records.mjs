@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
-import { doneConditionSource } from './next.mjs';
+import { doneConditionSource, flowSection } from './next.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, adjustmentRecordCount, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
@@ -432,6 +432,11 @@ ${r.out}`);
   const ac = adjustmentRecordCount(adjRecs, { today: '2026-11-19', windowMonths: 3 });
   check('IMPL-0954:ok 窓(3 か月)の中の調整の記録だけを数える。窓の外・別のゲート・同じ所在の重複は数えない', ac.count === 2 && ac.windowMonths === 3, JSON.stringify(ac));
   check('IMPL-0954:ng 判定日時を読めない調整の記録は、窓の件数に入れず別に数える(黙って落とさない)', ac.undated === 1);
+  const acF = adjustmentRecordCount([adj('2026-11-20 10:00', 'f.md'), adj('2026-11-19 10:00', 'g.md')], { today: '2026-11-19', windowMonths: 3 });
+  check('IMPL-0954:ng 判定日時が今日より後の調整の記録は、窓の件数に入れず別に数えて出す(黙って落とさない)', acF.count === 1 && acF.future === 1 && /今日より後の記録 1 件/.test(flowReportText({ throughput: ng, forecast: null, changes: null, adjustments: acF })), JSON.stringify(acF));
+  // 低-5: /pit の節「フロー」(flowSection)が調整の記録の件数を flowReportText へ渡す(結線)。--offline 相当(network:false)で通す
+  const fs5 = flowSection({ config: {}, records: adjRecs, today: '2026-11-19', network: false, forecastInput: {} });
+  check('IMPL-0954:ok 入口の側: flowSection は records から数えた調整の記録の件数(既定の窓 2 か月では 1 件、読めない記録 1 件)を節の本文に出す', /価値責任者の調整の判定記録[^\n]*: 1 件\(判定日時を読めない記録 1 件/.test(String(fs5?.text)), String(fs5?.text));
   check('IMPL-0954:ok 調整の記録が無ければ 0 件と出る', adjustmentRecordCount([], { today: '2026-11-19', windowMonths: 3 }).count === 0 && adjustmentRecordCount(undefined, { today: '2026-11-19', windowMonths: 3 }).count === 0);
   const adjText = flowReportText({ throughput: ng, forecast: null, changes: null, adjustments: ac });
   check('IMPL-0954:ok フローの節に件数を出し、種別は本文に書かれ機械は読まないと書く', /価値責任者の調整の判定記録[^\n]*2 件/.test(adjText) && /種別[^\n]*機械は読まない/.test(adjText) && /読めない記録 1 件/.test(adjText), adjText);

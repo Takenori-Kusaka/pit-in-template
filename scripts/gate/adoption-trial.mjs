@@ -1995,15 +1995,37 @@ function envCheck() {
 // ---- 是正の記録の欠けの検出(標準 第3章 3.5.5・第5章 5.6.2 の是正の記録。IMPL-0497。process-compass #326) ----
 // 起点は2つ: (i) state:needs-platform を付けた履歴のある Issue・PR(GitHub の events から読む)、
 // (ii) 導入前の検証の注入の記録(docs/adoption-trial/injection-result.json)の、目隠しを確かめられた層で見逃した類型。
-// 起点ごとに、欠陥の台帳の節「是正の記録」の対象の欄が、起点の番号(#N・/issues/N・/pull/N。後ろに数字が続くものは別の番号)か、
-// 見逃した類型の名を含む行を求め、無ければ一覧に出す。合否に使わない。行の中身(4つの問い)は読まない(品質保証の担当が読む)。
-// 番号や類型の名を書かずに言葉で指した行は対応に数えない(一覧に出る側に倒れる。品質保証の担当が見て消す)。
+// 起点ごとに、欠陥の台帳の節「是正の記録」の対象の欄が、起点の番号(#N、相対の /issues/N・/pull/N、同じリポジトリの URL。後ろに英数字が続くものは別の番号)か、
+// 見逃した類型の名(区切りで囲まれた一致。部分一致は数えない)を含む行を求め、無ければ一覧に出す。合否に使わない。行の中身(4つの問い)は読まない(品質保証の担当が読む)。
+// 番号や類型の名を書かずに言葉で指した行は対応に数えない(一覧に出る側に倒れる)。
+// 残る偽陰性: 別の起点の行が、この起点の番号か類型の名にたまたま触れただけでも、この起点は覆われる(欠けが出ない)。行の中身を読まないので機械は区別しない。
 
 export const NEEDS_PLATFORM_LABEL = 'state:needs-platform';
 
-/** 対象の欄が番号 n を指すか。#n・/issues/n・/pull/n で、後ろに数字が続かないもの(#12 は #123 に当たらない) */
-export function numberCited(text, n) {
-  return new RegExp(`(?:#|/issues/|/pull/)${Number(n)}(?![0-9])`).test(String(text ?? '').normalize('NFKC'));
+const escapeRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+const BOUNDARY_CLASS = String.raw`[\s、。，．,.;；:：()（）\[\]「」『』【】<>《》・/|｜"'` + '`]';
+
+/**
+ * 対象の欄が番号 n を指すか。#n(後ろに英数字が続かない)、相対の /issues/n・/pull/n(直前が語の文字でない)、
+ * 同じリポジトリ repo の URL(https://github.com/<repo>/issues|pull/n)。repo が分からない(null・波括弧のまま)ときは URL を数えない。
+ * #12 は #123 や #12a に当たらない。別のリポジトリの URL は数えない
+ */
+export function numberCited(text, n, repo = null) {
+  const t = String(text ?? '').normalize('NFKC');
+  const num = Number(n);
+  const tail = '(?![0-9A-Za-z_])';
+  if (new RegExp(`#${num}${tail}`).test(t)) return true;
+  if (new RegExp(String.raw`(?<![\w.\-/])/(?:issues|pull)/${num}${tail}`).test(t)) return true;
+  if (repo && !/[{}]/.test(repo) && new RegExp(String.raw`https?://github\.com/${escapeRe(repo)}/(?:issues|pull)/${num}${tail}`, 'i').test(t)) return true;
+  return false;
+}
+
+/** 対象の欄が見逃した類型の名を指すか。名が区切り(行頭・行末・空白・句読点・括弧)で囲まれた一致に限る(「境界」は「境界値分析」に当たらない) */
+export function typeCited(text, ty) {
+  const t = String(text ?? '').normalize('NFKC');
+  const name = String(ty).normalize('NFKC').trim();
+  if (!name) return false;
+  return new RegExp(`(?:^|${BOUNDARY_CLASS})${escapeRe(name)}(?=$|${BOUNDARY_CLASS})`).test(t);
 }
 
 /**
@@ -2011,15 +2033,15 @@ export function numberCited(text, n) {
  * ledgerText: 欠陥の台帳の本文(無ければ null)  platformNumbers: state:needs-platform を付けた履歴のある番号  missedTypes: 見逃した類型の名
  * 戻り値: { ledger: 'none'(台帳が無い)/ 'no-section'(節が無い)/ 'ok', gaps: [{ kind: 'needs-platform', ref: 12 } | { kind: 'missed-type', ref: '型名' }] }
  */
-export function correctionGaps({ ledgerText, platformNumbers = [], missedTypes = [] }) {
+export function correctionGaps({ ledgerText, platformNumbers = [], missedTypes = [], repo = null }) {
   const nums = [...new Set(platformNumbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
   const types = [...new Set(missedTypes.map(String).filter((t) => t.trim()))];
   const rows = ledgerText == null ? null : parseCorrections(ledgerText);
   const ledger = ledgerText == null ? 'none' : rows == null ? 'no-section' : 'ok';
   const targets = (rows ?? []).map((r) => r.target);
   const gaps = [
-    ...nums.filter((n) => !targets.some((t) => numberCited(t, n))).map((n) => ({ kind: 'needs-platform', ref: n })),
-    ...types.filter((ty) => !targets.some((t) => t.includes(ty))).map((ty) => ({ kind: 'missed-type', ref: ty })),
+    ...nums.filter((n) => !targets.some((t) => numberCited(t, n, repo))).map((n) => ({ kind: 'needs-platform', ref: n })),
+    ...types.filter((ty) => !targets.some((t) => typeCited(t, ty))).map((ty) => ({ kind: 'missed-type', ref: ty })),
   ];
   return { ledger, gaps };
 }
@@ -2060,11 +2082,11 @@ export function correctionGapNote({ root = ROOT, gh = null, repo = '{owner}/{rep
     }
   }
   const missedTypes = readMissedTypes(root);
-  const { ledger, gaps } = correctionGaps({ ledgerText, platformNumbers, missedTypes });
+  const { ledger, gaps } = correctionGaps({ ledgerText, platformNumbers, missedTypes, repo });
   if (!gaps.length) return unreadFailed ? `是正の記録の欠けの検出: ${unread}。読めた範囲(注入の記録 ${missedTypes.length} 類型)では欠けは無い` : null;
   const items = gaps.map((g) => (g.kind === 'needs-platform' ? `統制の弱化の引き渡し #${g.ref}` : `見逃した類型「${g.ref}」`));
   const where = ledger === 'none' ? `欠陥の台帳(${DEFECT_FILE})が無い` : ledger === 'no-section' ? `欠陥の台帳に節「${CORRECTION_HEADING}」が無い` : `節「${CORRECTION_HEADING}」の対象の欄に番号か類型の名を含む行が無い`;
-  return `是正の記録の欠け ${gaps.length} 件(${where}): ${items.join(' / ')}。${seatText}が、起点ごとに行を足す(対象の欄に #番号か類型の名を書く。4つの問いは行ごとにすべて書き、仕組みで置かないなら理由を書く)。機械は番号か類型の名を含む行の有無までを見て、行の中身は確かめない。言葉だけで指した行は対応に数えないので、あれば番号を足す。${unread ? `${unread}。` : ''}`;
+  return `是正の記録の欠け ${gaps.length} 件(${where}): ${items.join(' / ')}。${seatText}が、起点ごとに行を足す(対象の欄に #番号か、空白や括弧で区切った類型の名を書く。4つの問いは行ごとにすべて書き、仕組みで置かないなら理由を書く)。機械は番号か類型の名を含む行の有無までを見て、行の中身は確かめない。言葉だけで指した行は対応に数えないので、あれば番号を足す。${unread ? `${unread}。` : ''}`;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

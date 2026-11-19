@@ -462,11 +462,16 @@ function workspace({ keepOwner = false } = {}) {
   const ng = correctionGaps({ ledgerText: ledger([]), platformNumbers: [12] });
   check('IMPL-0497:ng 起点 #12 に対応する行が無いと、欠けとして出る', ng.ledger === 'ok' && ng.gaps.length === 1 && ng.gaps[0].kind === 'needs-platform' && ng.gaps[0].ref === 12, JSON.stringify(ng));
   check('IMPL-0497:ok 対象が「PR #12」の行があれば欠けない', correctionGaps({ ledgerText: ledger(['PR #12 の変更']), platformNumbers: [12] }).gaps.length === 0);
-  check('IMPL-0497:ok URL の形(/issues/12・/pull/12)も対応に数える', correctionGaps({ ledgerText: ledger(['https://github.com/o/r/pull/12']), platformNumbers: [12] }).gaps.length === 0 && correctionGaps({ ledgerText: ledger(['https://github.com/o/r/issues/12']), platformNumbers: [12] }).gaps.length === 0);
-  check('IMPL-0497:ng 番号の境界を見る: #123 や /pull/123 の行は #12 に当たらない(逆に #12 の行は #123 に当たらない)', correctionGaps({ ledgerText: ledger(['PR #123', 'https://github.com/o/r/pull/123']), platformNumbers: [12] }).gaps.length === 1 && correctionGaps({ ledgerText: ledger(['PR #12']), platformNumbers: [123] }).gaps.length === 1);
+  check('IMPL-0497:ok URL の形(/issues/12・/pull/12)も対応に数える', correctionGaps({ ledgerText: ledger(['https://github.com/o/r/pull/12']), platformNumbers: [12], repo: 'o/r' }).gaps.length === 0 && correctionGaps({ ledgerText: ledger(['https://github.com/o/r/issues/12']), platformNumbers: [12], repo: 'o/r' }).gaps.length === 0 && correctionGaps({ ledgerText: ledger(['PR /pull/12']), platformNumbers: [12] }).gaps.length === 0);
+  check('IMPL-0497:ng 番号の境界を見る: #123 や /pull/123 の行は #12 に当たらない(逆に #12 の行は #123 に当たらない)', correctionGaps({ ledgerText: ledger(['PR #123', 'https://github.com/o/r/pull/123']), platformNumbers: [12], repo: 'o/r' }).gaps.length === 1 && correctionGaps({ ledgerText: ledger(['PR #12']), platformNumbers: [123] }).gaps.length === 1);
   check('IMPL-0497:ng 見逃した類型の名を含む行が無ければ欠けとして出る。ok 含む行があれば欠けない', correctionGaps({ ledgerText: ledger(['別の類型 x']), missedTypes: ['境界値'] }).gaps[0]?.kind === 'missed-type' && correctionGaps({ ledgerText: ledger(['境界値(注入の記録)']), missedTypes: ['境界値'] }).gaps.length === 0);
   check('IMPL-0497:ng 台帳が無い・節が無いときは全部の起点が欠けで、その旨が分かる', correctionGaps({ ledgerText: null, platformNumbers: [1] }).ledger === 'none' && correctionGaps({ ledgerText: '# x\n', platformNumbers: [1] }).ledger === 'no-section' && correctionGaps({ ledgerText: null, platformNumbers: [1] }).gaps.length === 1);
   check('IMPL-0497:ok 番号を書かずに言葉で指した行は対応に数えない(一覧に出る側に倒れる)', correctionGaps({ ledgerText: ledger(['先月の権限の変更の件']), platformNumbers: [12] }).gaps.length === 1);
+  // 独立の突合(1巡目)高-1 の再現: 部分一致・別のリポジトリ・英数字の続く番号は対応に数えない
+  check('IMPL-0497:ng 類型の名は区切りで囲まれた一致に限る(「境界」は「境界値分析」の行に当たらない)', correctionGaps({ ledgerText: ledger(['境界値分析']), missedTypes: ['境界'] }).gaps.length === 1 && correctionGaps({ ledgerText: ledger(['境界(注入の記録)']), missedTypes: ['境界'] }).gaps.length === 0 && correctionGaps({ ledgerText: ledger(['境界 と 認可']), missedTypes: ['境界'] }).gaps.length === 0);
+  check('IMPL-0497:ng 別のリポジトリの URL(/pull/12)は #12 に当たらない。repo が分からないときは URL を数えない', correctionGaps({ ledgerText: ledger(['https://github.com/other/repo/pull/12']), platformNumbers: [12], repo: 'o/r' }).gaps.length === 1 && correctionGaps({ ledgerText: ledger(['https://github.com/o/r/pull/12']), platformNumbers: [12] }).gaps.length === 1 && correctionGaps({ ledgerText: ledger(['https://github.com/o/r/pull/12']), platformNumbers: [12], repo: '{owner}/{repo}' }).gaps.length === 1);
+  check('IMPL-0497:ng #12a のように英数字が続く番号は #12 に当たらない', correctionGaps({ ledgerText: ledger(['PR #12a', '#12_x']), platformNumbers: [12] }).gaps.length === 1);
+  check('IMPL-0497:ok 残る偽陰性の開示: 別の起点(#15)の行が「#12 と同じ類型」と書けば #12 は覆われる(行の中身を読まないため。note に書いた限界)', correctionGaps({ ledgerText: ledger(['#15(#12 と同じ類型)']), platformNumbers: [12, 15] }).gaps.length === 0);
   // GitHub の読み出しは差し替える(試験は網に出ない)
   const events = [{ event: 'labeled', label: { name: 'state:needs-platform' }, issue: { number: 12 } }, { event: 'labeled', label: { name: 'state:in-progress' }, issue: { number: 13 } }, { event: 'unlabeled', label: { name: 'state:needs-platform' }, issue: { number: 14 } }, { event: 'labeled', label: { name: 'state:needs-platform' }, issue: { number: 12 } }];
   const fakeGh = (args) => (args.some((a) => /issues\/events/.test(a)) ? JSON.stringify([events]) : '[]');
@@ -478,7 +483,7 @@ function workspace({ keepOwner = false } = {}) {
   const n1 = correctionGapNote({ root: dir, gh: fakeGh, repo: 'o/r', seatText: '品質保証の担当' });
   check('IMPL-0497:ng 台帳が無いと、番号と類型の両方の欠けが注記に出る(行の中身は確かめないと書く)', /#12/.test(n1) && /境界値/.test(n1) && /行の中身は確かめない/.test(n1), n1);
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'docs/defect-ledger.md'), ledger(['PR #12', '境界値の注入']));
+  fs.writeFileSync(path.join(dir, 'docs/defect-ledger.md'), ledger(['PR #12', '境界値(注入の記録)']));
   check('IMPL-0497:ok 対応する行がそろえば注記は出ない', correctionGapNote({ root: dir, gh: fakeGh, repo: 'o/r' }) === null);
   const off = correctionGapNote({ root: dir, gh: null });
   check('IMPL-0497:ok --offline で GitHub を読まないときは、読んだ範囲(注入の記録)だけで判定し、欠けが無ければ出さない', off === null);
@@ -487,6 +492,34 @@ function workspace({ keepOwner = false } = {}) {
   const boom = correctionGapNote({ root: dir, gh: () => { throw new Error('gh 失敗'); }, seatText: 'x' });
   check('IMPL-0497:ng GitHub を読めないときは、0 件と読み違えさせず、読めないことを文に出す', /読めない/.test(boom), boom);
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// IMPL-0497 の入口: /pit(next.mjs)を一時の置き場で --offline で通す。関数を直接呼ぶ試験では、注記を出す結線(computeNext)を外しても通る
+// (独立の突合 1 巡目 高-2)。GitHub の履歴の読み出し(gh)は差し替えられないので、この入口の試験は注入の記録の起点だけを通す
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'impl0497-entry-'));
+  try {
+    fs.cpSync(path.join(ROOT, 'scripts'), path.join(dir, 'scripts'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+    fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify({
+      configured: true,
+      gates: { g2: { state: 'required', label: 'G-2 要件合意' } },
+      roles: [{ id: 'value-owner', name: '価値責任者', gatesOwned: ['g2'] }, { id: 'qa-gatekeeper', name: '品質保証の担当', gatesOwned: ['g7'] }],
+      seats: [{ role: 'value-owner', accountable: 'p1' }],
+      people: [],
+    }, null, 2));
+    fs.mkdirSync(path.join(dir, 'docs/adoption-trial'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'docs/adoption-trial/injection-result.json'), JSON.stringify({ layers: { human: { blind: true, missedTypes: ['境界値'] } } }));
+    const env = { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '', GIT_CEILING_DIRECTORIES: path.dirname(dir) };
+    const pit = () => { const r = spawnSync(process.execPath, ['scripts/gate/next.mjs', '--offline'], { cwd: dir, encoding: 'utf8', env }); return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }; };
+    let r = pit();
+    check('IMPL-0497:ng 入口: 欠陥の台帳が無く注入の記録に見逃した類型があると、/pit(next.mjs)の注記に「是正の記録の欠け」と類型の名が出る', r.status === 0 && /是正の記録の欠け 1 件/.test(r.out) && /境界値/.test(r.out), r.out);
+    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'docs/defect-ledger.md'), '# 欠陥の台帳\n\n## 是正の記録(標準 第4章 G-5「是正の起動」)\n\n| 日付 | 起点 | 対象 | 問い |\n| --- | --- | --- | --- |\n| 2026-11-19 | 注入 | 境界値(注入の記録) | 書いた |\n\n## 引き下げの点検の記録\n');
+    r = pit();
+    check('IMPL-0497:ok 入口: 対応する行がそろえば、/pit の注記に「是正の記録の欠け」は出ない', r.status === 0 && !/是正の記録の欠け/.test(r.out), r.out);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log('');
