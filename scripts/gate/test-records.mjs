@@ -182,9 +182,16 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
       riskConfirmedBy: '—',
       d0Version: '3',
       judgedAt: '2026-10-22 10:00',
+      doneCondition: null,
+      unitPeriod: null,
     }),
     JSON.stringify(r)
   );
+  // 様式 04 の欄: あれば読み、様式の文言のまま・空・選択肢が残ったままは null
+  const withDone = recordFromForm('| 作業単位の完了の条件 | 受入基準を全て満たす |\n| 単位期間の長さ | 2週間 |\n', 'f.md', 'base');
+  check('recordFromForm: 完了の条件・単位期間の長さの欄を読む', withDone.doneCondition === '受入基準を全て満たす' && withDone.unitPeriod === '2週間', JSON.stringify(withDone));
+  const blankDone = recordFromForm('| 作業単位の完了の条件 | <記入> |\n| 単位期間の長さ |  |\n', 'f.md', 'base');
+  check('recordFromForm: 完了の条件・単位期間の長さが未記入なら null', blankDone.doneCondition === null && blankDone.unitPeriod === null, JSON.stringify(blankDone));
   check('recordFromForm: 結果欄に選択肢が残っていれば result=null、resultRaw に記載', (() => {
     const x = recordFromForm('| 結果 | 通過 / 差し戻し |\n', 'f.md', 'base');
     return x.result === null && x.resultRaw === '通過 / 差し戻し';
