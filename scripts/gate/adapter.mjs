@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES, localDay } from './config.mjs';
 import { effectiveAllowedLicenses } from './license-allowlist.mjs';
+import { decideStage, evaluateMutation } from './mutation-stage.mjs';
 
 const [, , mode, phase] = process.argv;
 const config = loadConfig();
@@ -44,7 +45,10 @@ if (!phase) {
   process.exit(2);
 }
 
-const cmd = (adapter.commands ?? {})[phase];
+// 段 mutation・regulatory は、キーが無いことを空と同じに扱う(既存の採用者のアダプタは持たない。必須かは下で判定する)
+const STAGE_PHASES = new Set(['mutation', 'regulatory']);
+const rawCmd = (adapter.commands ?? {})[phase];
+const cmd = STAGE_PHASES.has(phase) && rawCmd === undefined ? '' : rawCmd;
 
 if (cmd === undefined) {
   fail(`アダプタ ${adapter.id} に phase "${phase}" の定義がありません`);
@@ -73,7 +77,27 @@ if (!always && !state.present) {
 // 任意の検査は空でも通す。必須の検査は空を許さない
 const OPTIONAL = new Set(['lint', 'audit', 'licenses', 'coverage', 'install']);
 
+const stage = STAGE_PHASES.has(phase) ? decideStage({ phase, config }) : null;
+
 if (!cmd.trim()) {
+  if (stage) {
+    // 必須の段が空なら失敗。必須でなければ注意で通す(標準 附属書F F.6・附属書H H.1。ADR-0244)
+    if (stage.required) {
+      fail(
+        `アダプタ ${adapter.id} の "${phase}" が空です(必須の理由: ${stage.reasons.join('、')})。adapters/${adapter.id}.json の commands.${phase} へ実行コマンドを書いてください。` +
+          (phase === 'mutation'
+            ? '道具の無い言語では、外部で実行した記録を照らすコマンドを置けます。どちらも `mutation-result: score=<数値|none> survivors=<所在>` の行を出します。段が空のままの通過に、第7章 7.3 の例外承認は使えません'
+            : '空のまま通すと、検査を実施していない状態を通過した記録として残ります')
+      );
+      process.exit(1);
+    }
+    notice(
+      `アダプタ ${adapter.id}: "${phase}" のコマンドが空のため実施しません(この変更では必須ではありません)。この事実は証跡へ残ります` +
+        (phase === 'mutation' ? '。R1 の変更の PR では、この段が空だと G-5 が失敗します' : '')
+    );
+    if (stage.q1Unreadable) notice('附属書F F.2 の Q1 の記録を読めないため、案件の条件では必須にしていません(D-0 の記入は check-d0 と出荷の集約が止めます)');
+    process.exit(0);
+  }
   if (OPTIONAL.has(phase)) {
     notice(`アダプタ ${adapter.id}: "${phase}" のコマンドが空のため実施しません。この事実は証跡へ残ります`);
     process.exit(0);
@@ -129,5 +153,16 @@ if (adapter.runtime === 'python' && adapter.runtimeVersion && !process.env.UV_PY
 if (!always && state.dir !== '.') console.log(`(所在: ${state.dir})`);
 if (always && !state.present) console.log(`(製品のコードの有無に依らず実施する検査です。リポジトリの直下で実行します)`);
 console.log(`$ ${command}`);
+if (phase === 'mutation') {
+  // 閾値(基底ブランチの構成から。無ければ渡さない)と比較の起点をコマンドへ渡す。出力の約束は mutation-stage.mjs
+  if (stage.threshold !== undefined) env.PIT_IN_MUTATION_THRESHOLD = String(stage.threshold);
+  if (stage.reasons.length) console.log(`(必須の理由: ${stage.reasons.join('、')})`);
+  const m = spawnSync(command, { shell: true, stdio: ['inherit', 'pipe', 'inherit'], cwd, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  process.stdout.write(m.stdout ?? '');
+  if ((m.status ?? 1) !== 0) process.exit(m.status ?? 1);
+  const ev = evaluateMutation({ out: m.stdout ?? '', stage });
+  for (const x of ev.messages) (x.level === 'error' ? fail : notice)(x.text);
+  process.exit(ev.ok ? 0 : 1);
+}
 const r = spawnSync(command, { shell: true, stdio: 'inherit', cwd, env });
 process.exit(r.status ?? 1);

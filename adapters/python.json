@@ -11,7 +11,9 @@
     "lint": "ruff check .",
     "audit": "pip-audit",
     "licenses": "pip-licenses --format=json | node \"{root}/scripts/gate/ip-clearance-python.mjs\"",
-    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\"",
+    "mutation": "",
+    "regulatory": ""
   },
   "thresholdFiles": [
     ".coveragerc",

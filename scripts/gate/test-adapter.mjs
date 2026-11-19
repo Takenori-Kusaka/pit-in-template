@@ -66,15 +66,15 @@ function workspace(stack, files = {}, adapterPatch = null, { noRc = false } = {}
   git('config', 'user.name', 'tester');
   git('add', '-A');
   git('commit', '-q', '-m', 'base');
-  const run = (script, args, exit = '0') => {
+  const run = (script, args, exit = '0', extraEnv = {}) => {
     const r = spawnSync(process.execPath, [path.join(dir, script), ...args], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${BIN}${path.delimiter}${process.env.PATH}`, FAKE_EXIT: exit },
+      env: { ...process.env, PATH: `${BIN}${path.delimiter}${process.env.PATH}`, FAKE_EXIT: exit, ...extraEnv },
     });
     return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
-  return { dir, run, adapter: (phase, exit) => run('scripts/gate/adapter.mjs', ['run', phase], exit), ran: (rel, name) => fs.existsSync(path.join(dir, rel, `.fake-${name}`)) };
+  return { dir, run, adapter: (phase, exit, extraEnv = {}) => run('scripts/gate/adapter.mjs', ['run', phase], exit, extraEnv), ran: (rel, name) => fs.existsSync(path.join(dir, rel, `.fake-${name}`)) };
 }
 
 // ---------------------------------------------------------------- 1. 秘匿情報の検査は対象なしで通さない(欠陥①)
@@ -270,6 +270,156 @@ for (const id of ['python-poetry', 'python-uv']) {
   check('IMPL-0683:ok 期限の日までは一覧に入る', eff([entry()], '2030-06-30').allowed.includes('GPL-3.0-only') && eff([entry()], '2030-06-30').active.length === 1);
   check('IMPL-0683:ok 恒久の一覧は期限に依らず常に入る', ['2000-01-01', '2999-01-01'].every((d) => perm.every((l) => eff([entry()], d).allowed.includes(l))));
   check('IMPL-0683:ok 欄がそろった暫定の許可は検査を通る', provisionalLicenseProblems(cfg([entry()])).length === 0 && provisionalLicenseProblems({ ci: {} }).length === 0);
+}
+
+// ---------------------------------------------------------------- 7. 段 mutation・regulatory(附属書F F.6・附属書H H.1。ADR-0244。process-compass #445)
+// 必須 =「案件の条件(Q1 が「はい」・CL3)」または「R1 の変更」。必須で空・キーなしなら失敗。出力の約束は
+// `mutation-result: score=<数値|none> survivors=<所在>`。閾値は基底の構成から読み、設定があるときだけ合否に使う
+{
+  const baseCmds = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', 'node.json'), 'utf8')).commands;
+  const { mutation: _m, regulatory: _r, ...withoutKeys } = baseCmds;
+  const emit = (line) => `node -e "console.log('${line}')"`;
+  const OKLINE = emit('mutation-result: score=90 survivors=reports/survivors.json');
+  const product = { 'package.json': '{ "name": "x" }\n' };
+  const R1BODY = '## リスク区分\n\nR1\n';
+  const R2BODY = '## リスク区分\n\nR2\n';
+  const sh = (W, ...a) => execFileSync('git', a, { cwd: W.dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  // 基底のコミットの後に、ファイルを足したコミットを作る。返す値は基底のコミット
+  const change = (W, rel = 'src/a.js', msg = 'change') => {
+    const base = sh(W, 'rev-parse', 'HEAD');
+    fs.mkdirSync(path.dirname(path.join(W.dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(W.dir, rel), 'x = 1;\n');
+    sh(W, 'add', '-A');
+    sh(W, 'commit', '-q', '-m', msg);
+    return base;
+  };
+  const cfgOf = (W) => JSON.parse(fs.readFileSync(path.join(W.dir, 'process.config.json'), 'utf8'));
+  const baseCfg = (W, patch) => {
+    const f = path.join(W.dir, 'base-config.json');
+    fs.writeFileSync(f, JSON.stringify({ ...cfgOf(W), ...patch }));
+    return f;
+  };
+  const setConfig = (W, patch) => fs.writeFileSync(path.join(W.dir, 'process.config.json'), JSON.stringify({ ...cfgOf(W), ...patch }, null, 2));
+  const pr = (base, body, extra = {}) => ({ PIT_IN_EVENT: 'pull_request', PIT_IN_DIFF_BASE: base, PIT_IN_PR_BODY: body, ...extra });
+  const mk = (mutation, { keyless = false } = {}) => workspace('node', product, { commands: keyless ? withoutKeys : { ...baseCmds, mutation } });
+  const AUTH_FLOOR = { riskFloor: { rules: [{ id: 'auth', paths: ['src/auth/**'], floor: 'R1', why: '認証' }] } };
+
+  // --- R1 の PR: 段が空・キーが無ければ失敗
+  {
+    const W = mk('');
+    const base = change(W);
+    const r = W.adapter('mutation', '0', pr(base, R1BODY));
+    check('IMPL-1029:ng R1 の PR で mutation が空なら G-5 の段を失敗させる', r.code === 1 && /"mutation" が空です/.test(r.out) && /R1/.test(r.out) && /7\.3 の例外承認は使えません/.test(r.out), r.out);
+    const reg = W.adapter('regulatory', '0', pr(base, R1BODY));
+    check('IMPL-1029:ok R1 の PR でも、規制業でなければ regulatory が空で通る', reg.code === 0 && /実施しません/.test(reg.out), reg.out);
+  }
+  {
+    const W = mk('', { keyless: true });
+    const base = change(W);
+    const r = W.adapter('mutation', '0', pr(base, R1BODY));
+    check('IMPL-1029:ng R1 の PR で mutation のキーが無くても(空と同じに扱い)失敗させる。終了コード 2 の落ち方にしない', r.code === 1 && /が空です/.test(r.out), r.out);
+    const r3 = W.adapter('mutation', '0', pr(base, R2BODY));
+    check('IMPL-1029:ok R2 の PR ならキーが無くても通り、R1 の PR では失敗する旨を注意に出す', r3.code === 0 && /R1 の変更の PR では、この段が空だと G-5 が失敗します/.test(r3.out), r3.out);
+  }
+  // --- R1 の判定の源
+  {
+    const W = mk('');
+    const base = change(W, 'src/auth/login.js');
+    const bc = baseCfg(W, AUTH_FLOOR);
+    const lo = W.adapter('mutation', '0', pr(base, R2BODY, { PIT_IN_BASE_CONFIG: bc }));
+    check('IMPL-1029:ng 本文が R2 でも、基底の構成の下限が R1 なら必須(高いほうを採る)', lo.code === 1 && /区分の下限が R1/.test(lo.out), lo.out);
+    const none = W.adapter('mutation', '0', pr(base, R2BODY));
+    check('IMPL-1029:ok 本文が R2 で下限の規則も無ければ、空でも通る', none.code === 0, none.out);
+    const un = W.adapter('mutation', '0', { PIT_IN_EVENT: 'pull_request', PIT_IN_DIFF_BASE: base, PIT_IN_PR_BODY: undefined });
+    check('IMPL-1029:ng PR の本文が渡されなければ判定できず、必須の側に倒れて失敗する', un.code === 1 && /判定できない/.test(un.out) && /PIT_IN_PR_BODY/.test(un.out), un.out);
+    const un2 = W.adapter('mutation', '0', {});
+    check('IMPL-1029:ng 起動の経路が分からなければ(手元の実行を含む)必須の側に倒れて失敗する', un2.code === 1 && /判定できない/.test(un2.out), un2.out);
+    const un3 = W.adapter('mutation', '0', pr('0000000000000000000000000000000000000000', R2BODY));
+    check('IMPL-1029:ng 比較の起点から差分を取れなければ(浅い取得)必須の側に倒れて失敗する', un3.code === 1 && /差分を取れない/.test(un3.out), un3.out);
+  }
+  // --- push の経路: トレーラ Risk: と下限の高いほう
+  {
+    const W = mk('');
+    const base = change(W, 'src/a.js', 'feat: a\n\nRisk: R1\nVerification: test');
+    const r = W.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base });
+    check('IMPL-1029:ng push でトレーラ Risk: R1 があれば必須(空なら失敗)', r.code === 1 && /トレーラ Risk: R1/.test(r.out), r.out);
+    const W2 = mk('');
+    const base2 = change(W2, 'src/a.js', 'feat: a\n\nRisk: R2\nVerification: test');
+    const r2 = W2.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base2 });
+    check('IMPL-1029:ok push でトレーラが R2 で下限も無ければ、空でも通る', r2.code === 0, r2.out);
+    const W3 = mk('');
+    const base3 = change(W3, 'src/auth/x.js', 'feat: a\n\nRisk: R2\nVerification: test');
+    const bc3 = baseCfg(W3, AUTH_FLOOR);
+    const r3 = W3.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base3, PIT_IN_BASE_CONFIG: bc3 });
+    check('IMPL-1029:ng push でトレーラが R2 でも、下限が R1 なら必須(トレーラを省く・低く書く経路を塞ぐ)', r3.code === 1 && /区分の下限が R1/.test(r3.out), r3.out);
+  }
+  // --- 案件の条件
+  {
+    const W = mk('');
+    setConfig(W, { answers: { ...cfgOf(W).answers, 'q-criticality': 'cl3' } });
+    const base = change(W);
+    const r = W.adapter('mutation', '0', pr(base, R2BODY));
+    check('IMPL-0763:ng CL3 の案件では、R2 の PR でも mutation が空なら失敗させる', r.code === 1 && /安全重要度 CL3/.test(r.out), r.out);
+    const W2 = mk(OKLINE);
+    setConfig(W2, { answers: { ...cfgOf(W2).answers, 'q-criticality': 'cl3' } });
+    const base2 = change(W2);
+    const nt = W2.adapter('mutation', '0', pr(base2, R2BODY));
+    check('IMPL-0763:ng CL3 の案件で閾値が未設定なら、段を失敗させる(ADR-0224 決定6)', nt.code === 1 && /ci\.mutationThreshold が未設定/.test(nt.out), nt.out);
+    setConfig(W2, { ci: { ...cfgOf(W2).ci, mutationThreshold: 80 } });
+    const ok = W2.adapter('mutation', '0', pr(base2, R2BODY));
+    check('IMPL-0763:ok CL3 の案件で閾値 80 を定め、スコア 90 なら通る', ok.code === 0 && /閾値 80 以上/.test(ok.out), ok.out);
+  }
+  {
+    const W = mk('');
+    setConfig(W, { answers: { ...cfgOf(W).answers, 'q-quality': 'quality-regulated' } });
+    const base = change(W);
+    const r = W.adapter('regulatory', '0', pr(base, R2BODY));
+    check('IMPL-0930:ng 規制業の案件で regulatory が空なら失敗させる', r.code === 1 && /"regulatory" が空です/.test(r.out) && /規制業/.test(r.out), r.out);
+  }
+  // --- 出力の約束
+  {
+    const cases = [
+      ['行が無い', 'node -e "console.log(1)"', 1, /mutation-result: score=/],
+      ['スコアが数値でも none でもない', emit('mutation-result: score=abc survivors=s.json'), 1, /数値でも none でもありません/],
+      ['スコアが範囲外', emit('mutation-result: score=150 survivors=s.json'), 1, /数値でも none でもありません/],
+      ['所在が空', emit('mutation-result: score=90 survivors='), 1, /所在\(survivors=\)が空/],
+      ['コマンドの終了コードが 0 でない', 'node -e "process.exit(3)"', 3, /./],
+      ['対象の変異体なし(none)', emit('mutation-result: score=none survivors=-'), 0, /対象の変異体なし/],
+      ['スコアと所在が出る', OKLINE, 0, /閾値なしで通過.*検出力が足りるとは主張しません/],
+    ];
+    for (const [label, cmd, code, re] of cases) {
+      const W = mk(cmd);
+      const base = change(W);
+      const r = W.adapter('mutation', '0', pr(base, R1BODY));
+      check(`IMPL-1029:${code === 0 ? 'ok' : 'ng'} R1 の PR の出力の約束: ${label}`, r.code === code && re.test(r.out), r.out);
+    }
+  }
+  // --- 閾値(基底の構成から。設定があるときだけ比較する)
+  {
+    for (const [label, cmd, v, code, re] of [
+      ['閾値 80・スコア 70 は失敗', emit('mutation-result: score=70 survivors=s.json'), 80, 1, /70 が閾値 80 に届きません/],
+      ['閾値 80・スコア 85 は通る', emit('mutation-result: score=85 survivors=s.json'), 80, 0, /閾値 80 以上/],
+      ['閾値があっても none は比較せず通る', emit('mutation-result: score=none survivors=-'), 80, 0, /閾値の比較はしません/],
+      ['閾値が数値でなければ失敗', OKLINE, '80', 1, /0〜100 の数値ではありません/],
+    ]) {
+      const W = mk(cmd);
+      const base = change(W);
+      const bc = baseCfg(W, { ci: { ...cfgOf(W).ci, mutationThreshold: v } });
+      const r = W.adapter('mutation', '0', pr(base, R1BODY, { PIT_IN_BASE_CONFIG: bc }));
+      check(`IMPL-1029:${code === 0 ? 'ok' : 'ng'} R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
+    }
+  }
+  // 閾値の型の契約(verify-gate-contract.mjs が使う)
+  {
+    const { thresholdProblems } = await import('./mutation-stage.mjs');
+    check('IMPL-0763:ng 閾値が文字列なら問題にする', thresholdProblems({ ci: { mutationThreshold: '80' }, answers: {} }, null).length === 1);
+    check('IMPL-0763:ng CL3 で閾値が未設定なら問題にする', thresholdProblems({ ci: {}, answers: { 'q-criticality': 'cl3' } }, null).length === 1);
+    check('IMPL-0763:ok CL3 でも数値の閾値があれば問題にしない。R1 だけに当たる構成は閾値を求めない', thresholdProblems({ ci: { mutationThreshold: 80 }, answers: { 'q-criticality': 'cl3' } }, null).length === 0 && thresholdProblems({ ci: {}, answers: { 'q-criticality': 'cl0' } }, null).length === 0);
+  }
+  for (const id of ['go', 'node', 'none', 'python-poetry', 'python-uv', 'python', 'undetermined']) {
+    const a = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', `${id}.json`), 'utf8')).commands;
+    check(`${id}: アダプタは空の mutation・regulatory を持つ(既定のコマンドは置かない)`, a.mutation === '' && a.regulatory === '');
+  }
 }
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });

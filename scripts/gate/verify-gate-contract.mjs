@@ -92,6 +92,7 @@ import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
 import { coverageScopeOf, canMeasureChanged, briefCoverageScope, briefCoverageBaseline, SCOPE_LABEL, coverageFormatOf, isLanguageAdapter, COVERAGE_FORMATS } from './coverage-check.mjs';
 import { stackCoverageReport } from './stack-coverage.mjs';
+import { thresholdProblems } from './mutation-stage.mjs';
 
 const config = loadConfig();
 const problems = [];
@@ -866,6 +867,8 @@ if (adapter && config.gates?.g5?.state !== 'omitted') {
     const cfgThreshold = config.ci?.coverageThreshold;
     const thresholdOk = typeof cfgThreshold === 'number' && Number.isFinite(cfgThreshold) && cfgThreshold >= 0 && cfgThreshold <= 100;
     if (!thresholdOk) problems.push('構成に ci.coverageThreshold(G-5 基準3 の基準値。組織が定める値)がありません。参考の値では判定しません(第1章 1.7.7)。/process-change(種別 settings)で値を書いてください');
+    // ミューテーションの閾値の型と在否(附属書F F.6・ADR-0224 決定6。案件の条件に当たる構成では必須、それ以外は任意で、定めた場合は数値)
+    for (const msg of thresholdProblems(config, read('docs/D-0-governance.md'))) problems.push(msg);
     const brief = read('docs/project-brief.md');
     if (brief !== null) {
       const base = briefCoverageBaseline(brief);

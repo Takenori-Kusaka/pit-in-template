@@ -11,7 +11,9 @@
     "lint": "uv run --locked ruff check .",
     "audit": "uv export --locked --format requirements-txt --no-emit-project --no-header --quiet --output-file \"${RUNNER_TEMP:-/tmp}/pit-in-uv-requirements.txt\" && uvx --from \"pip-audit>=2.7\" pip-audit --disable-pip --require-hashes -r \"${RUNNER_TEMP:-/tmp}/pit-in-uv-requirements.txt\"",
     "licenses": "uvx --from \"pip-licenses>=5\" pip-licenses --python \"$(uv run --locked python -c 'import sys;print(sys.executable)')\" --format=json | node \"{root}/scripts/gate/ip-clearance-python.mjs\"",
-    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\"",
+    "mutation": "",
+    "regulatory": ""
   },
   "thresholdFiles": [
     ".coveragerc",

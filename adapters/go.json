@@ -10,7 +10,9 @@
     "lint": "go vet ./...",
     "audit": "govulncheck ./...",
     "licenses": "go-licenses check ./... --allowed_licenses=\"$(printf '%s' \"$PIT_IN_ALLOWED_LICENSES\" | tr ';' ',')\"",
-    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\""
+    "secretScan": "npx --yes -p secretlint@13.0.6 -p @secretlint/secretlint-rule-preset-recommend@13.0.6 secretlint \"**/*\"",
+    "mutation": "",
+    "regulatory": ""
   },
   "thresholdFiles": [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"],
   "coverageSummary": "coverage.out",

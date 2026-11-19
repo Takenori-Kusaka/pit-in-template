@@ -400,6 +400,63 @@ jobs:
       - name: 秘匿情報の混入検査
         run: node scripts/gate/adapter.mjs run secretScan
 
+  # 段 mutation(変異試験。標準 附属書F F.6・附属書H H.1。ADR-0224・ADR-0244)。構成済みなら常に走る(ジョブの if: に条件を書かない)。
+  # 必須かどうか(案件の条件、または R1 の変更)は段の中で判定する。必須でなければ、段の中で注意を出して成功で終わる。
+  # R1 の判定に、PR の本文(イベントのペイロード。fork の PR でも読める)と、比較の起点・基底ブランチの構成を渡す。
+  # 浅い取得だと差分を取れず、判定できないものとして必須の側に倒れるため、全履歴を取得する
+  mutation:
+    name: mutation
+    needs: config
+    if: needs.config.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - uses: ./.github/actions/setup-stack
+      - name: 比較の起点と基底ブランチの構成を取り出す
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="origin/${BASE_REF}"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            base="$BEFORE"
+          else
+            base="HEAD^"
+          fi
+          echo "PIT_IN_EVENT=${EVENT_NAME}" >> "$GITHUB_ENV"
+          echo "PIT_IN_DIFF_BASE=${base}" >> "$GITHUB_ENV"
+          if git show "${base}:process.config.json" > "${RUNNER_TEMP}/base-process.config.json" 2>/dev/null; then
+            echo "PIT_IN_BASE_CONFIG=${RUNNER_TEMP}/base-process.config.json" >> "$GITHUB_ENV"
+          fi
+      - name: 変異試験
+        env:
+          PIT_IN_PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/gate/adapter.mjs run mutation
+
+  # 段 regulatory(規制要件の検査。構成の回答 q-quality が quality-regulated のとき必須。ADR-0224)
+  regulatory:
+    name: regulatory
+    needs: config
+    if: needs.config.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - uses: ./.github/actions/setup-stack
+      - name: 規制要件の検査
+        run: node scripts/gate/adapter.mjs run regulatory
+
   # 基準8 依存関係の追加・更新の識別。合否は判定せず一覧を出す
   dependency-diff:
     name: dependency-diff
