@@ -754,6 +754,15 @@ node scripts/init/generate-profile.mjs --change <migrate の入力> --dry-run   
 - `.claude/skills/pit/reference/handoff.md` は取り込みで書き換わります。独自に改めている場合は、同じ箇所を直してください
 - `CLAUDE.md` の変更は AI維持管理者の承認を経ます(`state:needs-platform`)
 
+### 14. process-compass #446 の更新(IMPL-0772・0651・0709・0900)を取り込むとき
+
+契約と構成書と PR の検査に、次の3つの検査を足しました。**取り込むと、既存の構成が止まることがあります**。
+
+- **外した項目の宣言(IMPL-0772)**: 契約検査(`verify-gate-contract.mjs`)が、構成の `answers` から規則による導出をやり直し、ゲートの状態が導出より弱い(`required` から `simplified`・`omitted`、`simplified` から `omitted`)のに `unmet[]` にも `deviations[]` にも当該ゲートの記録が無ければ失敗させます。導出は、取り込んだ知識ベース(`scripts/vendor/tailoring-kb.json`)で行います。知識ベースの更新で導出が強くなった案件も、同じ理由で止まります。対処は、回答を改めた結果なら `/process-change` で再導出するか、外した理由と解消の時点を宣言として記録するかです。**パラメータ(`reviewerCount` など)の弱めは確かめません**(確かめる者: プロセス内部監査)
+- **構成書の追随(IMPL-0651)**: `check-process-rules.mjs`(`gate-entry.yml` が呼ぶ)が、`PROCESS-PROFILE.md` の全体を構成から生成し直した内容と文字列で比べ、食い違えば失敗させます。構成書を手で編集した案件と、取り込んだテンプレートの更新で生成の内容が変わった案件は、取り込み後の最初の実行で止まります。対処は `/process-change` で再生成することです(生成日時は構成の値を使うため、再生成だけで日付は動きません)。構成が未設定の案件は照らしません
+- **基準集合の範囲(IMPL-0709)**: `check-pr.mjs` が、正解の目録(`answers.json`)の `cases[]` から事例の識別(`id`)を削る PR で、同じ PR の `docs/exit-rehearsal.json` の `baselineScope.at`(承認日)が基底より後の実在の日で、`approvedBy` が記入済みでなければ失敗させます。**識別を残した事例の中身の書き換えと、`id` を持たない事例は確かめません**(確かめる者: 技術判断者)
+- 出荷判定(G-7)の手引き(`.claude/skills/gate/gates/G-7.md`)に、支援に関与した者を同一案件の判定者にしないことを、判定者本人が確かめる手順を足しました(IMPL-0900。機械は照らしません)
+
 ## 関連
 
 - 📖 [ピットイン方式とは — AI が実装する時代の開発プロセスを、一枚の図で理解する](https://zenn.dev/takenori_kusaka/articles/pit-in-process-overview) — 全体像の概要(Zenn)
