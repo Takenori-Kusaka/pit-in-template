@@ -365,6 +365,10 @@ if (process.platform === 'win32') {
   const none = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [{ type: 'deletion', ruleset_id: 12 }] } }));
   // IMPL-0314:ng(違反の入力: G-6 が無効の構成で、gate-g5 が必須チェックに無い)
   check('G-6 が無効の構成で gate-g5 が必須チェックに無ければ「不一致」', none.items.ruleset?.status === 'mismatch' && /gate-g5/.test(none.items.ruleset?.detail ?? ''), JSON.stringify(none.items.ruleset));
+  // process-compass #356 / IMPL-0191: pull_request の規則が無い構成は、状態を変えずに直接の push の欠けを詳細に出す
+  check('G-6 無効・必須チェックだけの構成は、確認済みのまま、詳細に直接の push の欠けを出す(状態は変えない)', ok.items.ruleset?.status === 'confirmed' && /直接の push/.test(ok.items.ruleset?.detail ?? '') && /5.6.2 第2層/.test(ok.items.ruleset?.detail ?? ''), JSON.stringify(ok.items.ruleset));
+  const withPr = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: RULES_TEAM } }));
+  check('pull_request の規則を含む応答では、直接の push の欠けを出さない', !/直接の push/.test(withPr.items.ruleset?.detail ?? ''), JSON.stringify(withPr.items.ruleset));
   w.done();
 }
 
@@ -392,6 +396,14 @@ if (process.platform === 'win32') {
   check('名義の照合は所見であり、9項目の確認済みの判定と終了コードを変えない', human.code === agent.code && Object.keys(human.items).length === 9, `${human.code} / ${agent.code}`);
   const unread = w.run(ghMap(), ['--seat', 'dev-verifier']);
   check('名義の照合: gh api user を読めなければ未確認', unread.record?.performerAccount?.status === 'unconfirmed', JSON.stringify(unread.record?.performerAccount));
+  w.done();
+}
+
+{
+  // G-6 有効で pull_request が無い: 不一致で、理由と直接の push の欠けの両方を詳細に出す(#356)
+  const w = workspace(TEAM);
+  const g6 = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: RULES_CHECKS } }));
+  check('G-6 有効・pull_request なしは「不一致」で、理由と直接の push の欠けの両方を詳細に出す', g6.items.ruleset?.status === 'mismatch' && /pull_request の規則が無い/.test(g6.items.ruleset?.detail ?? '') && /直接の push/.test(g6.items.ruleset?.detail ?? ''), JSON.stringify(g6.items.ruleset));
   w.done();
 }
 

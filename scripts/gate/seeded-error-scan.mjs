@@ -13,6 +13,7 @@
 //
 // 限界(記録にも書く): 標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash・リポジトリの squash の既定の文の設定(PR の題だけ等)は、
 // この走査では拾えない。「流出がない」とは記録しない(標準 5.6.2: 4層あっても流出しないとは記録してはならない)。
+// PR の検査(check-pr.mjs)が同じ判定(markerCommitsInRange)を import する(process-compass #356 / IMPL-0191)。
 // 標識の文字列は下の定数1か所に置く。標識の形が変わるとき(標識の可視性と秘匿の審議。#356 B)は、ここだけを直す。
 
 import fs from 'node:fs';
@@ -30,6 +31,8 @@ export const STATEMENT_FAILED = '走査が成立していない(理由は failur
 export const STATEMENT_FOUND ='標識の残存あり';
 export const LEDGER_OFF = '台帳と照合していない';
 export const FALSE_POSITIVE_HINT = `標識の文字列を本文に含むコミットは、本文から語を外すか、第7章の例外承認で受ける`;
+// PR の取り込み前の検査の失敗の文。PR の時点は PR のブランチで文を直せるため、例外承認を案内しない(出荷の走査は本番の履歴に入った後で直せないので案内する)
+export const PR_MARKER_HINT = `注入したコミットは既定ブランチへ取り込みません(第5章 5.6.2 第2層。第7章の例外承認では受けない)。説明のために語を書いたコミットなら、PR のブランチでその行を本文から外します。注入したコミットの標識は外しません(演習の変更は演習用のブランチで閉じる)`;
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 function git(cwd, args) {
@@ -40,6 +43,20 @@ function git(cwd, args) {
 /** 本文に標識の行があるか */
 export function hasMarker(body) {
   return MARKER_LINE.test(String(body ?? '').replace(/\r\n/g, '\n'));
+}
+
+/** 範囲(git log の spec)のコミットのうち、本文に標識の行があるものの SHA の配列。読めなければ null。浅い clone の検査は呼ぶ側が決める */
+export function markerCommitsInRange(cwd, spec) {
+  const log = git(cwd, ['log', '--format=%x1e%H%x1f%B', spec]);
+  if (log === null) return null;
+  return parseLog(log).filter((c) => hasMarker(c.body)).map((c) => c.sha);
+}
+
+function parseLog(log) {
+  return log.split('').filter((s) => s.trim() !== '').map((s) => {
+    const i = s.indexOf('');
+    return { sha: s.slice(0, i).trim(), body: s.slice(i + 1) };
+  });
 }
 
 /** 台帳(JSON。配列、または entries / ledger の配列)を読む。id・expiresAt・reclaimedAt だけを使う */

@@ -15,6 +15,7 @@
 //   node scripts/gate/adoption-trial.mjs verify <記録>              記録の末尾の要約値(入力と本文)を再計算し、一致を確かめる
 //
 // 7つの要件(I.11)を、このコマンドでは次のように扱う。
+//      (pull_request の規則が無い構成は、状態を変えずに直接の push の欠けを詳細に出す。process-compass #356)
 //   ⑦ 実環境の統制の確認は env-check が実環境の gh で読む(#288 第6巡)。模擬の gh・未認証・成果物が無い環境では各項目を
 //      「読めない」として未確認に倒し、記録の節3 と出荷の集約の項目4 に「未確認」と出し続ける(未達のゲートと同じ扱い)。
 //      場面集(⑤)が一時の複製と模擬の gh で止まることと、実環境でブランチ保護が効いていることは別の事実である
@@ -1630,11 +1631,13 @@ function envCheck() {
     if (!Array.isArray(r.value)) items.ruleset = fromFailure(r, 'ルールセットの一覧を読めない');
     // 読めた空の一覧は「不一致」(読めなかった場合と区別する。#315 R-4)
     else if (!r.value.length) {
-      items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)`, evidence: { rulesetIds: [], api, fetchedAt } };
+      items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)。pull_request の規則が無い: 既定ブランチへの直接の push を禁じていない。標識を含むコミットの取り込み前の拒否(第5章 5.6.2 第2層)は PR の経路だけで働き、直接の push の経路では欠ける。出荷の時点は走査が止める(IMPL-0047)`, evidence: { rulesetIds: [], api, fetchedAt } };
       rsRead = { pr: null, checks: [], rulesetIds: [], api, fetchedAt };
     } else {
       const pr = r.value.find((x) => x?.type === 'pull_request')?.parameters ?? null;
       const checks = r.value.filter((x) => x?.type === 'required_status_checks').flatMap((x) => x?.parameters?.required_status_checks ?? []).map((c) => c?.context).filter(Boolean);
+      // 直接の push の欠けは、状態を変えずに詳細へ出す(G-6 の有効・無効に依らない。process-compass #356 / IMPL-0191)
+      const prGap = !pr ? '既定ブランチへの直接の push を禁じていない。標識を含むコミットの取り込み前の拒否(第5章 5.6.2 第2層)は PR の経路だけで働き、直接の push の経路では欠ける。出荷の時点は走査が止める(IMPL-0047)' : null;
       const bad = [];
       if (g6Active) {
         if (!pr) bad.push('pull_request の規則が無い');
@@ -1657,8 +1660,8 @@ function envCheck() {
         ? `承認 ${pr?.required_approving_review_count} 名・push での古い承認の失効・最後の push の後の承認${ownerReview ? '・コードオーナー' : ''}・必須チェック ${checks.join('/')}`
         : `必須チェック ${checks.join('/')}(G-6 が無効の構成のため、承認の規則は確かめない)`;
       items.ruleset = bad.length
-        ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset ?? 'ルールセットなし'}。G-6 ${g6Active ? `有効・承認 ${want} 名` : '無効'})と一致しない: ${bad.join('。')}`, evidence }
-        : confirmedWith('ruleset', `ブランチ ${branch} に${what}が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)`, evidence);
+        ? { status: 'mismatch', detail: `効いている規則が構成(${ruleset ?? 'ルールセットなし'}。G-6 ${g6Active ? `有効・承認 ${want} 名` : '無効'})と一致しない: ${bad.join('。')}${prGap ? `。${bad.includes('pull_request の規則が無い') ? '' : 'pull_request の規則が無い: '}${prGap}` : ''}`, evidence }
+        : confirmedWith('ruleset', `ブランチ ${branch} に${what}が効いている(コア機能に別の承認者の数があれば、ルールセットでは強制されず、G-5 の警告と出荷の集約で確かめる)${prGap ? `。pull_request の規則が無い: ${prGap}` : ''}`, evidence);
     }
   }
 

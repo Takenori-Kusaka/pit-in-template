@@ -338,6 +338,20 @@ function aggCheck(d, rec, mod = readSeededScan) {
   check('T-7 行を持たない旧い様式は止めない', problemsFor(absent).length === 0);
 }
 
+// process-compass #356 / IMPL-0191: PR の検査が import する markerCommitsInRange
+{
+  const { markerCommitsInRange, PR_MARKER_HINT } = await import(pathToFileURL(SCAN).href);
+  const d = mkRepo();
+  commit(d, 'f1.txt', '1\n', 'feat: one');
+  commit(d, 'f2.txt', '2\n', `feat: two\n\n${MARK}`);
+  commit(d, 'f3.txt', '3\n', 'feat: three');
+  const second = git(d, 'rev-parse', 'HEAD~1');
+  check('T-8 markerCommitsInRange は標識の行のあるコミットだけの SHA を返す(3 コミット中 2 番目だけ)', JSON.stringify(markerCommitsInRange(d, 'v1..HEAD')) === JSON.stringify([second]));
+  check('T-8 標識の無い範囲は空の配列を返す(ok)', markerCommitsInRange(d, 'v1..HEAD~2').length === 0);
+  check('T-8 読めない範囲は null を返す(ng)', markerCommitsInRange(d, 'no-such-ref..HEAD') === null);
+  check('T-8 PR の文は例外承認で受けると案内しない', !/例外承認で受ける/.test(PR_MARKER_HINT) && /例外承認では受けない/.test(PR_MARKER_HINT));
+}
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 console.log(failed ? `\n${failed} 件失敗` : '\nすべて通った');
 process.exit(failed ? 1 : 0);
