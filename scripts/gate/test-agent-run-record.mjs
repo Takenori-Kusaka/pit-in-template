@@ -244,6 +244,59 @@ function repo() {
   );
 }
 
+// ---------------------------------------------------------------- IMPL-0225 読み込みの記録
+{
+  const W = repo();
+  const read = (input, env = {}) => {
+    const e = { ...process.env, ...env };
+    delete e.CLAUDE_CODE_SESSION_ID;
+    Object.assign(e, env);
+    return spawnSync(process.execPath, ['scripts/gate/agent-run-record.mjs', 'read'], { cwd: W.dir, encoding: 'utf8', input, env: e });
+  };
+  const reads = (id) => {
+    try {
+      return fs
+        .readFileSync(path.join(W.dir, '.claude', 'agent-runs', `${id}.reads.jsonl`), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l).path);
+    } catch {
+      return [];
+    }
+  };
+  const ev = (id, fp) => JSON.stringify({ session_id: id, tool_name: 'Read', tool_input: { file_path: fp } });
+  // IMPL-0225:ok
+  read(ev('sess-r', path.join(W.dir, '.claude', 'note.md')));
+  read(ev('sess-r', 'context/glossary.md'));
+  read(ev('sess-r', 'context/glossary.md'));
+  check('IMPL-0225:ok 指示資産の Read(絶対パス・相対パス)が、実行の識別子ごとの記録へ追記される', JSON.stringify(reads('sess-r')) === JSON.stringify(['.claude/note.md', 'context/glossary.md', 'context/glossary.md']), JSON.stringify(reads('sess-r')));
+  read(ev('sess-r2', 'CLAUDE.md'));
+  check('IMPL-0225:ok 別の実行の識別子は別の記録に入る', JSON.stringify(reads('sess-r2')) === JSON.stringify(['CLAUDE.md']) && reads('sess-r').length === 3);
+  // IMPL-0225:ng
+  read(ev('sess-x', 'src/app.js'));
+  read(ev('sess-x', path.join(os.tmpdir(), 'other.md')));
+  read(ev('sess-x', '../outside/CLAUDE.md'));
+  read(ev('sess-x', '.claude/agent-runs/sess-r.reads.jsonl'));
+  read(ev('sess-x', '.claude/settings.local.json'));
+  read(ev('sess-x', 'context/_archive/old.md'));
+  check('IMPL-0225:ng 指示資産の外・作業ツリーの外・除外のパスの Read は記録しない', reads('sess-x').length === 0 && !fs.existsSync(path.join(W.dir, '.claude', 'agent-runs', 'sess-x.reads.jsonl')), JSON.stringify(reads('sess-x')));
+  // 壊れた入力
+  const bad = [read('{not json'), read(''), read('null'), read(JSON.stringify({ session_id: '../evil', tool_input: { file_path: 'CLAUDE.md' } })), read(JSON.stringify({ session_id: 's', tool_input: { file_path: 42 } })), read(JSON.stringify({ session_id: 's' }))];
+  check('IMPL-0225:ng 壊れた入力・不正な識別子・パスの欠落でも、フックは 0 で終わり作業を止めない', bad.every((r) => r.status === 0), bad.map((r) => `${r.status} ${r.stderr}`).join('\n'));
+  check('IMPL-0225:ng 不正な識別子では記録を書かない', !fs.existsSync(path.join(W.dir, '.claude', 'evil.reads.jsonl')) && reads('s').length === 0);
+  const envR = read('', { CLAUDE_CODE_SESSION_ID: 'sess-env' });
+  check('IMPL-0225:ok 記録は指示資産の要約値を変えない(.claude/agent-runs/ は除外)', (() => { const a = W.record('sess-d'); return a.status === 0 && W.readRecord('sess-d')?.assets === 'clean'; })() && envR.status === 0);
+  // 記録できない種別
+  const u = read('', {});
+  const un = spawnSync(process.execPath, ['scripts/gate/agent-run-record.mjs', 'read', '--unrecordable'], { cwd: W.dir, encoding: 'utf8' });
+  check('IMPL-0225:ok 道具を経ずに文脈へ入るファイルは「記録できない種別」として出力に出る', un.status === 0 && /記録できない種別/.test(un.stdout) && /CLAUDE\.md/.test(un.stdout) && /スキル/.test(un.stdout) && u.status === 0, un.stdout);
+  // 設定
+  const st = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude', 'settings.json'), 'utf8'));
+  const hook = (st.hooks?.PostToolUse ?? []).find((h) => h.matcher === 'Read');
+  check('IMPL-0225:ok settings.json の PostToolUse(matcher: Read)が agent-run-record.mjs read を呼ぶ', hook?.hooks?.some((x) => /agent-run-record\.mjs read$/.test(x.command)) === true);
+  fs.rmSync(W.dir, { recursive: true, force: true });
+}
+
 // ---------------------------------------------------------------- core.hooksPath
 {
   const W = repo();

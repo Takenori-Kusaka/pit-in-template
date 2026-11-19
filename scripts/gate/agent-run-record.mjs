@@ -1,6 +1,7 @@
 // 実行の記録(標準 第5章 5.8.2 の生成の条件。IMPL-0207・IMPL-1019・IMPL-0743・IMPL-0828。ADR-0222)
 //
 //   node scripts/gate/agent-run-record.mjs record          SessionStart のフック。標準入力の JSON(session_id・source)を読み、記録を書く
+//   node scripts/gate/agent-run-record.mjs read             PostToolUse(Read)のフック。指示資産の Read だけを .claude/agent-runs/<id>.reads.jsonl へ追記する(IMPL-0225)
 //   node scripts/gate/agent-run-record.mjs assets <id>      commit-msg のフックが、トレーラ Agent-Assets の値を得る
 //
 // 観測の記録とフックのトレーラで運ぶ(ADR-0126 決定5)。道具の入力を書き換える形と、履歴からの導出は採らない。
@@ -143,6 +144,41 @@ export function assetsTrailerValue(id, cwd = ROOT) {
   }
 }
 
+// ---------------------------------------------------------------- 読み込みの記録(IMPL-0225。標準 5.8 の要求事項6)
+//   PostToolUse(matcher: Read)のフックが呼ぶ。指示資産(ASSET_ROOTS)のパスの Read だけを、実行の識別子ごとの
+//   .claude/agent-runs/<id>.reads.jsonl へ 1 行ずつ追記する。指示資産の外の Read は記録しない(全ての Read は採らない)。
+//   記録は書き換えを防げない。「監査できる状態」の証明ではなく、棚卸しの入力(確かめる者: プロセス内部監査)。
+//   フックの失敗で作業を止めない(常に 0 で終わる)
+export const READ_UNRECORDABLE = [
+  'CLAUDE.md・AGENTS.md(常駐の指示ファイル。起動時に道具を経ず文脈へ入る)',
+  '下位のディレクトリの CLAUDE.md(該当の作業のときに自動で入る)',
+  '条件つきの規則のファイル(.claude/rules/ のうち、自動で入るもの)',
+  'スキルの定義(description の一覧は起動時に自動で入る。本文の読み込みは Skill 道具による)',
+];
+
+export function readsPath(id, cwd = ROOT) {
+  return path.join(cwd, RUN_DIR, `${id}.reads.jsonl`);
+}
+
+/** 指示資産のパスなら、作業ツリーからの相対パス(/ 区切り)を返す。外・除外・不正なら null */
+export function assetRelPath(filePath, cwd = ROOT) {
+  if (typeof filePath !== 'string' || !filePath || filePath.includes('\0')) return null;
+  const rel = path.relative(cwd, path.resolve(cwd, filePath)).split(path.sep).join('/');
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || excluded(rel)) return null;
+  return ASSET_ROOTS.some((r) => rel === r || rel.startsWith(`${r}/`)) ? rel : null;
+}
+
+/** Read の記録を追記する。記録したら { recorded: true, path }。対象外・識別子不正は理由を返す */
+export function appendReadRecord(id, filePath, cwd = ROOT, now = new Date()) {
+  if (!safeId(id)) return { recorded: false, reason: 'invalid-id' };
+  const rel = assetRelPath(filePath, cwd);
+  if (!rel) return { recorded: false, reason: 'not-asset' };
+  const file = readsPath(id, cwd);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${JSON.stringify({ at: now.toISOString(), path: rel })}\n`);
+  return { recorded: true, path: rel };
+}
+
 // ---------------------------------------------------------------- 監査・集約が使う分類(IMPL-0743・IMPL-0828。対立 4)
 //   clean / dirty       版を特定できる(入力に用いる。dirty は件数を別に出す)
 //   unknown             Agent-Assets が unknown(...)。版を特定できない(外す対象)
@@ -189,6 +225,27 @@ async function main() {
     process.stdout.write(assetsTrailerValue(arg));
     return;
   }
+  if (cmd === 'read') {
+    // PostToolUse(Read)。どんな入力でも 0 で終わり、作業を止めない
+    try {
+      if (arg === '--unrecordable') {
+        console.log(`記録できない種別(道具を経ずに文脈へ入るもの):\n${READ_UNRECORDABLE.map((s) => `  - ${s}`).join('\n')}`);
+        return;
+      }
+      let input = {};
+      try {
+        if (!process.stdin.isTTY) input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+      } catch {
+        input = {};
+      }
+      const id = input.session_id || process.env.CLAUDE_CODE_SESSION_ID;
+      const fp = input.tool_input?.file_path;
+      if (id && fp) appendReadRecord(id, fp, ROOT);
+    } catch {
+      // 記録の失敗で作業を止めない
+    }
+    return;
+  }
   if (cmd === 'record') {
     let input = {};
     try {
@@ -211,7 +268,7 @@ async function main() {
     }
     return;
   }
-  console.error('使い方: node scripts/gate/agent-run-record.mjs <record|assets <id>>');
+  console.error('使い方: node scripts/gate/agent-run-record.mjs <record|read [--unrecordable]|assets <id>>');
   process.exit(2);
 }
 
