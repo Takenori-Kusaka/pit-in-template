@@ -167,7 +167,7 @@ ${view(goal, win, alt)}${costTable({})}`;
   check('IMPL-0878:ng git の版(<ref>:<path>)でも読める', r.out.includes('欄「現在の代替手段」が前案件の企画書'), r.out);
   r = run({ PREVIOUS_BRIEF: 'prev/ない.md' });
   check('IMPL-0878:ng 読めない所在は、確認していない旨を出す', r.out.includes('読めないため'), r.out);
-  // IMPL-0884: D-0 は判定した企画書の版の時点の物で比べる。D-0 と企画書を同じコミットに入れて版を作る
+  // IMPL-0884: 最初の G-1(通過の記録が無い)だけ順序を比べる。D-0 と企画書を同じコミットに入れて版を作る
   const d0 = (approved, judged) => `---
 project_id: P-001
 version: v1
@@ -204,28 +204,23 @@ next_review: 2027-05-01
   versionWith('日付ではない', '日付ではない');
   r = run();
   check('IMPL-0884:ok 読めない日付は確認できないと出し、失敗にしない', !r.out.includes('立ち上げの順序が逆です') && r.out.includes('確認できない日付があります'), r.out);
-  // G-1 を通過済み: 判定した版の時点の D-0 で比べる。変化点で現在の D-0 の承認日が改まっても失敗にしない
+  // G-1 の通過の記録がある: 順序を機械で比べない。承認し直した D-0・様式 09 で失敗にしない。表示の行を出す
+  const NOTE = '立ち上げの順序を機械で比べない';
   const verOk = versionWith('2026-01-01', '2026-01-02');
   W.write('docs/gates/g1.md', g1Record(verOk));
   W.write('docs/D-0-governance.md', d0('2026-03-01', '2026-01-02'));
   W.commit('docs: G-1 と、変化点で承認日を改めた D-0');
   r = run();
-  check('IMPL-0884:ok G-1 を通過済みで、判定した版の時点の D-0 が順序どおりなら、現在の D-0 の承認日が後でも失敗にしない', !r.out.includes('立ち上げの順序が逆です') && !r.out.includes('確かめられません'), r.out);
-  // 判定した版の時点の D-0 が逆なら、通過済みでも失敗にする
-  const verBad = versionWith('2026-03-01', '2026-01-02');
-  W.write('docs/gates/g1.md', g1Record(verBad));
-  W.commit('docs: 順序が逆の版で G-1');
+  check('IMPL-0884:ok 通過の記録があり、変化点で D-0 を承認し直しても失敗にしない。表示の行が出る', !r.out.includes('立ち上げの順序が逆です') && !r.out.includes('確かめられません') && r.out.includes(NOTE), r.out);
+  W.write('docs/safety-risk-assessment.md', '# 安全リスクアセスメント\n\n## 承認\n\n| 作成者 | 承認者 | 承認日 |\n| --- | --- | --- |\n| 作成 太郎 | 承認 花子 | 2999-12-31 |\n');
+  W.commit('docs: 通過の後に様式 09 を承認し直す');
   r = run();
-  check('IMPL-0884:ng G-1 を通過済みでも、判定した版の時点の D-0 が逆なら失敗にする', !r.ok && r.out.includes('::error::立ち上げの順序が逆です'), r.out);
-  // 版が読めないときは確かめられないとして失敗にする
-  W.write('docs/gates/g1.md', g1Record('0123456789abcdef0123456789abcdef01234567'));
-  W.commit('docs: 存在しない版を指す G-1');
+  check('IMPL-0884:ok 通過の記録があり、様式 09 を承認し直しても失敗にしない。表示の行が出る', !r.out.includes('立ち上げの順序が逆です') && !r.out.includes('確かめられません') && r.out.includes(NOTE), r.out);
+  // 通過の記録が無く、様式 09 の承認日が企画書より後: 逆
+  fs.rmSync(path.join(W.dir, 'docs/gates/g1.md'));
+  W.commit('docs: G-1 の記録を外す');
   r = run();
-  check('IMPL-0884:ng 判定した版を読めないときは、確かめられないと出して失敗にする', !r.ok && r.out.includes('確かめられません') && r.out.includes('::error::立ち上げの順序'), r.out);
-  W.write('docs/gates/g1.md', g1Record('該当なし'));
-  W.commit('docs: 版の記録が無い G-1');
-  r = run();
-  check('IMPL-0884:ng G-1 の判定記録に版が無いときも、確かめられないと出して失敗にする', !r.ok && r.out.includes('確かめられません') && r.out.includes('::error::立ち上げの順序'), r.out);
+  check('IMPL-0884:ng 通過の記録が無く、様式 09 の承認日が企画書のコミットの日付より後なら失敗する', !r.ok && r.out.includes('立ち上げの順序が逆です') && r.out.includes('2999-12-31') && !r.out.includes(NOTE), r.out);
   fs.rmSync(W.dir, { recursive: true, force: true });
 }
 

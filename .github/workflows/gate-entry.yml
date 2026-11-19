@@ -63,7 +63,7 @@ jobs:
     name: g1-check
     runs-on: ubuntu-latest
     steps:
-      # 立ち上げの順序(D-0・安全の判定・企画書のコミットの日付)を履歴から読むため、履歴をすべて取得する(IMPL-0884)
+      # 企画書の日付(最後のコミット)と、判定した企画書の版(G-1 の時点の見積りの上書き、PREVIOUS_BRIEF の <ref>:<path>)を履歴から読むため、履歴をすべて取得する(IMPL-0884・IMPL-0878)
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
