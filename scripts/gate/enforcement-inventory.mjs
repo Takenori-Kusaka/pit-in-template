@@ -5,7 +5,7 @@
 //        (scripts/gate/・.github/workflows/ のパス、または実行の記録にあるワークフロー・ジョブの名)を含む行
 //   (ii) GitHub Actions の実行の記録から、ワークフロー・ジョブごとの失敗の回数と最後の失敗の日
 // 合否に使わない。削除の候補を機械が選ばない。読み出せないとき(権限)は「読めない」と出し、0 件と読み違えさせない。
-// 一覧の上限(1,000 件)に達した・総数より少ない場合は「一部しか読めていない」と出し、保持期間で窓の前半が欠けた可能性(最も古い実行が窓の始まりより後)も出す。数を確定の値にしない。
+// 一覧の上限(1,000 件)に達した・総数より少ない場合は「一部しか読めていない」と出し、記録が欠けた可能性(最も古い実行が窓の始まりより後。実行が無かったか、実行の記録が保持期間または手で削除されたかは区別しない)も出す。数を確定の値にしない。
 // 失敗した実行だけを詳しく読む(ジョブごとの失敗は、失敗した実行のジョブの記録から数える)。窓は UTC の暦で、時計は読まない(--now を渡さない)。
 //
 // 使い方: node scripts/gate/enforcement-inventory.mjs --quarter 2026Q4 [--repo owner/name]
@@ -160,8 +160,8 @@ export function inventory({ window: win, ledgerText, runsResult, jobsOf }) {
   }
 
   lines.push('## 2. GitHub Actions の実行の失敗(ワークフロー・ジョブごと)', '');
-  if (runsResult?.error) lines.push(`読めない: 実行の記録を読み出せませんでした(${runsResult.error})。権限(Actions の読み取り)か保持期間の外の可能性があります。失敗が 0 件という意味ではありません。`, '');
-  else if (!done.workflows.length) lines.push('窓の中の実行の記録が 0 件でした(保持期間の外の実行は一覧に出ません)。', '');
+  if (runsResult?.error) lines.push(`読めない: 実行の記録を読み出せませんでした(${runsResult.error})。権限(Actions の読み取り)などの可能性があります。失敗が 0 件という意味ではありません。`, '');
+  else if (!done.workflows.length) lines.push('窓の中の実行の記録が 0 件でした(窓の中に実行が無かったか、実行の記録が消えているかを、この出力からは区別できません)。', '');
   else {
     const rl = runsResult.runs;
     const got = rl.length;
@@ -170,7 +170,7 @@ export function inventory({ window: win, ledgerText, runsResult, jobsOf }) {
     const short = total !== null && total > got;
     if (capped || short) lines.push(`**一部しか読めていません**: 実行の記録の一覧は 1 回の絞り込みで ${RUNS_API_CAP} 件までしか返りません。読めた ${got} 件${total !== null ? `(応答の総数 ${total} 件)` : ''}。以下の失敗・実行の数は確定の値ではなく、少なく出ている可能性があります。`, '');
     const oldest = rl.map((r) => String(r.created_at ?? '').slice(0, 10)).filter(Boolean).sort()[0];
-    if (oldest && oldest > win.from) lines.push(`注意: 読めた最も古い実行は ${oldest} で、窓の始まり ${win.from} より後です。実行の記録の保持期間(既定 90 日)で窓の前半が欠けているか、その期間は実行が無かったかを、この出力からは区別できません。数を確定の値として読まないでください。`, '');
+    if (oldest && oldest > win.from) lines.push(`注意: 読めた最も古い実行は ${oldest} で、窓の始まり ${win.from} より後です。90 日はログと成果物の保持期間で、2026-11-19 の観測では、それより古い実行とジョブの記録も残っていました。ただし GitHub の文書は 2026-10-01 以降、実行の記録にも保持期間(既定 90 日)を適用すると書いています。その期間に実行が無かったか、実行の記録が保持期間または手で削除されたかを、この出力からは区別できません。数を確定の値として読まないでください。`, '');
     const rowsOf = (workflowPath, jobName) =>
       matched
         .filter((r) => r.target.includes(workflowPath) || (jobName && nameIn(r.target, jobName)))

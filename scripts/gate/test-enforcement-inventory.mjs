@@ -87,7 +87,7 @@ check('IMPL-0145:ok ジョブの名を対象に書いた是正の行が、その
 const unreadable = inventory({ window: win, ledgerText: ledger, runsResult: { error: 'HTTP 403' }, jobsOf });
 check('IMPL-0145:ng 実行の記録を読めなければ「読めない」と出し、失敗 0 件と読み違えさせない', /読めない: 実行の記録を読み出せませんでした\(HTTP 403\)/.test(unreadable) && /0 件という意味ではありません/.test(unreadable) && !/\| 失敗 \|/.test(unreadable));
 check('IMPL-0145:ng 台帳が無い・節が無ければ「読めない」と出す', /読めない: docs\/defect-ledger\.md がありません/.test(inventory({ window: win, ledgerText: null, runsResult: { runs: [] }, jobsOf })) && /節「是正の記録」が見つかりません/.test(inventory({ window: win, ledgerText: '# x\n', runsResult: { runs: [] }, jobsOf })));
-check('実行が 0 件なら、0 件と保持期間の注意を出す', /0 件でした\(保持期間/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [] }, jobsOf })));
+check('実行が 0 件なら、0 件と記録が消えた可能性の注意を出す', /0 件でした\(窓の中に実行が無かったか/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [] }, jobsOf })));
 
 // ---- 取りこぼしを黙って数えない(上限・総数との差・保持期間・ジョブの記録・名の一致) ----
 const capRuns = Array.from({ length: 1000 }, (_, i) => R(100 + i, '.github/workflows/gate-g5.yml', 'success', '2026-11-20'));
@@ -96,7 +96,7 @@ check('IMPL-0145:ng 一覧の上限(1,000 件)に達したら「一部しか読�
 const shortText = inventory({ window: win, ledgerText: ledger, runsResult: { runs: runs.slice(0, 2), total: 40 }, jobsOf });
 check('IMPL-0145:ng 応答の総数より少なければ「一部しか読めていない」と出す', /一部しか読めていません/.test(shortText) && /総数 40 件/.test(shortText));
 check('IMPL-0145:ok 総数と一致し、上限に届かなければ「一部しか読めていない」は出さない', !/一部しか読めていません/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: runs.slice(0, 2), total: 2 }, jobsOf })));
-check('IMPL-0145:ng 最も古い実行が窓の始まりより後なら、保持期間で欠けた可能性を出す', /窓の始まり 2026-10-01 より後/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'success', '2026-11-20')], total: 1 }, jobsOf })) && !/窓の始まり 2026-10-01 より後/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'success', '2026-10-01')], total: 1 }, jobsOf })));
+check('IMPL-0145:ng 最も古い実行が窓の始まりより後なら、記録が欠けた可能性(保持期間・手による削除を区別しない)を出す', /窓の始まり 2026-10-01 より後/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'success', '2026-11-20')], total: 1 }, jobsOf })) && /区別できません/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'success', '2026-11-20')], total: 1 }, jobsOf })) && !/窓の始まり 2026-10-01 より後/.test(inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'success', '2026-10-01')], total: 1 }, jobsOf })));
 const unreadText = inventory({ window: win, ledgerText: ledger, runsResult: { runs: [R(1, 'a.yml', 'failure', '2026-11-01'), R(2, 'a.yml', 'failure', '2026-11-02')], total: 2 }, jobsOf: (r) => (r.id === 1 ? null : []) });
 check('IMPL-0145:ng ジョブの記録を読めなかった失敗の実行の件数を出す。再実行で成功した失敗は数えないと書く', /読めなかった失敗した実行: 1 件/.test(unreadText) && /run_attempt が 2 以上/.test(unreadText) && tally([R(1, 'a.yml', 'failure', '2026-11-01')], () => null).jobsUnread === 1);
 check('名の一致は語の境界つき(ジョブ名 test が latest・pre-test に当たらない。語として独立した test は当たる。意味は読まない)', isDeviceTarget('lint-docs の修正', ['lint-docs']) && isDeviceTarget('製品の test データの改め', ['test']) && !isDeviceTarget('latest の更新', ['test']) && isDeviceTarget('ジョブ test の是正', ['test']) && !isDeviceTarget('pre-test の是正', ['test']));
