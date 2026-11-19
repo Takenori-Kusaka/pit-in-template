@@ -4560,6 +4560,9 @@ export function renderProcessRules(config) {
   return L.join('\n');
 }
 
+/** 知識ベースの gates に在るゲートのキー(g1 など)。構成のゲートのキーがこの中に在るかの検査(IMPL-0771)が使う。構成を作るときの写像 GATE_BY_KEY のキー */
+export const knownGateKeys = () => Object.keys(GATE_BY_KEY);
+
 /**
  * 規則による導出のゲートの状態(buildConfig と同じ導出。未達への読み替えは含まない)。{ g1: 'required', ... }。
  * 外した項目を宣言せずに運用していないかの照合(IMPL-0772)に使う。導出できなければ null

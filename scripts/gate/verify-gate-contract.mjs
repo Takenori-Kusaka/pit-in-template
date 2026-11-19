@@ -86,7 +86,7 @@ import {
   performerAccountStates,
   PERFORMER_ACCOUNT_LABEL,
 } from './config.mjs';
-import { seatSeparationFindings, ruleStanding, pendingSeparationProblems, derivedGateStates, pendingTightenings } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, ruleStanding, pendingSeparationProblems, derivedGateStates, pendingTightenings, knownGateKeys } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
@@ -327,6 +327,15 @@ const VALID = /^(required|simplified|omitted|unmet|merged-into-g[1-8])$/;
 for (const [key, g] of Object.entries(config.gates ?? {})) {
   if (!VALID.test(g.state)) {
     problems.push(`${key}: 状態 "${g.state}" は不正です。required / simplified / omitted / unmet / merged-into-gN のいずれかにしてください`);
+  }
+}
+
+// 構成のゲートは知識ベースの gates からだけ作られる。キーが知識ベースの gates に無いゲートは、差し戻し基準(判定基準の表)を持たない
+// (テーラリングの禁止事項3。IMPL-0771)。写像は構成を作るときのもの(generate-profile.mjs の GATE_BY_KEY)を使う
+const KNOWN_GATE_KEYS = new Set(knownGateKeys());
+for (const key of Object.keys(config.gates ?? {})) {
+  if (!KNOWN_GATE_KEYS.has(key)) {
+    problems.push(`${key}: 知識ベースの gates に無いゲートです。差し戻し基準(判定基準の表)を持たないゲートは作れません(テーラリングの禁止事項3)。構成からこのキーを除いてください`);
   }
 }
 

@@ -399,6 +399,16 @@ function workspace({ keepOwner = false } = {}) {
   v = w.node('scripts/gate/verify-gate-contract.mjs');
   // IMPL-0321:ok(適合の入力: 現行の形式の版の構成)
   check('現行の形式の版の構成は、版の欄で失敗にしない', !contractErrors(v.out).some((l) => /formatVersion|schemaVersion/.test(l)), contractErrors(v.out).join('\n'));
+  // IMPL-0771:ng(違反の入力: 知識ベースの gates に無いゲートのキーを足した構成)
+  for (const extra of ['g-extra', 'g9']) {
+    w.writeJson('process.config.json', { ...future, gates: { ...future.gates, [extra]: { ...future.gates.g4, label: 'G-9' } } });
+    v = w.node('scripts/gate/verify-gate-contract.mjs');
+    check(`差し戻し基準を持たないゲート(キー ${extra})を足した構成は、契約検査が失敗にする`, contractErrors(v.out).some((l) => new RegExp(`${extra}: 知識ベースの gates に無い`).test(l)), v.out.slice(-800));
+  }
+  w.writeJson('process.config.json', future);
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0771:ok(適合の入力: 知識ベースのゲートだけの構成)
+  check('知識ベースのゲートだけの構成は、ゲートのキーで失敗にしない', !contractErrors(v.out).some((l) => /知識ベースの gates に無い/.test(l)) && Object.keys(future.gates).length >= 8, contractErrors(v.out).join('\n'));
 
   // 契約検査: フックの登録の欠けと @OWNER
   const settings = w.read('.claude/settings.json');

@@ -192,13 +192,15 @@ export function safetyRecordProblems(text, { ledgerRows = null, day = null, isVa
 
 /**
  * 適用の判定。q1: 真=はい・偽=いいえ・null=読めない。cls: D-0 の記録の区分と構成の回答の区分(cl0〜cl3 か null)。
- * 適用外にするのは、Q1 が「いいえ」と読め、かつ区分が読めて CL0・CL1 のときだけ。判定できないときは適用として扱う
+ * required: 構成のゲート g7 の params.safetyVerificationRecord が required か(規則 r-e-cl2 の導出の値。和として足す)。
+ * 適用外にするのは、Q1 が「いいえ」と読め、かつ区分が読めて CL0・CL1 で、構成の値も required でないときだけ。判定できないときは適用として扱う
  */
-export function safetyRecordApplies({ q1, classes = [] }) {
+export function safetyRecordApplies({ q1, classes = [], required = false }) {
   const ranks = classes.filter(Boolean).map((c) => Number(String(c).slice(2)));
   const high = ranks.length ? Math.max(...ranks) : null;
   if (q1 === true) return { applies: true, why: 'D-0 表10 の F.2 の Q1 が「はい」' };
   if (high !== null && high >= 2) return { applies: true, why: `安全重要度 CL${high}` };
+  if (required === true) return { applies: true, why: '構成のゲート g7 の safetyVerificationRecord が required' };
   if (q1 === false && high !== null) return { applies: false, why: '適用外(Q1 いいえ・CL0/CL1)' };
   return { applies: true, why: '適用を判定できない(Q1 または区分を読めない)ため適用として扱う' };
 }
@@ -222,7 +224,7 @@ export function checkSafetyRecord({ root = ROOT, config = null, day = null } = {
     const p = resolveSigner(config, name);
     return !!p && !aiNameBlocked(config, p.name) && !aiNameBlocked(config, name);
   };
-  const ap = safetyRecordApplies({ q1, classes });
+  const ap = safetyRecordApplies({ q1, classes, required: config?.gates?.g7?.params?.safetyVerificationRecord === 'required' });
   if (!ap.applies) return { applies: false, why: ap.why, problems: [], hr: null };
   const ledgerText = read('docs/debt-ledger.md');
   const { problems, hr } = safetyRecordProblems(read(SAFETY_RECORD_FILE), { ledgerRows: ledgerText ? parseLedger(ledgerText) : null, day, isValidApprover });

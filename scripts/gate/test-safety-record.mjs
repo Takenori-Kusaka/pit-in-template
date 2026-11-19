@@ -190,6 +190,36 @@ for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)',
   }
   check('適用: 判定の純関数(区分が読めず Q1 いいえ)は適用として扱う', safetyRecordApplies({ q1: false, classes: [null] }).applies === true);
 }
+// IMPL-0761:ng
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'safety-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), '## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n| 判定した区分 | CL1 |\n| 附属書F F.2 の回答 | いいえ |\n');
+    const cfg = (v) => ({ answers: { 'q-criticality': 'cl1' }, gates: { g7: { state: 'required', params: v === undefined ? {} : { safetyVerificationRecord: v } } } });
+    const r = checkSafetyRecord({ root: tmp, config: cfg('required') });
+    check('0761 違反: 構成の g7 が required でも、Q1 いいえ・CL1・記録なしなら適用として欠落に数える', r.applies && r.problems.length > 0, JSON.stringify(r));
+    check('0761 違反: 純関数も required を適用の和として扱う', safetyRecordApplies({ q1: false, classes: ['cl1'], required: true }).applies === true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+// IMPL-0761:ok
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'safety-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs/D-0-governance.md'), '## 16. 安全重要度の判定の記録\n\n| 項目 | 内容 |\n| --- | --- |\n| 判定した区分 | CL1 |\n| 附属書F F.2 の回答 | いいえ |\n');
+    const cfg = (v) => ({ answers: { 'q-criticality': 'cl1' }, gates: { g7: { state: 'required', params: v === undefined ? {} : { safetyVerificationRecord: v } } } });
+    check('0761 適合: 構成の値が無い・Q1 いいえ・CL1 は適用外のまま', !checkSafetyRecord({ root: tmp, config: cfg(undefined) }).applies);
+    check('0761 適合: 値が required 以外(none)なら適用外のまま', !checkSafetyRecord({ root: tmp, config: cfg('none') }).applies);
+    fs.writeFileSync(path.join(tmp, 'docs/safety-risk-assessment.md'), render());
+    const r = checkSafetyRecord({ root: tmp, config: cfg('required') });
+    check('0761 適合: 値が required でも、記入済みの記録なら欠落なし', r.applies && r.problems.length === 0, r.problems.join(' / '));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 // ---- IMPL-0927: 承認者の照合を実物の名簿から作る(checkSafetyRecord)
 {
