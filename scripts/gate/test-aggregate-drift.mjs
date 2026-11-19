@@ -43,6 +43,8 @@ t('担い手(適合): 宣言と同じ版の共著者 → 0件', d({ declaredMode
 t('担い手(偽の合格の固定): 宣言「claude」は別の版の「Claude Opus 4.5」を通す', d({ declaredModels: ['claude'], coAuthors: ['Claude Opus 4.5 <noreply@anthropic.com>'] }).length === 0);
 t('担い手(偽の合格の固定): 版の無い共著者「Claude」は宣言「claude-opus-4-5」を通す', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Claude <noreply@anthropic.com>'] }).length === 0);
 t('担い手(偽の合格の固定): 版の一部だけの共著者「Claude Opus 4」は宣言「claude-opus-4-5」を通す(宣言の一部分に当たる)', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Claude Opus 4 <noreply@anthropic.com>'] }).length === 0);
+t('担い手(偽の合格の固定): 宣言「claude-opus-4」は別の版の記録「Claude Opus 4.5」を通す(宣言が記録の一部分に当たる向き。部分一致は両方の向きで通す)', d({ declaredModels: ['claude-opus-4'], coAuthors: ['Claude Opus 4.5 <noreply@anthropic.com>'] }).length === 0);
+t('担い手(偽の合格の固定): 名称に英数字の無い共著者(日本語の名・名の無い記録)は、どの宣言とも一致したとみなす(判定は変えない)', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['山田 太郎 <taro@example.com>', '<x@y>'] }).length === 0);
 t('担い手(偽の合格の固定): 宣言の文字列に含まれる1文字の名「a」は宣言「claude-opus-4-5」を通す', d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['a <a@example.com>'] }).length === 0);
 t('担い手(偽の検出の固定): 人の共著者は検出する(人の共著者を含む場合があると文に書く)', (() => {
   const r = d({ declaredModels: ['claude-opus-4-5'], coAuthors: ['Hanako Sato <hanako@example.com>'] });
@@ -144,7 +146,9 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
     t('IMPL-1033:ng 通し(ng): 数字の無い共著者は行B の警告を別の行で出す(1 件。計 2 行)', wa.some((l) => /数字\(版\)を含む名称が無いコミット 1 件/.test(l)) && wa.length === 2, wa.join('\n'));
     t('通し: 説明に限界(Agent-Run の無いコミットは数えない・5.8.2 の自動の記録の代わりではない)を書く', wa.length > 0 && wa.every((l) => /Agent-Run を持つコミットだけ/.test(l) && /代わりではありません/.test(l)));
     t('通し: 欠落に数えない(::error:: の行にモデルの識別の本文が無い)', !lines(withRuns).some((l) => /::error::/.test(l) && /モデルの識別\(5\.8\.2\)/.test(l)) && !/## 欠落[\s\S]*モデルの識別\(5\.8\.2\)/.test(withRuns.report));
-    t('IMPL-1033:ok 通し(ok): Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
+    const okRuns = runWith(null, [msg('d', 'Claude Opus 4.5 <noreply@anthropic.com>')]);
+    t('IMPL-1033:ok 通し(ok): Agent-Run と「Claude Opus 4.5 <…>」を持つコミットだけの実行では警告を出さない', /を出力しました/.test(okRuns.out) && !lines(okRuns).some((l) => /モデルの識別(5.8.2)/.test(l)), okRuns.out.slice(-400));
+    t('通し: Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
     t('通し: 品質レポートにも行A・行B を出す', /Co-Authored-By が無いコミット 1 件/.test(withRuns.report) && /数字\(版\)を含む名称が無いコミット 1 件/.test(withRuns.report));
     {
       const agg = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'aggregate-evidence.mjs'), 'utf8');

@@ -4,6 +4,7 @@
 // 違反(ng)と適合(ok)を対で確かめる。検査が確かめるのは記入の形だけで、内容の妥当性・環境が本番でないこと・
 // 試験を行ったこと・推奨度が規格の表のとおりかは機械で閉じない(確かめる者: 独立した評価者と G-7 の判定者)。
 
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -219,6 +220,46 @@ for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)',
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// ---- IMPL-0761: 集約の入口を通す(集約が構成の g7 を checkSafetyRecord へ渡す結線。process-compass 束 B26 の突合 中-1)
+{
+  const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
+  const GAP = /安全関連部の検証の記録\(基準7\)/;
+  const NL = '\n';
+  const runAggregate = (g7Value) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-safety-agg-'));
+    try {
+      for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
+        if (SKIP.has(e.name)) continue;
+        fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
+      }
+      // 区分 CL1・F.2 の回答いいえ・記録なし。構成の g7 の値だけを変える
+      const cfgPath = path.join(dir, 'process.config.json');
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      cfg.answers = { ...(cfg.answers ?? {}), 'q-criticality': 'cl1' };
+      cfg.gates = { ...(cfg.gates ?? {}), g7: { ...(cfg.gates?.g7 ?? { state: 'required' }), params: g7Value === undefined ? {} : { safetyVerificationRecord: g7Value } } };
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + NL);
+      fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), ['## 16. 安全重要度の判定の記録', '', '| 項目 | 内容 |', '| --- | --- |', '| 判定した区分 | CL1 |', '| 附属書F F.2 の回答 | いいえ |', ''].join(NL));
+      fs.rmSync(path.join(dir, 'docs/safety-risk-assessment.md'), { force: true });
+      const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      git('init', '-q', '-b', 'main');
+      for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'tester'], ['core.autocrlf', 'false'], ['gc.auto', '0'], ['maintenance.auto', 'false']]) git('config', k, v);
+      git('add', '-A');
+      git('commit', '-q', '-m', 'chore: fixture');
+      const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: '', GH_TOKEN: '', GITHUB_TOKEN: '' } });
+      return `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+  // IMPL-0761:ng
+  const outReq = runAggregate('required');
+  check('0761 入口(違反): 集約を起動し、構成の g7 が required なら Q1 いいえ・CL1・記録なしでも基準7 の欠落が出る', GAP.test(outReq) && /を出力しました/.test(outReq), outReq.slice(-400));
+  // IMPL-0761:ok
+  const outNone = runAggregate(undefined);
+  check('0761 入口(適合): 集約を起動し、構成の値が無ければ基準7 の欠落は出ない', !GAP.test(outNone) && /を出力しました/.test(outNone), outNone.slice(-400));
 }
 
 // ---- IMPL-0927: 承認者の照合を実物の名簿から作る(checkSafetyRecord)
