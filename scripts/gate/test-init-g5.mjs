@@ -375,6 +375,22 @@ for (const n of [1, 3]) {
     r = W.node('scripts/gate/check-process-rules.mjs');
     // IMPL-0651:ok(戻した構成書は通る)
     check(`${tag}: 戻した PROCESS-PROFILE.md は check-process-rules が通る`, r.ok, r.out);
+    // IMPL-0651:ok(要約値の連鎖を持たない旧い構成は、手で書き換えた構成書でも注意にとどめる。check-d0 の生成区間と同じ扱い)
+    {
+      const cfgText = W.read('process.config.json');
+      const legacy = JSON.parse(cfgText);
+      const chained = (legacy.changeLog ?? []).some((e) => e?.stateHash);
+      legacy.changeLog = (legacy.changeLog ?? []).map((e) => {
+        const { stateHash, prevHash, ...rest } = e;
+        return rest;
+      });
+      W.write('process.config.json', `${JSON.stringify(legacy, null, 2)}\n`);
+      W.write('PROCESS-PROFILE.md', roleEdited);
+      r = W.node('scripts/gate/check-process-rules.mjs');
+      check(`${tag}: 連鎖を始めていない旧い構成は、手で書き換えた PROCESS-PROFILE.md を注意にとどめて失敗にしない`, chained && r.ok && /旧い構成のため注意にとどめています/.test(r.out), r.out);
+      W.write('process.config.json', cfgText);
+      W.write('PROCESS-PROFILE.md', profile);
+    }
   }
 
   // 既存のリポジトリへの持ち込み(process-compass #306): 既存の CLAUDE.md を残し、区間の目印だけを足した状態

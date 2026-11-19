@@ -86,7 +86,7 @@ import {
   performerAccountStates,
   PERFORMER_ACCOUNT_LABEL,
 } from './config.mjs';
-import { seatSeparationFindings, ruleStanding, pendingSeparationProblems, derivedGateStates } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, ruleStanding, pendingSeparationProblems, derivedGateStates, pendingTightenings } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
@@ -181,6 +181,9 @@ if (process.argv.includes('--instructions-digest')) {
 
 // ---------------------------------------------------------- 基底ブランチとの比較
 
+// compareWithBase が読んだ基底ブランチの構成(読めなかったときは null)。IMPL-0772 が、状態をこの変更で弱めたかを見るのに使う
+let baseConfigRead = null;
+
 /** 基底ブランチの構成と比べる。--base <ref>、または PR の GITHUB_BASE_REF から基底を読む */
 function compareWithBase() {
   const i = process.argv.indexOf('--base');
@@ -215,6 +218,7 @@ function compareWithBase() {
       } catch {
         problems.push(`基底ブランチ ${base} の process.config.json を読めません(JSON として不正)`);
       }
+      baseConfigRead = baseConfig;
       const found = baseChainProblems(baseConfig, config);
       for (const p of found) problems.push(`${p}(基底: ${base})`);
       // 取り込んだテンプレートの記録の上で、要約値が変わったパス(#315 突合 X-6)。強制層を変える変更と記録の取り直しを
@@ -391,12 +395,17 @@ for (const d of config.deviations ?? []) {
 }
 // 規則による導出より弱い状態(required → simplified・omitted・merged、simplified → omitted・merged)のゲートに、宣言が要る(IMPL-0772。
 // テーラリングの禁止事項6)。宣言は unmet[](未達)か deviations[](代償措置つきの逸脱)。強い向きの差は問わない。
-// 確かめるのはゲートの状態の差に限る。パラメータ(reviewerCount など)の弱めは確かめない(確かめる者: プロセス内部監査)
+// 確かめるのはゲートの状態の差に限る。パラメータ(reviewerCount など)の弱めは確かめない(確かめる者: プロセス内部監査)。
+// 取り込んだ知識ベースの更新で導出が強くなっただけの差(未適用の厳格化。ADR-0088 決定4。pendingTightenings が挙げる)は、
+// この変更が弱めたものではない。構成は知識ベースの版を記録しないため、状態の差だけでは両者を分けられない。
+// 分ける条件は、基底ブランチの構成の状態と比べること(決定可能): 基底より弱めた変更だけを失敗にし、基底と同じ状態の差は
+// 表示にとどめる(未適用の厳格化として /pit と証跡の集約が表示し続ける)。基底を読めない実行(ローカル・main への push)は表示にとどめる
 {
   const STATE_RANK = { required: 3, simplified: 2 };
   const rank = (s) => (s in STATE_RANK ? STATE_RANK[s] : 1); // omitted・merged-into-gN は、実施しない側で同じ段に数える
   const derived = derivedGateStates(config.answers);
   if (derived) {
+    const pending = new Set(pendingTightenings(config).map((t) => t.gate));
     for (const [key, want] of Object.entries(derived)) {
       const have = config.gates?.[key]?.state;
       if (have === undefined || have === 'unmet' || !VALID.test(have)) continue; // 未達は上の整合の検査が、不正な値は状態の値の検査が扱う
@@ -404,11 +413,19 @@ for (const d of config.deviations ?? []) {
       if (!weaker) continue;
       const declared =
         (config.unmet ?? []).some((u) => u.gate === key) || (config.deviations ?? []).some((d) => d.gate === key);
-      if (!declared) {
+      if (declared) continue;
+      const baseState = baseConfigRead?.gates?.[key]?.state;
+      const weakenedHere = baseState !== undefined && rank(baseState) > rank(have);
+      if (pending.has(key) && !weakenedHere) {
+        notes.push(
+          `gates.${key} の状態は "${have}" で、取り込んだ知識ベースの導出は "${want}" です。基底の状態から弱めた変更ではないため、` +
+            '未適用の厳格化として表示にとどめます(適用するには /process-change の種別 settings の空の入力。ADR-0088 決定4)'
+        );
+      } else {
         problems.push(
-          `gates.${key} の状態が "${have}" ですが、規則による導出は "${want}" で、宣言(unmet[] か deviations[] の記録)がありません。` +
-            '標準から外した項目を宣言せずに運用できません(テーラリングの禁止事項6)。外すなら理由と解消の時点を宣言として記録します。' +
-            '回答を改めた結果なら /process-change で再導出します。パラメータの弱めはこの検査の対象外です'
+          `gates.${key} の状態が "${have}" ですが、規則による導出は "${want}" で、宣言(未達として記録する: state を unmet にして unmet[] に理由、` +
+            'または deviations[] の記録)がありません。この変更が基底の状態から弱めています。標準から外した項目を宣言せずに運用できません(テーラリングの禁止事項6)。' +
+            '外すなら理由と解消の時点を宣言として記録します。回答を改めた結果なら /process-change で再導出します。パラメータの弱めはこの検査の対象外です'
         );
       }
     }

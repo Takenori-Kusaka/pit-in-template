@@ -433,22 +433,56 @@ function workspace({ keepOwner = false } = {}) {
   check('導出どおりのゲートの状態は、宣言が無くても通る(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
   w.writeJson('process.config.json', withG('g2', { state: 'simplified' }));
   v = w.node('scripts/gate/verify-gate-contract.mjs');
-  // IMPL-0772:ng(導出 required・構成 simplified・宣言なし)
-  check('導出 required のゲートを宣言なしで simplified にした構成は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates\.g2/.test(l)), v.out.slice(-800));
+  // 以降の ng は、基底(HEAD)の構成と比べて「この変更が弱めた」ものを失敗にする(取り込んだ知識ベースの更新で導出が強くなっただけの差は表示にとどめる。ADR-0088 決定4)
+  const vs = () => w.node('scripts/gate/verify-gate-contract.mjs', '--base', 'HEAD');
+  const noteOf = (out) => /gates.g2 の状態は "simplified" で、取り込んだ知識ベースの導出は "required"/.test(out);
+  w.writeJson('process.config.json', withG('g2', { state: 'simplified' }));
+  v = vs();
+  // IMPL-0772:ng(導出 required・基底 required・構成 simplified・宣言なし。この変更が弱めた)
+  check('基底から、導出 required のゲートを宣言なしで simplified に弱めた変更は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates.g2/.test(l)), v.out.slice(-800));
+  check('その失敗の文言は、宣言の無い逸脱として基底から弱めた変更だと示し、未達として記録する書き方(state を unmet)を案内する(IMPL-0772)', weakErrors(v.out).some((l) => /この変更が基底の状態から弱めています/.test(l) && /state を unmet/.test(l)), v.out.slice(-800));
   w.writeJson('process.config.json', withG('g2', { state: 'omitted' }));
-  v = w.node('scripts/gate/verify-gate-contract.mjs');
-  check('導出 required のゲートを宣言なしで omitted にした構成は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates\.g2/.test(l)), v.out.slice(-800));
+  v = vs();
+  check('基底から、導出 required のゲートを宣言なしで omitted に弱めた変更は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates.g2/.test(l)), v.out.slice(-800));
   w.writeJson(
     'process.config.json',
     withG('g2', { state: 'simplified' }, { deviations: [{ gate: 'g2', reason: '試験', resolveWhen: '2027-01', compensation: ['試験の代償措置'] }] })
   );
-  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  v = vs();
   // IMPL-0772:ok(同じ弱めに deviations の記録あり)
   check('同じ弱めに deviations[] の記録があれば、この検査では失敗にしない(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
   w.writeJson('process.config.json', withG('g3', { state: 'required' }));
-  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  v = vs();
   // IMPL-0772:ok(導出と同じ状態。強い向きの差は rank の比較で通る)
   check('導出と同じ状態(g3 を required のまま)は、宣言が無くても通る(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  // IMPL-0772:ok(強い向き。導出 simplified・構成 required は問わない)
+  {
+    const strong = build({ 'q-team-size': 'size-1-2', 'q-external-reviewer': 'reviewer-no', 'q-biz-phase': 'poc' });
+    const strongCfg = JSON.parse(JSON.stringify(strong));
+    const derivedG1 = strongCfg.gates.g1.state;
+    strongCfg.gates.g1.state = 'required';
+    w.writeJson('process.config.json', sealed(strongCfg));
+    v = vs();
+    check('導出が simplified のゲートを required で運用する構成(強い向き)は、宣言が無くても失敗にしない(IMPL-0772)', derivedG1 === 'simplified' && !weakErrors(v.out).length, `${derivedG1} ${weakErrors(v.out).join('\n')}`);
+  }
+  // 未適用の厳格化だけ(基底も同じ状態。知識ベースの更新で導出が強くなった形)は、失敗にしないで表示する
+  w.writeJson('process.config.json', withG('g2', { state: 'simplified' }));
+  w.commit('chore: simplified in base');
+  v = vs();
+  // IMPL-0772:ok(未適用の厳格化だけ → 失敗しない。同じ表示に寄せる)
+  check('基底と同じ状態の差(未適用の厳格化だけ)は、契約検査が失敗にしない(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  check('その差は未適用の厳格化として表示にとどめる(原因を取り違えない)(IMPL-0772)', noteOf(v.out) && /未適用の厳格化/.test(v.out), v.out.slice(-800));
+  const noBase = w.node('scripts/gate/verify-gate-contract.mjs');
+  check('基底を読めない実行(--base なし)は、状態の差を表示にとどめ、失敗にしない(IMPL-0772)', !weakErrors(noBase.out).length && noteOf(noBase.out), noBase.out.slice(-800));
+  // 両方: 未適用の厳格化(g2。基底も simplified)と、この変更の弱め(g3 required → simplified)。弱めの分(g3)だけ失敗にする
+  {
+    const both = JSON.parse(JSON.stringify(base));
+    both.gates.g2 = { ...both.gates.g2, state: 'simplified' };
+    both.gates.g3 = { ...both.gates.g3, state: 'simplified' };
+    w.writeJson('process.config.json', sealed(both));
+  }
+  v = vs();
+  check('未適用の厳格化(g2)と宣言の無い弱め(g3)が同居する構成は、弱めの分(g3)だけ失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates.g3/.test(l)) && !weakErrors(v.out).some((l) => /gates.g2/.test(l)), v.out.slice(-800));
   w.done();
 }
 {

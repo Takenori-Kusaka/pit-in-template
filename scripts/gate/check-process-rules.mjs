@@ -17,7 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, ROOT, fail, notice, aiNameBlocked } from './config.mjs';
+import { loadConfig, ROOT, fail, notice, warn, aiNameBlocked, chainStarted } from './config.mjs';
 import { renderProcessRules, profileMdProblems, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
 import { RESIDENT_FILE, buildManifest, loadManifest, missingResident, omitProblems } from './claude-md-resident.mjs';
 
@@ -82,12 +82,14 @@ if (config.configured !== false) {
     process.exit(1);
   }
   const pm = profileMdProblems(config, fs.readFileSync(profilePath, 'utf8'));
-  if (pm.length) {
+  // 要約値の連鎖を持たない旧い構成は、最初の /process-change までは注意にとどめる(check-d0.mjs の生成区間と同じ扱い。IMPL-0651)
+  if (pm.length && chainStarted(config)) {
     for (const p of pm) fail(p);
     console.log('PROCESS-PROFILE.md は導出物です。手で編集しないでください。構成か D-0 を改めたあとは /process-change で再生成します。');
     console.log('取り込んだ準拠テンプレートの更新で生成の内容が変わった場合も、同じ手順で再生成します。');
     process.exit(1);
   }
+  for (const p of chainStarted(config) ? [] : pm) warn(`${p}(旧い構成のため注意にとどめています。最初の /process-change の後は失敗します)`);
 }
 
 // 常駐の規則の節(区間の外)
