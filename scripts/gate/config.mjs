@@ -2257,9 +2257,12 @@ export function riskFloorOverlapPatterns(config, typeId) {
 
 /**
  * baseConfig を渡すと(IMPL-0834・IMPL-0664。契約検査用)、基底の構成に既にあった欠けを problems でなく onInherited(注記)へ回す。
- * 対象は、4点目(enforcement)だけの欠けと、区分の下限 R1・R2 の規則との同一のパターンのうち、基底にも同じ欠けがあるもの。
- * 新しく足す・変える登録(基底に無い欠け)は problems のまま拒む。委任の停止(autonomy.mjs)はこの関数を通らず、常に止める。
- * baseConfig が null(基底を読めない実行)は、同じ欠けを全て注記にとどめる(IMPL-0772 と同じ向き。PR の契約検査は基底を解決できなければ別に失敗にする)。
+ * 対象は、4点目(enforcement)だけの欠けと、区分の下限 R1・R2 の規則との同一のパターンのうち、基底にも同じ欠けがあり、
+ * かつ登録の内容(種別。同一のパターンは、その種別を指す委任の規則と、パターンを持つ区分の下限の規則も)が基底と同じものだけ。
+ * 基底と内容が違う登録(種別・規則)で欠けがあれば、欠けが基底にもあっても problems で拒む(欠けたままの登録の書き換えは「変える」に当たる)。
+ * 新しく足す・変える登録は problems のまま拒む。委任の停止(autonomy.mjs)はこの関数を通らず、常に止める。
+ * baseConfig が null(基底を読めない実行)は、同じ欠けを全て注記にとどめる(onInherited の第2引数は 'unread'。基底と比べていないため、
+ * 基底に既にあるかを確かめていない旨を出す。PR と既定ブランチへの push の契約検査は基底を解決して比べ、解決できなければ別に失敗にする)。基底を読んだ実行の第2引数は 'base'。
  * undefined(既定)は、従来どおり全て problems
  */
 export function changeTypeProblems(config, { checkRegistrant = true, only = null, existingConfig = null, baseConfig, onInherited = null } = {}) {
@@ -2295,9 +2298,11 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     const baseMissingKeys = new Set(baseType ? missingBasis(baseType.basis).map(([k]) => k) : []);
     const inheritable = baseConfig !== undefined && typeof onInherited === "function";
     const enforcementOnly = missing.length > 0 && missing.every(([k]) => k.startsWith("enforcement"));
-    const inheritedBasis = inheritable && enforcementOnly && (baseConfig === null || missing.every(([k]) => baseMissingKeys.has(k)));
+    const sameType = baseType !== null && baseType !== undefined && canonicalJson(t) === canonicalJson(baseType);
+    const inheritedBasis = inheritable && enforcementOnly && (baseConfig === null || (sameType && missing.every(([k]) => baseMissingKeys.has(k))));
+    const inheritNote = (m) => onInherited(m, baseConfig === null ? 'unread' : 'base');
     if (missing.length) {
-      (inheritedBasis ? { push: onInherited } : out).push(
+      (inheritedBasis ? { push: inheritNote } : out).push(
         `${at}: 変更種別 "${id}" に、登録の根拠(basis)がない(${missing.map(([k, label]) => `${k}: ${label}`).join(' / ')})。` +
           '4点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・手戻り率)ごとに算出の所在を書く。' +
           'enforcement は、実行の単位(selfCorrection: 自己修正のループ / aiReviewRound: AI の確認側と作成側の往復)ごとに、停止条件を強制する手段の所在を書く。使わない単位は「該当なし(理由)」と書く。' +
@@ -2308,9 +2313,18 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     // 標準変更カタログへ登録できる種別は R3 だけ(標準 第3章 3.7.4 B-4。IMPL-0664)。区分の下限 R1・R2 の規則のパターンと同一の範囲は登録しない
     const overlap = riskFloorOverlapPatterns(config, id);
     const baseOverlap = baseConfig ? riskFloorOverlapPatterns(baseConfig, id) : [];
-    const inheritedOverlap = inheritable && overlap.length > 0 && (baseConfig === null || overlap.every((p) => baseOverlap.includes(p)));
+    // 同一のパターンの継承は、種別の登録と、その種別を指す委任の規則・パターンを持つ区分の下限の規則の内容が、基底と同じときだけ
+    const overlapScope = (cfg) => {
+      const dRules = (Array.isArray(cfg?.delegation?.rules) ? cfg.delegation.rules : []).filter((r) => String(r?.changeType ?? '').trim() === id);
+      const fRules = (Array.isArray(cfg?.riskFloor?.rules) ? cfg.riskFloor.rules : []).filter(
+        (r) => Array.isArray(r?.paths) && r.paths.some((p) => typeof p === 'string' && overlap.includes(p.normalize('NFKC').trim()))
+      );
+      return canonicalJson({ dRules, fRules });
+    };
+    const sameOverlapScope = baseConfig ? sameType && overlapScope(config) === overlapScope(baseConfig) : false;
+    const inheritedOverlap = inheritable && overlap.length > 0 && (baseConfig === null || (sameOverlapScope && overlap.every((p) => baseOverlap.includes(p))));
     if (overlap.length) {
-      (inheritedOverlap ? { push: onInherited } : out).push(
+      (inheritedOverlap ? { push: inheritNote } : out).push(
         `${at}: 変更種別 "${id}" の範囲のパターン(${overlap.map((p) => `${p}`).join('・')})が、区分の下限 R1・R2 の規則(riskFloor.rules[])のパターンと同一である。` +
           '標準変更カタログへ登録できる種別は R3 だけであり、R1・R2 の範囲は登録しない(標準 第3章 3.7.4)。同一の文字列だけを検査する。重なりは変更ごとの条件2(R3 を求める)が止める'
       );

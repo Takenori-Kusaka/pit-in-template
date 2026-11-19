@@ -474,6 +474,13 @@ function workspace({ keepOwner = false } = {}) {
   check('その差は未適用の厳格化として表示にとどめる(原因を取り違えない)(IMPL-0772)', noteOf(v.out) && /未適用の厳格化/.test(v.out), v.out.slice(-800));
   const noBase = w.node('scripts/gate/verify-gate-contract.mjs');
   check('基底を読めない実行(--base なし)は、状態の差を表示にとどめ、失敗にしない(IMPL-0772)', !weakErrors(noBase.out).length && noteOf(noBase.out), noBase.out.slice(-800));
+  // 高-2:基底と比べていないのに、比べた文(基底から弱めた変更ではない)を出さない
+  check(
+    '基底を読めない実行の注記は「基底を読めず、弱めたかどうかを確かめていない」と出し、基底と同じだとは言わない(IMPL-0772)',
+    /基底を読めず、この変更が弱めたかどうかを確かめていません/.test(noBase.out) && !/基底と状態も宣言の有無も同じ/.test(noBase.out),
+    noBase.out.slice(-800)
+  );
+  check('基底を読んで同じと確かめた実行の注記は「基底と状態も宣言の有無も同じ」と出す(IMPL-0772)', /基底と状態も宣言の有無も同じ/.test(v.out) && !/基底を読めず/.test(v.out), v.out.slice(-800));
   // 両方: 未適用の厳格化(g2。基底も simplified)と、この変更の弱め(g3 required → simplified)。弱めの分(g3)だけ失敗にする
   {
     const both = JSON.parse(JSON.stringify(base));
@@ -483,6 +490,34 @@ function workspace({ keepOwner = false } = {}) {
   }
   v = vs();
   check('未適用の厳格化(g2)と宣言の無い弱め(g3)が同居する構成は、弱めの分(g3)だけ失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates.g3/.test(l)) && !weakErrors(v.out).some((l) => /gates.g2/.test(l)), v.out.slice(-800));
+  // 高-1(2巡目):状態が基底と同じでも、基底にあった宣言を外す変更は失敗にする(宣言だけを外す)
+  const dev = [{ gate: 'g2', reason: '試験', resolveWhen: '2027-01', compensation: ['試験の代償措置'] }];
+  w.writeJson('process.config.json', withG('g2', { state: 'simplified' }, { deviations: dev }));
+  w.commit('chore: simplified with deviation in base');
+  v = vs();
+  // IMPL-0772:ok(基底も simplified + deviations[]。変更なし)
+  check('基底と同じ(状態・宣言)の組(simplified + deviations[])は、失敗にしない(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  w.writeJson('process.config.json', withG('g2', { state: 'simplified' }));
+  v = vs();
+  // IMPL-0772:ng(基底の宣言だけを外す)
+  check(
+    '基底で deviations[] つきの simplified から、状態を変えずに宣言だけを外した変更は、契約検査が失敗にする(IMPL-0772)',
+    weakErrors(v.out).some((l) => /gates.g2/.test(l) && /基底にあった宣言/.test(l)) && !noteOf(v.out),
+    v.out.slice(-800)
+  );
+  // 高-1(2巡目):基底の未達(unmet + unmet[])を、宣言なしの省略(omitted)へ移す変更
+  w.writeJson('process.config.json', withG('g2', { state: 'unmet' }, { unmet: [{ gate: 'g2', label: 'G-2', reason: '試験', reviewSourcing: '外部の確認者' }] }));
+  w.commit('chore: unmet in base');
+  v = vs();
+  check('基底と同じ未達(unmet + unmet[])は、この検査では失敗にしない(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  w.writeJson('process.config.json', withG('g2', { state: 'omitted' }));
+  v = vs();
+  // IMPL-0772:ng(基底の未達を宣言なしの省略へ移す)
+  check('基底の未達(unmet)を、宣言なしの省略(omitted)へ移した変更は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates.g2/.test(l)) && !noteOf(v.out), v.out.slice(-800));
+  // 弱めて宣言を付ける(基底の宣言を、状態を移したうえで付け直す)は通る
+  w.writeJson('process.config.json', withG('g2', { state: 'omitted' }, { deviations: dev }));
+  v = vs();
+  check('基底の未達を省略へ移し、deviations[] の宣言を付けた変更は通る(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
   w.done();
 }
 {
@@ -516,7 +551,19 @@ function workspace({ keepOwner = false } = {}) {
   const noBase = w.node('scripts/gate/verify-gate-contract.mjs');
   w.writeJson('process.config.json', withTypes([noEnf('旧い種別')]));
   const nb = w.node('scripts/gate/verify-gate-contract.mjs');
-  check('基底を読めない実行(--base なし)は、4点目の欠けを注記にとどめる(IMPL-0834。IMPL-0772 と同じ向き)', !catErrors(nb.out).length && /基底の構成に既にある欠け/.test(nb.out) && noBase.out !== undefined, nb.out.slice(-800));
+  check(
+    '基底を読めない実行(--base なし)は、4点目の欠けを注記にとどめ、「基底を読めず、確かめていない」と出す(IMPL-0834。基底に既にあるとは言わない)',
+    !catErrors(nb.out).length && /標準変更カタログ.*基底を読めず.*確かめていません/.test(nb.out) && !/基底の構成に既にある欠けで/.test(nb.out) && noBase.out !== undefined,
+    nb.out.slice(-800)
+  );
+  // 中-1(2巡目):基底で4点目が欠けたままの登録の内容(登録者・登録日など)を書き換える変更は「変える」に当たり、失敗にする
+  w.writeJson('process.config.json', withTypes([{ ...noEnf('旧い種別'), registeredBy: '鈴木', registeredAt: '2026-02-01' }]));
+  v = vs();
+  check('基底で4点目が欠けたままの登録の内容を書き換える変更(登録者・登録日)は、欠けが基底にもあっても失敗にする(IMPL-0834)', catErrors(v.out).some((l) => /旧い種別/.test(l) && /enforcement/.test(l)), v.out.slice(-800));
+  w.writeJson('process.config.json', withTypes([t('旧い種別', { ...filled, tests: '既存のテスト: tests/changed' })]));
+  v = vs();
+  check('基底で4点目が欠けたままの登録の他の欄(tests)を書き換える変更も、失敗にする(IMPL-0834)', catErrors(v.out).some((l) => /旧い種別/.test(l) && /enforcement/.test(l)), v.out.slice(-800));
+  w.writeJson('process.config.json', withTypes([noEnf('旧い種別')]));
   // 3点(detection など)の欠けは、4点目と混ざっても注記に回さない
   const old3 = t('旧い種別', { rollback: '取り消し: scripts/rollback', tests: '既存のテスト: tests/a' });
   w.writeJson('process.config.json', withTypes([old3]));
@@ -552,6 +599,13 @@ function workspace({ keepOwner = false } = {}) {
   w.writeJson('process.config.json', sealed(ex));
   v = w.node('scripts/gate/verify-gate-contract.mjs');
   check('規則の excludePaths に同じ文字列があるパターンは、同一に数えない(IMPL-0664)', !catErrors(v.out).length && !/基底の構成に既にある欠け/.test(v.out), v.out.slice(-800));
+  // 中-1(2巡目)・低-1:基底に既にある同一のパターンでも、その種別を指す規則の内容を書き換えれば失敗にする。基底を読めない実行は「確かめていない」と出す
+  w.writeJson('process.config.json', mkc([rule({ id: 'DR-9' })]));
+  v = vs();
+  check('基底に既にある同一のパターンでも、その種別を指す委任の規則の内容を書き換えた変更は、失敗にする(IMPL-0664)', catErrors(v.out).some((l) => l.includes('src/i18n') && /同一/.test(l)), v.out.slice(-800));
+  w.writeJson('process.config.json', mkc([rule()]));
+  const nb2 = w.node('scripts/gate/verify-gate-contract.mjs');
+  check('基底を読めない実行(--base なし)は、同一のパターンを注記にとどめ、「基底を読めず、確かめていない」と出す(IMPL-0664)', !catErrors(nb2.out).length && /R1・R2 の規則.*基底を読めず.*確かめていません/.test(nb2.out), nb2.out.slice(-800));
   w.done();
 }
 {

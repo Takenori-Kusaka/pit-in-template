@@ -398,8 +398,12 @@ for (const d of config.deviations ?? []) {
 // 確かめるのはゲートの状態の差に限る。パラメータ(reviewerCount など)の弱めは確かめない(確かめる者: プロセス内部監査)。
 // 取り込んだ知識ベースの更新で導出が強くなっただけの差(未適用の厳格化。ADR-0088 決定4。pendingTightenings が挙げる)は、
 // この変更が弱めたものではない。構成は知識ベースの版を記録しないため、状態の差だけでは両者を分けられない。
-// 分ける条件は、基底ブランチの構成の状態と比べること(決定可能): 基底より弱めた変更だけを失敗にし、基底と同じ状態の差は
-// 表示にとどめる(未適用の厳格化として /pit と証跡の集約が表示し続ける)。基底を読めない実行(ローカル・main への push)は表示にとどめる
+// 分ける条件は、基底ブランチの構成と比べること(決定可能): 失敗にするのは、変更の後の構成で導出より弱い状態に宣言が無く、かつ
+// (状態・宣言の有無)の組が基底と同じでないもの。基底と同じ状態でも、基底にあった宣言(unmet[]・deviations[])が消えたら失敗。
+// 基底の未達(unmet)を宣言なしの省略へ移す変更も失敗。表示にとどめるのは、状態も宣言の有無も基底と同じ差だけ
+// (未適用の厳格化として /pit と証跡の集約が表示し続ける。基底に既に入った宣言なしの弱めは、以後の PR でも注記になる。基底へ入った経路は確かめない)。
+// 基底を読めない実行(--base なしのローカル実行、ブランチの作成の push、workflow_dispatch、基底に構成が無いとき)は、
+// 弱めたかを確かめていない旨を出して表示にとどめる。PR(GITHUB_BASE_REF)と既定ブランチへの push(--base "$BEFORE")は基底と比べる
 {
   const STATE_RANK = { required: 3, simplified: 2 };
   const rank = (s) => (s in STATE_RANK ? STATE_RANK[s] : 1); // omitted・merged-into-gN は、実施しない側で同じ段に数える
@@ -414,18 +418,30 @@ for (const d of config.deviations ?? []) {
       const declared =
         (config.unmet ?? []).some((u) => u.gate === key) || (config.deviations ?? []).some((d) => d.gate === key);
       if (declared) continue;
+      const baseRead = baseConfigRead !== null;
       const baseState = baseConfigRead?.gates?.[key]?.state;
-      const weakenedHere = baseState !== undefined && rank(baseState) > rank(have);
-      if (pending.has(key) && !weakenedHere) {
+      const baseDeclared =
+        (baseConfigRead?.unmet ?? []).some((u) => u.gate === key) || (baseConfigRead?.deviations ?? []).some((d) => d.gate === key);
+      // (状態・宣言の有無)の組が基底と同じ(この変更の後は宣言なしなので、基底の状態が同じで、基底にも宣言が無い)
+      const sameAsBase = baseRead && baseState === have && !baseDeclared;
+      const stateWeakened = baseRead && baseState !== undefined && rank(baseState) > rank(have);
+      if (pending.has(key) && !baseRead) {
         notes.push(
-          `gates.${key} の状態は "${have}" で、取り込んだ知識ベースの導出は "${want}" です。基底の状態から弱めた変更ではないため、` +
+          `gates.${key} の状態は "${have}" で、取り込んだ知識ベースの導出は "${want}" です。基底を読めず、この変更が弱めたかどうかを確かめていません。` +
+            '表示にとどめます(PR と既定ブランチへの push の契約検査は基底と比べます。ADR-0088 決定4)'
+        );
+      } else if (pending.has(key) && sameAsBase) {
+        notes.push(
+          `gates.${key} の状態は "${have}" で、取り込んだ知識ベースの導出は "${want}" です。基底と状態も宣言の有無も同じで、この変更が弱めた差ではないため、` +
             '未適用の厳格化として表示にとどめます(適用するには /process-change の種別 settings の空の入力。ADR-0088 決定4)'
         );
       } else {
         problems.push(
           `gates.${key} の状態が "${have}" ですが、規則による導出は "${want}" で、宣言(未達として記録する: state を unmet にして unmet[] に理由、` +
             'または deviations[] の記録)がありません。この変更が基底の状態から弱めています。標準から外した項目を宣言せずに運用できません(テーラリングの禁止事項6)。' +
-            '外すなら理由と解消の時点を宣言として記録します。回答を改めた結果なら /process-change で再導出します。パラメータの弱めはこの検査の対象外です'
+            '外すなら理由と解消の時点を宣言として記録します。回答を改めた結果なら /process-change で再導出します。パラメータの弱めはこの検査の対象外です' +
+            (baseRead && !stateWeakened && baseState !== undefined && baseState !== have ? '(基底の状態からの移し替えです)' : '') +
+            (baseRead && baseDeclared ? '(基底にあった宣言(unmet[]・deviations[])が、この変更の後にありません)' : '')
         );
       }
     }
@@ -581,11 +597,17 @@ if (!Array.isArray(config.seats)) {
   // 照合しない(離任した人の登録を残すため)。AI の名義だけを拒否する
   // 基底の構成に既にあった4点目(enforcement)の欠けと R1・R2 の規則との同一のパターンは、注記にとどめる(IMPL-0834・IMPL-0664)。
   // 委任の停止(autonomy.mjs)は常に働くため、取り込みの PR 以外の PR を落とさない。新しく足す・変える登録の欠けだけを失敗にする。
-  // 基底を読めない実行は、同じ欠けを注記にとどめる(IMPL-0772 と同じ向き。PR で基底を解決できなければ、別に失敗にする)
+  // 基底と内容が違う登録(種別。同一のパターンは、その種別を指す委任の規則と、パターンを持つ区分の下限の規則も)の欠けは、基底にもあっても失敗にする。
+  // 基底を読めない実行は、基底と比べていない旨を出して注記にとどめる(PR と既定ブランチへの push で基底を解決できなければ、別に失敗にする)
   for (const p of changeTypeProblems(config, {
     checkRegistrant: false,
     baseConfig: baseConfigRead,
-    onInherited: (m) => notes.push(`標準変更カタログ: ${m}(基底の構成に既にある欠けのため、失敗にしません。登録済みの種別は、4点目を記録するまで委任が止まります)`),
+    onInherited: (m, kind) =>
+      notes.push(
+        kind === 'unread'
+          ? `標準変更カタログ: ${m}(基底を読めず、この登録の欠けが基底に既にあるか、この変更が作ったかを確かめていません。表示にとどめます。PR と既定ブランチへの push の契約検査は基底と比べます。登録済みの種別は、4点目を記録するまで委任が止まります)`
+          : `標準変更カタログ: ${m}(基底の構成に既にある欠けで、登録の内容も基底と同じため、失敗にしません。登録済みの種別は、4点目を記録するまで委任が止まります)`
+      ),
   })) problems.push(`標準変更カタログ: ${p}`);
   for (const p of protectedPathsProblems(config)) problems.push(p);
   for (const p of delegationSamplingProblems(config)) problems.push(p);
