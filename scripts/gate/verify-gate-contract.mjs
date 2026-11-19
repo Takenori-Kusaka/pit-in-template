@@ -579,7 +579,14 @@ if (!Array.isArray(config.seats)) {
 
   // 標準変更カタログへ登録した変更種別と、確約範囲・コア指定のパス。過去の登録者は現在の名簿と
   // 照合しない(離任した人の登録を残すため)。AI の名義だけを拒否する
-  for (const p of changeTypeProblems(config, { checkRegistrant: false })) problems.push(`標準変更カタログ: ${p}`);
+  // 基底の構成に既にあった4点目(enforcement)の欠けと R1・R2 の規則との同一のパターンは、注記にとどめる(IMPL-0834・IMPL-0664)。
+  // 委任の停止(autonomy.mjs)は常に働くため、取り込みの PR 以外の PR を落とさない。新しく足す・変える登録の欠けだけを失敗にする。
+  // 基底を読めない実行は、同じ欠けを注記にとどめる(IMPL-0772 と同じ向き。PR で基底を解決できなければ、別に失敗にする)
+  for (const p of changeTypeProblems(config, {
+    checkRegistrant: false,
+    baseConfig: baseConfigRead,
+    onInherited: (m) => notes.push(`標準変更カタログ: ${m}(基底の構成に既にある欠けのため、失敗にしません。登録済みの種別は、4点目を記録するまで委任が止まります)`),
+  })) problems.push(`標準変更カタログ: ${p}`);
   for (const p of protectedPathsProblems(config)) problems.push(p);
   for (const p of delegationSamplingProblems(config)) problems.push(p);
   if (delegation.allowed && rules.length && !Array.isArray(delegation.protectedPaths)) {

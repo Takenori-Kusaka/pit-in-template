@@ -223,7 +223,9 @@ export const BASE_COPIES_DIR = 'docs/records/reviews';
  * perMonth が n を上回る月は n を上限とする)に満たない月を short に出す。合否・欠落には数えない(本文は不足を差し戻しの条件にしていない)。
  * 機械が確かめないもの: 抜き取りの選び方(当事者に選ばせない)・確認の中身・条件4 の実績の中身(確かめる者: プロセス内部監査)
  */
-export function samplingMonthly(items, { perMonth = null, defaultCap = 5 } = {}) {
+export function samplingMonthly(items, { perMonth = null, defaultCap = 5, reviewerResolved = true } = {}) {
+  // 独立レビュアの席の責任者を名簿から引けないとき、記録があっても k=0 になり全ての月が不足に見える(誤報)。件数を数えず、その旨を返す
+  if (!reviewerResolved) return { months: [], short: [], undated: 0, source: Number.isInteger(perMonth) && perMonth >= 1 ? 'config' : 'default', unresolved: true };
   const by = new Map();
   let undated = 0;
   for (const it of items ?? []) {
@@ -247,6 +249,7 @@ export function samplingMonthly(items, { perMonth = null, defaultCap = 5 } = {})
 
 /** 事後の抜き取りの不足の月の表示(表の下に添える文)。判定ではない */
 export function samplingMonthlyText(m) {
+  if (m.unresolved) return '独立レビュアの席の責任者を名簿から引けず、事後の抜き取りの件数を数えていません。抜き取りが行われていないことを意味しません。席の責任者を記録すると、月ごとの不足を表示します(この表示は合否にも記載の欠落にも数えません)';
   const basis = m.source === 'config' ? '構成 delegation.sampling.perMonth' : `既定(月の件数と ${5} のうち小さいほう)`;
   const head = m.short.length
     ? `抜き取りが定めに満たない月: ${m.short.map((x) => `${x.month}(事後へ移した変更 ${x.n} 件・抜き取り ${x.k} 件・定め ${x.required} 件)`).join(' / ')}`
@@ -5515,7 +5518,7 @@ if (isMain) {
       return { pr: p.number, sampled: recs.length > 0, bySeat, month, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
     });
   // 月ごとの件数(IMPL-0597。条件6)。合否・欠落には数えない
-  const samplingByMonth = samplingMonthly(sampling.map((x) => ({ month: x.month, sampled: x.bySeat })), { perMonth: config.delegation?.sampling?.perMonth ?? null });
+  const samplingByMonth = samplingMonthly(sampling.map((x) => ({ month: x.month, sampled: x.bySeat })), { perMonth: config.delegation?.sampling?.perMonth ?? null, reviewerResolved: Boolean(whoKey('independent-reviewer')) });
 
   // --- 保証の主張の成立判定(標準 第4章 G-7「保証の主張の成立判定」/ 附属書H H.1・H.6。#288) -----------------
   //
@@ -6662,7 +6665,7 @@ if (isMain) {
       R.push(`- AI自律レベル(登録した変更種別は L3、それ以外は L1。準拠テンプレートは L2 を支えない。上限 ${au.cap?.level ?? '不明'}): ${au.types.length ? '' : '登録した変更種別なし(すべて L1)'}`);
       for (const t of au.types) {
         const why = external ? t.stops.map((x) => x.category).join('・') : stopsText(t);
-        R.push(`  - ${t.id}: ${t.level}${t.stops.length ? `(**委任を止めている**。${why})` : '(停止なし)'}。差し戻し率: ${rejectionText(t)}`);
+        R.push(`  - ${t.id}: ${t.level}${t.stops.length ? `(**委任を止めている**。${why})` : '(停止なし。変更のリスク区分が R1・R2 の変更は、種別が L3 でも委任で進まない(条件2))'}。差し戻し率: ${rejectionText(t)}`);
       }
       for (const t of au.types) R.push(`  - ${t.id}: ${reworkText(t)}`);
       for (const n of au.notes ?? []) R.push(`  - 評価の時点: ${n}`);

@@ -2246,13 +2246,23 @@ export function riskFloorOverlapPatterns(config, typeId) {
     .map((p) => p.normalize('NFKC').trim());
   const mine = (Array.isArray(config?.delegation?.rules) ? config.delegation.rules : [])
     .filter((r) => String(r?.changeType ?? '').trim() === typeId)
-    .flatMap((r) => (Array.isArray(r?.paths) ? r.paths : []))
-    .filter((p) => typeof p === 'string' && p.trim())
+    .flatMap((r) => {
+      // 規則の excludePaths に同じ文字列があるパターンは、その規則の範囲から外れている。同一に数えない(低-2)
+      const ex = (Array.isArray(r?.excludePaths) ? r.excludePaths : []).filter((p) => typeof p === 'string').map((p) => p.normalize('NFKC').trim());
+      return (Array.isArray(r?.paths) ? r.paths : []).filter((p) => typeof p === 'string' && p.trim() && !ex.includes(p.normalize('NFKC').trim()));
+    })
     .map((p) => p.normalize('NFKC').trim());
   return [...new Set(mine.filter((p) => floor.includes(p)))];
 }
 
-export function changeTypeProblems(config, { checkRegistrant = true, only = null, existingConfig = null } = {}) {
+/**
+ * baseConfig を渡すと(IMPL-0834・IMPL-0664。契約検査用)、基底の構成に既にあった欠けを problems でなく onInherited(注記)へ回す。
+ * 対象は、4点目(enforcement)だけの欠けと、区分の下限 R1・R2 の規則との同一のパターンのうち、基底にも同じ欠けがあるもの。
+ * 新しく足す・変える登録(基底に無い欠け)は problems のまま拒む。委任の停止(autonomy.mjs)はこの関数を通らず、常に止める。
+ * baseConfig が null(基底を読めない実行)は、同じ欠けを全て注記にとどめる(IMPL-0772 と同じ向き。PR の契約検査は基底を解決できなければ別に失敗にする)。
+ * undefined(既定)は、従来どおり全て problems
+ */
+export function changeTypeProblems(config, { checkRegistrant = true, only = null, existingConfig = null, baseConfig, onInherited = null } = {}) {
   const list = config.delegation?.changeTypes;
   if (list === undefined) return [];
   if (!Array.isArray(list)) return ['delegation.changeTypes が配列ではない'];
@@ -2281,8 +2291,13 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     if (only && !only.has(id)) return;
     // 様式の文言(<…>)や「—」「未定」などの記入でない値は、記入なしとして扱う(例外承認の記録の判定と同じ関数)
     const missing = missingBasis(t.basis);
+    const baseType = baseConfig && Array.isArray(baseConfig.delegation?.changeTypes) ? baseConfig.delegation.changeTypes.find((b) => String(b?.id ?? "").trim() === id) : null;
+    const baseMissingKeys = new Set(baseType ? missingBasis(baseType.basis).map(([k]) => k) : []);
+    const inheritable = baseConfig !== undefined && typeof onInherited === "function";
+    const enforcementOnly = missing.length > 0 && missing.every(([k]) => k.startsWith("enforcement"));
+    const inheritedBasis = inheritable && enforcementOnly && (baseConfig === null || missing.every(([k]) => baseMissingKeys.has(k)));
     if (missing.length) {
-      out.push(
+      (inheritedBasis ? { push: onInherited } : out).push(
         `${at}: 変更種別 "${id}" に、登録の根拠(basis)がない(${missing.map(([k, label]) => `${k}: ${label}`).join(' / ')})。` +
           '4点の記録が無い種別は登録しない(標準 第5章 5.5.4)。detection は、検知条件(差し戻し率・手戻り率)ごとに算出の所在を書く。' +
           'enforcement は、実行の単位(selfCorrection: 自己修正のループ / aiReviewRound: AI の確認側と作成側の往復)ごとに、停止条件を強制する手段の所在を書く。使わない単位は「該当なし(理由)」と書く。' +
@@ -2292,8 +2307,10 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     }
     // 標準変更カタログへ登録できる種別は R3 だけ(標準 第3章 3.7.4 B-4。IMPL-0664)。区分の下限 R1・R2 の規則のパターンと同一の範囲は登録しない
     const overlap = riskFloorOverlapPatterns(config, id);
+    const baseOverlap = baseConfig ? riskFloorOverlapPatterns(baseConfig, id) : [];
+    const inheritedOverlap = inheritable && overlap.length > 0 && (baseConfig === null || overlap.every((p) => baseOverlap.includes(p)));
     if (overlap.length) {
-      out.push(
+      (inheritedOverlap ? { push: onInherited } : out).push(
         `${at}: 変更種別 "${id}" の範囲のパターン(${overlap.map((p) => `${p}`).join('・')})が、区分の下限 R1・R2 の規則(riskFloor.rules[])のパターンと同一である。` +
           '標準変更カタログへ登録できる種別は R3 だけであり、R1・R2 の範囲は登録しない(標準 第3章 3.7.4)。同一の文字列だけを検査する。重なりは変更ごとの条件2(R3 を求める)が止める'
       );

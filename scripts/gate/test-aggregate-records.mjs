@@ -903,6 +903,9 @@ const config = {
   check('IMPL-0597:ok マージの時刻を読めない変更は月ごとの表に含めず、件数を出す', samplingMonthly([{ month: null, sampled: false }, ...rows('2026-10', 1, 1)]).undated === 1);
   const text = samplingMonthlyText(ng);
   check('IMPL-0597:ok 表示は合否に数えない旨と、確かめない範囲(選び方・中身・実績の中身。内部監査)を出す', /2026-10/.test(text) && /合否にも記載の欠落にも数えません/.test(text) && /内部監査/.test(text));
+  // IMPL-0597:ng(席の責任者を引けない構成。記録があっても k=0 となり全ての月が不足に見える誤報を出さない)
+  const unres = samplingMonthly(rows('2026-10', 8, 0), { reviewerResolved: false });
+  check('IMPL-0597:ng 独立レビュアの席の責任者を引けないときは、月ごとの不足を出さず、数えていない旨を出す', unres.short.length === 0 && unres.unresolved === true && /名簿から引けず/.test(samplingMonthlyText(unres)) && samplingMonthly(rows('2026-10', 8, 0)).short.length === 1);
   // IMPL-0597:ng
   check('IMPL-0597:ng perMonth は1以上の整数(0・小数・文字列を構成の検査が拒む)', [0, 1.5, '3'].every((v) => delegationSamplingProblems({ delegation: { sampling: { perMonth: v } } }).length === 1) && delegationSamplingProblems({ delegation: { sampling: { perMonth: 3 } } }).length === 0 && delegationSamplingProblems({ delegation: {} }).length === 0);
 }

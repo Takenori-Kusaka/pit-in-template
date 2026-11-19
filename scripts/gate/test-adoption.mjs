@@ -486,6 +486,75 @@ function workspace({ keepOwner = false } = {}) {
   w.done();
 }
 {
+  // IMPL-0834・IMPL-0664:契約検査は、基底の構成に既にあった4点目の欠け・同一のパターンを注記にとどめ、新しく足す・変える登録の欠けだけを失敗にする。
+  // 委任の停止(autonomy.mjs)は別に働く(test-check-delegation)
+  const w = workspace();
+  w.commit('chore: template');
+  const catErrors = (out) => contractErrors(out).filter((l) => /標準変更カタログ/.test(l));
+  const filled = { detection: { rejectionRate: '集計: scripts/a', reworkRate: '集計: scripts/b' }, rollback: '取り消し: scripts/rollback', tests: '既存のテスト: tests/a' };
+  const enf = { selfCorrection: '強制: ci/loop', aiReviewRound: '強制: ci/round' };
+  const withTypes = (types, extra = {}) => {
+    const c = JSON.parse(JSON.stringify(base));
+    c.delegation = { ...(c.delegation ?? {}), changeTypes: types, ...extra };
+    return sealed(c);
+  };
+  const t = (id, basis) => ({ id, registeredBy: '佐藤', registeredAt: '2026-01-05', basis });
+  const noEnf = (id) => t(id, { ...filled });
+  w.writeJson('process.config.json', withTypes([noEnf('旧い種別')]));
+  w.commit('chore: base with a type lacking the 4th point');
+  const vs = () => w.node('scripts/gate/verify-gate-contract.mjs', '--base', 'HEAD');
+  let v = vs();
+  // IMPL-0834:ok(基底に既にある4点目の欠け → 注記)
+  check('基底の構成に既にある4点目の欠けは、契約検査が失敗にせず注記にする(IMPL-0834)', !catErrors(v.out).length && /標準変更カタログ.*旧い種別.*基底の構成に既にある欠け/.test(v.out), v.out.slice(-800));
+  w.writeJson('process.config.json', withTypes([noEnf('旧い種別'), noEnf('新しい種別')]));
+  v = vs();
+  // IMPL-0834:ng(新しく足した種別の4点目の欠け)
+  check('新しく足した種別の4点目の欠けは、契約検査が失敗にする(IMPL-0834)', catErrors(v.out).some((l) => /新しい種別/.test(l) && /enforcement/.test(l)) && !catErrors(v.out).some((l) => /旧い種別/.test(l)), v.out.slice(-800));
+  w.writeJson('process.config.json', withTypes([t('旧い種別', { ...filled, enforcement: enf })]));
+  v = vs();
+  check('4点目を記録した登録は、失敗にも注記にもならない(IMPL-0834)', !catErrors(v.out).length && !/基底の構成に既にある欠け/.test(v.out), v.out.slice(-800));
+  const noBase = w.node('scripts/gate/verify-gate-contract.mjs');
+  w.writeJson('process.config.json', withTypes([noEnf('旧い種別')]));
+  const nb = w.node('scripts/gate/verify-gate-contract.mjs');
+  check('基底を読めない実行(--base なし)は、4点目の欠けを注記にとどめる(IMPL-0834。IMPL-0772 と同じ向き)', !catErrors(nb.out).length && /基底の構成に既にある欠け/.test(nb.out) && noBase.out !== undefined, nb.out.slice(-800));
+  // 3点(detection など)の欠けは、4点目と混ざっても注記に回さない
+  const old3 = t('旧い種別', { rollback: '取り消し: scripts/rollback', tests: '既存のテスト: tests/a' });
+  w.writeJson('process.config.json', withTypes([old3]));
+  w.commit('chore: base with a type lacking detection');
+  v = vs();
+  check('4点目以外の欠け(検知条件)は、基底にあっても失敗にする(従来どおり)(IMPL-0834)', catErrors(v.out).some((l) => /detection/.test(l)), v.out.slice(-800));
+  // IMPL-0664:同一のパターン
+  const floor = { rules: [{ floor: 'R1', paths: ['src/i18n/**'] }] };
+  const rule = (extra = {}) => ({ id: 'DR-1', changeType: '旧い種別', paths: ['src/i18n/**'], ...extra });
+  const full = t('旧い種別', { ...filled, enforcement: enf });
+  const mkc = (rules) => {
+    const c = JSON.parse(JSON.stringify(base));
+    c.delegation = { ...(c.delegation ?? {}), changeTypes: [full], rules };
+    c.riskFloor = floor;
+    return sealed(c);
+  };
+  w.writeJson('process.config.json', mkc([rule()]));
+  w.commit('chore: base with an overlapping pattern');
+  v = vs();
+  // IMPL-0664:ok(基底に既にある同一 → 注記)
+  check('基底の構成に既にある同一のパターンは、契約検査が失敗にせず注記にする(IMPL-0664)', !catErrors(v.out).length && /R1・R2 の規則.*基底の構成に既にある欠け/.test(v.out), v.out.slice(-800));
+  w.writeJson('process.config.json', mkc([rule(), { ...rule(), id: 'DR-2', paths: ['docs/**'] }]));
+  const nf = JSON.parse(fs.readFileSync(path.join(w.dir, 'process.config.json'), 'utf8'));
+  nf.riskFloor = { rules: [{ floor: 'R2', paths: ['src/i18n/**', 'docs/**'] }] };
+  w.writeJson('process.config.json', sealed(nf));
+  v = vs();
+  // IMPL-0664:ng(新しく足した同一のパターン)
+  check('新しく足した同一のパターン(基底に無い)は、契約検査が失敗にする(IMPL-0664)', catErrors(v.out).some((l) => l.includes('docs/**') && /同一/.test(l)), v.out.slice(-800));
+  // IMPL-0664 低-2:規則の excludePaths に同じ文字列があれば、同一に数えない
+  const ex = JSON.parse(JSON.stringify(nf));
+  ex.delegation.rules = [{ ...rule(), excludePaths: ['src/i18n/**'] }];
+  ex.riskFloor = floor;
+  w.writeJson('process.config.json', sealed(ex));
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  check('規則の excludePaths に同じ文字列があるパターンは、同一に数えない(IMPL-0664)', !catErrors(v.out).length && !/基底の構成に既にある欠け/.test(v.out), v.out.slice(-800));
+  w.done();
+}
+{
   // 初期化: --template-commit の書式と、取り込んだテンプレートの記録
   const w = workspace();
   w.commit('chore: template');
