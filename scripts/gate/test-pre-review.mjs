@@ -1,4 +1,4 @@
-// 事前レビュー期間の受付・起票・通知・集計の試験(IMPL-0571・0210・0213・0219・0215・0216。process-compass #325)
+// 事前レビュー期間の受付・起票・通知・集計の試験(IMPL-0571・0210・0213・0219・0215・0216・0214・0830・0217。process-compass #325)
 // 時計と TZ に依らない: now は固定の時刻を渡し、子プロセスで TZ=UTC と TZ=Asia/Tokyo の結果が同じことを確かめる。
 //
 //   node scripts/gate/test-pre-review.mjs
@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseHolidays } from './business-days.mjs';
-import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER, materialPrOf, prRefOf, fetchPrCreated, requiredOwners, publishedAtOf, withPublishedAt, fetchPrFiles } from './pre-review.mjs';
+import { parseIssueForm, targetOf, riskOf, timelineOf, planNotify, metricsFor, metricsBody, parseOpinion, opinionGaps, publishedState, fetchIssues, applyActions, readProposal, isMonth, previousMonth, DRAFT_PREFIX, MARKER, materialPrOf, prRefOf, fetchPrCreated, requiredOwners, publishedAtOf, withPublishedAt, fetchPrFiles, parseGateRecord, bindRecord, respondedCheck, fetchPrRecordFiles, fetchGateRecords, shorteningForbidden, VERDICTS } from './pre-review.mjs';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -266,7 +266,7 @@ check('IMPL-0217:ok どの行にも当たらないファイルは unowned に出
 const rq = reqPlan();
 const rqBody = rq.actions.find((a) => a.key.startsWith('required:'))?.body ?? '';
 check('IMPL-0217:ng CODEOWNERS の所有者が指名レビュアに無ければ、必須応答として記載し、含まれない者を示す', /必須応答/.test(rqBody) && /@bob @dave @carol/.test(rqBody) && /指名レビュアに含まれていません: @dave。/.test(rqBody) && /通知先: @dave$/m.test(rqBody), rqBody);
-check('IMPL-0217:ok 条文は有効で、機械が止めないのは強制の機械化が未決のためだと書く(条文の要求を未決と読ませない)', /3\.10\.9 は、必須応答の者の記名の応答が揃うまで判定へ進めないと定めています/.test(rqBody) && /機械はこれを止めません\(止める強制の機械化は未決\)/.test(rqBody) && !/扱いは、機械では決めていません/.test(rqBody) && /PR 上のレビューは読みません/.test(rqBody));
+check('IMPL-0217:ok 条文は有効で、機械は既定で止めず必須にするかは採用者が決めると書く(旧い「止める強制の機械化は未決」を出さない)', /3\.10\.9 は、必須応答の者の記名の応答が揃うまで判定へ進めないと定めています/.test(rqBody) && /機械は既定で止めません\(必須にするかは採用者が決めます。ADR-0223\)/.test(rqBody) && !/機械化は未決/.test(rqBody) && !/扱いは、機械では決めていません/.test(rqBody) && /PR 上のレビューは読みません/.test(rqBody));
 check('IMPL-0217:ok 判定資料への転記は起案者が行い、機械の記載は上程の Issue に置くと書く', /判定資料\(3\.10\.3\)への転記は起案者が行います/.test(rqBody) && /判定資料の本文は編集しません/.test(rqBody));
 const allNom = reqPlan({ fields: { 指名レビュア: '@bob @carol @dave @boss' } });
 check('IMPL-0217:ok 全員が指名レビュアに含まれていれば、含まれない者を示さない', (() => { const b = allNom.actions.find((a) => a.key.startsWith('required:')).body; return /全員が指名レビュアに含まれています/.test(b) && /通知先:\s*$/m.test(b); })());
@@ -280,7 +280,7 @@ check('IMPL-0217:ok 同じ必須応答の記載は重ねて出さない(冪等)'
 const missPlan = (comments) => plan({ issues: [withPr({ comments, fields: { 指名レビュア: '@bob @carol @dave @boss' } })], now: at('2026-11-26'), prFiles: { 77: ['src/a.ts', 'docs/x.md'] }, codeownersText: coText });
 const miss = missPlan([cm('bob', op(), at('2026-11-22'))]).actions.find((a) => a.key.startsWith('required-miss'));
 check('IMPL-0217:ng 締切で記名の応答が無い必須の者(dave・carol)を、0219 の宛先(節6 の判定する者 @boss)へ通知する', Boolean(miss) && /^@boss /.test(miss.body.split('\n')[1]) && /無い必須応答の者がいます: @dave @carol/.test(miss.body) && !/通知先:.*@bob/.test(miss.body), miss?.body);
-check('IMPL-0217:ng 通知は判定を止めない旨を書く(条文は有効・機械化は未決)', /機械はこれを止めません\(止める強制の機械化は未決\)/.test(miss?.body ?? '') && /定めていますが/.test(miss?.body ?? '') && !/この通知は判定を止めません/.test(miss?.body ?? ''));
+check('IMPL-0217:ng 通知は判定を止めない旨を書く(条文は有効・必須にするかは採用者が決める)', /機械は既定で止めません\(必須にするかは採用者が決めます。ADR-0223\)/.test(miss?.body ?? '') && !/機械化は未決/.test(miss?.body ?? '') && /定めていますが/.test(miss?.body ?? '') && !/この通知は判定を止めません/.test(miss?.body ?? ''));
 check('IMPL-0217:ok 全員が記名で応答していれば通知しない', !missPlan(['bob', 'carol', 'dave', 'boss'].map((l) => cm(l, op(), at('2026-11-22')))).actions.some((a) => a.key.startsWith('required-miss')));
 check('IMPL-0217:ok 締切の前には通知しない', !plan({ issues: [withPr()], now: at('2026-11-24'), prFiles: { 77: ['src/a.ts'] }, codeownersText: coText }).actions.some((a) => a.key.startsWith('required-miss')));
 check('IMPL-0217:ok AI の名義(bot)の所有者は必須応答に数えない', !/ci-bot/.test(reqPlan({ plan: { codeownersText: '* @ci-bot @bob\n' } }).actions.find((a) => a.key.startsWith('required:')).body.split('\n')[0]));
@@ -289,21 +289,115 @@ check('IMPL-0217:ok AI の名義(bot)の所有者は必須応答に数えない'
 const ledgerHead = '| ID | 区分 | 対象 | 内容 | 受容した理由 | 返却の目安 | 状態 | 承認した者 | 記録者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
 const ftRow = (target) => `| D-001 | 例外 | ${target} | ファストトラック(短縮: G-6)。事前レビューの短縮 | 期日 | 2026-12-01 | 未返却 | 山田 太郎 | 鈴木 一郎 |\n`;
 const pubTitle = '判定資料: #5';
+const gIssue = (f = {}, o = {}) => issue({ body: form({ 種別: '工程ゲート', 工程ゲート: 'G-6', ...f }), ...o });
 const published = (day) => [{ number: 9, title: pubTitle, body: '', publishedAt: at(day, '01:00:00') }];
-const shortPlan = (o = {}) => plan({ issues: [o.issue ?? issue()], materials: o.materials ?? published('2026-11-24'), now: at('2026-11-25'), ledgerText: ledgerHead, ...o.plan });
+const shortPlan = (o = {}) => plan({ issues: [o.issue ?? gIssue()], materials: o.materials ?? published('2026-11-24'), now: at('2026-11-25'), ledgerText: ledgerHead, ...o.plan });
 const sh = shortPlan().actions.find((a) => a.key.startsWith('shortened'));
 check('IMPL-0830:ng 公開が T−3 の営業日(期日 T−5 より遅い)で、台帳に行が無ければ、起案者と節6 の宛先へ通知する', Boolean(sh) && /@alice/.test(sh.body) && /@boss/.test(sh.body) && /3\.10\.2/.test(sh.body) && sh.key === 'shortened:2026-11-20', sh?.body);
 check('IMPL-0830:ng 通知は可否を決めず、人が決める旨を書く', /機械が決めません/.test(sh?.body ?? ''));
 check('IMPL-0830:ok 期間どおり(公開が T−5 の営業日以前)なら通知しない', !shortPlan({ materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')) && !shortPlan({ materials: published('2026-11-19') }).actions.some((a) => a.key.startsWith('shortened')));
 const ftPlan = shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #5') } });
-check('IMPL-0830:ok 対象を当該の Issue とするファストトラックの行があれば、通知せず「経路と下限は未決」と出す', !ftPlan.actions.some((a) => a.key.startsWith('shortened')) && ftPlan.notes.some((n) => /ファストトラックの行あり\(D-001\)/.test(n) && /短縮の経路と下限は未決\(EV-0281\)/.test(n) && /通知しない・合格ともしない/.test(n)), JSON.stringify(ftPlan.notes));
-check('IMPL-0830:ok 対象を判定資料の PR とする行も当たる', shortPlan({ issue: withPr(), plan: { ledgerText: ledgerHead + ftRow('PR #77') } }).notes.some((n) => /D-001/.test(n)));
+check('IMPL-0830:ok 対象を当該の Issue とし、印のゲートが上程のゲートを名指すファストトラックの行があれば、通知しない。出力に EV-0281 を出さない(d)', !ftPlan.actions.some((a) => a.key.startsWith('shortened')) && ftPlan.notes.some((n) => /ファストトラックの行あり\(D-001。印のゲートが G-6 を名指す\)/.test(n) && /通知しない・合格ともしない/.test(n) && /ADR-0223/.test(n)) && !JSON.stringify(ftPlan).includes('EV-0281'), JSON.stringify(ftPlan.notes));
+check('IMPL-0830:ok 対象を判定資料の PR とする行も当たる', shortPlan({ issue: gIssue({ 判定資料の所在: PR_URL }), plan: { ledgerText: ledgerHead + ftRow('PR #77') } }).notes.some((n) => /D-001/.test(n)));
 check('IMPL-0830:ng 別の対象の行・印の無い行は当たらず、通知する', shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #99') } }).actions.some((a) => a.key.startsWith('shortened')) && shortPlan({ plan: { ledgerText: ledgerHead + ftRow('PR #5').replace('ファストトラック(短縮: G-6)。', '') } }).actions.some((a) => a.key.startsWith('shortened')));
-check('IMPL-0830:ng 草案の印のまま期日(T−5)を過ぎれば、短縮として通知する。期日の当日は通知しない', plan({ issues: [issue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-23'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')) && !plan({ issues: [issue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-20'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')));
+check('IMPL-0830:ng 草案の印のまま期日(T−5)を過ぎれば、短縮として通知する。期日の当日は通知しない', plan({ issues: [gIssue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-23'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')) && !plan({ issues: [gIssue()], materials: [{ number: 9, title: `${DRAFT_PREFIX}判定資料: #5`, body: '' }], now: at('2026-11-20'), ledgerText: ledgerHead }).actions.some((a) => a.key.startsWith('shortened')));
 check('IMPL-0830:ok 台帳を読めないときは行が無いものとして通知し、読めない旨を書く', /docs\/debt-ledger\.md を読めません/.test(shortPlan({ plan: { ledgerText: null } }).actions.find((a) => a.key.startsWith('shortened')).body));
-const shR1 = plan({ issues: [issue({ body: form({ リスク区分: 'R1' }) })], materials: published('2026-11-16'), now: at('2026-11-17'), ledgerText: ledgerHead }).actions.find((a) => a.key.startsWith('shortened'));
+const shR1 = plan({ issues: [gIssue({ リスク区分: 'R1' })], materials: published('2026-11-16'), now: at('2026-11-17'), ledgerText: ledgerHead }).actions.find((a) => a.key.startsWith('shortened'));
 check('IMPL-0830:ng R1 は T−10 営業日(2026-11-13)が期日', Boolean(shR1) && shR1.key === 'shortened:2026-11-13' && /10営業日前/.test(shR1.body));
-check('IMPL-0830:ok 同じ短縮の通知は重ねて出さない(冪等)', !shortPlan({ issue: issue({ comments: [cm('github-actions[bot]', sh.body, at('2026-11-25'), { bot: true })] }) }).actions.some((a) => a.key.startsWith('shortened')));
+check('IMPL-0830:ok 同じ短縮の通知は重ねて出さない(冪等)', !shortPlan({ issue: gIssue({}, { comments: [cm('github-actions[bot]', sh.body, at('2026-11-25'), { bot: true })] }) }).actions.some((a) => a.key.startsWith('shortened')));
+
+// (a) 行の印の <ゲート> と上程のゲートの一致
+const ftRowG = (target, gate) => ftRow(target).replace('短縮: G-6', `短縮: ${gate}`);
+const g5 = (o = {}) => shortPlan({ issue: gIssue({ 工程ゲート: 'G-5' }), ...o });
+check('IMPL-0830(a):ng 印が G-3 の行しか無い G-5 の上程は、対象が当該の Issue でも短縮を通知する(行の印のゲートを名指す語を含む)', g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3') } }).actions.some((a) => a.key.startsWith('shortened') && /G-5/.test(a.body)));
+check('IMPL-0830(a):ok 印が当該のゲート(G-5)の行があれば通知しない。印に複数のゲートを並べても一致する', !g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-5') } }).actions.some((a) => a.key.startsWith('shortened')) && !g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3・G-5') } }).actions.some((a) => a.key.startsWith('shortened')));
+// (b) G-4 と B-1〜B-4 は行の有無に依らず通知する
+const g4 = (o = {}) => shortPlan({ issue: gIssue({ 工程ゲート: 'G-4' }), ...o });
+check('IMPL-0830(b):ng G-4 の上程は、G-4 を名指す行があっても短縮できないと通知する', (() => { const a = g4({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-4') } }).actions.find((x) => x.key.startsWith('shortened')); return Boolean(a) && /短縮できません/.test(a.body) && /ADR-0223/.test(a.body); })());
+check('IMPL-0830(b):ng B-2 の上程は、G-6 の行があっても短縮できないと通知する', (() => { const a = shortPlan({ issue: issue(), plan: { ledgerText: ledgerHead + ftRow('PR #5') } }).actions.find((x) => x.key.startsWith('shortened')); return Boolean(a) && /短縮できません/.test(a.body); })());
+check('IMPL-0830(b):ok G-4・B-2 の上程が期間どおり(公開が T の5営業日前)なら通知しない', !g4({ materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')) && !shortPlan({ issue: issue(), materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')));
+check('IMPL-0830(b):ok 短縮できない上程の判定: G-4 と B-1〜B-4 だけ', shorteningForbidden(readProposal(gIssue({ 工程ゲート: 'G-4' }), { config })) && shorteningForbidden(readProposal(issue(), { config })) && !shorteningForbidden(readProposal(gIssue(), { config })));
+// (c) 短縮した上程の判定の時点までの全員の宣言行
+const ftLedger = ledgerHead + ftRow('PR #5');
+const cPlan = (comments, now = at('2026-11-26')) => plan({ issues: [gIssue({ 指名レビュア: '@bob @carol @dave' }, { comments })], materials: published('2026-11-24'), now, ledgerText: ftLedger });
+const cBob = cm('bob', op(), at('2026-11-22'));
+const cCarol = cm('carol', op(), at('2026-11-23'));
+const cDave = cm('dave', op(), at('2026-11-23'));
+const c2 = cPlan([cBob, cCarol]).actions.find((a) => a.key.startsWith('short-unanswered'));
+check('IMPL-0830(c):ng 短縮した上程で、3名中2名の宣言行しか無ければ、残る1名(dave)を通知先にして通知する', Boolean(c2) && /通知先: @dave$/m.test(c2.body) && !/通知先:.*@bob/.test(c2.body), c2?.body);
+check('IMPL-0830(c):ok 3名分の宣言行が揃っていれば通知しない', !cPlan([cBob, cCarol, cDave]).actions.some((a) => a.key.startsWith('short-unanswered')));
+check('IMPL-0830(c):ok 期間どおりの上程(短縮でない)は対象にしない。判定予定日の前々日にも出さない', !plan({ issues: [gIssue({ 指名レビュア: '@bob @carol @dave' }, { comments: [cBob] })], materials: published('2026-11-20'), now: at('2026-11-26'), ledgerText: ftLedger }).actions.some((a) => a.key.startsWith('short-unanswered')) && !cPlan([cBob], at('2026-11-25')).actions.some((a) => a.key.startsWith('short-unanswered')));
+check('IMPL-0830(c):ok AI の担い手の意見・賛否の欄が空の意見は宣言行に数えない', cPlan([cBob, cCarol, cm('dave', op(), at('2026-11-23'), { bot: true })]).actions.some((a) => a.key.startsWith('short-unanswered')) && cPlan([cBob, cCarol, cm('dave', '賛否:\n理由: x', at('2026-11-23'))]).actions.some((a) => a.key.startsWith('short-unanswered')));
+
+// ---- 0214 応答の揃いを確かめる検査(下位命令 responded) ----
+const recText = (gate, target, when = '2026-11-27 10:00') => `| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | ${target} |\n| 判定者 | 山田 太郎 |\n| 判定日時 | ${when} |\n`;
+const rec6 = (target = '上程 #5', when) => ({ path: 'docs/gates/g6-x-2026-11-27.md', text: recText('G-6 ソースコード品質', target, when) });
+const rIssue = (risk, comments, f = {}) => gIssue({ リスク区分: risk, 指名レビュア: '@bob @carol', ...f }, { comments });
+const rcheck = (o) => respondedCheck({ records: [rec6()], issues: [rIssue('R1', [])], config, ...o });
+const pr1 = parseGateRecord(recText('G-6 ソースコード品質', 'PR #12', '2026-11-27 10:00'));
+check('IMPL-0214:ok 判定の記録の読み: ゲートの語・対象・判定日時の日付を欄から読む。プレースホルダは null', pr1.gate === 'G-6' && pr1.target === 'PR #12' && pr1.day === '2026-11-27' && pr1.time === '10:00' && parseGateRecord(recText('G-6', 'x', 'YYYY-MM-DD HH:MM')).day === null);
+const okAll = [cm('bob', op(), at('2026-11-25')), cm('carol', op('反対', 'x', 'y'), at('2026-11-26'))];
+const r1fail = rcheck({ issues: [rIssue('R1', [okAll[0]])] });
+check('IMPL-0214:ng R1 の上程で指名レビュア1名(carol)の宣言行が欠ければ失敗とし、欠けた者を出す', r1fail.status === 'fail' && r1fail.lines.some((l) => /@carol/.test(l) && !/@bob/.test(l)), JSON.stringify(r1fail));
+const r1ok = rcheck({ issues: [rIssue('R1', okAll)] });
+check('IMPL-0214:ok R1 の上程で指名レビュアの全員に宣言行があれば合格(応答の中身は確かめないと書く)', r1ok.status === 'pass' && r1ok.lines.some((l) => /応答の中身は確かめていない/.test(l)), JSON.stringify(r1ok));
+check('IMPL-0214:ng 判定日より後の意見は宣言行に数えない(判定日の欄までで切る)', rcheck({ issues: [rIssue('R1', [okAll[0], cm('carol', op(), at('2026-11-28'))])] }).status === 'fail');
+check('IMPL-0214:ok 賛否の欄が空の意見・AI の担い手の意見は宣言行に数えない', rcheck({ issues: [rIssue('R1', [okAll[0], cm('carol', '賛否:\n理由: x', at('2026-11-26'))])] }).status === 'fail' && rcheck({ issues: [rIssue('R1', [okAll[0], cm('carol', op(), at('2026-11-26'), { bot: true })])] }).status === 'fail');
+for (const target of ['F-012', '上程 #99', '']) {
+  const u = rcheck({ records: [rec6(target)] });
+  check(`IMPL-0214:ng でも ok でもない 上程と結べない記録(対象「${target}」)は失敗にせず「確かめていない」`, u.status === 'unverified' && u.lines.some((l) => /確かめていない/.test(l)) && VERDICTS[u.status].startsWith('確かめていない'), JSON.stringify(u));
+}
+check('IMPL-0214:ng ゲートの語が違う記録は結ばない(G-5 の記録は G-6 の上程に結ばない)', rcheck({ records: [{ path: 'docs/gates/x.md', text: recText('G-5 実装品質', '上程 #5') }] }).status === 'unverified');
+check('IMPL-0214:ok 記録を含まない PR は「確かめていない」', respondedCheck({ records: [], issues: [rIssue('R1', [])], config }).status === 'unverified');
+check('IMPL-0214:ok 対象の番号が判定資料の PR 番号でも結べる。同じ番号に結べる上程が2件あれば結ばない', respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL })], config }).status === 'pass' && respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL }), { ...rIssue('R1', okAll, { 判定資料の所在: PR_URL }), number: 6 }], config }).status === 'unverified');
+check('IMPL-0214:ok bindRecord: ちょうど1件に結べたときだけ結ぶ', bindRecord(parseGateRecord(recText('G-6', '#5')), [readProposal(rIssue('R1', []), { config })])?.number === 5 && bindRecord(parseGateRecord(recText('G-6', '#6')), [readProposal(rIssue('R1', []), { config })]) === null);
+// R2・R3 の短縮は範囲外。3.10.9 の上程は必須応答の者の全員
+const sc2 = rcheck({ issues: [rIssue('R2', [], { 判定資料の所在: PR_URL })], prFiles: { 77: ['src/a.ts'] }, codeownersText: '# 所有者なし\n', repo: 'o/r' });
+check('IMPL-0214:ok R2 の短縮の上程(必須応答の者を記載する上程でもない)は、この検査の範囲外', sc2.status === 'out' && /範囲外/.test(sc2.lines[0]), JSON.stringify(sc2));
+check('IMPL-0214:ok R2 で必須応答の者を導出できなければ、範囲かを確かめていない(失敗にしない)', rcheck({ issues: [rIssue('R2', [])] }).status === 'unverified');
+const sc3 = (comments) => rcheck({ issues: [rIssue('R3', comments, { 判定資料の所在: PR_URL })], prFiles: { 77: ['src/a.ts'] }, codeownersText: '* @dave\n', repo: 'o/r' });
+check('IMPL-0214:ng 3.10.9 の上程(R3)で必須応答の者(dave)の宣言行が無ければ失敗。指名レビュアの分は問わない', sc3([cm('bob', op(), at('2026-11-25'))]).status === 'fail' && sc3([cm('bob', op(), at('2026-11-25'))]).lines.some((l) => /@dave/.test(l) && !/@bob/.test(l)));
+check('IMPL-0214:ok 3.10.9 の上程(R3)で必須応答の者の宣言行があれば合格', sc3([cm('dave', op(), at('2026-11-25'))]).status === 'pass');
+// 読み取りの整形
+const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
+const recGh = (args) => {
+  const p = args[args.length - 1];
+  if (/pulls\/12\/files/.test(p)) return JSON.stringify([[{ filename: 'docs/gates/g6-x.md', status: 'added' }, { filename: 'src/a.ts', status: 'modified' }, { filename: 'docs/gates/old.md', status: 'removed' }]]);
+  if (/pulls\/12$/.test(p)) return JSON.stringify([{ head: { sha: 'abc123' } }]);
+  if (/contents\/docs\/gates\/g6-x\.md\?ref=abc123/.test(p)) return JSON.stringify([{ encoding: 'base64', content: b64(recText('G-6', '#5')) }]);
+  return '[[]]';
+};
+const fr = fetchPrRecordFiles(recGh, 'o/r', 12);
+check('IMPL-0214:ok 記録ファイルの読み取り: docs/gates/*.md の追加・変更だけを head の版で読む(削除・他のパスは読まない)', fr.length === 1 && fr[0].path === 'docs/gates/g6-x.md' && /ゲート \| G-6/.test(fr[0].text), JSON.stringify(fr));
+const gcalls = [];
+fetchPrRecordFiles((args) => { gcalls.push(args.join(' ')); return recGh(args); }, 'o/r', 12);
+check('IMPL-0214:ok 読み取りの API だけを使う(書き込みの -X を含まない)', gcalls.length > 0 && gcalls.every((c) => !/-X/.test(c)));
+
+// ---- 0216 資料公開から判定までの日数 ----
+const mIssue = (n, f = {}) => gIssue({ '判定予定日 T': '2026-11-27', ...f }, { number: n });
+const mMat = (n, day) => ({ number: 100 + n, title: `判定資料: #${n}`, body: '', publishedAt: at(day, '01:00:00') });
+const mRec = (n, when) => ({ path: `docs/gates/g6-${n}.md`, text: recText('G-6', `#${n}`, when) });
+const mk0216 = (o = {}) => metricsFor({ issues: [mIssue(5), mIssue(6), mIssue(7)], month: '2026-11', config, materials: [mMat(5, '2026-11-24'), mMat(6, '2026-11-19'), mMat(7, '2026-11-19')], records: [mRec(5, '2026-11-27 10:00'), mRec(6, '2026-11-27 10:00')], ...o });
+const mm = mk0216();
+check('IMPL-0216:ng 公開から判定まで3営業日の上程は「規定日数を下回った」に数える。ok 6営業日は数えない', mm.belowRegulated === '1/2 件' && mm.daysMedian.startsWith('4.5 営業日'), JSON.stringify(mm));
+check('IMPL-0216:ok 結べない上程(判定の記録が無い #7)は母数から外し、件数と比率を同じ行に出す', mm.unbound === 1 && mm.boundRatio.startsWith('66.7%') && /結べず外した 1 件/.test(metricsBody(mm)) && /66\.7%\(2\/3\)/.test(metricsBody(mm)), metricsBody(mm));
+check('IMPL-0216:ng 判定の時点は判定記録の判定日で読み、予定日 T で代用しない(公開 11-24・判定 12-02 は6営業日で、下回らない)', mk0216({ records: [mRec(5, '2026-12-02 10:00')] }).belowRegulated === '0/1 件');
+const prx = mk0216({ records: [{ ...mRec(5, 'YYYY-MM-DD HH:MM'), mergedAt: '2026-11-27T01:00:00Z' }] });
+check('IMPL-0216:ok 判定日の欄を読めないときだけ、記録を入れた PR のマージの時刻で代理し、「代理」と出す', prx.proxyCount === 1 && prx.belowRegulated === '1/1 件' && /\(代理\): 1 件/.test(metricsBody(prx)), metricsBody(prx));
+check('IMPL-0216:ok 判定日も代理のマージの時刻も読めない記録は結べない扱い(母数から外す)', mk0216({ records: [mRec(5, 'YYYY-MM-DD HH:MM')] }).unbound === 3);
+check('IMPL-0216:ok R1 は10営業日が規定日数。公開の時点を読めない上程は母数から外す', mk0216({ issues: [mIssue(5, { リスク区分: 'R1' })], materials: [mMat(5, '2026-11-16')], records: [mRec(5, '2026-11-27 10:00')] }).belowRegulated === '1/1 件' && mk0216({ issues: [mIssue(5)], materials: [], records: [mRec(5, '2026-11-27 10:00')] }).unbound === 1);
+check('IMPL-0216:ok 工程ゲートも B-2 も母数に含める。閾値を置かず、判定当日の論点は機械が数えないと書く', metricsBody(mm).includes('工程ゲートの上程も含みます') && /閾値は置いていません/.test(metricsBody(mm)) && /機械は数えません/.test(metricsBody(mm)) && mk0216({ issues: [mIssue(5, { 種別: 'B-2', 工程ゲート: '' })], records: [{ path: 'x.md', text: recText('B-2 投資判断', '#5') }], materials: [mMat(5, '2026-11-24')] }).belowRegulated === '1/1 件');
+check('IMPL-0216:ok 個人別の値を出さない(ログイン名が本文に無い)', !/bob|carol|alice/.test(metricsBody(mm)));
+const gr = fetchGateRecords((args) => {
+  const p = args[args.length - 1];
+  if (/contents\/docs\/gates$/.test(p)) return JSON.stringify([[{ type: 'file', name: 'g6-5.md', path: 'docs/gates/g6-5.md' }, { type: 'dir', name: 'sub', path: 'docs/gates/sub' }]]);
+  if (/contents\/docs\/gates\/g6-5\.md$/.test(p)) return JSON.stringify([{ encoding: 'base64', content: b64(recText('G-6', '#5')) }]);
+  if (/commits\?path=/.test(p)) return JSON.stringify([[{ sha: 's2' }, { sha: 's1' }]]);
+  if (/commits\/s1\/pulls/.test(p)) return JSON.stringify([[{ merged_at: '2026-11-27T01:00:00Z' }]]);
+  return '[[]]';
+}, 'o/r');
+check('IMPL-0216:ok 既定ブランチの docs/gates の記録を、最初に入れた PR のマージの時刻つきで読む。読めなければ []', gr.length === 1 && gr[0].mergedAt === '2026-11-27T01:00:00Z' && fetchGateRecords(() => { throw new Error('404'); }, 'o/r').length === 0, JSON.stringify(gr));
+
 check('公開の時刻: 草案の印を外した題名の改めの履歴から読む', publishedAtOf([{ event: 'renamed', created_at: '2026-11-20T01:00:00Z', rename: { from: '[草案] 判定資料: #5', to: '判定資料: #5' } }]) === '2026-11-20T01:00:00Z' && publishedAtOf([{ event: 'labeled', created_at: '2026-11-20T01:00:00Z' }]) === null);
 const eventsGh = (args) => (/issues\/9\/events/.test(args.join(' ')) ? JSON.stringify([[{ event: 'renamed', created_at: '2026-11-24T01:00:00Z', rename: { from: '[草案] 判定資料: #5', to: '判定資料: #5' } }]]) : '[[]]');
 const wp = withPublishedAt(eventsGh, 'o/r', [{ number: 9, title: '判定資料: #5', body: '' }, { number: 10, title: '[草案] 判定資料: #6', body: '' }]);

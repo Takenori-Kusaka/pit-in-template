@@ -2,7 +2,7 @@
 //
 // 運び手は Issue の様式 .github/ISSUE_TEMPLATE/pre-review.yml で起票した Issue(ラベル pre-review)である。
 // 機械が決めるのは、日時の比較・件数・有無・欄の空だけである。コメントと記名(@login)で知らせるだけで、合否を持たない。
-// 必須チェックにしない(ADR-0200 決定4。pre-review-closed・pre-review-all-responded は IMPL-0214 の重の審議に残す)。
+// 通知は必須チェックにしない(ADR-0200 決定4)。止める検査は下位命令 responded が持ち、これも既定で必須にしない(ADR-0223。必須にするかは採用者がブランチ保護で決める)。
 // 内容の確定・意見の採否・措置(代理の指名)は人が行う。AI の担い手のコメントは、意見にも応答にも数えない(標準 3.10.1)。
 //
 //   - 0571 種別が B-1〜B-4 と工程ゲートの Issue を対象にし、標準変更を外す。工程ゲートは非同期コメント期間だけ(判定当日の手順を起動しない)
@@ -12,24 +12,27 @@
 //   - 0219 通知の宛先を未応答の者に絞る(前営業日は D-0 節6 の判定する者にも)。締切を過ぎて未応答が残れば、3.9.3 の措置の宛先へ通知する
 //   - 0215 意見のコメントの雛形(賛否:・理由:・代替案または充足条件:)の欄の空を示す。注意の喚起に限る(意見を応答の対象から外さない)
 //   - 0217(検出と記載・通知の部分) 判定資料の所在が PR を指すとき、その変更ファイルに当たる CODEOWNERS の行の所有者を「必須応答」として記載し、
-//          指名レビュアに含まれない者を示す。締切で記名の応答が無い必須の者を、0219 の宛先へ通知する。標準 3.10.9 の条文(記名の応答が揃うまで判定へ進めない)は有効だが、機械が止める強制は作らない(機械化は未決。IMPL-0214 と同じ重の審議)
-//   - 0830(共通の部分) 判定資料の公開が T の5営業日前(R1 は10)より遅いものを「短縮」として検出し、対象を当該の Issue か PR とするファストトラックの行
-//          (ADR-0200 の印)が台帳に無ければ、起案者と 0219 の宛先へ通知する。行があれば「短縮の経路と下限は未決」と表示し、通知しない・合格ともしない。
+//          指名レビュアに含まれない者を示す。締切で記名の応答が無い必須の者を、0219 の宛先へ通知する。標準 3.10.9 の条文(記名の応答が揃うまで判定へ進めない)は有効で、機械は既定で止めない(必須にするかは採用者が決める。ADR-0223)。止める検査は 0214 の responded
+//   - 0830 判定資料の公開が T の5営業日前(R1 は10)より遅いものを「短縮」として検出する(ADR-0223)。(a) 7.4 のファストトラックの行は、行の印の <ゲート> が上程のゲートを名指すものだけを数える。
+//          (b) G-4 と B-1〜B-4 の上程は短縮できない: 行の有無に依らず起案者と 0219 の宛先へ通知する。行の無い他のゲートも通知する。(c) 短縮した上程は、判定予定日までに
+//          指名レビュアと必須応答の者の全員の記名の応答(賛否の欄が書かれた意見)が揃っていなければ通知する。機械は既定で止めない(ADR-0223)。
 //          公開の時点は GitHub の上の値(資料の Issue の草案の印を外した時刻か作成の時刻。所在だけの上程は、上程と所在の PR の作成の時刻の遅い方を下限)で読む。
-//          読めない所在(外部の URL など)は検出せず、「公開の時点を確かめていない」と出す
-//   - 0216 月次で、応答が付いていない意見の比率などを集計し、指標の Issue へコメントする(個人の集計を出さない。3.10.11)
+//          読めない所在(外部の URL など)は検出せず、「公開の時点を確かめていない」と出す。行の有効性・限定列挙は IMPL-0608〜0610 が追う
+//   - 0214 下位命令 responded: 判定の記録(docs/gates/*.md)を基底ブランチへ入れる PR で、結べた上程の応答の宣言行の揃いを確かめる。R1 の上程は指名レビュアの全員、
+//          必須応答の者を記載できる上程(3.10.9)は必須応答の者の全員。上程と結べない PR は失敗にせず「確かめていない」。R2・R3 の短縮は範囲外。応答の中身とブランチ保護の回避は確かめない
+//   - 0216 月次で、応答が付いていない意見の比率・資料公開から判定までの日数(判定の記録に結べた上程だけ)などを集計し、指標の Issue へコメントする(個人の集計を出さない。3.10.11)
 //
 // 日付・時刻は引数で渡し、時計を読まない。暦の日は business-days.mjs(UTC の暦、明示した差で直す)で求める。
 // GitHub への読み書きは差し替えられる(fetchIssues・postComment など)。通知は冪等である(同じ印のコメントがあれば出さない)。
 //
-// 使い方: node scripts/gate/pre-review.mjs [notify|metrics] [--month YYYY-MM] [--dry-run] [--now ISO] [--offset-minutes 540]
+// 使い方: node scripts/gate/pre-review.mjs [notify|metrics|responded] [--month YYYY-MM] [--pr N] [--dry-run] [--now ISO] [--offset-minutes 540]
 //   環境変数: GITHUB_REPOSITORY, GH_TOKEN, PRE_REVIEW_METRICS_ISSUE(指標の Issue の番号。月次の集計の宛先)
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROOT, loadConfig, aiAccountCheck, dedicatedSeatOf, parseLedger, CODEOWNERS_PLACES } from './config.mjs';
-import { addBusinessDays, dayOf, isRealDate, isBusinessDay, loadHolidays, HOLIDAYS_FILE, DEFAULT_OFFSET_MINUTES } from './business-days.mjs';
+import { addBusinessDays, dayOf, isRealDate, isBusinessDay, businessDaysBetween, loadHolidays, HOLIDAYS_FILE, DEFAULT_OFFSET_MINUTES } from './business-days.mjs';
 import { escalationTarget, ghCli, json, BOT_LOGIN } from './review-queue.mjs';
 import { parseCodeowners, codeownersMatch } from './roster-ids.mjs';
 
@@ -209,11 +212,17 @@ export function requiredOwners(codeownersText, files) {
 }
 
 const FAST_TRACK_MARK = /^ファストトラック[((]\s*短縮\s*[::]\s*([^))]*)[))]/;
-/** 台帳から、対象が #n を指すファストトラックの行(区分「例外」・内容の先頭が印 `ファストトラック(短縮: <ゲート>)`)を探す。行の有効性は問わない */
-export function fastTrackRowsFor(ledgerText, numbers) {
+/** 行の印 `ファストトラック(短縮: <ゲート>)` の <ゲート> に書かれたゲートの語(G-1〜G-8)の並び。区切りは中黒・読点・カンマ・スラッシュ・空白 */
+export function markGatesOf(content) {
+  const m = FAST_TRACK_MARK.exec(String(content ?? '').normalize('NFKC').trim());
+  return m ? m[1].split(/[・、,/\s]+/).map((t) => t.trim().toUpperCase()).filter((t) => /^G-[1-8]$/.test(t)) : [];
+}
+/** 台帳から、対象が #n を指すファストトラックの行(gate を渡したときは、行の印の <ゲート> がそのゲートを名指す行に限る)。区分「例外」・内容の先頭が印 `ファストトラック(短縮: <ゲート>)`)を探す。行の有効性は問わない */
+export function fastTrackRowsFor(ledgerText, numbers, gate = null) {
   const wanted = (numbers ?? []).filter((n) => Number.isInteger(n));
   return parseLedger(ledgerText)
     .filter((r) => r.kind === '例外' && FAST_TRACK_MARK.test(String(r.content ?? '').normalize('NFKC').trim()))
+    .filter((r) => gate === null || markGatesOf(r.content).includes(gate))
     .filter((r) => wanted.some((n) => new RegExp(`(?:^|[^0-9])#\\s*${n}(?!\\d)`).test(String(r.target ?? '').normalize('NFKC'))))
     .map((r) => r.id);
 }
@@ -275,6 +284,75 @@ export function readProposal(issue, { config, holidays = new Set(), repo = null 
 }
 
 const mention = (l) => `@${l}`;
+
+/** 上程のゲートの語。工程ゲートは欄の G-n、B-1〜B-4 は B-n。読めなければ null */
+export function gateTokenOf(p) {
+  if (p.target === 'gate') {
+    const g = norm(p.fields[FIELDS.gate]);
+    return /^G-[1-8]$/.test(g) ? g : null;
+  }
+  const m = /^(B-[1-4])(\D|$)/.exec(norm(p.fields[FIELDS.kind]));
+  return m ? m[1] : null;
+}
+/** 事前レビュー期間を短縮できない上程か。G-4 と B-1〜B-4(ADR-0223 決定1・2。行の有無に依らない) */
+export const shorteningForbidden = (p) => p.target === 'proposal' || gateTokenOf(p) === 'G-4';
+
+/**
+ * 公開の時点(暦の日)を GitHub の上の値から読む。{ pub, publishedDay, basis, unverified }。
+ * 判定資料の Issue の草案の印を外した時刻(履歴が無ければ作成の時刻)。判定資料の所在だけで公開した上程は、
+ * 上程の作成の時刻と所在の PR の作成の時刻の遅い方を下限とする(所在の欄を書いた時刻は読めない)
+ */
+export function publicationOf(p, issue, materials, prCreated, offsetMinutes) {
+  const pub = publishedState(p, materials);
+  const mat = materialOf(materials, p.number);
+  let publishedDay = null;
+  let basis = null;
+  let unverified = null;
+  if (pub.published) {
+    if (mat && !String(mat.title ?? '').startsWith(DRAFT_PREFIX.trim()) && mat.publishedAt) {
+      publishedDay = dayOf(mat.publishedAt, offsetMinutes);
+      basis = `判定資料 #${mat.number} の公開`;
+    } else if (norm(p.fields[FIELDS.material])) {
+      const lows = [issue.createdAt, p.materialPr ? prCreated?.[p.materialPr] : null].filter((v) => Number.isFinite(Date.parse(v)));
+      if (p.materialPr && lows.length) {
+        publishedDay = dayOf(lows.sort().at(-1), offsetMinutes);
+        basis = '上程と所在の PR の作成の時刻(所在の欄を書いた時刻の下限)';
+        unverified = '所在の欄を書いた時刻は読めない(下限より前に公開されたかを確かめていない)';
+      } else unverified = p.materialPr ? '所在の PR の作成の時刻を読めない' : '所在がこのリポジトリの PR を指さない(外部の URL など)ため、公開の時点を読めない';
+    } else unverified = '判定資料の Issue の公開の時刻を読めない';
+  }
+  return { pub, publishedDay, basis, unverified };
+}
+
+/**
+ * 短縮か(公開の日が、判定日 J の5営業日前(R1 は10)より遅い)。事前レビュー期間の短縮の検出は、通知(IMPL-0830)と
+ * 月次の指標「規定日数を下回った上程」(IMPL-0216)のどちらもこの関数を通す(二重の定義を作らない)
+ */
+export function publishedLate(publishedDay, J, risk, holidays = new Set()) {
+  if (!publishedDay || !J || !risk) return false;
+  return publishedDay > timelineOf(J, risk, holidays).publishDay;
+}
+
+/** 必須応答の者(3.10.9。CODEOWNERS の行の所有者。起案者と AI の名義を除く)。導出できなければ { logins: null, why } */
+export function requiredLoginsOf(p, { prFiles = {}, codeownersText = null, config }) {
+  if (!p.materialPr) return { logins: null, why: '判定資料の所在が PR を指さない' };
+  const files = prFiles?.[p.materialPr];
+  if (!Array.isArray(files)) return { logins: null, why: `PR #${p.materialPr} の変更ファイルを読めない` };
+  if (codeownersText === null || codeownersText === undefined) return { logins: null, why: 'CODEOWNERS が既定ブランチに無い' };
+  const own = requiredOwners(codeownersText, files);
+  const authorKey = p.author?.toLowerCase();
+  return { logins: own.logins.filter((l) => l.toLowerCase() !== authorKey && !isAiActor(config, { login: l })), own, files, why: null };
+}
+
+/** 応答した者(賛否の欄が書かれた意見のある者。AI の担い手を除く)の login(小文字)。cutoffDay を渡すと、その日までの意見に限る */
+export function respondedUpTo(p, cutoffDay = null, offsetMinutes = DEFAULT_OFFSET_MINUTES) {
+  return new Set(
+    p.opinions
+      .filter((o) => o.stance && (cutoffDay === null || (dayOf(o.at, offsetMinutes) ?? '9999') <= cutoffDay))
+      .map((o) => o.login.toLowerCase()),
+  );
+}
+
 const draftBody = (p) =>
   [
     `<!-- ${MARKER} material of=#${p.number} -->`,
@@ -443,7 +521,7 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
               missing.length ? `指名レビュアに含まれていません: ${missing.map(mention).join(' ')}。指名は人が行います(起案者は、指名レビュアの欄へ加えるかを決めてください)。` : '全員が指名レビュアに含まれています。',
               '記名の応答は、この Issue の意見のコメント(`賛否:` の欄が書かれたもの)だけを数えます。PR 上のレビューは読みません。',
               `通知先: ${missing.map(mention).join(' ')}`.trimEnd(),
-              '標準 3.10.9 は、必須応答の者の記名の応答が揃うまで判定へ進めないと定めています。機械はこれを止めません(止める強制の機械化は未決)。進めてよいかは決定者が確かめてください。',
+              '標準 3.10.9 は、必須応答の者の記名の応答が揃うまで判定へ進めないと定めています。機械は既定で止めません(必須にするかは採用者が決めます。ADR-0223)。進めてよいかは決定者が確かめてください。',
               '判定資料(3.10.3)への転記は起案者が行います。機械の記載はこの Issue のコメントに置き、判定資料の本文は編集しません。この記載は指名レビュアの時点のものです(指名を直したときは、新しい記載が出ます)。',
             ].join('\n'),
           );
@@ -454,45 +532,52 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
           const escTo = esc.login ? `${mention(esc.login)} ` : '';
           push(
             `required-miss:${tl.deadlineDay}`,
-            `${escTo}意見の受付の締切(${tl.deadlineDay})を過ぎても、記名の応答が無い必須応答の者がいます: ${silent.map(mention).join(' ')}\n措置(3.9.3。D-0 表3 に記名した者への通知と、代理の指名)が要るかを、宛先の方が判断してください。標準 3.10.9 は記名の応答が揃うまで判定へ進めないと定めていますが、機械はこれを止めません(止める強制の機械化は未決)。進めてよいかは決定者が確かめてください。\n通知先: ${silent.map(mention).join(' ')}`,
+            `${escTo}意見の受付の締切(${tl.deadlineDay})を過ぎても、記名の応答が無い必須応答の者がいます: ${silent.map(mention).join(' ')}\n措置(3.9.3。D-0 表3 に記名した者への通知と、代理の指名)が要るかを、宛先の方が判断してください。標準 3.10.9 は記名の応答が揃うまで判定へ進めないと定めていますが、機械は既定で止めません(必須にするかは採用者が決めます。ADR-0223)。進めてよいかは決定者が確かめてください。\n通知先: ${silent.map(mention).join(' ')}`,
           );
         }
       }
     }
 
-    // 0830(共通の部分) 判定資料の公開が期日(T の5営業日前。R1 は10)より遅いものを短縮として検出する。行が無ければ通知、行があれば未決と表示するだけ
+    // 0830 判定資料の公開が期日(T の5営業日前。R1 は10)より遅いものを短縮として検出する(ADR-0223)。
+    //   (b) G-4 と B-1〜B-4 は短縮できない: 行の有無に依らず通知する
+    //   (a) それ以外は、行の印の <ゲート> が上程のゲートを名指す行があるときだけ、行ありとする。無ければ通知する
+    //   (c) 短縮した上程は、判定の時点(T)までに指名レビュアと必須応答の者の全員の記名の応答(宣言行)が揃っていなければ通知する
     {
-      const pub = publishedState(p, materials);
-      const mat = materialOf(materials, p.number);
-      // 公開の時点を GitHub の上の値から読む: 判定資料の Issue の草案の印を外した時刻(印の履歴が無ければ作成の時刻)。
-      // 判定資料の所在だけで公開した上程は、上程の作成の時刻と、所在の PR の作成の時刻の遅い方を下限とする(所在の欄を後から書いた時刻は読めない)
-      let publishedDay = null;
-      let basis = null;
-      let unverified = null;
-      if (pub.published) {
-        if (mat && !String(mat.title ?? '').startsWith(DRAFT_PREFIX.trim()) && mat.publishedAt) {
-          publishedDay = dayOf(mat.publishedAt, offsetMinutes);
-          basis = `判定資料 #${mat.number} の公開`;
-        } else if (norm(p.fields[FIELDS.material])) {
-          const lows = [issue.createdAt, p.materialPr ? prCreated?.[p.materialPr] : null].filter((v) => Number.isFinite(Date.parse(v)));
-          if (p.materialPr && lows.length) {
-            publishedDay = dayOf(lows.sort().at(-1), offsetMinutes);
-            basis = '上程と所在の PR の作成の時刻(所在の欄を書いた時刻の下限)';
-            unverified = '所在の欄を書いた時刻は読めない(下限より前に公開されたかを確かめていない)';
-          } else unverified = p.materialPr ? '所在の PR の作成の時刻を読めない' : '所在がこのリポジトリの PR を指さない(外部の URL など)ため、公開の時点を読めない';
-        } else unverified = '判定資料の Issue の公開の時刻を読めない';
-      }
-      const late = (!pub.published && nowDay > tl.publishDay && nowDay <= p.T) || (publishedDay !== null && publishedDay > tl.publishDay);
+      const { pub, publishedDay, basis, unverified } = publicationOf(p, issue, materials, prCreated, offsetMinutes);
+      const late = (!pub.published && nowDay > tl.publishDay && nowDay <= p.T) || publishedLate(publishedDay, p.T, p.risk, holidays);
       if (!late && unverified && nowDay >= tl.publishDay) notes.push(`#${issue.number}: 判定資料の公開の時点を確かめていない(${unverified})。公開の遅れ(短縮)を検出していない`);
       if (late) {
-        const rows = ledgerText ? fastTrackRowsFor(ledgerText, [p.number, p.materialPr]) : [];
-        if (rows.length) notes.push(`#${issue.number}: 事前レビュー期間が短縮になっている(公開が期日 ${tl.publishDay} より遅い)。ファストトラックの行あり(${rows.join('・')})。短縮の経路と下限は未決(EV-0281)。通知しない・合格ともしない`);
-        else {
-          const to = [p.author, esc.login].filter(Boolean).map(mention).join(' ');
+        const to = [p.author, esc.login].filter(Boolean).map(mention).join(' ');
+        const gateTok = gateTokenOf(p);
+        const state = `${pub.published ? `公開 ${publishedDay}。根拠: ${basis}` : '未公開'}`;
+        if (shorteningForbidden(p)) {
           push(
             `shortened:${tl.publishDay}`,
-            `${to} 判定資料の公開が期日(${tl.publishDay}。T の${p.risk === 'R1' ? '10' : '5'}営業日前)より遅れ、事前レビュー期間が短縮になっています(${pub.published ? `公開 ${publishedDay}。根拠: ${basis}` : '未公開'})。\n標準 3.10.2 は、短縮を第7章 7.4 のファストトラックを適用した場合に限ります。技術負債台帳${ledgerText === null || ledgerText === undefined ? '(docs/debt-ledger.md を読めません)' : ''}に、対象を #${p.number}${p.materialPr && p.materialPr !== p.number ? ` か #${p.materialPr}` : ''} とする印「ファストトラック(短縮: <ゲート>)」の行が見つかりません。\n短縮の可否は機械が決めません。判定者へ知らせ、期間どおりに戻すか、7.4 の手続を取るかを人が決めてください。\n通知先: ${to}`,
+            `${to} 判定資料の公開が期日(${tl.publishDay}。T の${p.risk === 'R1' ? '10' : '5'}営業日前)より遅れ、事前レビュー期間が短縮になっています(${state})。\n${gateTok ?? '会議体の上程'} は事前レビュー期間を短縮できません(標準 3.10.2。ADR-0223 決定1・2)。第7章 7.4 の行の有無に依らず、期間どおりに戻してください(判定予定日 T を、公開の時点から5営業日(R1 は10)後へ改める)。\n短縮の可否は機械が決めません。判定者へ知らせ、人が決めてください。\n通知先: ${to}`,
           );
+        } else {
+          const rows = ledgerText ? fastTrackRowsFor(ledgerText, [p.number, p.materialPr], gateTok) : [];
+          if (rows.length) notes.push(`#${issue.number}: 事前レビュー期間が短縮になっている(公開が期日 ${tl.publishDay} より遅い)。ファストトラックの行あり(${rows.join('・')}。印のゲートが ${gateTok} を名指す)。行の有効性は確かめていない(IMPL-0608〜0610)。通知しない・合格ともしない。短縮した上程は、全員の記名の応答が揃うまで判定へ進めない(ADR-0223)`);
+          else {
+            push(
+              `shortened:${tl.publishDay}`,
+              `${to} 判定資料の公開が期日(${tl.publishDay}。T の${p.risk === 'R1' ? '10' : '5'}営業日前)より遅れ、事前レビュー期間が短縮になっています(${state})。\n標準 3.10.2 は、短縮を第7章 7.4 のファストトラックを適用した場合に限ります。技術負債台帳${ledgerText === null || ledgerText === undefined ? '(docs/debt-ledger.md を読めません)' : ''}に、対象を #${p.number}${p.materialPr && p.materialPr !== p.number ? ` か #${p.materialPr}` : ''} とし、印の <ゲート> が ${gateTok ?? '(上程のゲートを読めない)'} を名指す「ファストトラック(短縮: <ゲート>)」の行が見つかりません。\n短縮の可否は機械が決めません。判定者へ知らせ、期間どおりに戻すか、7.4 の手続を取るかを人が決めてください。\n通知先: ${to}`,
+            );
+          }
+        }
+        // (c) 判定の時点(T)までに全員の記名の応答が揃うか
+        if (nowDay >= tl.answerDay && nowDay <= p.T) {
+          const req = requiredLoginsOf(p, { prFiles, codeownersText, config });
+          const everyone = uniq([...p.reviewers, ...(req.logins ?? [])]);
+          const got = respondedUpTo(p);
+          const missing = everyone.filter((l) => !got.has(l.toLowerCase()));
+          if (req.logins === null && p.materialPr) notes.push(`#${issue.number}: 短縮した上程の必須応答の者を導出できない(${req.why})。指名レビュアの分だけ照らす`);
+          if (missing.length) {
+            push(
+              `short-unanswered:${p.T}`,
+              `${to} 事前レビュー期間が短縮になっている上程で、判定予定日(${p.T})までに記名の応答(賛否の欄が書かれた意見)が揃っていない者がいます: ${missing.map(mention).join(' ')}\n標準 3.10.2 は、短縮した場合、指名したレビュア(必須応答の者を含む)の全員が記名で応答した後でなければ判定へ進めないと定めています。1名でも応答が無ければ通常の期間に戻ります。機械は既定で止めません(必須にするかは採用者が決めます。ADR-0223)。\n通知先: ${missing.map(mention).join(' ')}`,
+            );
+          }
         }
       }
     }
@@ -515,25 +600,138 @@ export function planNotify({ issues, materials = [], now, config, d0Text = '', h
   return { actions, notes };
 }
 
-/** 月次の集計(0216)。月は YYYY-MM。判定予定日 T がその月の事前レビュー Issue を数える。個人別の値は出さない */
-export function metricsFor({ issues, month, config, holidays = new Set() }) {
+// ---- 判定の記録と上程の結び付け(IMPL-0214・0216) ----
+
+/**
+ * 判定の記録(様式 04 の冒頭の表)を読む。{ gate, target, day, time }。読めない欄は null。
+ * ゲートは G-1〜G-8・SG・B-1〜B-4 の語、対象は欄の文字列、判定日時は YYYY-MM-DD(HH:MM)で、実在する日付に限る
+ */
+export function parseGateRecord(text) {
+  const rows = {};
+  for (const line of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
+    const m = /^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$/.exec(line);
+    if (m && !(norm(m[1]) in rows)) rows[norm(m[1])] = norm(m[2]);
+  }
+  const gate = /^(G-[1-8]|SG|B-[1-4])(?![0-9A-Za-z])/.exec(rows['ゲート'] ?? '')?.[1] ?? null;
+  const when = /^(\d{4}-\d{2}-\d{2})(?:[ T]+(\d{2}:\d{2}))?/.exec(rows['判定日時'] ?? '');
+  const day = when && isRealDate(when[1]) ? when[1] : null;
+  return { gate, target: rows['対象'] ?? null, day, time: day ? (when[2] ?? null) : null };
+}
+
+/**
+ * 判定の記録を上程に結ぶ。結ぶ条件(決定可能): 記録のゲートが上程のゲートの語に等しく、記録の対象の欄の `#番号` が
+ * 上程の Issue の番号か判定資料の所在の PR の番号に等しい。ちょうど1件に結べたときだけ結ぶ(0件・2件以上は結ばない)
+ */
+export function bindRecord(rec, proposals) {
+  if (!rec.gate || !rec.target) return null;
+  const refs = [...String(rec.target).matchAll(/#\s*(\d+)(?!\d)/g)].map((m) => Number(m[1]));
+  const hits = proposals.filter((p) => gateTokenOf(p) === rec.gate && refs.some((n) => n === p.number || n === p.materialPr));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * 応答の揃いの検査(IMPL-0214)。判定の記録を基底ブランチへ入れる PR の記録ファイルごとに、結べた上程の宣言行を照らす。
+ * 範囲: R1 の上程は指名レビュアの全員、必須応答の者を記載できる上程(3.10.9)は必須応答の者の全員。R2・R3 の短縮は範囲外。
+ * 上程と結べない記録は失敗にせず「確かめていない」。応答の中身・ブランチ保護の回避は確かめない。
+ * 戻り値: { status: 'fail'|'pass'|'out'|'unverified', lines }
+ */
+export function respondedCheck({ records, issues, config, holidays = new Set(), repo = null, prFiles = {}, codeownersText = null, offsetMinutes = DEFAULT_OFFSET_MINUTES }) {
+  const proposals = issues.map((i) => readProposal(i, { config, holidays, repo })).filter((p) => p.target && !p.problems.length);
+  const lines = [];
+  const seen = new Set();
+  if (!records.length) return { status: 'unverified', lines: ['判定の記録(docs/gates/*.md)を含まない PR のため、確かめていない'] };
+  for (const r of records) {
+    const rec = parseGateRecord(r.text);
+    const p = bindRecord(rec, proposals);
+    if (!p) {
+      seen.add('unverified');
+      lines.push(`${r.path}: 事前レビューの上程と結べない(ゲート ${rec.gate ?? '(読めない)'}・対象 ${rec.target ?? '(読めない)'}。結ぶのは、ゲートの語の一致と、対象の欄の #番号が上程か判定資料の PR の番号に等しいこと)。確かめていない`);
+      continue;
+    }
+    const req = requiredLoginsOf(p, { prFiles, codeownersText, config });
+    const isR1 = p.risk === 'R1';
+    if (!isR1 && req.logins === null) {
+      seen.add('unverified');
+      lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。必須応答の者を導出できない(${req.why})ため、3.10.9 の範囲かを確かめていない`);
+      continue;
+    }
+    const needed = uniq([...(isR1 ? p.reviewers : []), ...(req.logins ?? [])]);
+    if (!needed.length) {
+      seen.add('out');
+      lines.push(`${r.path}: 上程 #${p.number}(${p.risk})は R1 でも必須応答の記載を要する上程でもないため、この検査の範囲外(R2・R3 の短縮は IMPL-0830 の通知が担う)`);
+      continue;
+    }
+    const got = respondedUpTo(p, rec.day, offsetMinutes);
+    const missing = needed.filter((l) => !got.has(l.toLowerCase()));
+    const cut = rec.day ? `判定日 ${rec.day} まで` : '判定日を読めないため期限を切らず';
+    if (missing.length) {
+      seen.add('fail');
+      lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。宣言行(賛否の欄が書かれた意見)が揃っていない(${cut}): ${missing.map(mention).join(' ')}`);
+    } else {
+      seen.add('pass');
+      lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。宣言行が揃った(${cut}。${needed.length} 名)。応答の中身は確かめていない`);
+    }
+  }
+  const status = ['fail', 'pass', 'out', 'unverified'].find((s) => seen.has(s));
+  return { status, lines };
+}
+
+export const VERDICTS = { fail: '失敗: 応答の宣言行が揃っていない', pass: '合格: 宣言行が揃った(応答の中身は確かめていない)', out: '範囲外(この検査は確かめない)', unverified: '確かめていない(上程と結べない、または読めない。失敗にはしない)' };
+const median = (xs) => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const k = s.length >> 1;
+  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
+};
+
+/**
+ * 月次の集計(0216)。月は YYYY-MM。判定予定日 T がその月の事前レビュー Issue を数える。個人別の値は出さない。
+ * 資料公開から判定までの日数: records(判定の記録。{ path, text, mergedAt? })を上程に結べたものだけを母数にする。
+ * 判定の時点は記録の判定日の欄を先に読み、読めないときだけ記録を基底ブランチへ入れた PR のマージの時刻で代理する(「代理」と出す)。予定日 T で代用しない。
+ * 公開の時点を読めない上程・結べない上程は母数から外し、件数と比率を出す。「規定日数を下回った」は短縮の検出(publishedLate)と同じ関数を通す
+ */
+export function metricsFor({ issues, month, config, holidays = new Set(), materials = [], prCreated = {}, records = [], repo = null, offsetMinutes = DEFAULT_OFFSET_MINUTES }) {
   const rows = [];
+  const all = [];
   let excludedKinds = 0;
   for (const issue of issues) {
-    const p = readProposal(issue, { config, holidays });
+    const p = readProposal(issue, { config, holidays, repo });
     if (!p.target) {
       excludedKinds++;
       continue;
     }
+    if (!p.problems.length) all.push({ p, issue });
     if (!p.T || !p.T.startsWith(month)) continue;
-    rows.push(p);
+    rows.push({ p, issue });
   }
-  const opinions = rows.flatMap((p) => p.opinions.map((o) => ({ ...o, answered: p.answeredIds.has(o.id) })));
-  const reviewerSlots = rows.reduce((n, p) => n + p.reviewers.length, 0);
-  const respondedSlots = rows.reduce((n, p) => n + p.reviewers.filter((l) => p.responded.has(l.toLowerCase())).length, 0);
-  const noOpinion = rows.filter((p) => p.opinions.length === 0).length;
+  const opinions = rows.flatMap(({ p }) => p.opinions.map((o) => ({ ...o, answered: p.answeredIds.has(o.id) })));
+  const reviewerSlots = rows.reduce((n, { p }) => n + p.reviewers.length, 0);
+  const respondedSlots = rows.reduce((n, { p }) => n + p.reviewers.filter((l) => p.responded.has(l.toLowerCase())).length, 0);
+  const noOpinion = rows.filter(({ p }) => p.opinions.length === 0).length;
   const unanswered = opinions.filter((o) => !o.answered).length;
   const pct = (a, b) => (b === 0 ? '算定できない(対象なし)' : `${Math.round((a / b) * 1000) / 10}%(${a}/${b})`);
+
+  // 資料公開から判定までの日数
+  const byNumber = new Map();
+  for (const r of records) {
+    const rec = parseGateRecord(r.text);
+    const p = bindRecord(rec, all.map((x) => x.p));
+    if (p && !byNumber.has(p.number)) byNumber.set(p.number, { rec, mergedAt: r.mergedAt ?? null });
+  }
+  const days = [];
+  let below = 0;
+  let proxy = 0;
+  for (const { p, issue } of rows) {
+    const hit = byNumber.get(p.number);
+    if (!hit || !p.risk) continue;
+    const pubInfo = publicationOf(p, issue, materials, prCreated, offsetMinutes);
+    const judged = hit.rec.day ?? dayOf(hit.mergedAt, offsetMinutes);
+    if (!pubInfo.publishedDay || !judged) continue;
+    if (!hit.rec.day) proxy++;
+    days.push(businessDaysBetween(pubInfo.publishedDay, judged, holidays));
+    if (publishedLate(pubInfo.publishedDay, judged, p.risk, holidays)) below++;
+  }
+  const med = median(days);
   return {
     month,
     proposals: rows.length,
@@ -541,6 +739,11 @@ export function metricsFor({ issues, month, config, holidays = new Set() }) {
     reviewerResponseRatio: pct(respondedSlots, reviewerSlots),
     unansweredOpinionRatio: pct(unanswered, opinions.length),
     excludedKinds,
+    boundRatio: pct(days.length, rows.length),
+    unbound: rows.length - days.length,
+    daysMedian: med === null ? '算定できない(結べた上程なし)' : `${med} 営業日(${days.length} 件の中央値)`,
+    belowRegulated: days.length === 0 ? '算定できない(結べた上程なし)' : `${below}/${days.length} 件`,
+    proxyCount: proxy,
   };
 }
 
@@ -556,10 +759,16 @@ export function metricsBody(m) {
       `| 事前意見が0件の上程の比率 | ${m.noOpinionRatio} |`,
       `| 指名レビュアの応答率(指名の延べ数に対する、賛否の欄が書かれた意見のある者の割合) | ${m.reviewerResponseRatio} |`,
       `| 起案者の応答が付いていない意見の比率(宣言行 \`応答: <意見のコメントの URL>\` が結ぶものを応答とする) | ${m.unansweredOpinionRatio} |`,
+      `| 資料公開から判定までの日数: 判定の記録に結べた上程(結べた件数と比率。残りは母数から外した) | ${m.boundRatio}。結べず外した ${m.unbound} 件 |`,
+      `| 資料公開から判定までの日数の中央値(営業日) | ${m.daysMedian} |`,
+      `| 規定日数(5営業日、R1 は10)を下回った上程の件数 | ${m.belowRegulated} |`,
       '',
       '- AI の担い手のコメントは、分子にも分母にも数えていません(標準 3.10.1)。',
-      '- 個人別の値は出していません。応答率と応答の件数・速さを個人の評価指標にしません(標準 3.10.11)。警戒サインの解釈は人が行います(3.10.8)。',
-      '- 集計していない指標: 判定当日に初めて出た論点の比率・資料公開から判定までの日数(Issue のコメントから決められない)。',
+      '- 個人別の値は出していません。応答率と応答の件数・速さを個人の評価指標にしません(標準 3.10.11)。警戒サインの解釈は人が行います(3.10.8)。閾値は置いていません。',
+      '- 日数は、資料公開の時点(GitHub の上の値)から、判定の記録の判定日の欄までを営業日で数えました。工程ゲートの上程も含みます。予定日 T では代用していません。' +
+        (m.proxyCount ? ` 判定日の欄を読めず、記録を基底ブランチへ入れた PR のマージの時刻で代理したもの(代理): ${m.proxyCount} 件。` : ''),
+      '- 結べるのは、判定の記録の対象の欄の #番号が上程か判定資料の PR の番号に等しく、ゲートの語が一致するものだけです。結べない上程は外しています(外した件数が多いほど、この指標は実態を表しません)。',
+      '- 集計していない指標: 判定当日に初めて出た論点の比率。決定者が判定記録の未解決の論点の欄に区別して書き、集計はプロセス内部監査が行います(機械は数えません)。',
       '',
     ].join('\n'),
   );
@@ -621,6 +830,64 @@ export function withPublishedAt(gh, repo, materials) {
   });
 }
 
+const decodeContent = (r) => {
+  const o = Array.isArray(r) ? r[0] : r;
+  return o?.content ? Buffer.from(String(o.content).replace(/\n/g, ''), o.encoding === 'base64' ? 'base64' : 'utf8').toString('utf8') : null;
+};
+const RECORD_PATH = /^docs\/gates\/[^/]+\.md$/;
+
+/** 判定の記録を基底ブランチへ入れる PR の、記録ファイル(docs/gates/*.md。head の版)を読む。読めないファイルは含めない。gh は差し替えられる */
+export function fetchPrRecordFiles(gh, repo, n) {
+  const files = parse(gh, [`repos/${repo}/pulls/${n}/files?per_page=100`]).filter((f) => RECORD_PATH.test(f.filename ?? '') && f.status !== 'removed');
+  if (!files.length) return [];
+  const pr = parse(gh, [`repos/${repo}/pulls/${n}`]);
+  const sha = (Array.isArray(pr) ? pr[0] : pr)?.head?.sha;
+  const out = [];
+  for (const f of files) {
+    try {
+      const text = decodeContent(parse(gh, [`repos/${repo}/contents/${encodeURI(f.filename)}${sha ? `?ref=${sha}` : ''}`]));
+      if (text !== null) out.push({ path: f.filename, text });
+    } catch {
+      // 読めないファイルは含めない(上程と結べないものと同じく、確かめていないに回る)
+    }
+  }
+  return out;
+}
+
+/**
+ * 既定ブランチの docs/gates/*.md を、最初に入れた時点(PR のマージの時刻。読めなければコミットの時刻)つきで読む。読めなければ []。gh は差し替えられる
+ */
+export function fetchGateRecords(gh, repo) {
+  let list;
+  try {
+    list = parse(gh, [`repos/${repo}/contents/docs/gates`]).filter((f) => f.type === 'file' && /\.md$/.test(f.name ?? ''));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of list) {
+    try {
+      const text = decodeContent(parse(gh, [`repos/${repo}/contents/${encodeURI(f.path)}`]));
+      if (text === null) continue;
+      let mergedAt = null;
+      try {
+        const commits = parse(gh, [`repos/${repo}/commits?path=${encodeURIComponent(f.path)}&per_page=100`]);
+        const first = commits.at(-1);
+        if (first) {
+          const prs = parse(gh, [`repos/${repo}/commits/${first.sha}/pulls`]);
+          mergedAt = prs.map((x) => x.merged_at).filter(Boolean).sort()[0] ?? first.commit?.committer?.date ?? null;
+        }
+      } catch {
+        mergedAt = null;
+      }
+      out.push({ path: f.path, text, mergedAt });
+    } catch {
+      // 読めない記録は結べない上程と同じく母数から外れる
+    }
+  }
+  return out;
+}
+
 export function postComment(gh, repo, n, body) {
   gh(['api', '-X', 'POST', `repos/${repo}/issues/${n}/comments`, '--input', '-'], { input: JSON.stringify({ body }) });
 }
@@ -654,8 +921,30 @@ export function previousMonth(now, offset = DEFAULT_OFFSET_MINUTES) {
   return d.toISOString().slice(0, 7);
 }
 
+/** 応答の揃いの検査の入口(IMPL-0214)。--pr <番号>(判定の記録を基底ブランチへ入れる PR)。失敗は終了コード 1、確かめていないは 0 */
+function respondedMain({ opt, repo, issues, config, hol, offset }) {
+  const n = Number(opt('--pr') ?? process.env.PR_NUMBER);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.error('--pr <番号> を渡してください(判定の記録を基底ブランチへ入れる PR)');
+    process.exit(2);
+  }
+  const records = fetchPrRecordFiles(ghCli, repo, n);
+  const prFiles = {};
+  for (const i of issues) {
+    const rp = readProposal(i, { config, holidays: hol.days, repo });
+    if (rp.target && rp.materialPr && !(rp.materialPr in prFiles)) prFiles[rp.materialPr] = fetchPrFiles(ghCli, repo, rp.materialPr);
+  }
+  const coPlace = CODEOWNERS_PLACES.find((f) => fs.existsSync(path.join(ROOT, f)));
+  const codeownersText = coPlace ? fs.readFileSync(path.join(ROOT, coPlace), 'utf8') : null;
+  const r = respondedCheck({ records, issues, config, holidays: hol.days, repo, prFiles, codeownersText, offsetMinutes: offset });
+  if (hol.note) console.log(`注意: ${hol.note}`);
+  for (const l of r.lines) console.log(l);
+  console.log(`応答の揃いの検査: ${VERDICTS[r.status]}。ブランチ保護の回避は確かめない。実物の GitHub では確かめていない。`);
+  process.exit(r.status === 'fail' ? 1 : 0);
+}
+
 function main(argv) {
-  const mode = argv.find((a) => a === 'notify' || a === 'metrics') ?? 'notify';
+  const mode = argv.find((a) => a === 'notify' || a === 'metrics' || a === 'responded') ?? 'notify';
   const opt = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
@@ -667,14 +956,20 @@ function main(argv) {
   const offset = opt('--offset-minutes') !== null ? Number(opt('--offset-minutes')) : DEFAULT_OFFSET_MINUTES;
   const config = loadConfig();
   const hol = loadHolidays(ROOT);
-  const issues = fetchIssues(ghCli, repo, { label: LABEL, state: mode === 'metrics' ? 'all' : 'open' });
+  const issues = fetchIssues(ghCli, repo, { label: LABEL, state: mode === 'notify' ? 'open' : 'all' });
   if (mode === 'metrics') {
     const month = opt('--month') ?? previousMonth(now, offset);
     if (!isMonth(month)) {
       console.error(`--month は YYYY-MM で渡してください: ${month}`);
       process.exit(2);
     }
-    const m = metricsFor({ issues, month, config, holidays: hol.days });
+    const materials = withPublishedAt(ghCli, repo, fetchIssues(ghCli, repo, { label: MATERIAL_LABEL, state: 'all' }));
+    const prCreated = {};
+    for (const i of issues) {
+      const rp = readProposal(i, { config, holidays: hol.days, repo });
+      if (rp.target && rp.materialPr && !(rp.materialPr in prCreated)) prCreated[rp.materialPr] = fetchPrCreated(ghCli, repo, rp.materialPr);
+    }
+    const m = metricsFor({ issues, month, config, holidays: hol.days, materials, prCreated, records: fetchGateRecords(ghCli, repo), repo, offsetMinutes: offset });
     const body = metricsBody(m);
     const target = Number(process.env.PRE_REVIEW_METRICS_ISSUE) > 0 ? Number(process.env.PRE_REVIEW_METRICS_ISSUE) : null;
     console.log(body);
@@ -692,6 +987,7 @@ function main(argv) {
     if (!dry) postComment(ghCli, repo, target, body);
     return;
   }
+  if (mode === 'responded') return respondedMain({ opt, repo, issues, config, hol, offset });
   const materials = withPublishedAt(ghCli, repo, fetchIssues(ghCli, repo, { label: MATERIAL_LABEL, state: 'all' }));
   const prFiles = {};
   const prCreated = {};
