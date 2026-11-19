@@ -24,6 +24,11 @@ const setRisk = (input, value) => {
   input.pr.body = input.pr.body.replace(/(## リスク区分\n\n)R3/, `$1${value}`);
 };
 
+// 依存の目印のファイルを、規則の範囲(src/i18n/**)の内側の変更に加える
+const depFile = (input, name, extra) => {
+  input.files.push({ path: `src/i18n/${name}`, ...extra });
+};
+
 // 開発者の席の規則を外し、トレーラを独立レビュアの席の規則(DR-002)へ向ける
 const reviewerOnly = (input) => {
   input.config.delegation.rules = input.config.delegation.rules.filter((r) => r.id !== 'DR-001');
@@ -202,6 +207,19 @@ const cases = [
   ['種別の範囲が区分の下限 R1 の規則のパターンと同一', (i) => { i.config.riskFloor = { rules: [{ paths: ['src/i18n/**'], floor: 'R1' }] }; }, false, ['条件2']],
   // IMPL-0664:ok
   ['区分の下限の規則のパターンが種別の範囲と重ならない', (i) => { i.config.riskFloor = { rules: [{ paths: ['src/pay/**'], floor: 'R1' }] }; }, true, []],
+  // 依存の目印のファイルの追加の行(IMPL-0840。委任の対象の属性の代理指標)。版の数字・ハッシュだけが変わる更新は落とさない
+  // IMPL-0840:ng
+  ['依存の目印のファイルに依存の追加の行(新しいキー)', (i) => depFile(i, 'package.json', { patch: '@@ -5,3 +5,4 @@\n   "dependencies": {\n+    "left-pad": "^1.3.0",\n     "react": "^18.2.0"', additions: 1, deletions: 0 }), false, ['条件2']],
+  // IMPL-0840:ng
+  ['依存の目印のファイルに、削除の行と対応しない追加の行(依存の差し替え)', (i) => depFile(i, 'package.json', { patch: '@@ -5,2 +5,2 @@\n-    "lodash": "^4.17.21"\n+    "underscore": "^1.13.6"', additions: 1, deletions: 1 }), false, ['条件2']],
+  // IMPL-0840:ng
+  ['依存の目印のファイルで差分を読めない(patch なし)追加の行は、行数で判定して落とす', (i) => depFile(i, 'package-lock.json', { additions: 3, deletions: 0 }), false, ['条件2']],
+  // IMPL-0840:ok
+  ['依存の版の更新だけ(版の数字が変わる。依存のパッチ更新)', (i) => depFile(i, 'package.json', { patch: '@@ -6,1 +6,1 @@\n-    "react": "^18.2.0"\n+    "react": "^18.3.1"', additions: 1, deletions: 1 }), true, []],
+  // IMPL-0840:ok
+  ['ロックファイルの版・ハッシュだけが変わる更新', (i) => depFile(i, 'package-lock.json', { patch: '@@ -9,2 +9,2 @@\n-      "version": "18.2.0",\n-      "integrity": "sha512-AAAA1111+/=="\n+      "version": "18.3.1",\n+      "integrity": "sha512-BBBB2222+/=="', additions: 2, deletions: 2 }), true, []],
+  // IMPL-0840:ok
+  ['依存の目印のファイルで依存を削除するだけ(追加の行なし)', (i) => depFile(i, 'package.json', { patch: '@@ -5,2 +5,1 @@\n-    "left-pad": "^1.3.0",', additions: 0, deletions: 1 }), true, []],
   // 検知条件から外した欄が残る旧い構成は、読まずに受け付ける(登録の要件にも数えない)
   ['旧い構成の外した検知条件の欄は読まない', (i) => (i.config.delegation.changeTypes[0].basis.detection.duplicationRate = '旧い記入'), true, []], // retired-ok: 外した旧い欄の後方互換を試す
 ];

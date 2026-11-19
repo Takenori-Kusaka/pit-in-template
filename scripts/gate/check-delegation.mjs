@@ -214,7 +214,7 @@ try {
     '--paginate',
     `repos/${repo}/pulls/${number}/files?per_page=100`,
     '--jq',
-    '.[] | {path: .filename, previousPath: .previous_filename, additions, deletions}',
+    '.[] | {path: .filename, previousPath: .previous_filename, additions, deletions, patch}',
   ]);
   commits = ghLines([
     'api',

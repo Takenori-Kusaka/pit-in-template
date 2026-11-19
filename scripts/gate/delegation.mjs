@@ -35,8 +35,48 @@ import {
   ruleApprovalProblems,
   changeTypeProblems,
   aiAccountCheck,
+  DEPENDENCY_MANIFESTS,
 } from './config.mjs';
 import { autonomyState, stopsText } from './autonomy.mjs';
+
+/**
+ * 依存の目印のファイルの追加の行(IMPL-0840。標準 第5章 5.5.4 の委任の対象の属性「新たな外部呼び出し・データ構造・権限を導入しない」の代理指標)。
+ * 追加の行のうち、削除の行と並べたときに対応する行が無いものがあれば、依存の追加とみなす。版の数字・ハッシュだけが変わった行
+ * (依存の版の更新)は対応する行がある。差分を読めない(patch が無い。GitHub は大きな差分を省く)ときは、追加の行の数だけで判定し、
+ * 追加が1行でもあれば依存の追加とみなす。範囲は依存の目印のファイルの追加の行に限る。マイグレーション・権限の設定・外部呼び出しの導入は
+ * ここでは確かめない(置き場を委任の規則の excludePaths に書く手引きがある。確かめる者: 登録する者と事後の抜き取り)
+ */
+export function dependencyAdditions(files) {
+  const norm = (l) =>
+    String(l)
+      .normalize('NFKC')
+      .trim()
+      .replace(/sha\d+-[A-Za-z0-9+/=]+/g, 'H')
+      .replace(/\b[0-9a-f]{32,}\b/gi, 'H')
+      .replace(/v?\d+(?:\.\d+)+[0-9A-Za-z.+~-]*/g, 'V')
+      .replace(/\b\d+\b/g, 'N');
+  const out = [];
+  for (const f of files ?? []) {
+    const name = String(f.path ?? '').split('/').pop();
+    if (!DEPENDENCY_MANIFESTS.includes(name)) continue;
+    if (typeof f.patch === 'string') {
+      const lines = f.patch.split('\n');
+      const added = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => norm(l.slice(1))).filter(Boolean);
+      const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => norm(l.slice(1))).filter(Boolean);
+      const pool = new Map();
+      for (const r of removed) pool.set(r, (pool.get(r) ?? 0) + 1);
+      let extra = 0;
+      for (const a of added) {
+        if ((pool.get(a) ?? 0) > 0) pool.set(a, pool.get(a) - 1);
+        else extra += 1;
+      }
+      if (extra > 0) out.push({ path: f.path, added: extra, basis: 'patch' });
+    } else if ((Number(f.additions) || 0) > 0) {
+      out.push({ path: f.path, added: Number(f.additions), basis: 'count' });
+    }
+  }
+  return out;
+}
 
 /** G-5 の必須ステータスチェックの名前(ゲート契約で固定) */
 export const REQUIRED_CHECK = 'gate-g5';
@@ -215,6 +255,10 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
     const acting = classifyByRule(cfg, paths, ruleId, lines);
     actingRule = acting.rule;
     c2.push(...acting.reasons);
+  }
+  // 依存の目印のファイルに追加の行がある変更は、導入するものの属性を満たさない疑いとして人の判定へ戻す(IMPL-0840)
+  for (const d of dependencyAdditions(files)) {
+    c2.push(`依存の目印のファイル ${d.path} に依存の追加とみなす行がある(${d.basis === 'patch' ? `対応する削除の行が無い追加の行 ${d.added} 行` : `追加の行 ${d.added} 行。差分を読めないため行数で判定`})。導入するものの属性(新たな外部呼び出し・データ構造・権限を導入しない)を満たさない疑いとして、人の判定へ戻す`);
   }
   const risk = riskClassOf(pr.body);
   if (risk !== 'R3') c2.push(`PR のリスク区分が R3 と記録されていない(記録: ${risk ?? '未記入'})`);

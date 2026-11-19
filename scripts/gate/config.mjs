@@ -2328,6 +2328,28 @@ export function delegationSamplingProblems(config) {
   return [];
 }
 
+/**
+ * 依存の目印のファイル(マニフェスト・ロックファイル)の名前。依存の一覧(dependency-diff.mjs。G-5 基準8)と、
+ * 委任の判定(delegation.mjs の条件2。IMPL-0840)が同じ一覧を使う。ファイル名(ディレクトリを除く)で照合する
+ */
+export const DEPENDENCY_MANIFESTS = [
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'requirements.txt',
+  'pyproject.toml',
+  'poetry.lock',
+  'uv.lock',
+  'go.mod',
+  'go.sum',
+  'Cargo.toml',
+  'Cargo.lock',
+  'Gemfile',
+  'Gemfile.lock',
+  'composer.json',
+];
+
 /** 確約範囲とコア指定のパス(delegation.protectedPaths[])の形式上の問題を返す。キーが無い構成は未宣言 */
 export function protectedPathsProblems(config) {
   const list = config.delegation?.protectedPaths;

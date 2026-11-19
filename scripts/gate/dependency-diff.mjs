@@ -8,25 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, notice } from './config.mjs';
-
-const MANIFESTS = [
-  'package.json',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-  'requirements.txt',
-  'pyproject.toml',
-  'poetry.lock',
-  'uv.lock',
-  'go.mod',
-  'go.sum',
-  'Cargo.toml',
-  'Cargo.lock',
-  'Gemfile',
-  'Gemfile.lock',
-  'composer.json',
-];
+import { ROOT, notice, DEPENDENCY_MANIFESTS as MANIFESTS } from './config.mjs';
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(name);
