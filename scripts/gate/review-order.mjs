@@ -141,10 +141,12 @@ export function emphasisStyleOf({ gate, target, risk, day }) {
   return (((h + k) % 4) + 4) % 4;
 }
 
-const BULLET = /^(\s*(?:[-*+]\s+|・\s*)?)(.*)$/;
-/** 項目の1行目の先頭の識別(最初の「:」「：」まで。無ければ最初の空白まで、無ければ最初の「、」「。」まで、無ければ1行目の全部) */
+// 先頭の目印: 箇条書きの記号、タスクリストの箱(- [ ]・- [x])、・。箱は目印に含め、本文の一部として太字にしない
+const BULLET = /^(\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|・\s*)?)(.*)$/;
+const TABLE_ROW = /^\s*\|/;
+/** 項目の1行目の先頭の識別(最初の空白より前に「:」「：」があればそこまで。無ければ最初の空白まで、無ければ最初の「、」「。」まで、無ければ1行目の全部) */
 function headOf(text) {
-  const m = text.match(/^[^:：]+(?=[:：])/) ?? text.match(/^\S+(?=[\s\u3000])/) ?? text.match(/^[^、。]+(?=[、。])/);
+  const m = text.match(/^[^:：\s\u3000]+(?=[:：])/) ?? text.match(/^\S+(?=[\s\u3000])/) ?? text.match(/^[^、。]+(?=[、。])/);
   return m ? m[0] : text;
 }
 
@@ -152,6 +154,7 @@ function headOf(text) {
 export function emphasizeItem(item, style) {
   if (style == null) return item;
   const lines = String(item).split('\n');
+  if (TABLE_ROW.test(lines[0])) return item; // 表の行は、印を付けると表が崩れるので付けない
   const m = lines[0].match(BULLET);
   const [, lead, body] = m;
   if (body === '') return item;
@@ -159,8 +162,10 @@ export function emphasizeItem(item, style) {
     lines[0] = `${lead}${MARKS[style - 2]} ${body}`;
   } else {
     const part = style === 0 ? headOf(body) : body;
-    if (part.includes('**') || part.trim() === '') return item;
-    lines[0] = `${lead}**${part}**${body.slice(part.length)}`;
+    if (part.trim() === '') return item;
+    // すでに ** を含む項目は、太字を重ねず、同じ週の他の項目と見た目が割れないよう行頭の印(▶)に寄せる
+    if (part.includes('**')) lines[0] = `${lead}${MARKS[0]} ${body}`;
+    else lines[0] = `${lead}**${part}**${body.slice(part.length)}`;
   }
   return lines.join('\n');
 }
@@ -169,7 +174,7 @@ export function emphasizeItem(item, style) {
 export function stripEmphasis(item) {
   return String(item)
     .split('\n')
-    .map((l, i) => (i === 0 ? l.replace(/^(\s*(?:[-*+]\s+|・\s*)?)[▶◆] /, '$1') : l))
+    .map((l, i) => (i === 0 ? l.replace(/^(\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|・\s*)?)[▶◆] /, '$1') : l))
     .join('\n')
     .replace(/\*\*/g, '');
 }

@@ -65,7 +65,11 @@ const byStyle = Object.fromEntries(eDays.slice(0, 4).map((d) => [em(d).style, em
 check('IMPL-0175:ok 様式 0 は先頭の識別、1 は1行目、2・3 は行頭の印(続きの行と字下げは変えない)', byStyle[0][0] === '- **基準1** 受入基準との対応\n  続きの行' && byStyle[0][1] === '- **基準2**: テストの削除の有無' && byStyle[0][3] === '・**基準4**、外部インタフェース' && byStyle[1][0] === '- **基準1 受入基準との対応**\n  続きの行' && byStyle[2][2] === '▶ 基準3 判断記録の添付' && byStyle[3][0] === '- ◆ 基準1 受入基準との対応\n  続きの行', JSON.stringify(byStyle));
 check('IMPL-0175:ng R3 は強調を付けない(入力のまま)', same(em('2026-11-18', { risk: 'R3' }).items, eitems) && em('2026-11-18', { risk: 'R3' }).style === null);
 check('IMPL-0175:ok 対象が違えば様式の起点が変わりうる(100 対象で 2 通り以上)', new Set(Array.from({ length: 100 }, (_, i) => em('2026-11-18', { target: `PR-${i}` }).style)).size >= 2);
-check('IMPL-0175:ok すでに ** を含む項目には太字を足さない(様式 0)', emphasizeItem('- **基準1** 文', 0) === '- **基準1** 文');
+check('IMPL-0175:ok すでに ** を含む項目には太字を重ねず、行頭の印(▶)に寄せる(様式 0・1。どの様式の週でも項目の間で見た目が割れない)', emphasizeItem('- **基準1** 文', 0) === '- ▶ **基準1** 文' && emphasizeItem('- **基準1** 文', 1) === '- ▶ **基準1** 文' && stripEmphasis(emphasizeItem('- **基準1** 文', 0)) === '- 基準1 文');
+// 独立の突合(1巡目)低-1 の再現
+check('IMPL-0175:ng タスクリスト(- [ ]・- [x])の箱は先頭の目印で、本文の一部として太字にしない(全様式で箱が先頭に残る)', [0, 1, 2, 3].every((st) => /^- \[ \] /.test(emphasizeItem('- [ ] 基準1', st)) && /^- \[x\] /.test(emphasizeItem('- [x] 基準1', st))) && emphasizeItem('- [ ] 基準1', 0) === '- [ ] **基準1**' && emphasizeItem('- [ ] 基準1', 2) === '- [ ] ▶ 基準1' && stripEmphasis(emphasizeItem('- [ ] 基準1', 2)) === '- [ ] 基準1');
+check('IMPL-0175:ng 表の行(| で始まる行)には印を付けない(表が崩れない)', [0, 1, 2, 3].every((st) => emphasizeItem('| 基準1 | 受入 |', st) === '| 基準1 | 受入 |'));
+check('IMPL-0175:ng 先頭の識別のコロンの探索は最初の空白より前に限る("基準1 文 (参照: ADR-1)" は "基準1" を太字にする)', emphasizeItem('- 基準1 文 (参照: ADR-1)', 0) === '- **基準1** 文 (参照: ADR-1)' && emphasizeItem('- 基準2: 文', 0) === '- **基準2**: 文');
 check('IMPL-0175:ng 強調でも不正なゲート・リスク区分・日付は例外', thr(() => emphasisStyleOf({ ...ebase, gate: 'G-9', day: '2026-11-18' })) && thr(() => emphasisStyleOf({ ...ebase, risk: 'R4', day: '2026-11-18' })) && thr(() => emphasisStyleOf({ ...ebase, day: '2026-02-30' })));
 check('IMPL-0175:ok 並びは強調に影響されない(orderItems の出力は強調前のまま)', same(order().items.map(stripEmphasis), order().items));
 
