@@ -356,6 +356,27 @@ for (const n of [1, 3]) {
   r = W.node('scripts/gate/check-process-rules.mjs');
   check(`${tag}: check-process-rules が通る`, r.ok, r.out);
 
+  // IMPL-0651:構成書(PROCESS-PROFILE.md)が構成から生成し直した内容と一致するかを照らす
+  {
+    const profile = W.read('PROCESS-PROFILE.md');
+    check(`${tag}: 生成直後の PROCESS-PROFILE.md は構成から生成し直した内容と一致する(check-process-rules が通る)`, r.ok, r.out);
+    // ロールの表の1行(判定するゲート)を手で書き換える
+    const roleHeading = profile.indexOf('## ロールの構成');
+    const roleEdited = roleHeading >= 0 ? profile.slice(0, roleHeading) + profile.slice(roleHeading).replace(/^(\| (?!ロール|---)[^\n]*)$/m, '$1 手で足した') : profile;
+    W.write('PROCESS-PROFILE.md', roleEdited);
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    // IMPL-0651:ng(ロールの行を手で書き換えた構成書は落ちる)
+    check(`${tag}: ロールの表を手で書き換えた PROCESS-PROFILE.md は check-process-rules が落とす`, roleHeading >= 0 && roleEdited !== profile && !r.ok && /PROCESS-PROFILE\.md が、いまの構成/.test(r.out), r.out);
+    // 構成を変えずに構成書の版の記載だけが古い状態(D-0 の版の追随)も同じ検査で落ちる
+    W.write('PROCESS-PROFILE.md', profile.replace(/追随している D-0 体制図の版: [^\n]*/, '追随している D-0 体制図の版: `0.0`'));
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    check(`${tag}: D-0 の版の追随が古い PROCESS-PROFILE.md は check-process-rules が落とす`, !r.ok && /PROCESS-PROFILE\.md が、いまの構成/.test(r.out), r.out);
+    W.write('PROCESS-PROFILE.md', profile);
+    r = W.node('scripts/gate/check-process-rules.mjs');
+    // IMPL-0651:ok(戻した構成書は通る)
+    check(`${tag}: 戻した PROCESS-PROFILE.md は check-process-rules が通る`, r.ok, r.out);
+  }
+
   // 既存のリポジトリへの持ち込み(process-compass #306): 既存の CLAUDE.md を残し、区間の目印だけを足した状態
   {
     const full = W.read('CLAUDE.md');

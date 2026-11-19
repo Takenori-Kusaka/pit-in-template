@@ -417,6 +417,41 @@ function workspace({ keepOwner = false } = {}) {
   w.done();
 }
 {
+  // IMPL-0772:外した項目を宣言せずに運用しない。規則による導出より弱いゲートの状態に、unmet[] か deviations[] の宣言を要する
+  const w = workspace();
+  w.commit('chore: template');
+  const weakErrors = (out) => contractErrors(out).filter((l) => /規則による導出は/.test(l));
+  const withG = (key, patch, extra = {}) => {
+    const c = JSON.parse(JSON.stringify(base));
+    c.gates[key] = { ...c.gates[key], ...patch };
+    return sealed({ ...c, ...extra });
+  };
+  w.writeJson('process.config.json', sealed(base));
+  w.commit('chore: init');
+  let v = w.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0772:ok(導出どおりの構成)
+  check('導出どおりのゲートの状態は、宣言が無くても通る(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  w.writeJson('process.config.json', withG('g2', { state: 'simplified' }));
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0772:ng(導出 required・構成 simplified・宣言なし)
+  check('導出 required のゲートを宣言なしで simplified にした構成は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates\.g2/.test(l)), v.out.slice(-800));
+  w.writeJson('process.config.json', withG('g2', { state: 'omitted' }));
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  check('導出 required のゲートを宣言なしで omitted にした構成は、契約検査が失敗にする(IMPL-0772)', weakErrors(v.out).some((l) => /gates\.g2/.test(l)), v.out.slice(-800));
+  w.writeJson(
+    'process.config.json',
+    withG('g2', { state: 'simplified' }, { deviations: [{ gate: 'g2', reason: '試験', resolveWhen: '2027-01', compensation: ['試験の代償措置'] }] })
+  );
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0772:ok(同じ弱めに deviations の記録あり)
+  check('同じ弱めに deviations[] の記録があれば、この検査では失敗にしない(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  w.writeJson('process.config.json', withG('g3', { state: 'required' }));
+  v = w.node('scripts/gate/verify-gate-contract.mjs');
+  // IMPL-0772:ok(導出と同じ状態。強い向きの差は rank の比較で通る)
+  check('導出と同じ状態(g3 を required のまま)は、宣言が無くても通る(IMPL-0772)', !weakErrors(v.out).length, weakErrors(v.out).join('\n'));
+  w.done();
+}
+{
   // 初期化: --template-commit の書式と、取り込んだテンプレートの記録
   const w = workspace();
   w.commit('chore: template');

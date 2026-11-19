@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, ROOT, fail, notice, aiNameBlocked } from './config.mjs';
-import { renderProcessRules, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
+import { renderProcessRules, profileMdProblems, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
 import { RESIDENT_FILE, buildManifest, loadManifest, missingResident, omitProblems } from './claude-md-resident.mjs';
 
 const config = loadConfig();
@@ -71,6 +71,23 @@ if (actual !== expected) {
     console.log('process.config.json を手で編集した場合は、編集を戻してください。構成を書き換えるのは /process-change だけです(契約検査が、変化点を経ない書き換えを検出します)。');
   }
   process.exit(1);
+}
+
+// PROCESS-PROFILE.md(ロール・判定するゲート・引き渡し先を含む構成書)が、いまの構成から生成し直した内容と一致するか(IMPL-0651)。
+// D-0 の生成区間は check-d0.mjs(IMPL-0728)が照らす。ここは構成書の側。構成が未設定のときは照らさない
+if (config.configured !== false) {
+  const profilePath = path.join(ROOT, 'PROCESS-PROFILE.md');
+  if (!fs.existsSync(profilePath)) {
+    fail('PROCESS-PROFILE.md がありません。/process-change で再生成してください');
+    process.exit(1);
+  }
+  const pm = profileMdProblems(config, fs.readFileSync(profilePath, 'utf8'));
+  if (pm.length) {
+    for (const p of pm) fail(p);
+    console.log('PROCESS-PROFILE.md は導出物です。手で編集しないでください。構成か D-0 を改めたあとは /process-change で再生成します。');
+    console.log('取り込んだ準拠テンプレートの更新で生成の内容が変わった場合も、同じ手順で再生成します。');
+    process.exit(1);
+  }
 }
 
 // 常駐の規則の節(区間の外)

@@ -4535,6 +4535,58 @@ export function renderProcessRules(config) {
 }
 
 /**
+ * 規則による導出のゲートの状態(buildConfig と同じ導出。未達への読み替えは含まない)。{ g1: 'required', ... }。
+ * 外した項目を宣言せずに運用していないかの照合(IMPL-0772)に使う。導出できなければ null
+ */
+export function derivedGateStates(answers) {
+  let result;
+  try {
+    result = evaluate(KB, answers ?? {});
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const g of KB.gates) {
+    const key = GATE_KEY[g.id];
+    let state = toGateState(result.profile[`gate:${g.id}`]?.state);
+    if (NEVER_OMITTABLE.has(key) && state !== 'required' && state !== 'simplified') state = 'required';
+    out[key] = state;
+  }
+  return out;
+}
+
+
+/**
+ * PROCESS-PROFILE.md が、いまの構成から生成し直した文字列と一致するかを照らす(IMPL-0651)。
+ * ロール・判定するゲート・引き渡し先を含む全体を、renderProfileMd の出力と文字列で比べる。
+ * 生成日時は構成(generatedAt)から出るため、非決定の値は入らない。食い違いは、構成を書き換えずに
+ * 構成書だけを手で編集した状態か、構成・D-0 の改訂に構成書が追随していない状態を示す。
+ * 返すのは問題の一覧(一致なら空)。構成が未設定のときは照らさない
+ */
+export function profileMdProblems(config, text) {
+  if (config?.configured === false) return [];
+  let expected;
+  try {
+    expected = renderProfileMd(config, evaluate(KB, config.answers ?? {}));
+  } catch (err) {
+    return [`PROCESS-PROFILE.md を構成から生成し直せません(${err.message})。構成の answers を確かめてください`];
+  }
+  const norm = (s) => String(s).replace(/\r\n/g, '\n').trim();
+  const actual = norm(text);
+  const want = norm(expected);
+  if (actual === want) return [];
+  const a = actual.split('\n');
+  const w = want.split('\n');
+  let i = 0;
+  while (i < a.length && i < w.length && a[i] === w[i]) i++;
+  const brief = (s) => (s === undefined ? '(行なし)' : s.length > 80 ? `${s.slice(0, 80)}…` : s);
+  return [
+    `PROCESS-PROFILE.md が、いまの構成(process.config.json)から生成し直した内容と一致しません(最初の食い違い: ${i + 1} 行目。` +
+      `ファイル「${brief(a[i])}」/ 構成から「${brief(w[i])}」)。構成書は導出物です。/process-change で再生成してください`,
+  ];
+}
+
+/**
  * ロールの詳細(判定するゲート・判定してはならないゲート・運用形態・受信箱・引き渡しのラベル・兼務の禁止)。
  * CLAUDE.md へ常駐させず、next.mjs --role で必要な時点に出す(#286)。構成から毎回導出するため、構成と乖離しない
  */

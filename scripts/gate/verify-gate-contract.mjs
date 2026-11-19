@@ -85,7 +85,7 @@ import {
   performerAccountStates,
   PERFORMER_ACCOUNT_LABEL,
 } from './config.mjs';
-import { seatSeparationFindings, ruleStanding, pendingSeparationProblems } from '../init/generate-profile.mjs';
+import { seatSeparationFindings, ruleStanding, pendingSeparationProblems, derivedGateStates } from '../init/generate-profile.mjs';
 import { classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { aggregateFindings } from './g5-aggregate.mjs';
 import { pushTriggerProblems, readWorkflows } from './push-trigger.mjs';
@@ -386,6 +386,31 @@ for (const d of config.deviations ?? []) {
   }
   if (!(d.compensation ?? []).length) {
     problems.push(`deviations の ${d.gate} に代償措置がありません。代償措置のない逸脱は認められません`);
+  }
+}
+// 規則による導出より弱い状態(required → simplified・omitted・merged、simplified → omitted・merged)のゲートに、宣言が要る(IMPL-0772。
+// テーラリングの禁止事項6)。宣言は unmet[](未達)か deviations[](代償措置つきの逸脱)。強い向きの差は問わない。
+// 確かめるのはゲートの状態の差に限る。パラメータ(reviewerCount など)の弱めは確かめない(確かめる者: プロセス内部監査)
+{
+  const STATE_RANK = { required: 3, simplified: 2 };
+  const rank = (s) => (s in STATE_RANK ? STATE_RANK[s] : 1); // omitted・merged-into-gN は、実施しない側で同じ段に数える
+  const derived = derivedGateStates(config.answers);
+  if (derived) {
+    for (const [key, want] of Object.entries(derived)) {
+      const have = config.gates?.[key]?.state;
+      if (have === undefined || have === 'unmet' || !VALID.test(have)) continue; // 未達は上の整合の検査が、不正な値は状態の値の検査が扱う
+      const weaker = rank(have) < rank(want);
+      if (!weaker) continue;
+      const declared =
+        (config.unmet ?? []).some((u) => u.gate === key) || (config.deviations ?? []).some((d) => d.gate === key);
+      if (!declared) {
+        problems.push(
+          `gates.${key} の状態が "${have}" ですが、規則による導出は "${want}" で、宣言(unmet[] か deviations[] の記録)がありません。` +
+            '標準から外した項目を宣言せずに運用できません(テーラリングの禁止事項6)。外すなら理由と解消の時点を宣言として記録します。' +
+            '回答を改めた結果なら /process-change で再導出します。パラメータの弱めはこの検査の対象外です'
+        );
+      }
+    }
   }
 }
 if (
