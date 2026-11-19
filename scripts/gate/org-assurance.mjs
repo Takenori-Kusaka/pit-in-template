@@ -33,7 +33,7 @@ export const BRIEF_FILE = 'docs/project-brief.md';
 export const D0_FILE = 'docs/D-0-governance.md';
 export const HANDOVER_FILE = 'docs/handover.md';
 export const EXIT_REHEARSAL_FILE = 'docs/exit-rehearsal.json';
-import { modelAdoptionState, rehearsalJudgeFindings, separationItems } from './model-adoption.mjs';
+import { modelAdoptionState, rehearsalJudgeFindings, separationItems, MODEL_ADOPTION_FILE } from './model-adoption.mjs';
 
 const readText = (rel, root = ROOT) => {
   const p = path.join(root, rel);
@@ -873,6 +873,7 @@ export function continuityState(config, policy, { root = ROOT, day = null, accep
   // モデルの導入の記録・正解の目録・AI の採点者の較正(第3章 3.12.3 の要求事項1〜4・11〜16、3.12.13。process-compass #426)
   const adoption = modelAdoptionState(config, { root });
   problems.push(...adoption.problems, ...rehearsalJudgeFindings(config, ex.records));
+  problems.push(...seatQualificationProblems(aiSeats, adoption));
   // 評価用の基準集合の範囲の承認(第3章 3.12.3 の要求事項10。AI運用担当者が起案し、技術判断者が記名で承認する)
   const scope = ex.baselineScope ?? null;
   const techAccountable = seats.find((s) => s.role === 'tech-lead')?.accountable ?? null;
@@ -1215,6 +1216,70 @@ export function competenceState(config, policy, { day = null } = {}) {
     const note = outsideRoster ? `確認した者 ${c.confirmedBy} は名簿の外(受け付ける。所属・役職は確認の記録 ${c.record ?? '所在なし'} で示す。内部監査の観点6 で名簿と突合する)` : null;
     return { seat: label, role, accountable, record: c, status, why, nextDue, ok: status === 'valid', outsideRoster, note };
   });
+}
+
+/**
+ * 席の適合性確認の記録の所在と、確認の対象のモデルの導入の記録(第3章 3.4.2 要求事項2・5、3.12.3。IMPL-0640・IMPL-0643)。
+ *   - 0640: 適合性確認の記録(seats[].qualification)があるのに、確認の記録の所在(qualification.record)が無い席を挙げる。実在の有無だけを見る
+ *     (所在の指す先の中身、再現と欠陥注入が行われたか、事例の正解の出所は確かめない。確かめる者: AI維持管理者の席の責任者と内部監査)
+ *   - 0643: 確認の対象のモデル(qualification.performer.model。無ければ performer.model)が、導入の記録(MODEL_ADOPTION_FILE)に
+ *     同じ識別(正規化の一致)で在り、その記録に問題が無いことを求める。導入の記録のファイルが無いときは「確かめられない」と出す。
+ *     評価の中身(正解の正しさ・一致の十分さ)は確かめない(IMPL-0405 と同じ)
+ * 表示だけで止めない(continuityState の問題の一覧と同じ扱い)。
+ */
+export function seatQualificationProblems(aiSeats, adoption) {
+  const out = [];
+  for (const s of aiSeats) {
+    const q = s.qualification;
+    if (!q) continue;
+    const label = s.name ?? s.role;
+    if (!isFilledValue(q.record)) out.push(`${label}: 適合性確認の記録の所在(seats[].qualification.record)が無い。確認に用いた再現と欠陥注入の記録の所在を書く(第3章 3.4.2 要求事項2・5)`);
+    const model = q.performer?.model ?? s.performer?.model;
+    if (!isFilledValue(model)) continue;
+    if (!adoption.present) {
+      out.push(`${label}: 適合性確認の対象のモデル ${model} が、モデルの適合性評価(3.12.3)を通過したか確かめられない(${MODEL_ADOPTION_FILE} が無い)`);
+      continue;
+    }
+    const rec = adoption.adoptions.find((a) => normKey(a.model) === normKey(model));
+    if (!rec) out.push(`${label}: 適合性確認の対象のモデル ${model} が導入の記録(${MODEL_ADOPTION_FILE})に無い。適合性評価を通過していないモデルを席の確認の対象にしない(第3章 3.4.2)`);
+    else if (!rec.approved) out.push(`${label}: 適合性確認の対象のモデル ${model} の導入の記録に問題がある(${rec.why.slice(0, 2).join('。')})。評価を通過していないモデルを席の確認の対象にしない(第3章 3.4.2)`);
+  }
+  return out;
+}
+
+/**
+ * 判断を担う4席の外の席の、任命の確認の記録(seats[].competence。第3章 3.4.1 要求事項1〜3。IMPL-0636)。
+ * 4席の外では任意。書いた席は4席と同じ照合(本人以外・日付・所在)を当て、欠けは注意として返す(失敗にしない)。
+ * 要求事項5 の確認の有効期間は4席の外では確かめない(周期を照らさない)。確認の中身は確かめない(確かめる者: 任命する者。D-0 表1)
+ */
+export function appointmentConfirmationState(config) {
+  const out = [];
+  for (const seat of config.seats ?? []) {
+    if (JUDGE_SEATS.some(([, id]) => id === seat.role)) continue;
+    const accountable = seat.accountable ? resolveSigner(config, seat.accountable)?.name ?? seat.accountable : null;
+    if (!accountable) continue;
+    const c = seat.competence && typeof seat.competence === 'object' ? seat.competence : null;
+    let status = 'recorded';
+    let why = null;
+    if (!c) {
+      status = 'unrecorded';
+      why = '任命の確認の記録なし(4席の外では任意)';
+    } else if (c.person && !samePerson(config, c.person, accountable)) {
+      status = 'unrecorded';
+      why = `任命の確認の記録は前任(${c.person})のもの。現在の責任者 ${accountable} の記録なし`;
+    } else if (!isRealDay(c.confirmedAt)) {
+      status = 'invalid';
+      why = '確認日(YYYY-MM-DD)が無い';
+    } else if (!isFilledValue(c.confirmedBy) || samePerson(config, c.confirmedBy, accountable)) {
+      status = 'invalid';
+      why = isFilledValue(c.confirmedBy) ? '確認した者が本人(自己申告は認めない)' : '確認した者が未記入';
+    } else if (!isFilledValue(c.record)) {
+      status = 'invalid';
+      why = '確認の記録の所在が未記入';
+    }
+    out.push({ seat: seat.name ?? seat.role, role: seat.role, accountable, record: c, status, why, ok: status === 'recorded' });
+  }
+  return out;
 }
 
 /**

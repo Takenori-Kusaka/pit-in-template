@@ -9,7 +9,7 @@
   "seats": {
     "dev-verifier": {
       "performer": { "model": "<モデルの版>", "instructions": "<指示資産の版>@<識別子>", "permissions": "<権限の組>" },
-      "qualification": { "confirmedAt": "2026-10-01", "performedBy": "<AI維持管理者の席の責任者>", "approvedBy": "<当該の席の責任者>", "cases": "<用いた事例>", "result": "<結果>", "performer": { "model": "<新しい識別>", "instructions": "<同>", "permissions": "<同>" } }
+      "qualification": { "confirmedAt": "2026-10-01", "performedBy": "<AI維持管理者の席の責任者>", "approvedBy": "<当該の席の責任者>", "cases": "<用いた事例>", "result": "<結果>", "record": "<確認の記録の所在>", "performer": { "model": "<新しい識別>", "instructions": "<同>", "permissions": "<同>" } }
     }
   },
   "decidedBy": "<当該の席の責任者>",

@@ -53,7 +53,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `performer` | `{ "model": "<モデルの版>", "instructions": "<指示資産の版>", "permissions": "<権限の組>" }`。人が担う席は `null` |
 | `performerAccount` | AI の担い手の名義(種別 performer でだけ)。`{ "kind": "dedicated", "account": { "login": "<ログイン名>", "id": <数値の識別子> } }` か `{ "kind": "shared", "person": "<名簿の id>" }`。`null` は申告を取り下げる(未申告)。担い手の識別に含めない(`kinds/performer.md`「担い手の名義を変える」) |
 | `fallback` | AI が使えないときの扱い。`human`(人へ戻す) / `stop`(止める) |
-| `qualification` | 適合性確認の記録。`{ "confirmedAt", "performedBy", "approvedBy", "cases", "result", "performer" }`。`confirmedAt` は発効日以前の実在する日付。`performer` に確認した担い手の識別。**`performedBy` は AI維持管理者の席の責任者、`approvedBy` は当該の席の責任者に限る**(標準 第3章 3.4.2)。承認し直すだけなら `{ "approvedBy": "<新しい責任者>" }` |
+| `qualification` | 適合性確認の記録。`{ "confirmedAt", "performedBy", "approvedBy", "cases", "result", "performer", "record" }`。`record` は確認の記録の所在(再現と欠陥注入の記録。欠けると問題の一覧に出る。止めない。IMPL-0640)。`confirmedAt` は発効日以前の実在する日付。`performer` に確認した担い手の識別。**`performedBy` は AI維持管理者の席の責任者、`approvedBy` は当該の席の責任者に限る**(標準 第3章 3.4.2)。承認し直すだけなら `{ "approvedBy": "<新しい責任者>" }` |
 | `competence` | 席の責任者本人の、AI を使わずに判断できる力量の確認の記録(判断を担う席。標準 第3章 3.4.3 要求事項1)。`{ "confirmedAt", "confirmedBy", "record" }`。`confirmedBy` は本人以外の自然人。`null` で記録を消す。責任者が交代すると前任の記録は引き継がれない。記録だけの変化点に記名は要らない。詳細: `kinds/accountable.md` |
 
 指示資産の版は、末尾へ `@<識別子>` を書くと、契約検査が実ファイル(`CLAUDE.md`・`AGENTS.md`・`.claude/`)と照合します。識別子を伴わない申告は照合されず、自己申告として表示されます。

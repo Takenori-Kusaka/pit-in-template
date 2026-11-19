@@ -7,6 +7,7 @@ import * as MA from './model-adoption.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { seatQualificationProblems as SQ, continuityState } from './org-assurance.mjs';
 import { modelAdoptionState, answersFindings, calibrationFindings, rehearsalJudgeFindings, MODEL_ADOPTION_FILE } from './model-adoption.mjs';
 
 let failures = 0;
@@ -119,6 +120,34 @@ s = run([adoption({ revisedAfterResults: [{ case: 'C-1', beforeResult: '' }] })]
 check('導入: 結果を見た後に改めた正解に、改める前の結果の併記が無ければ出す', s.problems.some((p) => /改める前の結果/.test(p)), JSON.stringify(s.problems));
 s = run([adoption({ revisedAfterResults: [{ case: 'C-1', beforeResult: '不合格 3 件', failToPass: true }] })]);
 check('導入: 不合格を合格へ改めた事例を緩める向きとして注記に出す', s.notes.some((n) => /不合格を合格へ改めた/.test(n)), JSON.stringify(s.notes));
+// ---------------------------------------------------------------- 席の確認の対象のモデルと確認の記録の所在(IMPL-0643・0640)
+{
+  const seat = (over = {}) => ({ role: 'dev-verifier', name: '開発者(検証)', performer: { model: 'model-b' }, qualification: { performer: { model: 'model-b' }, record: 'docs/qualification/dev-verifier.md' }, ...over });
+  // IMPL-0643:ok(適合の入力。問題の無い導入の記録に在る)
+  s = run([adoption()]);
+  check('IMPL-0643:ok 席の確認の対象のモデルが、問題の無い導入の記録に在れば何も出さない', SQ([seat()], s).length === 0, JSON.stringify(SQ([seat()], s)));
+  // IMPL-0643:ng(違反の入力。導入の記録に無い)
+  check('IMPL-0643:ng 席の確認の対象のモデルが導入の記録に無ければ出す', SQ([seat({ qualification: { performer: { model: 'model-z' }, record: 'docs/q.md' } })], s).some((p) => /model-z/.test(p) && /導入の記録/.test(p) && /に無い/.test(p)), '');
+  check('IMPL-0643:ok 識別の正規化(大文字小文字・空白)の一致は同じ識別とする', SQ([seat({ qualification: { performer: { model: 'Model-B ' }, record: 'docs/q.md' } })], s).length === 0, JSON.stringify(SQ([seat({ qualification: { performer: { model: 'Model-B ' }, record: 'docs/q.md' } })], s)));
+  check('IMPL-0643:ok 確認の記録の担い手の識別が無ければ、席の担い手のモデルで照らす', SQ([seat({ qualification: { record: 'docs/q.md' }, performer: { model: 'model-z' } })], s).some((p) => /model-z/.test(p)), '');
+  // IMPL-0643:ng(違反の入力。記録に問題がある)
+  const bad = run([adoption({ diff: '' })]);
+  check('IMPL-0643:ng 導入の記録に問題があるモデルを確認の対象にしていれば出す', SQ([seat()], bad).some((p) => /model-b/.test(p) && /問題がある/.test(p) && /差分/.test(p)), JSON.stringify(SQ([seat()], bad)));
+  // IMPL-0643:ng(導入の記録のファイルが無い。確かめられないと出す)
+  fs.rmSync(path.join(TMP, MODEL_ADOPTION_FILE));
+  const none = modelAdoptionState(config, { root: TMP });
+  check('IMPL-0643:ng 導入の記録のファイルが無ければ「確かめられない」と出す', SQ([seat()], none).some((p) => /確かめられない/.test(p)), JSON.stringify(SQ([seat()], none)));
+  check('IMPL-0643:ok 適合性確認の記録が無い席(qualification なし)は対象にしない', SQ([seat({ qualification: undefined })], none).length === 0, '');
+  // IMPL-0640:ng / ok(確認の記録の所在の実在)
+  check('IMPL-0640:ng 適合性確認の記録の所在(qualification.record)が無ければ出す', SQ([seat({ qualification: { performer: { model: 'model-b' } } })], s).some((p) => /qualification\.record/.test(p)), '');
+  check('IMPL-0640:ok 所在が書かれていれば出さない', !SQ([seat()], s).some((p) => /qualification\.record/.test(p)), '');
+  // 結線:continuityState の問題の一覧に出る(読み取りの経路が同じ関数を呼ぶ)
+  write(MODEL_ADOPTION_FILE, { adoptions: [adoption()] });
+  const ct = continuityState({ ...config, seats: [...config.seats, seat({ qualification: { performer: { model: 'model-z' } } })] }, null, { root: TMP, day: '2026-10-10' });
+  check('IMPL-0643・0640:continuityState の問題に、モデルの不在と所在の欠けが出る', ct.problems.some((p) => /model-z/.test(p)) && ct.problems.some((p) => /qualification\.record/.test(p)), JSON.stringify(ct.problems));
+  write(MODEL_ADOPTION_FILE, { adoptions: [adoption()] });
+}
+
 write('docs/eval-baseline/answers.json', { cases: [goodCase({ confirmedBy: 'Claude' })], blindConfirmation: 'なし' });
 s = run([adoption()]);
 check('導入: 正解の目録に確定なしの事例があれば承認なし', !s.adoptions[0].approved && s.problems.some((p) => /確定なしの事例 1 件/.test(p)), JSON.stringify(s.problems));
