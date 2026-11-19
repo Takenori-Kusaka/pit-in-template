@@ -7,7 +7,9 @@
 // 着手した時点は、このテンプレートの定義である(ADR-0173): 作業単位を指す最初の PR が開かれた時点。無ければ、受信箱のラベル
 // state:in-progress を最初に付けた時点。PR は同じリポジトリのものに限り、PR の作成と Issue の作成の遅い方を取る(Issue より前には遡らない)。
 // 「指す」は、タイムラインの cross-referenced(言及)で近似している。言及しただけの PR も数えるため、近似である。
-// 企画書の G-1 で合意した値は、様式に欄が無いため使わない(欄を足すときに追う)。
+// 企画書の欄「滞留と判定する経過時間」に G-1 で合意した値(N日・N週間・N週)があれば、それを閾値に使う(標本の数に依らない)。
+// 85パーセンタイルも算定できるときは、通知の文と出力に両方を並べる。「または」は採用者が G-1 で選ぶ読みで、機械は短い方を選ばない。
+// 値があるのに読めないときは注意を出して85パーセンタイルへ戻る。G-1 の後の企画書の書き換えは機械は区別しない(版の照合は G-1 の判定記録の側)。
 // 観測の窓は、単位8(next.mjs)と同じ読み方(config の observationWindow。月数)で、完了した作業単位の判定も next.mjs の isCompletedUnit を使う
 // (完了の理由で閉じ、closes で結び付いた PR が既定ブランチへ取り込まれている)。最小の標本数だけが、このテンプレートの既定値(暫定)である。
 // 合否を持たない。通知は GitHub の上のコメントまで。時計を読まない(now は引数)。差は UTC のミリ秒で測るため、TZ に依らない。
@@ -20,6 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, observationWindowAt, OBSERVATION_WINDOW_DEFAULT } from './config.mjs';
 import { seatLogin, ghCli, postComment, json as parse, isBotComment } from './review-queue.mjs';
 import { isCompletedUnit } from './next.mjs';
+import { stagnationThresholdOf } from './brief-estimates.mjs';
+import fs from 'node:fs';
 
 export const MARKER = 'pit-in:flow-observation';
 /** 最小の標本数。標準に値が無く、実証もない暫定の既定値(IMPL-0283 の note に開示)。採用者が --min-sample で変える */
@@ -62,7 +66,7 @@ export function startOf(timeline, { repo = null, issueCreatedAt = null } = {}) {
  * 通知を決める(純関数)。
  * open: [{ number, startAt, assignees[], comments:[{body}] }]  closed: [{ number, startAt, closedAt }](完了の理由で閉じたもの)
  */
-export function flowActions({ open, closed, now, config, minSample = DEFAULT_MIN_SAMPLE, windowMonths = OBSERVATION_WINDOW_DEFAULT }) {
+export function flowActions({ open, closed, now, config, minSample = DEFAULT_MIN_SAMPLE, windowMonths = OBSERVATION_WINDOW_DEFAULT, agreed = null }) {
   const nowMs = Date.parse(now);
   const notes = [];
   const durations = closed
@@ -70,11 +74,22 @@ export function flowActions({ open, closed, now, config, minSample = DEFAULT_MIN
     .map((c) => Date.parse(c.closedAt) - Date.parse(c.startAt))
     .filter((d) => Number.isFinite(d) && d >= 0)
     .sort((a, b) => a - b);
-  const thresholdMs = durations.length >= minSample ? percentile(durations, 0.85) : null;
+  const p85Ms = durations.length >= minSample ? percentile(durations, 0.85) : null;
+  let thresholdMs = p85Ms;
+  let source = 'p85';
+  if (agreed?.kind === 'agreed') {
+    thresholdMs = agreed.days * DAY_MS;
+    source = 'agreed';
+  } else if (agreed?.kind === 'unreadable') {
+    notes.push(`合意した値を読めない(企画書の欄「滞留と判定する経過時間」: ${agreed.raw})。N日・N週間・N週 で書く。85パーセンタイルを使う`);
+  }
+  const days = (ms) => (Math.round((ms / DAY_MS) * 10) / 10).toString();
   if (thresholdMs === null) {
     notes.push(`算定できない: 観測の窓(${windowMonths} か月)の完了した作業単位が ${durations.length} 件(最小 ${minSample} 件)。通知しない`);
-    return { thresholdMs, n: durations.length, actions: [], notes };
+    return { thresholdMs, p85Ms, source, n: durations.length, actions: [], notes };
   }
+  const p85Text = p85Ms === null ? `算定できない(${durations.length} 件、最小 ${minSample} 件)` : `${days(p85Ms)} 日(観測の窓 ${windowMonths} か月の ${durations.length} 件)`;
+  if (source === 'agreed') notes.push(`閾値は G-1 で合意した値(${agreed.raw} = ${days(thresholdMs)} 日)。85パーセンタイル: ${p85Text}`);
   const owner = seatLogin(config, 'value-owner');
   if (!owner.login) notes.push(`価値責任者のログイン名を解決できない(${owner.why})。担当者だけを記名する`);
   const actions = [];
@@ -85,13 +100,12 @@ export function flowActions({ open, closed, now, config, minSample = DEFAULT_MIN
     const elapsed = nowMs - Date.parse(u.startAt);
     if (elapsed <= thresholdMs) continue;
     const who = [...(u.assignees ?? []), owner.login].filter(Boolean).map((l) => `@${l}`);
-    const days = (ms) => (Math.round((ms / DAY_MS) * 10) / 10).toString();
     actions.push({
       issue: u.number,
-      body: `${key}\n${who.join(' ')} この作業単位は、着手(${u.startAt})から ${days(elapsed)} 日が経ち、観測の窓(${windowMonths} か月)に完了した ${durations.length} 件の実測サイクルタイムの85パーセンタイル(${days(thresholdMs)} 日)を超えました。滞留していないか確かめてください。このコメントは1回だけ出します。ラベルは変えません。`,
+      body: `${key}\n${who.join(' ')} この作業単位は、着手(${u.startAt})から ${days(elapsed)} 日が経ち、${source === 'agreed' ? `G-1 で合意した値(企画書の欄「滞留と判定する経過時間」: ${days(thresholdMs)} 日)を超えました。参考として、実測サイクルタイムの85パーセンタイルは ${p85Text} です。` : `観測の窓(${windowMonths} か月)に完了した ${durations.length} 件の実測サイクルタイムの85パーセンタイル(${days(thresholdMs)} 日)を超えました。`}滞留していないか確かめてください。このコメントは1回だけ出します。ラベルは変えません。`,
     });
   }
-  return { thresholdMs, n: durations.length, actions, notes };
+  return { thresholdMs, p85Ms, source, n: durations.length, actions, notes };
 }
 
 /** GitHub から作業単位を読む。gh は差し替えられる。閉じた作業単位は窓の中の最新 maxClosed 件まで(超えたら truncated)。完了の判定は next.mjs の isCompletedUnit */
@@ -127,7 +141,12 @@ function main(argv) {
   const windowMonths = observationWindowAt(config, now.slice(0, 10));
   const minSample = opt('--min-sample') ? Number(opt('--min-sample')) : DEFAULT_MIN_SAMPLE;
   const { open, closed, truncated } = fetchUnits(ghCli, repo, { now, windowMonths });
-  const r = flowActions({ open, closed, now, config, minSample, windowMonths });
+  let brief = null;
+  try {
+    brief = fs.readFileSync(path.resolve(process.env.PIT_IN_BRIEF ?? 'docs/project-brief.md'), 'utf8');
+  } catch {}
+  const agreed = brief == null ? null : stagnationThresholdOf(brief);
+  const r = flowActions({ open, closed, now, config, minSample, windowMonths, agreed });
   if (truncated) console.log('注意: 窓の中の閉じた作業単位が最初の 100 件を超えた。読んだ範囲だけで算定した');
   for (const n of r.notes) console.log(`注意: ${n}`);
   for (const a of r.actions) {

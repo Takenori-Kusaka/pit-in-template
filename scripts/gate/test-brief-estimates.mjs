@@ -1,6 +1,6 @@
 // 当初の見積りの保存と、見積りと実績の差の記録の検査(brief-estimates.mjs、check-g1、出荷の証跡の集約)の試験。
 // process-compass #416 / ADR-0093(標準 第7章 7.7.9 の要求事項3・4)
-import { g1EstimateBlank, g1EstimateChanges, briefVersionOf, estimateGapBlank, DEFAULT_DONE_CONDITION, doneConditionOf, isDefaultDoneCondition, unitPeriodDaysOf } from './brief-estimates.mjs';
+import { g1EstimateBlank, g1EstimateChanges, briefVersionOf, estimateGapBlank, DEFAULT_DONE_CONDITION, doneConditionOf, isDefaultDoneCondition, unitPeriodDaysOf, stagnationThresholdOf } from './brief-estimates.mjs';
 import { isFilledValue } from './config.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -101,6 +101,10 @@ const g1Record = (ver) => ['# ゲート判定記録', '', '| 項目 | 値 |', '|
   check('IMPL-0374:ng 別の文の欄は既定として読まない', !isDefaultDoneCondition(doneConditionOf(row('作業単位を指す変更が取り込まれ、受入基準を満たした記録がある'))));
   check('IMPL-0374:ng 様式のままの欄(<…>)・欄なしは既定として読まない', !isDefaultDoneCondition(doneConditionOf(row('<閉じた者の申告以外の記録で示せる条件>'))) && !isDefaultDoneCondition(doneConditionOf('欄なし')));
   check('IMPL-0374:ok 単位期間の長さを日数へ読む(2週間=14、3日=3)。読めない書き方は null', unitPeriodDaysOf(row('x')) === 14 && unitPeriodDaysOf('- 単位期間の長さ: 3日') === 3 && unitPeriodDaysOf('- 単位期間の長さ: 隔週') === null);
+  const sf = (v) => `- 滞留と判定する経過時間: ${v}\n`;
+  check('IMPL-0283:ok 合意した値は N日・N週間・N週 を日数へ読む(3日=3、2週間=14、1週=7)', stagnationThresholdOf(sf('3日')).days === 3 && stagnationThresholdOf(sf('2週間')).days === 14 && stagnationThresholdOf(sf('1週')).days === 7 && stagnationThresholdOf(sf('３日')).kind === 'agreed');
+  check('IMPL-0283:ok 欄が無い・空・85パーセンタイルの語(様式の例の文を含む)は agreed にしない', ['欄なし', sf(''), sf('実測サイクルタイムの85パーセンタイル'), sf('<実測サイクルタイムの85パーセンタイル、または合意した値。合意した値は N日・N週間 で書く>')].map((t) => stagnationThresholdOf(t).kind).join() === 'none,none,percentile,percentile');
+  check('IMPL-0283:ng 値があるのに書式が読めない(しばらく・0日・3営業日)は unreadable', ['しばらく', '0日', '3営業日', '2.5日'].every((v) => stagnationThresholdOf(sf(v)).kind === 'unreadable'));
 }
 
 // IMPL-0801・IMPL-0878・IMPL-0884: 企画書の一般語のみの欄、前案件との同一、立ち上げの順序(入口 check-g1 を一時の git で通す)

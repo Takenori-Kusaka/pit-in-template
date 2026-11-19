@@ -116,3 +116,20 @@ export function unitPeriodDaysOf(briefText) {
   const n = Number(m[1]);
   return n > 0 ? n * (m[2] === '日' ? 1 : 7) : null;
 }
+
+/**
+ * 企画書の欄「滞留と判定する経過時間」(標準 第2章 2.10.4。IMPL-0283)。
+ * kind: 'none'(欄が無い・空)/ 'percentile'(「85パーセンタイル」の語を含む。様式の例の文のままも含む)/
+ *       'agreed'(「N日」「N週間」「N週」。days に日数)/ 'unreadable'(値はあるが上のどれでもない。raw に原文)。
+ * 「または」は、採用者が G-1 でどちらを基準にするかを選ぶ読み。機械は短い方を選ばない。
+ */
+export function stagnationThresholdOf(briefText) {
+  const v = bulletValue(briefText, '滞留と判定する経過時間');
+  if (v == null || nfkc(v) === '') return { kind: 'none' };
+  const s = nfkc(v);
+  if (/85\s*パーセンタイル/.test(s)) return { kind: 'percentile' };
+  const m = s.match(/^(\d+)\s*(日|週間|週)$/);
+  const n = m ? Number(m[1]) : 0;
+  if (!m || n <= 0) return { kind: 'unreadable', raw: s };
+  return { kind: 'agreed', days: n * (m[2] === '日' ? 1 : 7), raw: s };
+}

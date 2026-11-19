@@ -45,6 +45,21 @@ const noOwner = flowActions({ open: [unit({})], closed: closedOf(10), now: NOW, 
 check('価値責任者を解決できなければ担当者だけを記名し、注意に書く', noOwner.actions.length === 1 && !/@alice/.test(noOwner.actions[0].body) && noOwner.notes.some((n) => /価値責任者/.test(n)));
 check('着手の時点が無い作業単位は数えない', flowActions({ open: [unit({ startAt: null })], closed: closedOf(10), now: NOW, config }).actions.length === 0);
 
+// 合意した値(企画書の欄「滞留と判定する経過時間」。IMPL-0283)
+const A3 = { kind: 'agreed', days: 3, raw: '3日' };
+const ag0 = flowActions({ open: [unit({ startAt: iso(t0 - 4 * DAY) })], closed: [], now: NOW, config, agreed: A3 });
+check('IMPL-0283:ok 合意した値 3日 は、標本 0 件でも 4日経過の作業単位に通知する(最小の標本数を求めない)', ag0.actions.length === 1 && ag0.thresholdMs === 3 * DAY && ag0.source === 'agreed' && ag0.p85Ms === null, JSON.stringify(ag0));
+check('IMPL-0283:ok 通知の文に閾値の出所(合意した値)が入り、85パーセンタイルが算定できないことも書く', /G-1 で合意した値/.test(ag0.actions[0].body) && /算定できない/.test(ag0.actions[0].body) && ag0.notes.some((n) => /合意した値/.test(n)));
+check('IMPL-0283:ok 合意した値 3日 は、2日経過の作業単位に通知しない', flowActions({ open: [unit({ startAt: iso(t0 - 2 * DAY) })], closed: [], now: NOW, config, agreed: A3 }).actions.length === 0);
+const ag10 = flowActions({ open: [unit({ startAt: iso(t0 - 4 * DAY) })], closed: closedOf(10), now: NOW, config, agreed: A3 });
+check('IMPL-0283:ok 合意した値と85パーセンタイル(9日)が両方算定できるとき、閾値は合意した値で、出力と通知の文に両方の値を並べる', ag10.thresholdMs === 3 * DAY && ag10.p85Ms === 9 * DAY && ag10.actions.length === 1 && /3 日/.test(ag10.actions[0].body) && /9 日/.test(ag10.actions[0].body) && ag10.notes.some((n) => /3 日/.test(n) && /9 日/.test(n)), JSON.stringify(ag10));
+const ag14 = flowActions({ open: [unit({ startAt: iso(t0 - 10 * DAY) })], closed: closedOf(10), now: NOW, config, agreed: { kind: 'agreed', days: 14, raw: '2週間' } });
+check('IMPL-0283:ok 合意した値の方が長いときは短い方へ読み替えない(10日経過は85パーセンタイル 9日 を超えるが通知しない)', ag14.actions.length === 0 && ag14.thresholdMs === 14 * DAY);
+const bad = flowActions({ open: [unit({})], closed: closedOf(10), now: NOW, config, agreed: { kind: 'unreadable', raw: 'しばらく' } });
+check('IMPL-0283:ng 書式が読めない値は注意を出して85パーセンタイルへ戻る(通知の文は85パーセンタイル)', bad.source === 'p85' && bad.thresholdMs === 9 * DAY && bad.notes.some((n) => /合意した値を読めない/.test(n)) && /85パーセンタイル\(9 日\)/.test(bad.actions[0].body), JSON.stringify(bad));
+check('IMPL-0283:ok 欄が空・85パーセンタイルの語・企画書なしは現行の挙動(通知の文は85パーセンタイル)', [null, { kind: 'none' }, { kind: 'percentile' }].every((a) => { const x = flowActions({ open: [unit({})], closed: closedOf(10), now: NOW, config, agreed: a }); return x.source === 'p85' && x.thresholdMs === 9 * DAY && !x.notes.some((n) => /合意した値/.test(n)); }));
+check('IMPL-0283:ok 合意した値のとき、通知の1回だけの印は変わらない', flowActions({ open: [unit({ startAt: iso(t0 - 4 * DAY), comments: [{ body: ag10.actions[0].body, login: 'github-actions[bot]' }] })], closed: closedOf(10), now: NOW, config, agreed: A3 }).actions.length === 0);
+
 // 着手の時点の定義
 const tl = [
   { event: 'labeled', label: { name: 'state:in-progress' }, created_at: '2026-11-05T00:00:00Z' },
