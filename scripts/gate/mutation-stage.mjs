@@ -98,6 +98,17 @@ export function thresholdOf(ci) {
   return { value: undefined, problem: `構成の ci.mutationThreshold(${JSON.stringify(v)})が 0〜100 の数値ではありません` };
 }
 
+/**
+ * 出荷の集約(G-7 の材料)へ出す、構成に閾値が無いことの注意の1行。構成の値を読むだけ(決定可能。ruling-1 §1.1)。
+ * 閾値が数値で在れば null(注意を出さない)。無ければ「閾値なしで通過する」と出す。型が不正なら不正と出す
+ */
+export function mutationThresholdNote(config) {
+  const t = thresholdOf(config?.ci);
+  if (t.problem) return `**注意**: ${t.problem}。G-5 の段 mutation の閾値として使えません`;
+  if (t.value !== undefined) return null;
+  return '**注意**: 構成に閾値(ci.mutationThreshold)がありません。G-5 の段 mutation は、走った事実と生き残りの所在だけを証跡として「閾値なしで通過」します。検出力が足りるとは示していません(附属書H H.1・H.4)';
+}
+
 /** 閾値の在否と型の問題(契約検査が使う)。caseRequired: 案件の条件に当たる構成では未設定も問題 */
 export function thresholdProblems(config, d0Text) {
   const t = thresholdOf(config?.ci);

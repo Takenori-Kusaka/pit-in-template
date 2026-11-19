@@ -422,6 +422,19 @@ for (const id of ['python-poetry', 'python-uv']) {
   }
 }
 
+// 8. 出荷の集約へ出す、構成に閾値が無いことの注意(ruling-1 §1.1。構成の値を読むだけ)
+{
+  const { mutationThresholdNote } = await import('./mutation-stage.mjs');
+  const absent = mutationThresholdNote({ ci: {} });
+  check('IMPL-0763:ng 構成に閾値が無ければ、閾値なしで通過する注意を出す', typeof absent === 'string' && /ci.mutationThreshold/.test(absent) && /閾値なしで通過/.test(absent), absent);
+  check('構成に ci が無くても注意を出す', mutationThresholdNote({}) === absent && mutationThresholdNote(undefined) === absent);
+  check('IMPL-0763:ok 閾値が数値で在れば注意を出さない(0 も在る扱い)', mutationThresholdNote({ ci: { mutationThreshold: 80 } }) === null && mutationThresholdNote({ ci: { mutationThreshold: 0 } }) === null);
+  const bad = mutationThresholdNote({ ci: { mutationThreshold: '80' } });
+  check('閾値の型が不正なら、不正と注意を出す', typeof bad === 'string' && /0〜100 の数値ではありません/.test(bad), bad);
+  const ev = fs.readFileSync(path.join(ROOT, 'scripts/gate/aggregate-evidence.mjs'), 'utf8');
+  check('出荷の集約が、この注意を機械検査の表へ出す', ev.includes('mutationThresholdNote: mutationThresholdNote(config)') && ev.includes('A.machineChecks.mutationThresholdNote'));
+}
+
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 console.log('');
 if (failures) {

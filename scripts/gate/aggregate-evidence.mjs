@@ -190,6 +190,7 @@ import { loadDecisions, checkDecisions, countsLine, fieldProblems, replacesOf, D
 import { decisionRecheck, decisionRecheckGapText, decisionRecheckSummary, replacementWithoutG3, replacementWithoutG3GapText, decisionG3Passes } from './decision-recheck.mjs';
 import { handoverItems, handoverGapText, handoverResultText } from './handover-items.mjs';
 import { readAggregate, machineCheckStatus } from './g5-aggregate.mjs';
+import { mutationThresholdNote } from './mutation-stage.mjs';
 import { unrunStreak, streakText, computeUnrunStreaks } from './unrun-streak.mjs';
 import { summarizeSizeObservation, renderSizeObservation } from './size-observation.mjs';
 import { estimateGapBlank } from './brief-estimates.mjs';
@@ -4588,6 +4589,8 @@ if (isMain) {
     licenses: licenseStatus.text,
     secretScan: phase('secretScan', 'secret-scan'),
     // 集約が合否に使う検査の不備(基準を実装するジョブが needs に無い等)。項目は増やさず、項目4 の値の出所として出す
+    // 構成に閾値(ci.mutationThreshold)が無いことの注意(閾値が数値で在れば null)。構成の値を読むだけ
+    mutationThresholdNote: mutationThresholdNote(config),
     aggregateProblems: g5Aggregate ? g5Aggregate.problems : ['集約 gate-g5 の定義(.github/workflows/gate-g5.yml)が無い'],
     dependencyDiff: depDiff ? '実施' : NO_RECORD,
     // 実環境の統制の確認(附属書I I.11 要件⑦。#288 第6巡)。ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物の取得を、
@@ -6738,6 +6741,7 @@ if (isMain) {
     // 集約が合否に使う検査の不備。「実施」の出所は集約の needs であり、構成にコマンドが書かれていることではない(#290)
     const aggP = A.machineChecks.aggregateProblems ?? [];
     R.push(`| 集約 gate-g5 が合否に使う検査(G-5 の基準を実装するジョブ) | ${aggP.length ? `**不備 ${aggP.length} 件**: ${aggP.join(' / ')}` : '基準を実装するジョブはすべて集約の needs にある(基準6 は参照切れだけを確かめる。見出しのアンカー・逆引用符の中の .claude/・scripts/ 以外で始まるパス・分量の上限は確かめていない)'}。過去の時点の定義は読みません(現在の gate-g5.yml を見ます)。期間中の gate-g5.yml の変更は項目1(統制の設定の変更)を見てください |`);
+    if (A.machineChecks.mutationThresholdNote) R.push(`| 段 mutation の閾値(構成の ci.mutationThreshold) | ${A.machineChecks.mutationThresholdNote} |`);
     // 実環境の統制の確認(附属書I I.11 要件⑦)。gate-g5 の結論は実環境の実行の記録だが、ブランチ保護が効いていなければ失敗した PR もマージできる。
     // 採用者が実環境の gh で確かめた記録(env-check)を写す。未確認は出し続ける(欠落にはしない。未達のゲートと同じ扱い。#288 第6巡)
     R.push(`| 実環境の統制の確認(ルールセット・旧来のブランチ保護・CODEOWNERS・バイパスの主体・PR のレビューの取得・ship-evidence の成果物。確認済み / 不一致 / 未確認 / 対象外。附属書I I.11 要件⑦) | ${A.machineChecks.envControls ?? '未確認'} |`);

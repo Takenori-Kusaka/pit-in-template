@@ -36,6 +36,10 @@ export const G5_CRITERION_JOBS = [
 export const G5_RULE_JOBS = [
   { label: '構成と CI・ブランチ保護の整合(契約検査)', job: 'contract' },
   { label: 'PR 単位の検査(基準値と除外設定・陰性の確認・区分の下限ほか)', job: 'pr-rules' },
+  // 段 mutation(案件の条件または R1 の変更で必須。ADR-0224・ADR-0244)と段 regulatory(規制業で必須。ADR-0224)。
+  // 必須かどうかは段の中で判定し、構成済みなら常に走る。集約が success を求めるので、段のジョブを if: で飛ばして集約を通せない
+  { label: '段 mutation(変異試験)', job: 'mutation' },
+  { label: '段 regulatory(規制要件の検査)', job: 'regulatory' },
 ];
 
 /** ジョブ名 → ジョブの本文(2 字下げのキーから次の 2 字下げのキーまで) */
@@ -77,6 +81,24 @@ export function needsOf(jobBody) {
     return out;
   }
   return [];
+}
+
+/**
+ * 集約の手順が success を確かめているジョブの集合を返す(process-compass #326 項目9 b・c)。
+ * 読み方: 集約の env の `R_NAME: ${{ needs.<job>.result }}` で変数とジョブを結び、手順の `"<job>:$R_NAME"` の組が
+ * 同じジョブを指していて、手順が `[ "$res" = "success" ] && continue` で success 以外を失敗にしているものを数える。
+ * 確かめないこと: 手順のシェルの実行(試験が実際に流す)、skipped を許す例外が pr-rules だけであること以外の例外の意味
+ */
+export function successCheckedJobs(aggBody) {
+  const body = String(aggBody ?? '');
+  const out = new Set();
+  if (!/\[ "\$res" = "success" \]\s*&&\s*continue/.test(body)) return out;
+  const vars = new Map();
+  for (const m of body.matchAll(/^ {8,10}(R_[A-Z0-9_]+):\s*\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}\s*$/gm)) vars.set(m[1], m[2]);
+  for (const m of body.matchAll(/"([A-Za-z0-9_-]+):\$(R_[A-Z0-9_]+)"/g)) {
+    if (vars.get(m[2]) === m[1]) out.add(m[1]);
+  }
+  return out;
 }
 
 /**
@@ -122,6 +144,17 @@ export function aggregateFindings(text) {
     problems.push(
       `${r.what} を実装する検査が、集約の合否に使われていません(${reason})。` +
         '集約から外すことで基準を外せません。基準を外せるのは標準 第8章の調整だけです(標準 第4章 G-5「判定基準を実装する検査と集約」)'
+    );
+  }
+  // 構成が設定済みのとき、基準・規則のジョブの結果が success であることを集約が求めているか(skipped を通さない)
+  const checked = successCheckedJobs(agg);
+  const wanted = new Set(required.map((r) => r.job));
+  for (const job of wanted) {
+    if (checked.has(job)) continue;
+    if (!effective.has(job)) continue; // needs にない・結果を使っていない不備は上で出した
+    problems.push(
+      `ジョブ "${job}" の結果が success であることを、集約 "${G5_AGGREGATE_JOB}" が確かめていません(failure・cancelled だけを落とす式だと、` +
+        'ジョブが skipped でも集約は通ります)。集約の env の R_* と手順の "<job>:$R_*" の組、success でなければ失敗にする行を確かめてください'
     );
   }
   notes.push(

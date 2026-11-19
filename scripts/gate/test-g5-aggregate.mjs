@@ -9,7 +9,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
-import { aggregateFindings, needsOf, jobsOf, machineCheckStatus, G5_WORKFLOW } from './g5-aggregate.mjs';
+import { spawnSync } from 'node:child_process';
+import { aggregateFindings, needsOf, jobsOf, machineCheckStatus, successCheckedJobs, G5_WORKFLOW } from './g5-aggregate.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -20,7 +21,7 @@ function check(name, ok, detail = '') {
 }
 
 const wf = fs.readFileSync(path.join(ROOT, G5_WORKFLOW), 'utf8');
-const NEEDS = 'needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules]';
+const NEEDS = 'needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules, mutation, regulatory]';
 check('テンプレートのワークフローに、集約の needs の行がある(試験の目印)', wf.includes(NEEDS));
 
 // 1. テンプレートのワークフローそのもの
@@ -28,7 +29,7 @@ check('テンプレートのワークフローに、集約の needs の行があ
   const f = aggregateFindings(wf);
   // IMPL-0142:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('テンプレートの gate-g5.yml は不備 0 件', f.problems.length === 0, f.problems.join(' / '));
-  check('集約の needs を 9 件読む', f.needs.length === 9, JSON.stringify(f.needs));
+  check('集約の needs を 11 件読む(段 mutation・regulatory を含む)', f.needs.length === 11 && f.needs.includes('mutation') && f.needs.includes('regulatory'), JSON.stringify(f.needs));
   check('基準6 のうち確かめていない部分(アンカー・逆引用符・分量の上限)を注意として出す', f.notes.some((n) => /基準6.*分量の上限/.test(n)));
 }
 
@@ -49,9 +50,9 @@ check('テンプレートのワークフローに、集約の needs の行があ
 
 // 4. needs の箇条の書き方も読む
 {
-  const list = wf.replace(NEEDS, 'needs:\n      - config\n      - contract\n      - test\n      - static-analysis\n      - spec-lint\n      - context-format\n      - ip-clearance\n      - secret-scan\n      - pr-rules');
+  const list = wf.replace(NEEDS, 'needs:\n      - config\n      - contract\n      - test\n      - static-analysis\n      - spec-lint\n      - context-format\n      - ip-clearance\n      - secret-scan\n      - pr-rules\n      - mutation\n      - regulatory');
   const f = aggregateFindings(list);
-  check('needs を箇条で書いても読む(不備 0 件)', f.problems.length === 0 && f.needs.length === 9, f.problems.join(' / '));
+  check('needs を箇条で書いても読む(不備 0 件)', f.problems.length === 0 && f.needs.length === 11, f.problems.join(' / '));
   check('needsOf は 1 語の needs を読む', JSON.stringify(needsOf('    needs: config\n')) === '["config"]');
 }
 
@@ -75,7 +76,8 @@ check('テンプレートのワークフローに、集約の needs の行があ
 
 // 7. 集約が needs の結果を見ない
 {
-  const blind = wf.replace(/contains\(needs\.\*\.result, 'failure'\) \|\| contains\(needs\.\*\.result, 'cancelled'\)/, 'false');
+  // 集約の中の needs.*.result と needs.<job>.result の参照をすべて外す(env の受け渡しも含める)
+  const blind = wf.replace(/\n {2}gate-g5:\n[\s\S]*$/, (blk) => blk.replace(/needs\.(\*|[A-Za-z0-9-]+)\.result/g, 'x'));
   check('集約の判定を書き換える試験の目印がある', blind !== wf);
   const f = aggregateFindings(blind);
   check('集約が needs の結果を見ないと不備が出て、合否に使う検査は 0 件', f.problems.some((p) => /needs\.\*\.result/.test(p)) && f.effective.size === 0, f.problems.join(' / '));
@@ -123,6 +125,68 @@ check('テンプレートのワークフローに、集約の needs の行があ
   const step = setup.split(/\r?\n/).join('\n').split(/\n    - name: /).find((b) => b.includes('adapter.mjs run install')) ?? '';
   check('setup-stack: 依存の取得の段(adapter.mjs run install)がある', step.length > 0);
   check('setup-stack: 依存の取得の段に continue-on-error を置かない(失敗が黙って続かない)', step.length > 0 && !/continue-on-error/.test(step), step);
+}
+
+// 9d. 段 mutation・regulatory が needs にあり、集約が success を確かめる(process-compass #326 項目9 b・c。ADR-0224 決定8)
+const wfLf = wf.replace(/\r\n/g, '\n');
+const aggBody = jobsOf(wf).get('gate-g5');
+{
+  const checked = successCheckedJobs(aggBody);
+  check('success を確かめるジョブに mutation・regulatory が入る', checked.has('mutation') && checked.has('regulatory'), [...checked].join(','));
+  check('success を確かめるジョブは基準・規則のジョブ 10 件', checked.size === 10, [...checked].join(','));
+  // 陰性: needs から段を外す
+  for (const job of ['mutation', 'regulatory']) {
+    const cut = wf.replace(NEEDS, NEEDS.replace(`, ${job}`, ''));
+    const f = aggregateFindings(cut);
+    check(`needs から ${job} を外すと不備が出る`, f.problems.some((x) => x.includes(`"${job}"`) && /needs にありません/.test(x)), f.problems.join(' / '));
+  }
+  // 陰性: success を確かめる組を落とす(env の変数は残す)
+  const noPair = wf.replace(/ "mutation:\$R_MUTATION"/, '');
+  const f1 = aggregateFindings(noPair);
+  check('手順の組から mutation を落とすと「success を確かめていません」の不備が出る', noPair !== wf && f1.problems.some((x) => /"mutation".*success/.test(x)), f1.problems.join(' / '));
+  // 陰性: success でなければ失敗にする行を外す
+  const noSucc = wf.replace(/\[ "\$res" = "success" \] && continue/, 'true');
+  const f2 = aggregateFindings(noSucc);
+  check('success を求める行を外すと、全ジョブで不備が出る', noSucc !== wf && f2.problems.filter((x) => /success であることを/.test(x)).length === 10, f2.problems.join(' / '));
+  // 陰性: 変数が別のジョブの結果を指している(式の取り違え)
+  const swapped = wf.replace('R_MUTATION: ${{ needs.mutation.result }}', 'R_MUTATION: ${{ needs.test.result }}');
+  const f3 = aggregateFindings(swapped);
+  check('変数が別のジョブの結果を指すと mutation の不備が出る', swapped !== wf && f3.problems.some((x) => /"mutation".*success/.test(x)), f3.problems.join(' / '));
+}
+
+// 9e. 集約の手順のシェルを実際に流す(skipped・failure・cancelled・success の場面)
+{
+  const m = wfLf.match(/\n {2}gate-g5:\n[\s\S]*?\n {8}run: \|\n([\s\S]*)$/);
+  const script = m ? m[1].split('\n').map((l) => l.replace(/^ {10}/, '')).join('\n') : '';
+  check('集約の手順の本文を取り出せる', script.includes('G-5 通過'));
+  const names = { contract: 'R_CONTRACT', test: 'R_TEST', 'static-analysis': 'R_STATIC', 'spec-lint': 'R_SPEC', 'context-format': 'R_CTX', 'ip-clearance': 'R_IP', 'secret-scan': 'R_SECRET', 'pr-rules': 'R_PR', mutation: 'R_MUTATION', regulatory: 'R_REGULATORY' };
+  const run = ({ configured = 'true', event = 'pull_request', over = {} } = {}) => {
+    const env = { ...process.env, CONFIGURED: configured, EVENT: event, ANY_BAD: 'false' };
+    for (const [job, v] of Object.entries(names)) env[v] = 'success';
+    for (const [job, res] of Object.entries(over)) {
+      env[names[job]] = res;
+      if (res === 'failure' || res === 'cancelled') env.ANY_BAD = 'true'; // GitHub の式が与える値を模す
+    }
+    const r = spawnSync('bash', ['-c', script], { env, encoding: 'utf8' });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  if (spawnSync('bash', ['-c', 'true']).status !== 0) {
+    check('bash が使えない環境のため、集約の手順の実行は試験しない', false, 'bash を用意して再実行');
+  } else {
+    check('全ジョブが success なら通る', run().code === 0);
+    for (const job of ['mutation', 'regulatory', 'test', 'secret-scan', 'contract']) {
+      const r = run({ over: { [job]: 'skipped' } });
+      check(`構成済みで ${job} が skipped なら落ちる`, r.code === 1 && r.out.includes(`検査 ${job} の結果が skipped`), r.out);
+    }
+    for (const res of ['failure', 'cancelled']) {
+      check(`mutation が ${res} なら落ちる`, run({ over: { mutation: res } }).code === 1);
+      check(`regulatory が ${res} なら落ちる`, run({ over: { regulatory: res } }).code === 1);
+    }
+    check('pr-rules は PR 以外の契機で skipped でも通る', run({ event: 'push', over: { 'pr-rules': 'skipped' } }).code === 0);
+    check('pr-rules は PR の契機で skipped なら落ちる', run({ event: 'pull_request', over: { 'pr-rules': 'skipped' } }).code === 1);
+    check('push の契機でも mutation が skipped なら落ちる(例外は pr-rules だけ)', run({ event: 'push', over: { mutation: 'skipped' } }).code === 1);
+    check('構成が未設定なら、全ジョブが skipped でも警告で通る', run({ configured: 'false', over: Object.fromEntries(Object.keys(names).map((j) => [j, 'skipped'])) }).code === 0);
+  }
 }
 
 // 10. ワークフロー: contract でこの試験を実行する

@@ -572,30 +572,60 @@ jobs:
           path: evidence/pr-checks.md
           if-no-files-found: ignore
 
-  # 集約。ブランチ保護の必須ステータスチェックはこのジョブ名を指す
+  # 集約。ブランチ保護の必須ステータスチェックはこのジョブ名を指す。
+  # 構成が設定済みのときは、基準を実装するジョブと規則を実装するジョブ(scripts/gate/g5-aggregate.mjs の G5_CRITERION_JOBS・G5_RULE_JOBS)の
+  # 結果が success であることを求める。skipped を通さない(ジョブの if: で飛ばして集約を通す形を塞ぐ。process-compass #326 項目9 b・c)。
+  # 例外は、pr-rules が PR 以外の契機で skipped になる場合だけ。ジョブの一覧とここの一覧の一致は aggregateFindings が確かめる。
+  # 守る範囲: 式の誤り(うっかり)。同じ PR がこの定義ごと書き換える悪意は、.github/workflows/** の変更の承認(ADR-0115)が受ける
   gate-g5:
     name: gate-g5
     runs-on: ubuntu-latest
-    needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules]
+    needs: [config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules, mutation, regulatory]
     if: always()
     steps:
       - name: 全検査の結果を突合する
+        env:
+          CONFIGURED: ${{ needs.config.outputs.configured }}
+          EVENT: ${{ github.event_name }}
+          R_CONTRACT: ${{ needs.contract.result }}
+          R_TEST: ${{ needs.test.result }}
+          R_STATIC: ${{ needs.static-analysis.result }}
+          R_SPEC: ${{ needs.spec-lint.result }}
+          R_CTX: ${{ needs.context-format.result }}
+          R_IP: ${{ needs.ip-clearance.result }}
+          R_SECRET: ${{ needs.secret-scan.result }}
+          R_PR: ${{ needs.pr-rules.result }}
+          R_MUTATION: ${{ needs.mutation.result }}
+          R_REGULATORY: ${{ needs.regulatory.result }}
+          ANY_BAD: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          echo "configured:      ${{ needs.config.outputs.configured }}"
-          echo "contract:        ${{ needs.contract.result }}"
-          echo "test:            ${{ needs.test.result }}"
-          echo "static-analysis: ${{ needs.static-analysis.result }}"
-          echo "spec-lint:       ${{ needs.spec-lint.result }}"
-          echo "context-format:  ${{ needs.context-format.result }}"
-          echo "ip-clearance:    ${{ needs.ip-clearance.result }}"
-          echo "secret-scan:     ${{ needs.secret-scan.result }}"
-          echo "pr-rules:        ${{ needs.pr-rules.result }}"
-          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+          echo "configured:      $CONFIGURED"
+          echo "contract:        $R_CONTRACT"
+          echo "test:            $R_TEST"
+          echo "static-analysis: $R_STATIC"
+          echo "spec-lint:       $R_SPEC"
+          echo "context-format:  $R_CTX"
+          echo "ip-clearance:    $R_IP"
+          echo "secret-scan:     $R_SECRET"
+          echo "pr-rules:        $R_PR"
+          echo "mutation:        $R_MUTATION"
+          echo "regulatory:      $R_REGULATORY"
+          if [ "$ANY_BAD" = "true" ]; then
             echo "::error::G-5 は通過していません"
             exit 1
           fi
-          if [ "${{ needs.config.outputs.configured }}" != "true" ]; then
+          if [ "$CONFIGURED" != "true" ]; then
             echo "::warning::プロセス構成が未設定のため、検査を実施していません。/process-init を実行してください"
             exit 0
           fi
+          bad=0
+          for pair in "contract:$R_CONTRACT" "test:$R_TEST" "static-analysis:$R_STATIC" "spec-lint:$R_SPEC" "context-format:$R_CTX" "ip-clearance:$R_IP" "secret-scan:$R_SECRET" "pr-rules:$R_PR" "mutation:$R_MUTATION" "regulatory:$R_REGULATORY"; do
+            job="${pair%%:*}"; res="${pair#*:}"
+            [ "$res" = "success" ] && continue
+            # pr-rules は PR のときだけ走る。PR 以外の契機の skipped は正当
+            if [ "$job" = "pr-rules" ] && [ "$EVENT" != "pull_request" ] && [ "$res" = "skipped" ]; then continue; fi
+            echo "::error::構成が設定済みなのに、検査 $job の結果が $res です(success でない)"
+            bad=1
+          done
+          if [ "$bad" = "1" ]; then exit 1; fi
           echo "::notice::G-5 通過"

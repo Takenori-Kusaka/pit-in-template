@@ -234,7 +234,7 @@ for (const n of [1, 3]) {
   {
     const wfPath = '.github/workflows/gate-g5.yml';
     const wfText = W.read(wfPath);
-    const cut = wfText.replace(/needs: \[config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules\]/, 'needs: [config, contract, pr-rules]');
+    const cut = wfText.replace(/needs: \[config, contract, test, static-analysis, spec-lint, context-format, ip-clearance, secret-scan, pr-rules, mutation, regulatory]/, 'needs: [config, contract, pr-rules]');
     check(`${tag}: 集約の needs を書き換える試験の目印がある`, cut !== wfText);
     W.write(wfPath, cut);
     r = W.node('scripts/gate/verify-gate-contract.mjs');
