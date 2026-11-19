@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { orderItems, isoWeekOf, splitItems, isRealDay } from './review-order.mjs';
+import { orderItems, isoWeekOf, splitItems, isRealDay, emphasizeItems, emphasizeItem, emphasisStyleOf, stripEmphasis } from './review-order.mjs';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -51,6 +51,24 @@ check('IMPL-0175:ok R1 は回す', order({ risk: 'R1' }).rotated === true);
 check('項目が1つ以下なら回さない', orderItems(['a'], base).rotated === false && orderItems([], base).items.length === 0);
 check('入力の配列を書き換えない', (() => { const c = [...items]; orderItems(c, base); return same(c, items); })());
 
+// ---- 強調の様式(全部の項目へ同じ様式。IMPL-0175・束 B26) ----
+const thr = (f) => { try { f(); return false; } catch { return true; } };
+const ebase = { gate: 'G-6', target: 'PR-123', risk: 'R2' };
+const eitems = ['- 基準1 受入基準との対応\n  続きの行', '- 基準2: テストの削除の有無', '基準3 判断記録の添付', '・基準4、外部インタフェース'];
+const em = (day, o = {}) => emphasizeItems(eitems, { ...ebase, day, ...o });
+const eDays = ['2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23', '2026-11-30', '2026-12-07', '2026-12-14', '2026-12-21'];
+check('IMPL-0175:ok 同じ種(ゲート・対象・週)で同じ強調の出力になる(同じ週の別の日でも)', same(em('2026-11-18').items, em('2026-11-18').items) && same(em('2026-11-16').items, em('2026-11-22').items));
+check('IMPL-0175:ok 強調の印を除けば、項目の文と番号は入力と同じ(全週・全様式)', eDays.every((d) => same(em(d).items.map(stripEmphasis), eitems)));
+check('IMPL-0175:ok 隣り合う週は必ず様式が変わり、4 週で 4 つの様式が出る(週が変われば様式が変わる)', eDays.slice(1).every((d, i) => em(d).style !== em(eDays[i]).style) && new Set(eDays.slice(0, 4).map((d) => em(d).style)).size === 4);
+check('IMPL-0175:ok 全部の項目へ同じ様式を付ける(特定の1項目を選ばない)。どの様式でも全項目の1行目に印がある', eDays.slice(0, 4).every((d) => { const r = em(d); return r.items.every((x, i) => x !== eitems[i]) && r.items.length === eitems.length; }));
+const byStyle = Object.fromEntries(eDays.slice(0, 4).map((d) => [em(d).style, em(d).items]));
+check('IMPL-0175:ok 様式 0 は先頭の識別、1 は1行目、2・3 は行頭の印(続きの行と字下げは変えない)', byStyle[0][0] === '- **基準1** 受入基準との対応\n  続きの行' && byStyle[0][1] === '- **基準2**: テストの削除の有無' && byStyle[0][3] === '・**基準4**、外部インタフェース' && byStyle[1][0] === '- **基準1 受入基準との対応**\n  続きの行' && byStyle[2][2] === '▶ 基準3 判断記録の添付' && byStyle[3][0] === '- ◆ 基準1 受入基準との対応\n  続きの行', JSON.stringify(byStyle));
+check('IMPL-0175:ng R3 は強調を付けない(入力のまま)', same(em('2026-11-18', { risk: 'R3' }).items, eitems) && em('2026-11-18', { risk: 'R3' }).style === null);
+check('IMPL-0175:ok 対象が違えば様式の起点が変わりうる(100 対象で 2 通り以上)', new Set(Array.from({ length: 100 }, (_, i) => em('2026-11-18', { target: `PR-${i}` }).style)).size >= 2);
+check('IMPL-0175:ok すでに ** を含む項目には太字を足さない(様式 0)', emphasizeItem('- **基準1** 文', 0) === '- **基準1** 文');
+check('IMPL-0175:ng 強調でも不正なゲート・リスク区分・日付は例外', thr(() => emphasisStyleOf({ ...ebase, gate: 'G-9', day: '2026-11-18' })) && thr(() => emphasisStyleOf({ ...ebase, risk: 'R4', day: '2026-11-18' })) && thr(() => emphasisStyleOf({ ...ebase, day: '2026-02-30' })));
+check('IMPL-0175:ok 並びは強調に影響されない(orderItems の出力は強調前のまま)', same(order().items.map(stripEmphasis), order().items));
+
 // ---- 入力の検査 ----
 const throws = (f) => { try { f(); return false; } catch { return true; } };
 check('IMPL-0175:ng ゲート・リスク区分・日付・対象が不正なら例外', throws(() => order({ gate: 'G-9' })) && throws(() => order({ risk: 'R4' })) && throws(() => order({ day: 'x' })) && throws(() => order({ target: ' ' })));
@@ -77,7 +95,7 @@ const cli = (args, input) => {
   }
 };
 const c1 = cli(['--gate', 'G-6', '--target', 'PR-123', '--risk', 'R2', '--date', '2026-11-18'], items.join('\n'));
-check('命令行: 標準入力の項目を同じ並びで出す', c1.code === 0 && same(c1.out.trimEnd().split('\n'), r1.items), c1.out);
+check('命令行: 標準入力の項目を同じ並びで出し、強調の印を除けば文は同じ(全部の項目に同じ様式)', c1.code === 0 && same(c1.out.trimEnd().split('\n').map(stripEmphasis), r1.items) && same(c1.out.trimEnd().split('\n'), emphasizeItems(r1.items, { gate: 'G-6', target: 'PR-123', risk: 'R2', day: '2026-11-18' }).items), c1.out);
 check('命令行: 引数が足りなければ終了コード 2', cli(['--gate', 'G-6'], 'a').code === 2);
 
 console.log(failures ? `\n${failures} 件が期待と異なる` : '\n確認を求める項目の並びの試験: すべて期待どおり');
