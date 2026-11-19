@@ -611,6 +611,22 @@ for (const cl of ['cl1', 'cl2', 'cl3']) {
   check('エスカレーション: 予算・日程の段階1 は価値責任者が吸収し、期日・予算・SC-M を動かさない', Boolean(s1) && /価値責任者/.test(s1[1]) && /動かさない/.test(s1[1]) && /判定を要しない/.test(s1[1]) && s1[2] === 'state:needs-po', JSON.stringify(s1));
   check('エスカレーション: 起票した者は自分の起票を判定しないことと、実際の宛先が D-0 の節6 によることを出す', /起票した者は自分の起票を判定しない/.test(esc) && /D-0 の節6/.test(esc), esc);
 }
+// IMPL-0636:D-0 節9 の表に、4席の外の席の任命の確認を出す(任意。欠けは注意、書いた席は記録)
+{
+  const cfg = {
+    aiNames: ['Claude'],
+    people: [{ id: 'p1', name: '山田 太郎' }, { id: 'p2', name: '鈴木 一郎' }, { id: 'p3', name: '佐藤 花子' }],
+    seats: [
+      { role: 'value-owner', name: '価値責任者', accountable: 'p1' },
+      { role: 'dev-verifier', name: '開発者', accountable: 'p2' },
+      { role: 'context-owner', name: '文脈オーナー', accountable: 'p3', competence: { confirmedAt: '2026-10-01', confirmedBy: '山田 太郎', record: 'docs/a.md', person: '佐藤 花子' } },
+    ],
+  };
+  const sec = renderD0Section('competence', cfg);
+  check('IMPL-0636:ng 4席の外で記録の無い席は「任命の確認の記録なし(…注意)」と出し、失敗にしない', /\| 開発者 \| 鈴木 一郎 \| 任命の確認の記録なし/.test(sec), sec);
+  check('IMPL-0636:ok 4席の外で書いた席は記録を出す', /\| 文脈オーナー \| 佐藤 花子 \| 2026-10-01 \| 山田 太郎 \| docs\/a\.md \|/.test(sec), sec);
+  check('IMPL-0636:ok 空欄の様式(責任者なしの席)では4席の外の行を足さない', !/開発者/.test(renderD0Section('competence', { ...cfg, seats: cfg.seats.map((s) => ({ ...s, accountable: null })) })), '');
+}
 console.log('');
 if (failures) {
   console.log(`独立と席の規則の試験: ${failures} 件が期待と一致しません`);

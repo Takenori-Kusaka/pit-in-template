@@ -17,6 +17,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { appointmentConfirmationState } from './org-assurance.mjs';
 import {
   ROOT,
   namingProblems,
@@ -375,6 +376,30 @@ const NOTICE_DAY = localDay();
   } finally {
     w2.done();
   }
+}
+// ---------------------------------------------------------------- 判断を担う4席の外の席の任命の確認(IMPL-0636)
+{
+  const people = [{ id: 'p1', name: '山田 太郎' }, { id: 'p2', name: '鈴木 一郎' }, { id: 'p3', name: '佐藤 花子' }];
+  const cfgA = (competence) => ({
+    aiNames: ['Claude'],
+    people,
+    seats: [
+      { role: 'value-owner', name: '価値責任者', accountable: 'p1' },
+      { role: 'dev-verifier', name: '開発者', accountable: 'p2', ...(competence ? { competence } : {}) },
+    ],
+  });
+  const good = { confirmedAt: '2020-01-05', confirmedBy: '佐藤 花子', record: 'docs/appointment/dev.md' };
+  // IMPL-0636:ng(欠け。失敗にせず注意として返す。4席の外だけを対象にする)
+  let st = appointmentConfirmationState(cfgA(null));
+  check('IMPL-0636:ng 4席の外の席に任命の確認の記録が無ければ注意として返す(4席は対象にしない)', st.length === 1 && st[0].role === 'dev-verifier' && st[0].status === 'unrecorded' && st[0].ok === false, JSON.stringify(st));
+  // IMPL-0636:ng(書いた席は既存の照合を当てる)
+  st = appointmentConfirmationState(cfgA({ ...good, confirmedBy: '鈴木 一郎' }));
+  check('IMPL-0636:ng 確認した者が本人なら不備とする', st[0].status === 'invalid' && /本人/.test(st[0].why), JSON.stringify(st));
+  st = appointmentConfirmationState(cfgA({ ...good, confirmedAt: '' }));
+  check('IMPL-0636:ng 確認日が無ければ不備とする', st[0].status === 'invalid', JSON.stringify(st));
+  // IMPL-0636:ok(書いた席は有効。周期を照らさない=古い確認日でも失効にしない)
+  st = appointmentConfirmationState(cfgA(good));
+  check('IMPL-0636:ok 本人以外が確認した記録は有効とし、確認の有効期間は4席の外では照らさない', st[0].status === 'recorded' && st[0].ok === true, JSON.stringify(st));
 }
 console.log(`\n外部の確認者と制限と段の反証の試験: ${failures ? `${failures} 件の失敗(${checks} 件中)` : `${checks} 件が期待と一致しました`}`);
 process.exit(failures ? 1 : 0);

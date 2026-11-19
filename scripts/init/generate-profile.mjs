@@ -2172,6 +2172,10 @@ export function diffConfig(before, after, opts = {}) {
             `確認を経ない任命として、出荷の証跡の集約の項目7 と次の一手に「未確認」と出続ける。確認の後に、種別 accountable で seats.${s.role}.competence({ "confirmedAt", "confirmedBy", "record" })を書く(記名は要らない)`
         );
       }
+      // 判断を担う4席の外の席の任命の確認は任意(3.4.1 要求事項1〜3。IMPL-0636)。失敗にせず、記録が無いことを注意として出す
+      if (s.accountable && !JUDGE_SEAT_IDS.includes(s.role) && !s.competence) {
+        remaining.push(`${s.name}: 新任の責任者(${toName})の任命の確認の記録が無い(標準 第3章 3.4.1 要求事項1〜3。4席の外では任意。注意として /pit と D-0 節9 に出る)。実務の成果物か演習の記録での確認の後に、種別 accountable で seats.${s.role}.competence({ "confirmedAt", "confirmedBy", "record" })を書く`);
+      }
       const owned = (ownedBy[s.role] ?? []).map((k) => GATE_BY_KEY[k]?.label ?? k);
       if (owned.length) {
         candidates.push(`${s.name} が判定者となる ${owned.join(' / ')} の、仕掛かり中の判定(作成を指示した者と確認する者の関係が変わる)`);
@@ -3311,6 +3315,16 @@ export function renderD0Section(key, config, { legacy = false, before430 = false
       const by = own ? `${c.confirmedBy ?? ''}${c.confirmedBy && !resolveSigner(config, c.confirmedBy) ? '(名簿の外)' : ''}` : null;
       L.push(`| ${s.name} | ${cell(who)} | ${blank ? '' : own ? cell(c.confirmedAt) : '**未確認**(確認を経ない任命)'} | ${blank ? '' : own ? cell(by) : '—'} | ${blank ? '' : own ? cell(c.record ?? '所在なし') : '—'} |`);
     }
+    // 判断を担う4席の外の席の任命の確認(3.4.1 要求事項1〜3。IMPL-0636)。4席の外では任意で、失敗にしない。書いた席は記録を出し、責任者のいる席で欠けていれば注意を出す。
+    // 確認の有効期間(要求事項5)は4席の外では確かめない。確かめる者: 任命する者(表1)
+    if (!blank) {
+      for (const s of seats.filter((x) => !JUDGE_SEAT_IDS.includes(x.role) && x.accountable)) {
+        const c = s.competence && typeof s.competence === 'object' ? s.competence : null;
+        const own = c && (!c.person || personKey(config, c.person) === personKey(config, s.accountable));
+        const by = own ? `${c.confirmedBy ?? ''}${c.confirmedBy && !resolveSigner(config, c.confirmedBy) ? '(名簿の外)' : ''}` : null;
+        L.push(`| ${s.name} | ${cell(personName(config, s.accountable))} | ${own ? cell(c.confirmedAt) : '任命の確認の記録なし(4席の外では任意。注意)'} | ${own ? cell(by) : '—'} | ${own ? cell(c.record ?? '所在なし') : '—'} |`);
+      }
+    }
   } else if (key === 'performers') {
     const FALLBACK = { human: '人へ戻す', stop: '止める' };
     const d = config.delegation ?? { allowed: false, blockedBy: [], rules: [] };
@@ -3680,7 +3694,7 @@ export function renderProfileMd(config, result) {
     for (const b of cs.blockers) L.push(`- ${b}`);
     if (cs.name && cs.name !== '適用の表明') {
       L.push(
-        '- 構成から決まらない列挙に無い離脱は、この名に反映していません。コア機能の理解の保持者が1名以下と、層1 の記名者が事業決裁者を兼ねることは、出荷判定の証跡の集約が運用引き継ぎ文書の節2 と層1 から数えます。保持者は、書いた名が1名以下、または確認者の列なし・空欄・本人など本人以外の確認の記録を欠くとき離脱に数えます。引き継ぎ文書・層1 が無い、節2 に記載が無い、周期の欠け・日付の書式(日付らしい語があり YYYY-MM-DD の実在の日に解けないとき。日付らしい語が無い確認日は確認日なしで離脱の側)で数えられるか決まらないときは、数えられるか決まらない名を足せば2名に届く場合に限り数えず、理由を出力に書きます(詳しい線は ADR-0147 決定2)。欠陥注入の時期と箇所の秘匿が成り立たないこと、層1 の記名者と事業決裁者の氏名の表記が違う場合、兼務を禁止した組でない席どうしの認証情報の共有、ホスティングのアカウントの外の認証情報、配備の資格情報を配備を許す参照に結び付けていない構成(7.3 の例外承認を経たものを除く。配備のワークフローはテンプレートに無い。標準 ADR-0165)は、数えません。当たる場合に述べられるのは、適用の表明までです(標準 第1章 1.10.2)。数えない項目は人が確かめます',
+        '- 構成から決まらない列挙に無い離脱は、この名に反映していません。コア機能の理解の保持者が1名以下と、層1 の記名者が事業決裁者を兼ねることは、出荷判定の証跡の集約が運用引き継ぎ文書の節2 と層1 から数えます。保持者は、書いた名が1名以下、または確認者の列なし・空欄・本人など本人以外の確認の記録を欠くとき離脱に数えます。引き継ぎ文書・層1 が無い、節2 に記載が無い、周期の欠け・日付の書式(日付らしい語があり YYYY-MM-DD の実在の日に解けないとき。日付らしい語が無い確認日は確認日なしで離脱の側)で数えられるか決まらないときは、数えられるか決まらない名を足せば2名に届く場合に限り数えず、理由を出力に書きます(詳しい線は ADR-0147 決定2)。欠陥注入の時期と箇所の秘匿が成り立たないこと、層1 の記名者と事業決裁者の氏名の表記が違う場合、兼務を禁止した組でない席どうしの認証情報の共有(AI の担い手どうしを含み、離脱に数えない)、別の自然人どうしが同じ認証情報を使う構成(構成に申告されない共有であり、機械は数えない。個別の認証の記録の実在と突合を採用者が確かめる。IMPL-1004)、ホスティングのアカウントの外の認証情報、配備の資格情報を配備を許す参照に結び付けていない構成(7.3 の例外承認を経たものを除く。配備のワークフローはテンプレートに無い。標準 ADR-0165)は、数えません。当たる場合に述べられるのは、適用の表明までです(標準 第1章 1.10.2)。数えない項目は人が確かめます',
       );
     }
     if (cs.listed.length) {

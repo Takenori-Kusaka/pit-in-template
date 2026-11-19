@@ -56,7 +56,7 @@ import { recalibrationState, recalibrationNote } from './recalibration.mjs';
 import { autonomyState, readAutonomyRecords, autonomyNoteLines } from './autonomy.mjs';
 import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
-import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
+import { readPolicy, continuityState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 /**
@@ -1546,6 +1546,24 @@ function continuityNotes(config) {
         `席の責任者本人の AI を使わない力量の確認(3.4.3 要求事項1。任命時と層1 の周期): ${bad.map((c) => `${c.seat}(${c.accountable})${label(c)}(${c.why})`).join(' / ')}。` +
           (cycleBlank ? `層1 の「AI を使わない力量の確認の周期」を記名者が埋める(読む: ${READ.artifact('11-quality-assurance-policy')})。` : '') +
           `確認は本人以外の者が行い(AI を使っていない期間の成果物、または判定者の面前の演習。自己申告は認めない)、\`/process-change\`(種別 accountable。seats.<席>.competence に確認日・確認した者・記録の所在。決定者の記名は要らない)で構成へ書く。出荷の集約の項目7 に出続ける(読む: ${READ.change('accountable')})`
+      );
+    }
+  }
+
+  // 判断を担う4席の外の席の任命の確認(3.4.1 要求事項1〜3。IMPL-0636)。任意。失敗にせず、記録の欠けと不備を注意として出す。
+  // 確認の有効期間(要求事項5)は4席の外では確かめない。確かめる者: 任命する者(D-0 表1)
+  {
+    const appt = appointmentConfirmationState(config);
+    const missing = appt.filter((a) => a.status === 'unrecorded');
+    const invalid = appt.filter((a) => a.status === 'invalid');
+    if (missing.length || invalid.length) {
+      notes.push(
+        `判断を担う4席の外の席の任命の確認(3.4.1 要求事項1〜3。任意): ` +
+          [
+            missing.length ? `記録なし: ${missing.map((a) => `${a.seat}(${a.accountable})`).join(' / ')}` : null,
+            invalid.length ? `記録に不備: ${invalid.map((a) => `${a.seat}(${a.accountable})の${a.why}`).join(' / ')}` : null,
+          ].filter(Boolean).join('。') +
+          '。失敗にはしない。実務の成果物か演習の記録での確認の後に、`/process-change`(種別 accountable。seats.<席>.competence に確認日・本人以外の確認した者・記録の所在)で書く。確認の有効期間は4席の外では機械が確かめない(確かめる者: 任命する者)'
       );
     }
   }

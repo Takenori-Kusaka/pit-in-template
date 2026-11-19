@@ -6683,6 +6683,7 @@ if (isMain) {
         (evidence.claim.blockers.length ? `。理由: ${evidence.claim.blockers.join(' / ')}` : '') +
         (evidence.claim.listedDeviations.length ? `。列挙する逸脱: ${evidence.claim.listedDeviations.join(' / ')}` : '')
     );
+    R.push('- 述べられる名が数えない認証情報の共有(第1章 1.10.2。IMPL-1004。採用者が確かめる): 構成に申告されない共有、別の自然人どうしが同じ認証情報を使う構成(個別の認証の記録の実在と突合)、ホスティングのアカウントの外の認証情報。兼務を禁止していない組の席どうし(AI の担い手どうしを含む)の共有は、離脱に数えない');
     {
       // 適用の表明に併記する事項の値(第1章 1.10.2。IMPL-0120。値だけ。表明の文は表明する者が書く)。外へ渡す形では離脱の内容(保持者の名を含みうる)を出さず件数だけにする
       const c = evidence.claim;

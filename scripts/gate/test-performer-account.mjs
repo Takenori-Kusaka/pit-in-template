@@ -15,6 +15,7 @@
 //   - PR 本文の @アカウントを、検査の時点に数値の識別子へ解決して名簿と照合し、解決した値と時点を残す(ADR-0108 決定1 / IMPL-0426)
 // GitHub へ問い合わせません。
 
+import nodeFs from 'node:fs';
 import {
   performerAccountProblems,
   performerAccountStates,
@@ -258,6 +259,18 @@ const UNDECLARED = cfgOf([
   const three = withSeats([seat('value-owner', '価値責任者', same), seat('dev-verifier', '開発者', same), seat('independent-reviewer', '独立レビュア', same)]);
   check('認証情報(iv): 3席が同じ識別子のとき、2席目と3席目の禁止の組も注記に出る', performerAccountProblems(three).notes.some((n) => /独立レビュア/.test(n) && /開発者/.test(n)), JSON.stringify(performerAccountProblems(three)));
   check('認証情報: separations の無い旧い構成は数えない(読めないときは下げない向き)', !claimStatus({ ...forbidden, separations: undefined }).unlisted.some((d) => d.derived === 'performer-credential-shared'));
+  // IMPL-1030:D-0 節12 の書き分けと、述べられる名が数えない部分の注記(文の存在だけを固定する。意味は D-0 節12 の確認者が読む)
+  {
+    const read = (rel) => nodeFs.readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    const d0 = read('../../templates/00-d0-governance.md');
+    check('IMPL-1030:D-0 節12 が、兼務を禁止した組の席どうしと別の自然人どうしの2つに書き分ける', /兼務を禁止した組の席どうしの担い手が、同じ認証情報/.test(d0) && /別の自然人どうしが、同じ認証情報を使う構成/.test(d0), '');
+    check('IMPL-1030:D-0 節12 が、兼務を禁止していない組の AI の担い手どうしの共有を離脱に数えない旨を出す', /AI の担い手どうしを含む\)が同じ認証情報を使う構成は、離脱に数えない/.test(d0), '');
+    const gp = read('../init/generate-profile.mjs');
+    const ag = read('./aggregate-evidence.mjs');
+    check('IMPL-1030:構成書の注記と出荷の集約が、数えない部分(個別の認証の記録の突合・ホスティングの外)を人が確かめる旨を出す', /個別の認証の記録の実在と突合/.test(gp) && /個別の認証の記録の実在と突合/.test(ag) && /ホスティングのアカウントの外の認証情報/.test(ag), '');
+    // 兼務を禁止していない組の AI の担い手どうしが同じ識別子でも、離脱に数えない(変更前と同じ結果を固定)
+    check('IMPL-1030:ok 兼務を禁止していない組の AI の担い手どうしの共有は離脱に数えない(判定は禁止の組だけ)', !claimStatus(notForbidden).unlisted.some((d) => d.derived === 'performer-credential-shared'), '');
+  }
 }
 
 console.log(failures ? `\n担い手の名義の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\n担い手の名義の試験: ${checks} 件が期待と一致しました`);
