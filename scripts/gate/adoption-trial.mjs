@@ -2008,13 +2008,13 @@ const BOUNDARY_CLASS = String.raw`[\s、。，．,.;；:：()（）\[\]「」『
 /**
  * 対象の欄が番号 n を指すか。#n(後ろに英数字が続かない)、相対の /issues/n・/pull/n(直前が語の文字でない)、
  * 同じリポジトリ repo の URL(https://github.com/<repo>/issues|pull/n)。repo が分からない(null・波括弧のまま)ときは URL を数えない。
- * #12 は #123 や #12a に当たらない。別のリポジトリの URL は数えない
+ * #12 は #123 や #12a に当たらない。別のリポジトリの URL と短い参照(other/repo#12。#の直前が英数字・/・-・_・. のもの)は数えない
  */
 export function numberCited(text, n, repo = null) {
   const t = String(text ?? '').normalize('NFKC');
   const num = Number(n);
   const tail = '(?![0-9A-Za-z_])';
-  if (new RegExp(`#${num}${tail}`).test(t)) return true;
+  if (new RegExp(String.raw`(?<![\w/.\-])#${num}${tail}`).test(t)) return true;
   if (new RegExp(String.raw`(?<![\w.\-/])/(?:issues|pull)/${num}${tail}`).test(t)) return true;
   if (repo && !/[{}]/.test(repo) && new RegExp(String.raw`https?://github\.com/${escapeRe(repo)}/(?:issues|pull)/${num}${tail}`, 'i').test(t)) return true;
   return false;

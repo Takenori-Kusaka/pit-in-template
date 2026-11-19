@@ -170,7 +170,7 @@ export function inventory({ window: win, ledgerText, runsResult, jobsOf }) {
     const short = total !== null && total > got;
     if (capped || short) lines.push(`**一部しか読めていません**: 実行の記録の一覧は 1 回の絞り込みで ${RUNS_API_CAP} 件までしか返りません。読めた ${got} 件${total !== null ? `(応答の総数 ${total} 件)` : ''}。以下の失敗・実行の数は確定の値ではなく、少なく出ている可能性があります。`, '');
     const oldest = rl.map((r) => String(r.created_at ?? '').slice(0, 10)).filter(Boolean).sort()[0];
-    if (oldest && oldest > win.from) lines.push(`注意: 読めた最も古い実行は ${oldest} で、窓の始まり ${win.from} より後です。90 日はログと成果物の保持期間です。GitHub の文書は 2026-10-01 以降、実行の記録にも保持期間(既定 90 日)を適用すると書いています(それより前に作られた実行には遡らない、とも書いています)。その期間に実行が無かったか、実行の記録が保持期間または手で削除されたかを、この出力からは区別できません。数を確定の値として読まないでください。`, '');
+    if (oldest && oldest > win.from) lines.push(`注意: 読めた最も古い実行は ${oldest} で、窓の始まり ${win.from} より後です。90 日はログと成果物の保持期間です。GitHub の文書は 2026-10-01 以降、実行の記録にも保持期間(既定 90 日)を適用すると書いています(保持期間を変えたときは新しい対象にだけ適用し、既存の対象には遡らない、とも書いています。2026-10-01 の適用が既存の実行に及ぶかは、書いていません)。その期間に実行が無かったか、実行の記録が保持期間または手で削除されたかを、この出力からは区別できません。数を確定の値として読まないでください。`, '');
     const rowsOf = (workflowPath, jobName) =>
       matched
         .filter((r) => r.target.includes(workflowPath) || (jobName && nameIn(r.target, jobName)))

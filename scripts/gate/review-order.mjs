@@ -156,16 +156,16 @@ export function emphasizeItem(item, style) {
   const lines = String(item).split('\n');
   if (TABLE_ROW.test(lines[0])) return item; // 表の行は、印を付けると表が崩れるので付けない
   const m = lines[0].match(BULLET);
-  const [, lead, body] = m;
+  const [, lead, body0] = m;
+  // 入力にすでにある ** は除いてから様式を当てる(項目の間で見た目をそろえる。stripEmphasis は ** を全部除くので往復は変わらない)
+  const body = body0.replace(/\*\*/g, '');
   if (body === '') return item;
   if (style >= 2) {
     lines[0] = `${lead}${MARKS[style - 2]} ${body}`;
   } else {
     const part = style === 0 ? headOf(body) : body;
     if (part.trim() === '') return item;
-    // すでに ** を含む項目は、太字を重ねず、同じ週の他の項目と見た目が割れないよう行頭の印(▶)に寄せる
-    if (part.includes('**')) lines[0] = `${lead}${MARKS[0]} ${body}`;
-    else lines[0] = `${lead}**${part}**${body.slice(part.length)}`;
+    lines[0] = `${lead}**${part}**${body.slice(part.length)}`;
   }
   return lines.join('\n');
 }
