@@ -646,24 +646,39 @@ export function bindRecord(rec, proposals) {
  * 上程と結べない記録は失敗にせず「確かめていない」。応答の中身・ブランチ保護の回避は確かめない。
  * 戻り値: { status: 'fail'|'pass'|'out'|'unverified', lines }
  */
-export function respondedCheck({ records, issues, config, holidays = new Set(), repo = null, prFiles = {}, codeownersText = null, offsetMinutes = DEFAULT_OFFSET_MINUTES }) {
+export function respondedCheck({ records, issues, config, holidays = new Set(), repo = null, prFiles = {}, codeownersText = null, offsetMinutes = DEFAULT_OFFSET_MINUTES, listUnreadable = null }) {
   const proposals = issues.map((i) => readProposal(i, { config, holidays, repo })).filter((p) => p.target && !p.problems.length);
   const lines = [];
   const seen = new Set();
-  if (!records.length) return { status: 'unverified', lines: ['確かめていない(記録を含まない PR): 判定の記録(docs/gates/*.md)を含まない PR のため、この検査の対象ではない'] };
+  const flagged = [];
+  // 確かめていない行(注記の対象)。合格の行の「応答の中身は確かめていない」は含めない
+  const unv = (line) => {
+    seen.add('unverified');
+    lines.push(line);
+    flagged.push(line);
+  };
+  // 変更ファイルの一覧そのものを読めない: 記録の有無を言えないので「記録を含まない」とは表示せず、注記の対象にする
+  if (listUnreadable) {
+    const line = `確かめていない(変更ファイルを読めない): PR の変更ファイルの一覧を読めないため、判定の記録(docs/gates/*.md)の有無を確かめていない(${listUnreadable})`;
+    return { status: 'unverified', lines: [line], flagged: [line], noRecords: false };
+  }
+  // 一覧を読めて、記録のパスが1つも無いときだけ「記録を含まない PR」
+  if (!records.length) return { status: 'unverified', lines: ['確かめていない(記録を含まない PR): 判定の記録(docs/gates/*.md)を含まない PR のため、この検査の対象ではない'], flagged: [], noRecords: true };
   for (const r of records) {
+    if (r.text === null || r.text === undefined) {
+      unv(`${r.path}: 記録を読めない(${r.why ?? '内容の取得に失敗'})。確かめていない`);
+      continue;
+    }
     const rec = parseGateRecord(r.text);
     const p = bindRecord(rec, proposals);
     if (!p) {
-      seen.add('unverified');
-      lines.push(`${r.path}: 事前レビューの上程と結べない(ゲート ${rec.gate ?? '(読めない)'}・対象 ${rec.target ?? '(読めない)'}。結ぶのは、ゲートの語の一致と、対象の欄の #番号が上程か判定資料の PR の番号に等しいこと)。確かめていない`);
+      unv(`${r.path}: 事前レビューの上程と結べない(ゲート ${rec.gate ?? '(読めない)'}・対象 ${rec.target ?? '(読めない)'}。結ぶのは、ゲートの語の一致と、対象の欄の #番号が上程か判定資料の PR の番号に等しいこと)。確かめていない`);
       continue;
     }
     const req = requiredLoginsOf(p, { prFiles, codeownersText, config });
     const isR1 = p.risk === 'R1';
     if (!isR1 && req.logins === null) {
-      seen.add('unverified');
-      lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。必須応答の者を導出できない(${req.why})ため、3.10.9 の範囲かを確かめていない`);
+      unv(`${r.path}: 上程 #${p.number}(${p.risk})。必須応答の者を導出できない(${req.why})ため、3.10.9 の範囲かを確かめていない`);
       continue;
     }
     const needed = uniq([...(isR1 ? p.reviewers : []), ...(req.logins ?? [])]);
@@ -683,9 +698,8 @@ export function respondedCheck({ records, issues, config, holidays = new Set(), 
       lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。宣言行(賛否の欄が書かれた意見)が揃っていない(${cut}): ${missing.map(mention).join(' ')}`);
       if (reqUnresolved) lines.push(unresolvedLine);
     } else if (reqUnresolved) {
-      seen.add('unverified');
-      lines.push(unresolvedLine);
-      lines.push(`${r.path}: 指名レビュアの宣言行は揃った(${cut}。${needed.length} 名)。必須応答の者の分は確かめていない`);
+      unv(unresolvedLine);
+      unv(`${r.path}: 指名レビュアの宣言行は揃った(${cut}。${needed.length} 名)。必須応答の者の分は確かめていない`);
     } else {
       seen.add('pass');
       lines.push(`${r.path}: 上程 #${p.number}(${p.risk})。宣言行が揃った(${cut}。${needed.length} 名)。応答の中身は確かめていない`);
@@ -693,10 +707,10 @@ export function respondedCheck({ records, issues, config, holidays = new Set(), 
   }
   // 優先: 失敗 > 確かめていない > 合格 > 範囲外(確かめていないものが混ざる PR を合格に見せない)
   const status = ['fail', 'unverified', 'pass', 'out'].find((s) => seen.has(s));
-  return { status, lines };
+  return { status, lines, flagged, noRecords: false };
 }
 
-export const VERDICTS = { fail: '失敗: 応答の宣言行が揃っていない', pass: '合格: 宣言行が揃った(応答の中身は確かめていない)', out: '範囲外(この検査は確かめない)', unverified: '確かめていない(上程と結べない、または読めない。失敗にはしない)' };
+export const VERDICTS = { fail: '失敗: 応答の宣言行が揃っていない', pass: '合格: 宣言行が揃った(応答の中身は確かめていない)', out: '範囲外(この検査は確かめない)', unverified: '確かめていない(理由は個別の行を見よ。失敗にはしない)' };
 const median = (xs) => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -743,10 +757,15 @@ export function metricsFor({ issues, month, config, holidays = new Set(), materi
   let proxy = 0;
   let proxyPr = 0;
   let proxyCommit = 0;
-  const dropped = { noRecord: 0, noPublication: 0, noJudged: 0 };
+  const dropped = { badFields: 0, noRecord: 0, noPublication: 0, noJudged: 0 };
   for (const { p, issue } of rows) {
     const hit = byNumber.get(p.number);
-    if (!hit || !p.risk) {
+    // 欄に不備のある上程(リスク区分が読めないものを含む)は、記録に結べないのではなく欄の不備として分けて数える
+    if (!p.risk || p.problems.length) {
+      dropped.badFields++;
+      continue;
+    }
+    if (!hit) {
       dropped.noRecord++;
       continue;
     }
@@ -799,7 +818,7 @@ export function metricsBody(m) {
       `| 事前意見が0件の上程の比率 | ${m.noOpinionRatio} |`,
       `| 指名レビュアの応答率(指名の延べ数に対する、賛否の欄が書かれた意見のある者の割合) | ${m.reviewerResponseRatio} |`,
       `| 起案者の応答が付いていない意見の比率(宣言行 \`応答: <意見のコメントの URL>\` が結ぶものを応答とする) | ${m.unansweredOpinionRatio} |`,
-      `| 資料公開から判定までの日数: 判定の記録に結べた上程(結べた件数と比率。残りは母数から外した) | ${m.boundRatio}。結べず外した ${m.unbound} 件(判定の記録に結べない ${m.dropped.noRecord}・公開の時点を読めない ${m.dropped.noPublication}・判定の時点を読めない ${m.dropped.noJudged}) |`,
+      `| 資料公開から判定までの日数: 判定の記録に結べた上程(結べた件数と比率。残りは母数から外した) | ${m.boundRatio}。結べず外した ${m.unbound} 件(欄に不備(リスク区分を含む) ${m.dropped.badFields}・判定の記録に結べない ${m.dropped.noRecord}・公開の時点を読めない ${m.dropped.noPublication}・判定の時点を読めない ${m.dropped.noJudged}) |`,
       `| 資料公開から判定までの日数の中央値(営業日) | ${m.daysMedian} |`,
       `| 規定日数(5営業日、R1 は10)を下回った上程の件数 | ${m.belowRegulated} |`,
       '',
@@ -876,7 +895,7 @@ const decodeContent = (r) => {
 };
 const RECORD_PATH = /^docs\/gates\/[^/]+\.md$/;
 
-/** 判定の記録を基底ブランチへ入れる PR の、記録ファイル(docs/gates/*.md。head の版)を読む。読めないファイルは含めない。gh は差し替えられる */
+/** 判定の記録を基底ブランチへ入れる PR の、記録ファイル(docs/gates/*.md。head の版)を読む。読めないファイルは text: null と理由で返す(確かめていないとして数える)。変更ファイルの一覧を読めないときは例外を投げる。gh は差し替えられる */
 export function fetchPrRecordFiles(gh, repo, n) {
   const files = parse(gh, [`repos/${repo}/pulls/${n}/files?per_page=100`]).filter((f) => RECORD_PATH.test(f.filename ?? '') && f.status !== 'removed');
   if (!files.length) return [];
@@ -886,9 +905,10 @@ export function fetchPrRecordFiles(gh, repo, n) {
   for (const f of files) {
     try {
       const text = decodeContent(parse(gh, [`repos/${repo}/contents/${encodeURI(f.filename)}${sha ? `?ref=${sha}` : ''}`]));
-      if (text !== null) out.push({ path: f.filename, text });
-    } catch {
-      // 読めないファイルは含めない(上程と結べないものと同じく、確かめていないに回る)
+      out.push(text !== null ? { path: f.filename, text } : { path: f.filename, text: null, why: '内容が空' });
+    } catch (e) {
+      // 読めないファイルも落とさず、text: null で返す(respondedCheck が確かめていないとして数える)
+      out.push({ path: f.filename, text: null, why: String(e.message).split('\n')[0].slice(0, 80) });
     }
   }
   return out;
@@ -977,7 +997,13 @@ function respondedMain({ opt, repo, issues, config, hol, offset }) {
     console.error('--pr <番号> を渡してください(判定の記録を基底ブランチへ入れる PR)');
     process.exit(2);
   }
-  const records = fetchPrRecordFiles(ghCli, repo, n);
+  let records = [];
+  let listUnreadable = null;
+  try {
+    records = fetchPrRecordFiles(ghCli, repo, n);
+  } catch (e) {
+    listUnreadable = String(e.message).split('\n')[0].slice(0, 80);
+  }
   const prFiles = {};
   for (const i of issues) {
     const rp = readProposal(i, { config, holidays: hol.days, repo });
@@ -985,14 +1011,14 @@ function respondedMain({ opt, repo, issues, config, hol, offset }) {
   }
   const coPlace = CODEOWNERS_PLACES.find((f) => fs.existsSync(path.join(ROOT, f)));
   const codeownersText = coPlace ? fs.readFileSync(path.join(ROOT, coPlace), 'utf8') : null;
-  const r = respondedCheck({ records, issues, config, holidays: hol.days, repo, prFiles, codeownersText, offsetMinutes: offset });
+  const r = respondedCheck({ records, issues, config, holidays: hol.days, repo, prFiles, codeownersText, offsetMinutes: offset, listUnreadable });
   if (hol.note) console.log(`注意: ${hol.note}`);
   for (const l of r.lines) console.log(l);
   const verdict = `応答の揃いの検査: ${VERDICTS[r.status]}。ブランチ保護の回避は確かめない。実物の GitHub では確かめていない。`;
   console.log(verdict);
-  // 確かめていない(終了コードは 0 で、チェックは緑になる)ものが、チェックの画面で合格に見えないよう、注記と要約へ出す。記録を含まない PR(全 PR で動く)は注記を出さない
-  if (r.status === 'unverified' && records.length) {
-    console.log(`::warning title=pre-review-responded::確かめていない: ${r.lines.filter((l) => /確かめていない|結べない|導出できない/.test(l)).join(' / ')}`);
+  // 確かめていない(終了コードは 0 で、チェックは緑になる)ものが、チェックの画面で合格に見えないよう、注記と要約へ出す。記録を含まない PR(一覧を読めて、記録のパスが無い。全 PR で動く)だけは注記を出さない。変更ファイルの一覧や記録を読めないときは出す
+  if (r.status === 'unverified' && !r.noRecords) {
+    console.log(`::warning title=pre-review-responded::確かめていない: ${r.flagged.join(' / ')}`);
     if (process.env.GITHUB_STEP_SUMMARY) {
       try {
         fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## pre-review-responded: 確かめていない\n\n合格ではありません。次の点を確かめていません(失敗にもしていません)。\n\n${r.lines.map((l) => `- ${l}`).join('\n')}\n`);

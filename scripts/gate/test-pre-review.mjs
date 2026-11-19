@@ -392,6 +392,24 @@ check('IMPL-0214:ok 記録ファイルの読み取り: docs/gates/*.md の追加
 const gcalls = [];
 fetchPrRecordFiles((args) => { gcalls.push(args.join(' ')); return recGh(args); }, 'o/r', 12);
 check('IMPL-0214:ok 読み取りの API だけを使う(書き込みの -X を含まない)', gcalls.length > 0 && gcalls.every((c) => !/-X/.test(c)));
+// 高-N1 記録ファイルを読めないとき、「記録を含まない PR」と表示せず、注記の対象にする
+const failGh = (args) => {
+  const p = args[args.length - 1];
+  if (/contents\//.test(p)) throw new Error('HTTP 500');
+  return recGh(args);
+};
+const frFail = fetchPrRecordFiles(failGh, 'o/r', 12);
+check('IMPL-0214:ng 記録ファイルを読めないとき、落とさず text: null と理由で返す', frFail.length === 1 && frFail[0].path === 'docs/gates/g6-x.md' && frFail[0].text === null && /HTTP 500/.test(frFail[0].why), JSON.stringify(frFail));
+const unreadOnly = respondedCheck({ records: frFail, issues: mixIssues, ...mixCfg });
+check('IMPL-0214:ng 読めない記録だけの PR は「記録を含まない」と出さず、確かめていない(注記の対象)にする', unreadOnly.status === 'unverified' && unreadOnly.noRecords === false && unreadOnly.flagged.length === 1 && /記録を読めない/.test(unreadOnly.lines[0]) && !/記録を含まない/.test(unreadOnly.lines.join('')), JSON.stringify(unreadOnly));
+const unreadMix = respondedCheck({ records: [mixPass, { path: 'docs/gates/b.md', text: null, why: 'HTTP 500' }], issues: mixIssues, ...mixCfg });
+check('IMPL-0214:ng 記録2件のうち1件を読めない PR は、揃った1件があっても合格にしない。注記の対象は読めない行だけで、合格の行を含めない', unreadMix.status === 'unverified' && unreadMix.flagged.length === 1 && /b\.md/.test(unreadMix.flagged[0]), JSON.stringify(unreadMix));
+check('IMPL-0214:ng 失敗の記録と読めない記録が混ざる PR は失敗(優先は fail > unverified)', respondedCheck({ records: [{ path: 'docs/gates/b.md', text: null }, rec6('PR #77')], issues: [rIssue('R1', [okAll[0]], { 判定資料の所在: PR_URL })], ...mixCfg }).status === 'fail');
+const listUn = respondedCheck({ records: [], issues: mixIssues, ...mixCfg, listUnreadable: 'HTTP 500' });
+check('IMPL-0214:ng 変更ファイルの一覧そのものを読めないときは「記録を含まない」と出さず、確かめていない(変更ファイルを読めない)にして注記の対象にする', listUn.status === 'unverified' && listUn.noRecords === false && listUn.flagged.length === 1 && /変更ファイルを読めない/.test(listUn.lines[0]) && !/記録を含まない/.test(listUn.lines[0]), JSON.stringify(listUn));
+const noRec = respondedCheck({ records: [], issues: mixIssues, ...mixCfg });
+check('IMPL-0214:ok 一覧を読めて記録のパスが無いときだけ「記録を含まない PR」とし、注記の対象にしない', noRec.noRecords === true && noRec.flagged.length === 0 && /記録を含まない PR/.test(noRec.lines[0]));
+check('IMPL-0214:ok 混在の注記の対象には合格の行を含めない(応答の中身は確かめていない、の行)', mix.flagged.length >= 1 && mix.flagged.every((l) => !/応答の中身は確かめていない/.test(l)), JSON.stringify(mix.flagged));
 
 // ---- 0216 資料公開から判定までの日数 ----
 const mIssue = (n, f = {}) => gIssue({ '判定予定日 T': '2026-11-27', ...f }, { number: n });
@@ -409,7 +427,9 @@ check('IMPL-0216:ok R1 は10営業日が規定日数。公開の時点を読め�
 check('IMPL-0216:ok 工程ゲートも B-2 も母数に含める。閾値を置かず、判定当日の論点は機械が数えないと書く', metricsBody(mm).includes('工程ゲートの上程も含みます') && /閾値は置いていません/.test(metricsBody(mm)) && /機械は数えません/.test(metricsBody(mm)) && mk0216({ issues: [mIssue(5, { 種別: 'B-2', 工程ゲート: '' })], records: [{ path: 'x.md', text: recText('B-2 投資判断', '#5') }], materials: [mMat(5, '2026-11-24')] }).belowRegulated === '1/1 件');
 check('IMPL-0216:ok 個人別の値を出さない(ログイン名が本文に無い)', !/bob|carol|alice/.test(metricsBody(mm)));
 // 低-4 外した理由ごとの件数と代理の根拠
-check('IMPL-0216:ok 結べず外した件数に、理由ごとの件数(記録に結べない・公開の時点を読めない・判定の時点を読めない)を同じ行に出す', mm.dropped.noRecord === 1 && /結べず外した 1 件\(判定の記録に結べない 1・公開の時点を読めない 0・判定の時点を読めない 0\)/.test(metricsBody(mm)) && mk0216({ materials: [mMat(6, '2026-11-19'), mMat(7, '2026-11-19')] }).dropped.noPublication === 1 && mk0216({ records: [mRec(5, 'YYYY-MM-DD HH:MM')] }).dropped.noJudged === 1, metricsBody(mm));
+check('IMPL-0216:ok 結べず外した件数に、理由ごとの件数(記録に結べない・公開の時点を読めない・判定の時点を読めない)を同じ行に出す', mm.dropped.noRecord === 1 && /結べず外した 1 件\(欄に不備\(リスク区分を含む\) 0・判定の記録に結べない 1・公開の時点を読めない 0・判定の時点を読めない 0\)/.test(metricsBody(mm)) && mk0216({ materials: [mMat(6, '2026-11-19'), mMat(7, '2026-11-19')] }).dropped.noPublication === 1 && mk0216({ records: [mRec(5, 'YYYY-MM-DD HH:MM')] }).dropped.noJudged === 1, metricsBody(mm));
+const badRisk = mk0216({ issues: [mIssue(5), mIssue(6, { リスク区分: '未選択' }), mIssue(7)] });
+check('IMPL-0216:ok リスク区分を読めない上程は「判定の記録に結べない」に入れず、欄の不備として分けて数える', badRisk.dropped.badFields === 1 && badRisk.unbound === badRisk.dropped.badFields + badRisk.dropped.noRecord + badRisk.dropped.noPublication + badRisk.dropped.noJudged && /欄に不備\(リスク区分を含む\) 1/.test(metricsBody(badRisk)), JSON.stringify(badRisk.dropped));
 const prxC = mk0216({ records: [{ ...mRec(5, 'YYYY-MM-DD HH:MM'), mergedAt: '2026-11-27T01:00:00Z', mergedBasis: 'commit' }] });
 check('IMPL-0216:ok 代理の根拠(PR のマージの時刻/コミットの時刻)を分けて数え、出力に出す', prx.proxyPr === 1 && prx.proxyCommit === 0 && prxC.proxyCommit === 1 && prxC.proxyPr === 0 && /PR のマージの時刻 0 件・PR を読めずコミットの時刻 1 件/.test(metricsBody(prxC)), metricsBody(prxC));
 // 低-2 祝日を挟む境: 営業日数と暦の判定がずれる(公開 11-20 → 判定 11-27 は、祝日 11-23 を挟むと4営業日で規定の5を下回る。祝日の指定が無ければ5営業日で下回らない)。0830 の通知と同じ関数を通る
