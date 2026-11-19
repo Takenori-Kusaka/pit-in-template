@@ -406,7 +406,8 @@ for (const id of ['python-poetry', 'python-uv']) {
       const base = change(W);
       const bc = baseCfg(W, { ci: { ...cfgOf(W).ci, mutationThreshold: v } });
       const r = W.adapter('mutation', '0', pr(base, R1BODY, { PIT_IN_BASE_CONFIG: bc }));
-      check(`${code === 0 ? 'IMPL-0930:ok' : 'IMPL-0930:ng'} 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
+      if (code === 1) check(`IMPL-0930:ng 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
+      else check(`IMPL-0930:ok 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
     }
   }
   // 閾値の型の契約(verify-gate-contract.mjs が使う)
