@@ -129,6 +129,8 @@ check('導入: 不合格を合格へ改めた事例を緩める向きとして�
   // IMPL-0643:ng(違反の入力。導入の記録に無い)
   check('IMPL-0643:ng 席の確認の対象のモデルが導入の記録に無ければ出す', SQ([seat({ qualification: { performer: { model: 'model-z' }, record: 'docs/q.md' } })], s).some((p) => /model-z/.test(p) && /導入の記録/.test(p) && /に無い/.test(p)), '');
   check('IMPL-0643:ok 識別の正規化(大文字小文字・空白)の一致は同じ識別とする', SQ([seat({ qualification: { performer: { model: 'Model-B ' }, record: 'docs/q.md' } })], s).length === 0, JSON.stringify(SQ([seat({ qualification: { performer: { model: 'Model-B ' }, record: 'docs/q.md' } })], s)));
+  // IMPL-0643:ng(括弧の違いは別のモデルに数える。導入の記録の側の正規化は空白だけを除く)
+  check('IMPL-0643:ng 括弧の有無だけが違う識別(model-b(1) と model-b1)は別のモデルとして、導入の記録に無いと出す', SQ([seat({ qualification: { performer: { model: 'model-b(1)' }, record: 'docs/q.md' } })], run([adoption({ model: 'model-b1' })])).some((p) => /に無い/.test(p) && !/問題がある/.test(p)), JSON.stringify(SQ([seat({ qualification: { performer: { model: 'model-b(1)' }, record: 'docs/q.md' } })], run([adoption({ model: 'model-b1' })]))));
   check('IMPL-0643:ok 確認の記録の担い手の識別が無ければ、席の担い手のモデルで照らす', SQ([seat({ qualification: { record: 'docs/q.md' }, performer: { model: 'model-z' } })], s).some((p) => /model-z/.test(p)), '');
   // IMPL-0643:ng(違反の入力。記録に問題がある)
   const bad = run([adoption({ diff: '' })]);

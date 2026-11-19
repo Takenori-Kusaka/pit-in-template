@@ -1240,7 +1240,9 @@ export function seatQualificationProblems(aiSeats, adoption) {
       out.push(`${label}: 適合性確認の対象のモデル ${model} が、モデルの適合性評価(3.12.3)を通過したか確かめられない(${MODEL_ADOPTION_FILE} が無い)`);
       continue;
     }
-    const rec = adoption.adoptions.find((a) => normKey(a.model) === normKey(model));
+    // 導入の記録(model-adoption.mjs の norm)と同じ正規化: NFKC・小文字・空白の除去だけ。括弧は除かない(x(1) と x1 を同じモデルに数えない)
+    const modelKey = (v) => nfkc(String(v ?? '').trim()).toLowerCase().replace(/\s+/g, '');
+    const rec = adoption.adoptions.find((a) => modelKey(a.model) === modelKey(model));
     if (!rec) out.push(`${label}: 適合性確認の対象のモデル ${model} が導入の記録(${MODEL_ADOPTION_FILE})に無い。適合性評価を通過していないモデルを席の確認の対象にしない(第3章 3.4.2)`);
     else if (!rec.approved) out.push(`${label}: 適合性確認の対象のモデル ${model} の導入の記録に問題がある(${rec.why.slice(0, 2).join('。')})。評価を通過していないモデルを席の確認の対象にしない(第3章 3.4.2)`);
   }
