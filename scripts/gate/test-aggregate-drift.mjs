@@ -140,11 +140,11 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
     const msg = (n, co) => `feat: ${n}\n\nRisk: R3\nVerification: 手元で確かめた\nAgent-Run: run-${n}${co ? `\nCo-authored-by: ${co}` : ''}`;
     const withRuns = runWith(null, [msg('a', null), msg('b', 'Claude <noreply@anthropic.com>'), msg('c', 'Claude Opus 4.5 <noreply@anthropic.com>')]);
     const wa = lines(withRuns).filter((l) => /モデルの識別\(5\.8\.2\)/.test(l));
-    t('通し(ng): Agent-Run あり・共著者なしは行A の警告を出す(1 件)', wa.some((l) => /Co-Authored-By が無いコミット 1 件/.test(l)) && wa.every((l) => !/::error::/.test(l)), withRuns.out.slice(-500));
-    t('通し(ng): 数字の無い共著者は行B の警告を別の行で出す(1 件。計 2 行)', wa.some((l) => /数字\(版\)を含む名称が無いコミット 1 件/.test(l)) && wa.length === 2, wa.join('\n'));
+    t('IMPL-1033:ng 通し(ng): Agent-Run あり・共著者なしは行A の警告を出す(1 件)', wa.some((l) => /Co-Authored-By が無いコミット 1 件/.test(l)) && wa.every((l) => !/::error::/.test(l)), withRuns.out.slice(-500));
+    t('IMPL-1033:ng 通し(ng): 数字の無い共著者は行B の警告を別の行で出す(1 件。計 2 行)', wa.some((l) => /数字\(版\)を含む名称が無いコミット 1 件/.test(l)) && wa.length === 2, wa.join('\n'));
     t('通し: 説明に限界(Agent-Run の無いコミットは数えない・5.8.2 の自動の記録の代わりではない)を書く', wa.length > 0 && wa.every((l) => /Agent-Run を持つコミットだけ/.test(l) && /代わりではありません/.test(l)));
     t('通し: 欠落に数えない(::error:: の行にモデルの識別の本文が無い)', !lines(withRuns).some((l) => /::error::/.test(l) && /モデルの識別\(5\.8\.2\)/.test(l)) && !/## 欠落[\s\S]*モデルの識別\(5\.8\.2\)/.test(withRuns.report));
-    t('通し(ok): Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
+    t('IMPL-1033:ok 通し(ok): Agent-Run の無い実行では警告を出さない', !lines(okRun).some((l) => /モデルの識別\(5\.8\.2\)/.test(l)));
     t('通し: 品質レポートにも行A・行B を出す', /Co-Authored-By が無いコミット 1 件/.test(withRuns.report) && /数字\(版\)を含む名称が無いコミット 1 件/.test(withRuns.report));
     {
       const agg = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'aggregate-evidence.mjs'), 'utf8');
