@@ -374,7 +374,7 @@ for (const id of ['python-poetry', 'python-uv']) {
     setConfig(W, { answers: { ...cfgOf(W).answers, 'q-quality': 'quality-regulated' } });
     const base = change(W);
     const r = W.adapter('regulatory', '0', pr(base, R2BODY));
-    check('IMPL-0930:ng 規制業の案件で regulatory が空なら失敗させる', r.code === 1 && /"regulatory" が空です/.test(r.out) && /規制業/.test(r.out), r.out);
+    check('IMPL-0836:ng 規制業の案件で regulatory が空なら失敗させる', r.code === 1 && /"regulatory" が空です/.test(r.out) && /規制業/.test(r.out), r.out);
   }
   // --- 出力の約束
   {
@@ -406,7 +406,7 @@ for (const id of ['python-poetry', 'python-uv']) {
       const base = change(W);
       const bc = baseCfg(W, { ci: { ...cfgOf(W).ci, mutationThreshold: v } });
       const r = W.adapter('mutation', '0', pr(base, R1BODY, { PIT_IN_BASE_CONFIG: bc }));
-      check(`IMPL-1029:${code === 0 ? 'ok' : 'ng'} R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
+      check(`${code === 0 ? 'IMPL-0930:ok' : 'IMPL-0930:ng'} 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
     }
   }
   // 閾値の型の契約(verify-gate-contract.mjs が使う)
