@@ -258,6 +258,11 @@ export function autonomyState(config, records) {
     const c = changeOfTarget(changes, r.target);
     if (!c) out.unattributedRejections.push(r);
   }
+  // 運用引き継ぎ文書の節2 の「関わる登録した変更種別」のうち、登録の一覧に無い ID(K-4)。書き誤りで止まるべき種別が止まらない経路を作らないため、
+  // その機能は空欄と同じ扱い(すべての種別を止める側)にする。どの機能のどの ID かを出力に出す
+  const registeredIds = new Set(types.map((t) => String(t?.id ?? '').trim()).filter(Boolean));
+  const unregisteredIdsOf = (list) => (Array.isArray(list) ? [...new Set(list.map((x) => String(x ?? '').trim()).filter((x) => x && !registeredIds.has(x)))] : []);
+  out.coreUnregistered = (records?.core?.present ? records.core.rows ?? [] : []).map((c) => ({ name: c.name, ids: unregisteredIdsOf(c.changeTypes) })).filter((x) => x.ids.length);
   // 宣言行の無い CHANGES_REQUESTED(分子に入れない。件数の表示だけ)。記録を渡していない・読めないときは null(0 件と出さない)
   const undeclaredAll = records?.undeclared?.available ? (records.undeclared.items ?? []).filter((r) => isRealDay(r.date) && notAfter(r.date)) : null;
 
@@ -316,9 +321,11 @@ export function autonomyState(config, records) {
     } else {
       const coreHistory = records.core.history ?? { available: false, reason: '引き継ぎ文書の履歴を渡していない' };
       for (const c of records.core.rows) {
-        if (!applies(c.changeTypes)) continue;
+        const unregistered = unregisteredIdsOf(c.changeTypes);
+        if (!unregistered.length && !applies(c.changeTypes)) continue;
+        const unregisteredText = unregistered.length ? `。関わる登録した変更種別に登録の一覧に無い ID「${unregistered.join('・')}」があるため、空欄と同じ扱い(すべての種別を止める)にしている` : '';
         if ((Number(c.holders) || 0) <= 1) {
-          stop('第1区分', 'downgrade', `コア機能「${c.name}」の理解保持者数が ${Number(c.holders) || 0} 名(1名以下)である`);
+          stop('第1区分', 'downgrade', `コア機能「${c.name}」の理解保持者数が ${Number(c.holders) || 0} 名(1名以下)である${unregisteredText}`);
         } else if (!coreHistory.available) {
           // 保持者が1名以下だった時点を履歴から確かめられない。登録の判定の後に回復したかを判定できない(突合 X-2)
           stop('第1区分', 'unmeasurable', `${HANDOVER_FILE} の履歴を読めず(${coreHistory.reason ?? '理由の記録なし'})、コア機能「${c.name}」の理解保持者数が1名以下だった時点を確かめられない`);
@@ -996,6 +1003,9 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   }
   if (state.unattributedRejections?.length) {
     out.push(`AI自律レベル: 判定基準の番号を引いた G-6 の差し戻しのうち ${state.unattributedRejections.length} 件は、対象(PR・コミット)を既定ブランチの履歴へ対応づけられず、どの変更種別の差し戻し率にも数えていない`);
+  }
+  for (const u of state.coreUnregistered ?? []) {
+    out.push(`AI自律レベル: ${HANDOVER_FILE} の節2 のコア機能「${u.name}」の「関わる登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い)。この機能は空欄と同じ扱いで、理解保持者数が1名以下のあいだ、すべての登録した変更種別を止める`);
   }
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
   return out;

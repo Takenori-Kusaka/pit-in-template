@@ -979,6 +979,49 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('IMPL-0834: 4点目を書いた登録は拒まない', changeTypeProblems(base().config, { checkRegistrant: false }).length === 0);
 }
 
+// 理解保持者数による種別の停止(IMPL-0284。ADR-0081 決定6)を、登録した種別を2つ並べた構成で確かめる(K-4)。
+// 止めるのは、運用引き継ぎ文書の節2 の「関わる登録した変更種別」に当たる種別だけ。空欄(null)はすべての種別、「なし」(空の配列)はどれも止めない。
+// 登録の一覧に無い ID を書いた行は、空欄と同じ扱い(すべての種別を止める)にし、どの機能のどの ID かを出力に出す(書き誤りで止まるべき種別が黙って止まらない経路を作らない)
+{
+  const holderStop = (type) => type.stops.some((s) => s.category === '第1区分' && /コア機能/.test(s.reason));
+  const two = (holders, changeTypes) => {
+    const input = base();
+    const first = input.config.delegation.changeTypes[0];
+    input.config.delegation.changeTypes.push({ ...first, id: '決済' });
+    Object.assign(input.records.core.rows[0], { holders, changeTypes });
+    const st = autonomyState(input.config, input.records);
+    return { st, a: holderStop(st.types.find((x) => x.id === first.id)), b: holderStop(st.types.find((x) => x.id === '決済')) };
+  };
+  const first = base().config.delegation.changeTypes[0].id;
+  // IMPL-0284:ng
+  const r1 = two(1, [first]);
+  check('K-4: 保持者1名・関わる種別=種別1 のとき、種別1 だけが止まる', r1.a === true && r1.b === false);
+  // IMPL-0284:ok
+  const r2 = two(1, []);
+  check('K-4: 保持者1名・関わる種別=なし のとき、どの種別も止まらない', r2.a === false && r2.b === false);
+  // IMPL-0284:ng
+  const r3 = two(1, null);
+  check('K-4: 保持者1名・関わる種別=空欄 のとき、両方の種別が止まる', r3.a === true && r3.b === true);
+  // IMPL-0284:ng
+  const r4 = two(0, null);
+  check('K-4: 保持者0名・関わる種別=空欄 のとき、両方の種別が止まる', r4.a === true && r4.b === true);
+  // IMPL-0284:ng
+  const r5 = two(1, ['存在しない種別']);
+  check('K-4: 保持者1名・関わる種別が登録の一覧に無い ID のとき、空欄と同じく両方の種別が止まる', r5.a === true && r5.b === true);
+  const reasons = r5.st.types.flatMap((x) => x.stops.map((s) => s.reason)).join('\n');
+  check('K-4: 止める理由に、登録の一覧に無い ID を出す', /登録の一覧に無い ID「存在しない種別」/.test(reasons));
+  const noteLines = autonomyNoteLines(r5.st).join('\n');
+  check('K-4: 出力(次の一手の注記)に、どの機能のどの ID が登録に無いかを出す', r5.st.coreUnregistered.length === 1 && /コア機能「招待」/.test(noteLines) && /存在しない種別/.test(noteLines));
+  // IMPL-0284:ng
+  const r6 = two(1, [first, '存在しない種別']);
+  check('K-4: 登録の ID と登録外の ID が混ざる行は、空欄と同じ扱い(両方の種別が止まる)', r6.a === true && r6.b === true);
+  // IMPL-0284:ok
+  const r7 = two(2, ['存在しない種別']);
+  check('K-4: 保持者2名なら、登録外の ID があっても止めないが、注記には出す', r7.a === false && r7.b === false && r7.st.coreUnregistered.length === 1);
+  // IMPL-0284:ok
+  check('K-4: 登録の ID だけの行は、登録外の ID の注記を出さない', r1.st.coreUnregistered.length === 0 && r2.st.coreUnregistered.length === 0 && r3.st.coreUnregistered.length === 0);
+}
+
 // IMPL-0594(リスク区分ごとの最大レベル)。実行で確かめた範囲: L3 の導出(autonomyState)は種別の単位で、変更ごとのリスク区分を読まない。
 // L3 を読む箇所は委任の判定(delegation.mjs)・D-0 の表・保証の開示・次の一手の表示で、変更ごとに効くのは委任の判定だけであり、その条件2 が R3 を求める
 {
