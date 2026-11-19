@@ -991,7 +991,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   for (const t of state.types) {
     const head = `AI自律レベル: 登録した変更種別「${t.id}」は ${t.level}`;
     if (!t.stops.length) {
-      out.push(`${head}(停止なし)。差し戻し率: ${rejectionText(t)}。${reworkText(t)}`);
+      out.push(`${head}(停止なし。変更のリスク区分が R1・R2 の変更は、種別が L3 でも委任で進まない(条件2))。差し戻し率: ${rejectionText(t)}。${reworkText(t)}`);
       continue;
     }
     const kinds = [...new Set(t.stops.map((x) => STOP_KIND[x.kind] ?? x.kind))].join('・');
