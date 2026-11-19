@@ -129,6 +129,7 @@ import {
   parseLedger,
   ACTIVE_EXCEPTION_STATES,
   isFilledValue,
+  isRealDay,
   dueDayOf,
   resolveSigner,
   CODEOWNERS_PLACES,
@@ -1154,6 +1155,57 @@ export function reductionRejudgeProblems({ atBase, atHead, changedFiles }) {
   return out;
 }
 
+/**
+ * 評価用の基準集合の範囲を狭める変更(第3章 3.12.3 の要求事項10、3.13.3。IMPL-0709)。PR が変えた正解の目録(answers.json)の cases[] から
+ * 事例の識別(id)を削る(ファイルごと削除を含む)とき、同じ PR の退出の予行の記録(docs/exit-rehearsal.json)の baselineScope が
+ * 改められていること(承認日 at が基底より後の実在の日で、承認した技術判断者 approvedBy が記入済み)を要する。
+ * 見るのは識別の削除だけ。識別を残した事例の中身の書き換え(弱め)と、識別のない事例は検出しない(確かめる者: 技術判断者)。
+ * 承認が技術判断者本人かは org-assurance の集約が確かめる。ここは「改めたか」までを決定可能な条件で見る
+ */
+export function baselineShrinkProblems({ atBase, atHead, changedFiles, rehearsalFile = 'docs/exit-rehearsal.json' }) {
+  const parse = (t) => {
+    if (t === null || t === undefined) return { absent: true };
+    try {
+      return { json: JSON.parse(t) };
+    } catch {
+      return { broken: true };
+    }
+  };
+  const idsOf = (j) => (Array.isArray(j?.cases) ? j.cases.map((c) => (c && typeof c === 'object' && c.id !== undefined ? String(c.id) : null)).filter(Boolean) : []);
+  const removed = [];
+  const out = [];
+  for (const f of [...new Set(changedFiles)].filter((x) => x.split('/').pop() === 'answers.json')) {
+    const b = parse(atBase(f));
+    if (b.absent || b.broken) continue;
+    const h = parse(atHead(f));
+    if (h.broken) {
+      out.push(`${f} を JSON として読めないため、事例の識別が残るかを確かめられない`);
+      continue;
+    }
+    const kept = h.absent ? new Set() : new Set(idsOf(h.json));
+    for (const id of idsOf(b.json)) if (!kept.has(id)) removed.push(`${f}#${id}`);
+  }
+  if (removed.length) {
+    const scopeOf = (t) => {
+      const p = parse(t);
+      return p.json && !Array.isArray(p.json) && p.json.baselineScope && typeof p.json.baselineScope === 'object' ? p.json.baselineScope : null;
+    };
+    const bs = scopeOf(atBase(rehearsalFile));
+    const hs = scopeOf(atHead(rehearsalFile));
+    const dayOf = (v) => (isRealDay(v) ? String(v).normalize('NFKC').trim().slice(0, 10) : null);
+    const shown = `事例の識別を削っている(${removed.slice(0, 3).join(' / ')}${removed.length > 3 ? ` ほか ${removed.length - 3} 件` : ''})`;
+    if (!hs) out.push(`${shown}が、同じ PR の ${rehearsalFile} に baselineScope(範囲の承認)が無い`);
+    else if (!isFilledValue(hs.approvedBy)) out.push(`${shown}が、baselineScope.approvedBy(承認した技術判断者)が未記入`);
+    else {
+      const hd = dayOf(hs.at);
+      const bd = bs ? dayOf(bs.at) : null;
+      if (!hd) out.push(`${shown}が、baselineScope.at(承認日)が実在の日付でない`);
+      else if (bd && hd <= bd) out.push(`${shown}が、baselineScope.at(PR の先頭: ${hd}、基底: ${bd})が基底より後でない`);
+    }
+  }
+  return out;
+}
+
 /** 本文の末尾の段落のトレーラ ADR が指す判断記録の番号(4桁)。「ADR: ADR-021, ADR-0034」の形を読む */
 export function adrTrailerIds(body) {
   const ids = [];
@@ -2122,6 +2174,17 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       result.errors.push(
         `区分の引き下げの再判定: ${rejudge.join(' / ')}。区分の引き下げの根拠が引く機能仕様の受入基準を変える PR は、同じ PR で安全重要度の判定を再判定し、D-0 節16 の判定日を改める。` +
           '節の本文の文字列の一致で見る(整形だけの変更も再判定に当たる)。変更が必須制約を外すかの意味は確かめない(再判定の判定者が確かめる)'
+      );
+    }
+  }
+
+  // --- 7c2. 評価用の基準集合の範囲を狭める変更(第3章 3.12.3 の要求事項10。IMPL-0709) ---
+  {
+    const shrink = baselineShrinkProblems({ atBase, atHead, changedFiles: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])) });
+    if (shrink.length) {
+      result.errors.push(
+        `基準集合の範囲を狭める変更: ${shrink.join(' / ')}。評価用の基準集合から事例の識別を削る変更は統制を緩める向きの変更で、同じ PR で範囲の承認(退出の予行の記録の baselineScope。承認日を改め、技術判断者が記名)を改める` +
+          '。見るのは識別の削除だけで、識別を残した事例の中身の弱めは確かめない(技術判断者が確かめる)'
       );
     }
   }

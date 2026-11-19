@@ -876,6 +876,47 @@ scenario('再判定: 根拠が「該当なし」', {}, () => {
 }, passes());
 rewindBase();
 
+// ---------------------------------------------------------------- 基準集合の範囲を狭める変更(IMPL-0709)
+const CASES = (...ids) => JSON.stringify({ cases: ids.map((id) => ({ id, kind: 'verdict' })), blindConfirmation: 'なし' }, null, 2) + '\n';
+const REHEARSAL = (at, approvedBy = '佐藤 次郎') => JSON.stringify({ rehearsals: [], baselineScope: { scope: '全機能', draftedBy: '田中 三郎', approvedBy, at } }, null, 2) + '\n';
+const withBaseline = () => {
+  write('docs/eval-baseline/answers.json', CASES('C-1', 'C-2'));
+  write('docs/exit-rehearsal.json', REHEARSAL('2026-09-01'));
+  advanceBase('baseline-scope');
+};
+// IMPL-0709:ng(事例の識別を削り、範囲の承認を改めない)
+scenario('基準集合の範囲: 事例を削り、承認を改めない', {}, () => {
+  withBaseline();
+  write('docs/eval-baseline/answers.json', CASES('C-1'));
+}, failsWith(/基準集合の範囲を狭める変更: .*answers\.json#C-2.*baselineScope/));
+rewindBase();
+// IMPL-0709:ng(承認日が基底と同じ)
+scenario('基準集合の範囲: 事例を削り、承認日が基底と同じ', {}, () => {
+  withBaseline();
+  write('docs/eval-baseline/answers.json', CASES('C-1'));
+  write('docs/exit-rehearsal.json', REHEARSAL('2026-09-01'));
+}, failsWith(/基準集合の範囲を狭める変更: .*基底より後でない/));
+rewindBase();
+// IMPL-0709:ng(目録ごと削除)
+scenario('基準集合の範囲: 目録のファイルごと削除し、承認を改めない', {}, () => {
+  withBaseline();
+  fs.rmSync(path.join(TMP, 'docs/eval-baseline/answers.json'));
+}, failsWith(/基準集合の範囲を狭める変更: .*answers\.json#C-1/));
+rewindBase();
+// IMPL-0709:ok(削り、承認を改めた)
+scenario('基準集合の範囲: 事例を削り、承認日を改め、技術判断者が記名した', {}, () => {
+  withBaseline();
+  write('docs/eval-baseline/answers.json', CASES('C-1'));
+  write('docs/exit-rehearsal.json', REHEARSAL('2026-11-01'));
+}, passes());
+rewindBase();
+// IMPL-0709:ok(事例を足す)
+scenario('基準集合の範囲: 事例を足す変更は承認を改めなくてよい', {}, () => {
+  withBaseline();
+  write('docs/eval-baseline/answers.json', CASES('C-1', 'C-2', 'C-3'));
+}, passes());
+rewindBase();
+
 // ---------------------------------------------------------------- ファストトラックの行(7.4)の限定列挙と乱用の制約1(IMPL-0567・IMPL-0610。ADR-0200)
 const withFtLedger = (...rows) => {
   write('docs/debt-ledger.md', LEDGER_HEAD + exceptionRow('D-001', 7) + rows.join(''));
