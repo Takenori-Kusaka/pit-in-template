@@ -49,6 +49,7 @@ import { readLock } from './self-heal.mjs';
 import { doneConditionOf, isDefaultDoneCondition, unitPeriodDaysOf } from './brief-estimates.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
 import { readTrialChecklist } from './trial-checklist.mjs';
+import { correctionGapNote } from './adoption-trial.mjs';
 import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
@@ -1125,6 +1126,13 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
   // 読むのは出荷の集約と同じ関数(org-assurance.mjs)。段階は止めない(注記)。要約・評価は足さない
   if (config.configured !== false && fs.existsSync(d0)) {
     for (const n of continuityNotes(config)) result.notes.push(n);
+  }
+  // 是正の記録の欠け(IMPL-0497)。state:needs-platform の履歴と導入前の検証で見逃した類型のうち、欠陥の台帳の節「是正の記録」に
+  // 対応する行(対象の欄に #番号か類型の名)が無いものを、品質保証の担当への次の一手として出す。注記に留め、段階は止めない。行の中身は読まない
+  if (config.configured !== false) {
+    const ghRun = network ? (args) => execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000, maxBuffer: 64 * 1024 * 1024 }) : null;
+    const gapNote = correctionGapNote({ root: ROOT, gh: ghRun, seatText: seatText(config, 'qa-gatekeeper') });
+    if (gapNote) result.notes.push(gapNote);
   }
   // AI自律レベル(第5章 5.4.4・5.4.6)。登録した変更種別ごとの現在のレベル・停止・差し戻し率の窓を出す。
   // 判定不能を「異常なし」と出さない。窓ごとに受信箱へ渡さない(注記に留める)

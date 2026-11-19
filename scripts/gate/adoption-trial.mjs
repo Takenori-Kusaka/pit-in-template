@@ -61,6 +61,7 @@ import { fileURLToPath } from 'node:url';
 import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
+import { parseCorrections, DEFECT_FILE, CORRECTION_HEADING } from './enforcement-inventory.mjs';
 import { baseJudgeWorkflowProblems } from './base-judge.mjs';
 
 export const TRIAL_DIR = 'docs/adoption-trial';
@@ -1989,6 +1990,81 @@ function envCheck() {
   notice(`実環境の識別(査察で GitHub の画面と突合する鍵): ${idText ?? '無し(識別を返さない gh、または模擬。確認済みの項目は無い)'}`);
   notice(`${ENV_CHECK_FILE} を書きました(確認した者 ${by}。対象 ${repo ?? '不明'} / ${branch})。記録だけのコミットとしてコミットします。確認済みでない項目は、記録と出荷の集約に「未確認」と出続けます(消えません)`);
   return allOk ? 0 : 1;
+}
+
+// ---- 是正の記録の欠けの検出(標準 第3章 3.5.5・第5章 5.6.2 の是正の記録。IMPL-0497。process-compass #326) ----
+// 起点は2つ: (i) state:needs-platform を付けた履歴のある Issue・PR(GitHub の events から読む)、
+// (ii) 導入前の検証の注入の記録(docs/adoption-trial/injection-result.json)の、目隠しを確かめられた層で見逃した類型。
+// 起点ごとに、欠陥の台帳の節「是正の記録」の対象の欄が、起点の番号(#N・/issues/N・/pull/N。後ろに数字が続くものは別の番号)か、
+// 見逃した類型の名を含む行を求め、無ければ一覧に出す。合否に使わない。行の中身(4つの問い)は読まない(品質保証の担当が読む)。
+// 番号や類型の名を書かずに言葉で指した行は対応に数えない(一覧に出る側に倒れる。品質保証の担当が見て消す)。
+
+export const NEEDS_PLATFORM_LABEL = 'state:needs-platform';
+
+/** 対象の欄が番号 n を指すか。#n・/issues/n・/pull/n で、後ろに数字が続かないもの(#12 は #123 に当たらない) */
+export function numberCited(text, n) {
+  return new RegExp(`(?:#|/issues/|/pull/)${Number(n)}(?![0-9])`).test(String(text ?? '').normalize('NFKC'));
+}
+
+/**
+ * 是正の記録の欠け(純関数)。
+ * ledgerText: 欠陥の台帳の本文(無ければ null)  platformNumbers: state:needs-platform を付けた履歴のある番号  missedTypes: 見逃した類型の名
+ * 戻り値: { ledger: 'none'(台帳が無い)/ 'no-section'(節が無い)/ 'ok', gaps: [{ kind: 'needs-platform', ref: 12 } | { kind: 'missed-type', ref: '型名' }] }
+ */
+export function correctionGaps({ ledgerText, platformNumbers = [], missedTypes = [] }) {
+  const nums = [...new Set(platformNumbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+  const types = [...new Set(missedTypes.map(String).filter((t) => t.trim()))];
+  const rows = ledgerText == null ? null : parseCorrections(ledgerText);
+  const ledger = ledgerText == null ? 'none' : rows == null ? 'no-section' : 'ok';
+  const targets = (rows ?? []).map((r) => r.target);
+  const gaps = [
+    ...nums.filter((n) => !targets.some((t) => numberCited(t, n))).map((n) => ({ kind: 'needs-platform', ref: n })),
+    ...types.filter((ty) => !targets.some((t) => t.includes(ty))).map((ty) => ({ kind: 'missed-type', ref: ty })),
+  ];
+  return { ledger, gaps };
+}
+
+/** 注入の記録から、目隠しを確かめられた層の見逃した類型(和集合)。記録が無い・読めなければ [] */
+export function readMissedTypes(root = ROOT) {
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(root, RESULT_FILE), 'utf8'));
+    return [...new Set(Object.values(r.layers ?? {}).filter((v) => v?.blind).flatMap((v) => v.missedTypes ?? []))];
+  } catch {
+    return [];
+  }
+}
+
+/** state:needs-platform を付けた履歴のある Issue・PR の番号。gh は差し替えられる(gh(args) が標準出力の文字列を返す) */
+export function needsPlatformNumbers(gh, repo) {
+  const events = JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${repo}/issues/events?per_page=100`]).trim() || '[]').flatMap((x) => (Array.isArray(x) ? x : [x]));
+  return [...new Set(events.filter((e) => e?.event === 'labeled' && e.label?.name === NEEDS_PLATFORM_LABEL && e.issue?.number).map((e) => e.issue.number))].sort((a, b) => a - b);
+}
+
+/**
+ * /pit の注記の文(品質保証の担当の次の一手)。欠けが無ければ null。
+ * gh: null なら GitHub を読まない(--offline)。差し替えられる。読めないときは、読めないことを文に出す(0 件と読み違えさせない)
+ */
+export function correctionGapNote({ root = ROOT, gh = null, repo = '{owner}/{repo}', seatText = '品質保証の担当' } = {}) {
+  const file = path.join(root, DEFECT_FILE);
+  const ledgerText = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  let platformNumbers = [];
+  let unread = null;
+  let unreadFailed = false;
+  if (!gh) unread = 'state:needs-platform の履歴は --offline のため読んでいない';
+  else {
+    try {
+      platformNumbers = needsPlatformNumbers(gh, repo);
+    } catch (e) {
+      unreadFailed = true;
+      unread = `state:needs-platform の履歴を読めない(${String(e.message).split('\n')[0].slice(0, 80)})`;
+    }
+  }
+  const missedTypes = readMissedTypes(root);
+  const { ledger, gaps } = correctionGaps({ ledgerText, platformNumbers, missedTypes });
+  if (!gaps.length) return unreadFailed ? `是正の記録の欠けの検出: ${unread}。読めた範囲(注入の記録 ${missedTypes.length} 類型)では欠けは無い` : null;
+  const items = gaps.map((g) => (g.kind === 'needs-platform' ? `統制の弱化の引き渡し #${g.ref}` : `見逃した類型「${g.ref}」`));
+  const where = ledger === 'none' ? `欠陥の台帳(${DEFECT_FILE})が無い` : ledger === 'no-section' ? `欠陥の台帳に節「${CORRECTION_HEADING}」が無い` : `節「${CORRECTION_HEADING}」の対象の欄に番号か類型の名を含む行が無い`;
+  return `是正の記録の欠け ${gaps.length} 件(${where}): ${items.join(' / ')}。${seatText}が、起点ごとに行を足す(対象の欄に #番号か類型の名を書く。4つの問いは行ごとにすべて書き、仕組みで置かないなら理由を書く)。機械は番号か類型の名を含む行の有無までを見て、行の中身は確かめない。言葉だけで指した行は対応に数えないので、あれば番号を足す。${unread ? `${unread}。` : ''}`;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
