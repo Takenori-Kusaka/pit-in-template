@@ -104,6 +104,8 @@ const g1Record = (ver) => ['# ゲート判定記録', '', '| 項目 | 値 |', '|
   const sf = (v) => `- 滞留と判定する経過時間: ${v}\n`;
   check('IMPL-0283:ok 合意した値は N日・N週間・N週 を日数へ読む(3日=3、2週間=14、1週=7)', stagnationThresholdOf(sf('3日')).days === 3 && stagnationThresholdOf(sf('2週間')).days === 14 && stagnationThresholdOf(sf('1週')).days === 7 && stagnationThresholdOf(sf('３日')).kind === 'agreed');
   check('IMPL-0283:ok 欄が無い・空・85パーセンタイルの語(様式の例の文を含む)は agreed にしない', ['欄なし', sf(''), sf('実測サイクルタイムの85パーセンタイル'), sf('<実測サイクルタイムの85パーセンタイル、または合意した値。合意した値は N日・N週間 で書く>')].map((t) => stagnationThresholdOf(t).kind).join() === 'none,none,percentile,percentile');
+  // 独立の突合 1 巡目 中-1: 語と数値・単位の両方を含む値は、どちらを指すか決められないので unreadable で注意を出す
+  check('IMPL-0283:ng 85パーセンタイルの語と数値・単位(日・週間・週)の両方を含む値は unreadable(注意が出る)。語だけ・様式の例の文は percentile のまま', ['5日、または85パーセンタイル', '85パーセンタイル、または 5日', '3日(実測サイクルタイムの85パーセンタイルではなく合意した値)', '2週間か85パーセンタイル'].every((v) => stagnationThresholdOf(sf(v)).kind === 'unreadable') && stagnationThresholdOf(sf('実測サイクルタイムの85パーセンタイル')).kind === 'percentile' && stagnationThresholdOf(sf('85パーセンタイル')).kind === 'percentile');
   check('IMPL-0283:ng 値があるのに書式が読めない(しばらく・0日・3営業日)は unreadable', ['しばらく', '0日', '3営業日', '2.5日'].every((v) => stagnationThresholdOf(sf(v)).kind === 'unreadable'));
 }
 

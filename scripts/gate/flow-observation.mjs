@@ -128,32 +128,32 @@ export function fetchUnits(gh, repo, { now, windowMonths = OBSERVATION_WINDOW_DE
   return { open, closed, truncated: Boolean(res.pageInfo?.hasNextPage) };
 }
 
-function main(argv) {
+/** 入口。gh・環境・構成・出力は差し替えられる(試験は一時の企画書と固定の応答でここを通す) */
+export function main(argv, { gh = ghCli, env = process.env, config = loadConfig(), log = console.log } = {}) {
   const opt = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
-  const repo = process.env.GITHUB_REPOSITORY;
+  const repo = env.GITHUB_REPOSITORY;
   if (!repo) {
     console.error('GITHUB_REPOSITORY が未設定です');
     process.exit(2);
   }
   const dry = argv.includes('--dry-run');
   const now = opt('--now') ?? new Date().toISOString();
-  const config = loadConfig();
   const windowMonths = observationWindowAt(config, now.slice(0, 10));
   const minSample = opt('--min-sample') ? Number(opt('--min-sample')) : DEFAULT_MIN_SAMPLE;
-  const { open, closed, truncated } = fetchUnits(ghCli, repo, { now, windowMonths });
+  const { open, closed, truncated } = fetchUnits(gh, repo, { now, windowMonths });
   let brief = null;
   try {
-    brief = fs.readFileSync(path.resolve(process.env.PIT_IN_BRIEF ?? 'docs/project-brief.md'), 'utf8');
+    brief = fs.readFileSync(path.resolve(env.PIT_IN_BRIEF ?? 'docs/project-brief.md'), 'utf8');
   } catch {}
   const agreed = brief == null ? null : stagnationThresholdOf(brief);
   const r = flowActions({ open, closed, now, config, minSample, windowMonths, agreed });
-  if (truncated) console.log('注意: 窓の中の閉じた作業単位が最初の 100 件を超えた。読んだ範囲だけで算定した');
-  for (const n of r.notes) console.log(`注意: ${n}`);
+  if (truncated) log('注意: 窓の中の閉じた作業単位が最初の 100 件を超えた。読んだ範囲だけで算定した');
+  for (const n of r.notes) log(`注意: ${n}`);
   for (const a of r.actions) {
-    console.log(`Issue #${a.issue}: 滞留の通知${dry ? '(dry-run)' : ''}`);
-    if (!dry) postComment(ghCli, repo, a.issue, a.body);
+    log(`Issue #${a.issue}: 滞留の通知${dry ? '(dry-run)' : ''}`);
+    if (!dry) postComment(gh, repo, a.issue, a.body);
   }
-  console.log(`通知 ${r.actions.length} 件。着手の時点はテンプレートの定義(ADR-0173)。実物の GitHub では確かめていない(束 B18 単位10)。`);
+  log(`通知 ${r.actions.length} 件。着手の時点はテンプレートの定義(ADR-0173)。実物の GitHub では確かめていない(束 B18 単位10)。`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));

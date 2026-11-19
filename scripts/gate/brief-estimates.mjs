@@ -127,7 +127,8 @@ export function stagnationThresholdOf(briefText) {
   const v = bulletValue(briefText, '滞留と判定する経過時間');
   if (v == null || nfkc(v) === '') return { kind: 'none' };
   const s = nfkc(v);
-  if (/85\s*パーセンタイル/.test(s)) return { kind: 'percentile' };
+  // 語だけ(様式の例の文を含む)は percentile。語と数値・単位(日・週間・週)の両方を含む値は、どちらを指すか決められないので unreadable で注意を出す
+  if (/85\s*パーセンタイル/.test(s)) return /\d+\s*(日|週間|週)/.test(s) ? { kind: 'unreadable', raw: s } : { kind: 'percentile' };
   const m = s.match(/^(\d+)\s*(日|週間|週)$/);
   const n = m ? Number(m[1]) : 0;
   if (!m || n <= 0) return { kind: 'unreadable', raw: s };

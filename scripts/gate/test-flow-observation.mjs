@@ -5,7 +5,10 @@
 
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { flowActions, percentile, startOf, fetchUnits } from './flow-observation.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { flowActions, percentile, startOf, fetchUnits, main as flowMain } from './flow-observation.mjs';
 import { isCompletedUnit } from './next.mjs';
 
 let failures = 0;
@@ -95,6 +98,28 @@ const u = fetchUnits((a) => canned(a), 'o/r', { now: NOW });
 check('読み取り: PR と完了でない Issue を除き(完了の判定は next.mjs と同じ)、着手の時点を付ける', u.open.length === 1 && u.open[0].startAt === '2026-11-01T00:00:00Z' && u.closed.length === 1 && u.closed[0].number === 8 && u.closed[0].closedAt === '2026-11-10T00:00:00Z' && u.truncated === false, JSON.stringify(u));
 check('読み取り: --paginate --slurp で呼ぶ', slurped);
 check('完了の判定は next.mjs の isCompletedUnit と同じ', isCompletedUnit({ stateReason: 'COMPLETED', prs: [{ merged: true, baseRefName: 'main' }], base: 'main' }) && !isCompletedUnit({ stateReason: 'COMPLETED', prs: [], base: 'main' }));
+
+// 入口(main): 企画書の欄(PIT_IN_BRIEF の指す一時の企画書)を読んで閾値に使う結線。gh と出力は差し替える(独立の突合 1 巡目 高-3)。
+// 作業単位 #5 は着手から 17 日。閉じた作業単位は 1 件(最小標本 10 件に足りない)なので、合意した値を読まなければ算定できず通知しない
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flow-main-'));
+  try {
+    const write = (name, row) => { fs.writeFileSync(path.join(dir, name), `# 企画書\n\n- 滞留と判定する経過時間: ${row}\n`); return path.join(dir, name); };
+    const run = (briefPath) => {
+      const out = [];
+      flowMain(['--dry-run', '--now', NOW], { gh: (a) => canned(a), env: { GITHUB_REPOSITORY: 'o/r', ...(briefPath ? { PIT_IN_BRIEF: briefPath } : {}) }, config, log: (l) => out.push(l) });
+      return out.join('\n');
+    };
+    const withAgreed = run(write('agreed.md', '3日'));
+    check('IMPL-0283:ng 入口: 企画書に合意した値(3日)があると、標本が足りなくても main が読んで通知する(結線)', /Issue #5: 滞留の通知\(dry-run\)/.test(withAgreed) && /通知 1 件/.test(withAgreed) && /G-1 で合意した値/.test(withAgreed), withAgreed);
+    const none = run(path.join(dir, 'no-such-brief.md'));
+    check('IMPL-0283:ok 入口: 企画書が無ければ 85 パーセンタイルのまま。標本が足りなければ算定できず通知しない', /通知 0 件/.test(none) && /算定できない/.test(none), none);
+    const empty = run(write('empty.md', ''));
+    check('IMPL-0283:ok 入口: 欄が空なら通知しない(標本が足りない)', /通知 0 件/.test(empty), empty);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 // TZ に依らない
 const snippet = "import('./scripts/gate/flow-observation.mjs').then(m=>{const D=86400000,n=Date.parse('2026-11-18T00:00:00Z');const c=Array.from({length:10},(_,i)=>({number:i,startAt:new Date(n-(i+2)*D).toISOString(),closedAt:new Date(n-D).toISOString()}));const r=m.flowActions({open:[{number:1,startAt:'2026-10-01T00:00:00Z',assignees:[],comments:[]}],closed:c,now:'2026-11-18T00:00:00Z',config:{}});console.log(JSON.stringify([r.thresholdMs,r.actions.length]))})";
