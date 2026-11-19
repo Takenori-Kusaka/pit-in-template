@@ -1,0 +1,48 @@
+# 事前レビュー期間の応答の揃いの確認(IMPL-0214。process-compass #325 / ADR-0223)
+#
+# 判定の記録(docs/gates/*.md)を基底ブランチへ入れる PR で、結べた上程の応答の宣言行(賛否の欄が書かれた意見)が揃ったかを確かめます。
+# 範囲: R1 の上程は指名レビュアの全員、必須応答の者を記載できる上程(標準 3.10.9)は必須応答の者の全員。R2・R3 の短縮は範囲に入れません
+# (短縮の通知は pre-review.yml の notify が担う)。上程と結べない PR は失敗にせず「確かめていない」と出します。
+# 確かめるのは宣言行の有無だけです。応答の中身と、管理者によるブランチ保護の回避は確かめません(確かめる者: 決定者)。
+#
+# **既定では必須にしません**(ADR-0223 決定6)。このジョブは gate-g5 の needs に入れません。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
+# 必須にするかは採用者が決めます。手順は README「事前レビュー期間の応答の揃いを必須にする」にあります。
+#
+# 検査のコードと構成は、既定ブランチから読みます。PR の head は checkout しません(pull_request_target。記録ファイルは API で読む)。
+# 2026-11-19 時点で、このワークフローは実際の GitHub 上で実行して確かめていません(process-compass #361 で確かめる)。
+
+name: pre-review-responded
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'docs/gates/**'
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: pre-review-responded-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  responded:
+    name: pre-review-responded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - name: 応答の宣言行の揃いを確かめる
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/gate/pre-review.mjs responded --pr "$PR_NUMBER"

@@ -3,7 +3,7 @@
 # Issue の様式(.github/ISSUE_TEMPLATE/pre-review.yml。ラベル pre-review)で起票された上程だけを対象にします。
 # 機械は、判定資料の Issue の起票(草案の印つき)と、コメントと記名(@login)の通知、月次の集計だけを行います。
 # 内容の確定・意見の採否・措置(代理の指名)は人が行います。自動の再割り当てと自動承認はしません。
-# **必須チェックにしません**(pre-review-closed・pre-review-all-responded は IMPL-0214 の重の審議に残す)。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
+# **必須チェックにしません**(応答の揃いを確かめる検査は pre-review-responded.yml。これも既定で必須にしない。ADR-0223)。ジョブに gate-g5 の名を付けてはなりません(ADR-0123)。
 #
 # 検査のコードと構成は、既定ブランチから読みます。契機は schedule と workflow_dispatch だけです(PR の事象で動かしません)。
 # 営業日の祝日は .github/business-holidays.txt(任意)から読み、無ければ土日だけを除き、出力に「祝日を数えていない」と書きます。
