@@ -49,12 +49,14 @@ import {
   inputRecordGaps,
   stackedLayerCheck,
   stackedLayerText,
+  samplingMonthly,
+  samplingMonthlyText,
 } from './aggregate-evidence.mjs';
 import { stopFindings } from './check-pr.mjs';
 import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
-import { ROOT, sealChangeLog, unmetShipGaps, derivedUnmet } from './config.mjs';
+import { ROOT, sealChangeLog, unmetShipGaps, derivedUnmet, delegationSamplingProblems } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -883,6 +885,26 @@ const config = {
   check('IMPL-0498:ng hasValidApproval は必須(渡さなければ件数だけの判定へ戻らず例外)', noFn instanceof TypeError);
   check('IMPL-0498:ok 開示の行に、数えなかった件数・未確認の件数・見逃す場面(取り込みの後の rebase)を出す', /承認の無い層 1 件/.test(stackedLayerText(r1)) && /数えなかった PR 1 件/.test(stackedLayerText(r1)) && /履歴を読めず数えなかった PR 2 件/.test(stackedLayerText(r4)) && /rebase/.test(stackedLayerText(r1)), stackedLayerText(r1));
   fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// 委任の条件6 の事後の抜き取りの件数(IMPL-0597)。月ごとに、G-6 を事後へ移した変更 n 件と、独立レビュアの席の責任者の名義の抜き取り k 件を数える
+{
+  const rows = (month, nAll, k) => Array.from({ length: nAll }, (_, i) => ({ month, sampled: i < k }));
+  // IMPL-0597:ng
+  const ng = samplingMonthly([...rows('2026-10', 8, 3), ...rows('2026-11', 3, 3)]);
+  check('IMPL-0597:ng n=8・k=3 の月が不足と出る(既定は n と 5 のうち小さいほう)', ng.short.length === 1 && ng.short[0].month === '2026-10' && ng.short[0].n === 8 && ng.short[0].k === 3 && ng.short[0].required === 5);
+  // IMPL-0597:ok
+  check('IMPL-0597:ok n=3・k=3 の月は不足と出ない', ng.months.find((m) => m.month === '2026-11').short === false);
+  // IMPL-0597:ng
+  const cfg = samplingMonthly(rows('2026-10', 8, 3), { perMonth: 2 });
+  const cfg4 = samplingMonthly(rows('2026-10', 8, 3), { perMonth: 4 });
+  check('IMPL-0597:ng 構成の perMonth を使う(2 なら k=3 は足り、4 なら足りない)', cfg.short.length === 0 && cfg4.short.length === 1 && cfg4.short[0].required === 4 && cfg4.source === 'config');
+  check('IMPL-0597:ok perMonth が月の件数を上回る月は、月の件数を上限にする', samplingMonthly(rows('2026-10', 2, 2), { perMonth: 5 }).short.length === 0);
+  check('IMPL-0597:ok マージの時刻を読めない変更は月ごとの表に含めず、件数を出す', samplingMonthly([{ month: null, sampled: false }, ...rows('2026-10', 1, 1)]).undated === 1);
+  const text = samplingMonthlyText(ng);
+  check('IMPL-0597:ok 表示は合否に数えない旨と、確かめない範囲(選び方・中身・実績の中身。内部監査)を出す', /2026-10/.test(text) && /合否にも記載の欠落にも数えません/.test(text) && /内部監査/.test(text));
+  // IMPL-0597:ng
+  check('IMPL-0597:ng perMonth は1以上の整数(0・小数・文字列を構成の検査が拒む)', [0, 1.5, '3'].every((v) => delegationSamplingProblems({ delegation: { sampling: { perMonth: v } } }).length === 1) && delegationSamplingProblems({ delegation: { sampling: { perMonth: 3 } } }).length === 0 && delegationSamplingProblems({ delegation: {} }).length === 0);
 }
 
 console.log('');

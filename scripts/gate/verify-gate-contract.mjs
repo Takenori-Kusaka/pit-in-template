@@ -58,6 +58,7 @@ import {
   baseChainProblems,
   changeTypeProblems,
   protectedPathsProblems,
+  delegationSamplingProblems,
   structureDeciderSeat,
   pendingNotices,
   answersRosterProblems,
@@ -563,6 +564,7 @@ if (!Array.isArray(config.seats)) {
   // 照合しない(離任した人の登録を残すため)。AI の名義だけを拒否する
   for (const p of changeTypeProblems(config, { checkRegistrant: false })) problems.push(`標準変更カタログ: ${p}`);
   for (const p of protectedPathsProblems(config)) problems.push(p);
+  for (const p of delegationSamplingProblems(config)) problems.push(p);
   if (delegation.allowed && rules.length && !Array.isArray(delegation.protectedPaths)) {
     notes.push(
       '確約範囲とコア指定のパス(delegation.protectedPaths)が未宣言です。委任の条件5(確約範囲とコア指定に触れない)を判定できないため、どの変更も委任に該当しません。該当するパスが無い場合は、/process-change で空の配列を宣言してください'

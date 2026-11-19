@@ -111,6 +111,7 @@ import {
   aiNameBlocked,
   changeTypeProblems,
   protectedPathsProblems,
+  delegationSamplingProblems,
   CHAINED_SCHEMA_VERSION,
   configDigest,
   chainProblems,
@@ -6290,6 +6291,7 @@ if (isMain) {
           '" } を、変更前の決定者の記名と理由をつけて反映します'
         : null;
     for (const p of protectedPathsProblems(config)) refused.push(p);
+    for (const p of delegationSamplingProblems(config)) refused.push(p);
 
     if (change.ruleApprovedBy) {
       // 規則の承認者は、AI維持管理者の席の責任者に限る。委任を決定した者と同一人物でもよい

@@ -2074,6 +2074,7 @@ export function configIntegrityProblems(config) {
   }
   for (const p of changeTypeProblems(config, { checkRegistrant: false })) out.push(`標準変更カタログ: ${p}`);
   out.push(...protectedPathsProblems(config));
+  for (const p of delegationSamplingProblems(config)) out.push(p);
   for (const p of observationWindowProblems(config)) out.push(`観測の窓: ${p}`);
   for (const p of reworkBaselineProblems(config)) out.push(`手戻り率の基準値: ${p}`);
   (Array.isArray(config.changeLog) ? config.changeLog : []).forEach((e, i) => {
@@ -2312,6 +2313,19 @@ export function changeTypeProblems(config, { checkRegistrant = true, only = null
     }
   });
   return out;
+}
+
+/**
+ * 事後の抜き取りの頻度(delegation.sampling.perMonth。標準 第8章「事後監査の手続」の「組織で定める」値。IMPL-0597)の形式上の問題を返す。
+ * キーが無い構成は、既定(月ごとに、G-6 を事後へ移した変更の件数と 5 のうち小さいほう)を使う。値は1以上の整数
+ */
+export function delegationSamplingProblems(config) {
+  const s = config?.delegation?.sampling;
+  if (s === undefined) return [];
+  if (s === null || typeof s !== 'object' || Array.isArray(s)) return ['delegation.sampling がオブジェクトではない'];
+  if (s.perMonth === undefined) return [];
+  if (!Number.isInteger(s.perMonth) || s.perMonth < 1) return ['delegation.sampling.perMonth が1以上の整数ではない(月ごとの事後の抜き取りの件数。書かなければ、月の件数と 5 のうち小さいほう)'];
+  return [];
 }
 
 /** 確約範囲とコア指定のパス(delegation.protectedPaths[])の形式上の問題を返す。キーが無い構成は未宣言 */

@@ -216,6 +216,44 @@ import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl, readF2Q1 
 /** 基底ブランチに複製された写しの置き場(ship-evidence.yml が records/reviews/ から複製する) */
 export const BASE_COPIES_DIR = 'docs/records/reviews';
 
+/**
+ * 委任の条件6 の事後の抜き取りの件数(IMPL-0597。標準 第5章 5.5.4 条件6・第8章「事後監査の手続」)。
+ * items = G-6 を事後へ移した変更ごとの { month(マージした月 YYYY-MM。読めなければ null), sampled(独立レビュアの席の責任者の名義の抜き取りの記録があるか) }。
+ * 月ごとに、G-6 を事後へ移した変更の件数 n と、抜き取った変更の件数 k を数え、k が組織の定め(perMonth。無ければ n と 5 のうち小さいほう。
+ * perMonth が n を上回る月は n を上限とする)に満たない月を short に出す。合否・欠落には数えない(本文は不足を差し戻しの条件にしていない)。
+ * 機械が確かめないもの: 抜き取りの選び方(当事者に選ばせない)・確認の中身・条件4 の実績の中身(確かめる者: プロセス内部監査)
+ */
+export function samplingMonthly(items, { perMonth = null, defaultCap = 5 } = {}) {
+  const by = new Map();
+  let undated = 0;
+  for (const it of items ?? []) {
+    if (!it.month) {
+      undated += 1;
+      continue;
+    }
+    const e = by.get(it.month) ?? { month: it.month, n: 0, k: 0 };
+    e.n += 1;
+    if (it.sampled) e.k += 1;
+    by.set(it.month, e);
+  }
+  const months = [...by.values()]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .map((e) => {
+      const required = Number.isInteger(perMonth) && perMonth >= 1 ? Math.min(e.n, perMonth) : Math.min(e.n, defaultCap);
+      return { ...e, required, short: e.k < required };
+    });
+  return { months, short: months.filter((m) => m.short), undated, source: Number.isInteger(perMonth) && perMonth >= 1 ? 'config' : 'default' };
+}
+
+/** 事後の抜き取りの不足の月の表示(表の下に添える文)。判定ではない */
+export function samplingMonthlyText(m) {
+  const basis = m.source === 'config' ? '構成 delegation.sampling.perMonth' : `既定(月の件数と ${5} のうち小さいほう)`;
+  const head = m.short.length
+    ? `抜き取りが定めに満たない月: ${m.short.map((x) => `${x.month}(事後へ移した変更 ${x.n} 件・抜き取り ${x.k} 件・定め ${x.required} 件)`).join(' / ')}`
+    : '抜き取りが定めに満たない月はありません';
+  return `${head}。定めの出所: ${basis}。この表示は合否にも記載の欠落にも数えません。抜き取りの選び方(当事者に選ばせない)・確認の中身・取り消しの実績の中身は機械で確かめていません(確かめる者: プロセス内部監査)${m.undated ? `。マージの時刻を読めない変更 ${m.undated} 件は月ごとの表示に含めていません` : ''}`;
+}
+
 /** 基底ブランチの写しの複製(docs/records/reviews/)を読む(写しの検査は records.mjs の parseCopy)。置き場が無ければ present=false で空 */
 export function readBaseCopies(root) {
   const dir = path.join(root, BASE_COPIES_DIR);
@@ -5470,8 +5508,14 @@ if (isMain) {
     .filter((p) => p.g6PostHoc)
     .map((p) => {
       const recs = samplingRecords.filter((g) => refersToPr(g.target, p.number));
-      return { pr: p.number, sampled: recs.length > 0, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
+      // 条件6: 独立レビュアの席の責任者の名義の記録だけを、月ごとの件数(IMPL-0597)に数える
+      const reviewerKey = whoKey('independent-reviewer');
+      const bySeat = Boolean(reviewerKey) && recs.some((g) => g.judge && personKey(config, g.judge) === reviewerKey);
+      const month = p.mergedAt && !Number.isNaN(Date.parse(p.mergedAt)) ? localDay(new Date(p.mergedAt)).slice(0, 7) : null;
+      return { pr: p.number, sampled: recs.length > 0, bySeat, month, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
     });
+  // 月ごとの件数(IMPL-0597。条件6)。合否・欠落には数えない
+  const samplingByMonth = samplingMonthly(sampling.map((x) => ({ month: x.month, sampled: x.bySeat })), { perMonth: config.delegation?.sampling?.perMonth ?? null });
 
   // --- 保証の主張の成立判定(標準 第4章 G-7「保証の主張の成立判定」/ 附属書H H.1・H.6。#288) -----------------
   //
@@ -5934,6 +5978,8 @@ if (isMain) {
     decisionRecheck: decisionRecheckInfo,
     // G-6 を事後へ移した変更ごとの、事後の抜き取りの記録
     sampling,
+    // 月ごとの事後の抜き取りの件数と、定めに満たない月(IMPL-0597。合否・欠落に数えない)
+    samplingByMonth,
     generatedAt: new Date().toISOString(),
     profile: {
       projectId: config.projectId,
@@ -7076,6 +7122,8 @@ if (isMain) {
         `抜き取った変更 ${count(sampling, (x) => x.sampled)} 件 / 抜き取られていない変更 ${count(sampling, (x) => !x.sampled)} 件。` +
           '抜き取りの数と頻度が第8章「事後監査の手続」を満たすかは、機械では判定していません。抜き取られていない変更を、承認・通過として扱いません。'
       );
+      R.push('');
+      R.push(samplingMonthlyText(samplingByMonth));
     } else {
       R.push('G-6 を事後へ移した変更はありません。');
     }
