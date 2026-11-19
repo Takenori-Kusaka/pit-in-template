@@ -53,6 +53,13 @@ const bad = recalibrationState(cfg([{ kind: 'performer', date: '2026-10-05' }]),
 });
 check('AI の名義・名簿外・移した先なし・日付の形違いの記録は数えない(4 件を無視として出す)', bad.count === 7 && bad.ignored.length === 4, `${bad.count} / ${bad.ignored.length}`);
 
+// IMPL-0980:ng(違反の入力。判断「外す」で移した先が空は数えない)
+const offNg = recalibrationState(cfg([{ kind: 'performer', date: '2026-10-05' }]), { today: '2026-10-11', recordsText: rec(['| RC-01 | 外す | 2026-10-08 | 山田 太郎 | |']) });
+check('外す・移した先が空の記録は数えない(無視として出し、RC-01 は再評価待ちのまま)', offNg.ignored.length === 1 && /外す/.test(offNg.ignored[0]) && offNg.pending.some((p) => p.id === 'RC-01'), JSON.stringify(offNg.ignored));
+// IMPL-0980:ok(適合の入力。判断「外す」で移した先あり)
+const offOk = recalibrationState(cfg([{ kind: 'performer', date: '2026-10-05' }]), { today: '2026-10-11', recordsText: rec(['| RC-01 | 外す | 2026-10-08 | 山田 太郎 | 層1 の停止条件 |']) });
+check('外す・移した先ありの記録は RC-01 を解く', offOk.ignored.length === 0 && !offOk.pending.some((p) => p.id === 'RC-01'), ids(offOk));
+
 const day182 = recalibrationState(cfg(), { today: '2027-04-01', recordsText: '' });
 const day183 = recalibrationState(cfg(), { today: '2027-04-02', recordsText: '' });
 check('暦: 最初の記録から 182 日では出ない', day182.count === 0, ids(day182));

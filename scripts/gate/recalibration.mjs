@@ -41,8 +41,9 @@ export function readCalibrationRecords(config, text) {
       ignored.push(`${id}: 記名 "${by ?? ''}" が AI の名義、または人の名簿の人でない`);
       continue;
     }
-    if (decision === '移す' && !(to ?? '').trim()) {
-      ignored.push(`${id}: 「移す」に移した先の保証が無い`);
+    if ((decision === '移す' || decision === '外す') && !(to ?? '').trim()) {
+      // 外した後に失わない保証(移した先)を、「移す」だけでなく「外す」にも求める(第3章 3.12.12 要求事項5。IMPL-0980)
+      ignored.push(`${id}: 「${decision}」に移した先の保証が無い(外した後に失わない保証を示す)`);
       continue;
     }
     if (!latest.has(id) || latest.get(id).day < day) latest.set(id, { id, decision, day, by, to });

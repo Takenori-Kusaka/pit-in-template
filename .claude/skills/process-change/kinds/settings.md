@@ -65,4 +65,4 @@
 
 ## 能力依存の定数の再評価待ち
 
-`/process-change` の出力の末尾と `/pit` の注記が、再評価待ちの能力依存の定数の件数を出します(`node scripts/gate/recalibration.mjs`)。契機は、種別 `performer` で記録したモデル・指示資産の版の変更と、半期の暦だけです。**値は自動で変えません**。人が「残す・外す・移す」を `docs/calibration-register.md` へ記名で記録します(`| RC-NN | 残す・外す・移す | YYYY-MM-DD | 氏名 | 移した先の保証 |`)。
+`/process-change` の出力の末尾と `/pit` の注記が、再評価待ちの能力依存の定数の件数を出します(`node scripts/gate/recalibration.mjs`)。契機は、種別 `performer` で記録したモデル・指示資産の版の変更と、半期の暦だけです。**値は自動で変えません**。人が「残す・外す・移す」を `docs/calibration-register.md` へ記名で記録します(`| RC-NN | 残す・外す・移す | YYYY-MM-DD | 氏名 | 移した先の保証 |`)。「外す」と「移す」は、外した後に失わない保証(移した先)を必ず書く。空の行は再評価の記録に数えない。
