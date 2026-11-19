@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
 import { doneConditionSource } from './next.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
-import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
+import { fetchScMItems, completionThroughput, reachForecast, scMChanges, scMVariationRate, flowReportText, adjustmentRecordCount, pickupUndecidedLine, countPickupUndecided, pickupUndecidedNote, pickupIssueNumber, recordPickupUndecided, countUnwrittenPickup } from './next.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
@@ -425,6 +425,17 @@ ${r.out}`);
   const text = flowReportText({ throughput: ok, forecast: fc, changes: ch, confirmedOn: '2026-09-30' });
   check('IMPL-0614:ok 材料(残る作業単位・実測スループット・残る期間・変動率)を出し、評価と発火の判断は書かない', /残る作業単位[^\n]*6 件/.test(text) && /最小 0・最大 3/.test(text) && /残る期間の見込み/.test(text) && /66\.7%/.test(text) && !/発火(する|しない|すべき)/.test(text), text);
   check('IMPL-0614:ng 算定できない案件は、算定できない旨を出す', /算定できない/.test(flowReportText({ throughput: ng, forecast: reachForecast({ throughput: ng, remainingUnits: 1 }) })));
+
+  // IMPL-0954(/pit の側): 観測の窓の中の「価値責任者の調整」の判定記録の件数
+  const adj = (day, file, gate = '価値責任者の調整') => gateRecordFromText(`# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | ${gate} |\n| 対象 | SC-B の削除 |\n| 判定者 | 山田 太郎 |\n| 判定日時 | ${day} |\n| 結果 | 通過 |\n`, file, 'base');
+  const adjRecs = [adj('2026-10-20 10:00', 'a.md'), adj('2026-09-01 10:00', 'b.md'), adj('2025-01-05 10:00', 'c.md'), adj('2026-10-21 10:00', 'd.md', 'G-2 要件合意'), adj('', 'e.md'), adj('2026-10-20 10:00', 'a.md')];
+  const ac = adjustmentRecordCount(adjRecs, { today: '2026-11-19', windowMonths: 3 });
+  check('IMPL-0954:ok 窓(3 か月)の中の調整の記録だけを数える。窓の外・別のゲート・同じ所在の重複は数えない', ac.count === 2 && ac.windowMonths === 3, JSON.stringify(ac));
+  check('IMPL-0954:ng 判定日時を読めない調整の記録は、窓の件数に入れず別に数える(黙って落とさない)', ac.undated === 1);
+  check('IMPL-0954:ok 調整の記録が無ければ 0 件と出る', adjustmentRecordCount([], { today: '2026-11-19', windowMonths: 3 }).count === 0 && adjustmentRecordCount(undefined, { today: '2026-11-19', windowMonths: 3 }).count === 0);
+  const adjText = flowReportText({ throughput: ng, forecast: null, changes: null, adjustments: ac });
+  check('IMPL-0954:ok フローの節に件数を出し、種別は本文に書かれ機械は読まないと書く', /価値責任者の調整の判定記録[^\n]*2 件/.test(adjText) && /種別[^\n]*機械は読まない/.test(adjText) && /読めない記録 1 件/.test(adjText), adjText);
+  check('IMPL-0954:ok 入力が無い(adjustments なし)呼び出しは、既存の出力のまま', !/価値責任者の調整/.test(flowReportText({ throughput: ng, forecast: null, changes: null })));
 
   // IMPL-0500
   const line = pickupUndecidedLine('2026-11-18', 'state:needs-dev');

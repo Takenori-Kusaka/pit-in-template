@@ -1732,7 +1732,32 @@ export function scMVariationRate({ baseline, added, removed }) {
 }
 
 /** 見込みの報告の Issue の節「材料の集計」へ置く文面(IMPL-0377・0614)。評価と発火の判断は書かない */
-export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null, changesError = null }) {
+export const ADJUSTMENT_GATE = '価値責任者の調整';
+
+/**
+ * 観測の窓の中の「価値責任者の調整」の判定記録の件数(IMPL-0954 の /pit の側。標準 2.10.5)。ゲート欄が 価値責任者の調整 の記録を、
+ * 判定日時の日付が [today の windowMonths か月前, today] にあるものだけ数える(判定日時を読めない記録は窓の外とせず、別に数える)。
+ * 種別(表の行1〜3)は本文の文で、機械は読まない。同じ所在(file)の記録は 1 件に数える。
+ */
+export function adjustmentRecordCount(records, { today, windowMonths }) {
+  const since = monthsBefore(today, windowMonths);
+  const seen = new Set();
+  let inWindow = 0;
+  let undated = 0;
+  for (const r of records ?? []) {
+    const g = String(r?.gate ?? '').normalize('NFKC').replace(/\*/g, '').trim();
+    if (!g.startsWith(ADJUSTMENT_GATE)) continue;
+    const key = r.file ?? r;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const day = String(r.judgedAt ?? '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) undated++;
+    else if (day >= since && day <= today) inWindow++;
+  }
+  return { count: inWindow, undated, windowMonths };
+}
+
+export function flowReportText({ throughput, forecast, changes = null, confirmedOn = null, changesError = null, adjustments = null }) {
   const L = ['### 材料の集計(機械の出力。評価と発火の判断は価値責任者が行う。合否に使わない)'];
   if (!throughput?.computable) {
     L.push(`- 実測スループット: 算定できない(${throughput?.reason ?? '入力が無い'})`);
@@ -1749,6 +1774,9 @@ export function flowReportText({ throughput, forecast, changes = null, confirmed
   }
   if (!changes && changesError) {
     L.push(`- SC-M の変動率: 算定できない(SC-M の履歴を読めない: ${changesError})`);
+  }
+  if (adjustments) {
+    L.push(`- 価値責任者の調整の判定記録(観測の窓 ${adjustments.windowMonths} か月。ゲート欄「${ADJUSTMENT_GATE}」): ${adjustments.count} 件${adjustments.undated ? `(判定日時を読めない記録 ${adjustments.undated} 件は窓の件数に入れていない)` : ''}。調整の種別(2.10.5 の表の行1〜3)は本文に書かれ、機械は読まない`);
   }
   if (changes) {
     const rate = scMVariationRate(changes);
@@ -1952,7 +1980,7 @@ export function flowSection({ config, records, today, network, forecastInput = {
   }
   const forecast = reachForecast({ throughput, remainingUnits, remainingPeriods: forecastInput.remainingPeriods ?? null });
   if (!forecastInput.confirmedOn) changes = null;
-  return { text: flowReportText({ throughput, forecast, changes, confirmedOn: forecastInput.confirmedOn ?? null, changesError: forecastInput.confirmedOn ? changesError : null }), lines, throughput, forecast };
+  return { text: flowReportText({ throughput, forecast, changes, confirmedOn: forecastInput.confirmedOn ?? null, changesError: forecastInput.confirmedOn ? changesError : null, adjustments: adjustmentRecordCount(records, { today, windowMonths: win }) }), lines, throughput, forecast };
 }
 
 function renderFull(r, roleFilter = null) {
