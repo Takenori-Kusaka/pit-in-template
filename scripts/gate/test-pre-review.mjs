@@ -309,14 +309,21 @@ check('IMPL-0830:ok 同じ短縮の通知は重ねて出さない(冪等)', !sho
 // (a) 行の印の <ゲート> と上程のゲートの一致
 const ftRowG = (target, gate) => ftRow(target).replace('短縮: G-6', `短縮: ${gate}`);
 const g5 = (o = {}) => shortPlan({ issue: gIssue({ 工程ゲート: 'G-5' }), ...o });
-check('IMPL-0830(a):ng 印が G-3 の行しか無い G-5 の上程は、対象が当該の Issue でも短縮を通知する(行の印のゲートを名指す語を含む)', g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3') } }).actions.some((a) => a.key.startsWith('shortened') && /G-5/.test(a.body)));
-check('IMPL-0830(a):ok 印が当該のゲート(G-5)の行があれば通知しない。印に複数のゲートを並べても一致する', !g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-5') } }).actions.some((a) => a.key.startsWith('shortened')) && !g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3・G-5') } }).actions.some((a) => a.key.startsWith('shortened')));
+const g6 = (o = {}) => shortPlan({ issue: gIssue({ 工程ゲート: 'G-6' }), ...o });
+check('IMPL-0830(a):ng 印が G-3 の行しか無い G-6 の上程は、対象が当該の Issue でも短縮を通知する(行の印のゲートを名指す語を含む)', g6({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3') } }).actions.some((a) => a.key.startsWith('shortened') && /G-6/.test(a.body)));
+check('IMPL-0830(a):ok 印が当該のゲート(G-6)の行があれば通知しない。印に複数のゲートを並べても一致する', !g6({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-6') } }).actions.some((a) => a.key.startsWith('shortened')) && !g6({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-3・G-6') } }).actions.some((a) => a.key.startsWith('shortened')));
 // (b) G-4 と B-1〜B-4 は行の有無に依らず通知する
 const g4 = (o = {}) => shortPlan({ issue: gIssue({ 工程ゲート: 'G-4' }), ...o });
 check('IMPL-0830(b):ng G-4 の上程は、G-4 を名指す行があっても短縮できないと通知する', (() => { const a = g4({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-4') } }).actions.find((x) => x.key.startsWith('shortened')); return Boolean(a) && /短縮できません/.test(a.body) && /ADR-0223/.test(a.body); })());
 check('IMPL-0830(b):ng B-2 の上程は、G-6 の行があっても短縮できないと通知する', (() => { const a = shortPlan({ issue: issue(), plan: { ledgerText: ledgerHead + ftRow('PR #5') } }).actions.find((x) => x.key.startsWith('shortened')); return Boolean(a) && /短縮できません/.test(a.body); })());
 check('IMPL-0830(b):ok G-4・B-2 の上程が期間どおり(公開が T の5営業日前)なら通知しない', !g4({ materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')) && !shortPlan({ issue: issue(), materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')));
-check('IMPL-0830(b):ok 短縮できない上程の判定: G-4 と B-1〜B-4 だけ', shorteningForbidden(readProposal(gIssue({ 工程ゲート: 'G-4' }), { config })) && shorteningForbidden(readProposal(issue(), { config })) && !shorteningForbidden(readProposal(gIssue(), { config })));
+check('IMPL-0830(b):ng G-5 の上程は、G-5 を名指す行があっても短縮できないと通知する(標準 3.10.2 の G-4・G-5)', (() => { const a = g5({ plan: { ledgerText: ledgerHead + ftRowG('PR #5', 'G-5') } }).actions.find((x) => x.key.startsWith('shortened')); return Boolean(a) && /短縮できません/.test(a.body) && /G-5/.test(a.body); })());
+check('IMPL-0830(b):ok 短縮できない上程の判定: G-4・G-5 と B-1〜B-4 だけ', shorteningForbidden(readProposal(gIssue({ 工程ゲート: 'G-4' }), { config })) && shorteningForbidden(readProposal(gIssue({ 工程ゲート: 'G-5' }), { config })) && shorteningForbidden(readProposal(issue(), { config })) && !shorteningForbidden(readProposal(gIssue(), { config })) && !shorteningForbidden(readProposal(gIssue({ 工程ゲート: 'G-3' }), { config })));
+// 低-3 印はあるが印のゲートを読めない行
+const unreadablePlan = g6({ plan: { ledgerText: ledgerHead + ftRow('PR #5').replace('短縮: G-6', '短縮: G-3〜G-6') } });
+const unreadableA = unreadablePlan.actions.find((x) => x.key.startsWith('shortened'));
+check('IMPL-0830(a):ng 印はあるが印のゲートを読めない行(G-3〜G-6 の範囲の書き方)は、行なしとして通知し、読めない旨を並べて書く旨とともに出す', Boolean(unreadableA) && /印のゲートを読めません/.test(unreadableA.body) && /D-001/.test(unreadableA.body), unreadableA?.body);
+check('IMPL-0830(a):ok 印のゲートを読める行が無い通知では、読めない旨を出さない', !/印のゲートを読めません/.test(shortPlan().actions.find((x) => x.key.startsWith('shortened')).body));
 // (c) 短縮した上程の判定の時点までの全員の宣言行
 const ftLedger = ledgerHead + ftRow('PR #5');
 const cPlan = (comments, now = at('2026-11-26')) => plan({ issues: [gIssue({ 指名レビュア: '@bob @carol @dave' }, { comments })], materials: published('2026-11-24'), now, ledgerText: ftLedger });
@@ -349,7 +356,7 @@ for (const target of ['F-012', '上程 #99', '']) {
 }
 check('IMPL-0214:ng ゲートの語が違う記録は結ばない(G-5 の記録は G-6 の上程に結ばない)', rcheck({ records: [{ path: 'docs/gates/x.md', text: recText('G-5 実装品質', '上程 #5') }] }).status === 'unverified');
 check('IMPL-0214:ok 記録を含まない PR は「確かめていない」', respondedCheck({ records: [], issues: [rIssue('R1', [])], config }).status === 'unverified');
-check('IMPL-0214:ok 対象の番号が判定資料の PR 番号でも結べる。同じ番号に結べる上程が2件あれば結ばない', respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL })], config }).status === 'pass' && respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL }), { ...rIssue('R1', okAll, { 判定資料の所在: PR_URL }), number: 6 }], config }).status === 'unverified');
+check('IMPL-0214:ok 対象の番号が判定資料の PR 番号でも結べる。同じ番号に結べる上程が2件あれば結ばない', respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL })], config, prFiles: { 77: ['src/a.ts'] }, codeownersText: '# 所有者なし\n' }).status === 'pass' && respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', okAll, { 判定資料の所在: PR_URL }), { ...rIssue('R1', okAll, { 判定資料の所在: PR_URL }), number: 6 }], config }).status === 'unverified');
 check('IMPL-0214:ok bindRecord: ちょうど1件に結べたときだけ結ぶ', bindRecord(parseGateRecord(recText('G-6', '#5')), [readProposal(rIssue('R1', []), { config })])?.number === 5 && bindRecord(parseGateRecord(recText('G-6', '#6')), [readProposal(rIssue('R1', []), { config })]) === null);
 // R2・R3 の短縮は範囲外。3.10.9 の上程は必須応答の者の全員
 const sc2 = rcheck({ issues: [rIssue('R2', [], { 判定資料の所在: PR_URL })], prFiles: { 77: ['src/a.ts'] }, codeownersText: '# 所有者なし\n', repo: 'o/r' });
@@ -358,6 +365,19 @@ check('IMPL-0214:ok R2 で必須応答の者を導出できなければ、範囲
 const sc3 = (comments) => rcheck({ issues: [rIssue('R3', comments, { 判定資料の所在: PR_URL })], prFiles: { 77: ['src/a.ts'] }, codeownersText: '* @dave\n', repo: 'o/r' });
 check('IMPL-0214:ng 3.10.9 の上程(R3)で必須応答の者(dave)の宣言行が無ければ失敗。指名レビュアの分は問わない', sc3([cm('bob', op(), at('2026-11-25'))]).status === 'fail' && sc3([cm('bob', op(), at('2026-11-25'))]).lines.some((l) => /@dave/.test(l) && !/@bob/.test(l)));
 check('IMPL-0214:ok 3.10.9 の上程(R3)で必須応答の者の宣言行があれば合格', sc3([cm('dave', op(), at('2026-11-25'))]).status === 'pass');
+// 高-2 R1 で判定資料の PR があるのに必須応答の者を導出できない: 合格にしない
+const r1NoReq = (comments, o = {}) => respondedCheck({ records: [rec6('PR #77')], issues: [rIssue('R1', comments, { 判定資料の所在: PR_URL })], config, prFiles: {}, codeownersText: '* @dave\n', ...o });
+const hi2 = r1NoReq(okAll);
+check('IMPL-0214:ng R1 で判定資料の PR の変更ファイルを読めず必須応答の者を導出できないとき、指名レビュアが揃っていても合格にせず「確かめていない」とし、指名レビュアの分だけ照らした旨を出す', hi2.status === 'unverified' && hi2.lines.some((l) => /必須応答の者を導出できない/.test(l) && /指名レビュアの分だけ照らした/.test(l)), JSON.stringify(hi2));
+check('IMPL-0214:ng 同じ条件で指名レビュアに欠けがあれば失敗(導出できない旨も出す)。変更ファイルを読めて必須応答の者(dave)が欠ければ失敗', r1NoReq([okAll[0]]).status === 'fail' && r1NoReq([okAll[0]]).lines.some((l) => /指名レビュアの分だけ照らした/.test(l)) && r1NoReq(okAll, { prFiles: { 77: ['src/a.ts'] } }).status === 'fail');
+// 中-2 混在の優先: fail > unverified > pass > out
+const mixPass = rec6('PR #77');
+const mixUnb = { path: 'docs/gates/unbound.md', text: recText('G-6', 'F-012') };
+const mixIssues = [rIssue('R1', okAll, { 判定資料の所在: PR_URL })];
+const mixCfg = { config, prFiles: { 77: ['src/a.ts'] }, codeownersText: '# 所有者なし\n' };
+const mix = respondedCheck({ records: [mixPass, mixUnb], issues: mixIssues, ...mixCfg });
+check('IMPL-0214:ng 結べる記録(揃った)と結べない記録が混ざる PR は、総合を合格にせず「確かめていない」とする', mix.status === 'unverified' && mix.lines.some((l) => /確かめていない/.test(l)) && respondedCheck({ records: [mixPass], issues: mixIssues, ...mixCfg }).status === 'pass', JSON.stringify(mix));
+check('IMPL-0214:ng 失敗と確かめていないが混ざる PR は失敗。範囲外と確かめていないが混ざる PR は確かめていない', respondedCheck({ records: [mixUnb, rec6('PR #77')], issues: [rIssue('R1', [okAll[0]], { 判定資料の所在: PR_URL })], ...mixCfg }).status === 'fail' && respondedCheck({ records: [mixUnb, rec6('PR #77')], issues: [rIssue('R2', [], { 判定資料の所在: PR_URL })], ...mixCfg }).status === 'unverified');
 // 読み取りの整形
 const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
 const recGh = (args) => {
@@ -388,6 +408,13 @@ check('IMPL-0216:ok 判定日も代理のマージの時刻も読めない記録
 check('IMPL-0216:ok R1 は10営業日が規定日数。公開の時点を読めない上程は母数から外す', mk0216({ issues: [mIssue(5, { リスク区分: 'R1' })], materials: [mMat(5, '2026-11-16')], records: [mRec(5, '2026-11-27 10:00')] }).belowRegulated === '1/1 件' && mk0216({ issues: [mIssue(5)], materials: [], records: [mRec(5, '2026-11-27 10:00')] }).unbound === 1);
 check('IMPL-0216:ok 工程ゲートも B-2 も母数に含める。閾値を置かず、判定当日の論点は機械が数えないと書く', metricsBody(mm).includes('工程ゲートの上程も含みます') && /閾値は置いていません/.test(metricsBody(mm)) && /機械は数えません/.test(metricsBody(mm)) && mk0216({ issues: [mIssue(5, { 種別: 'B-2', 工程ゲート: '' })], records: [{ path: 'x.md', text: recText('B-2 投資判断', '#5') }], materials: [mMat(5, '2026-11-24')] }).belowRegulated === '1/1 件');
 check('IMPL-0216:ok 個人別の値を出さない(ログイン名が本文に無い)', !/bob|carol|alice/.test(metricsBody(mm)));
+// 低-4 外した理由ごとの件数と代理の根拠
+check('IMPL-0216:ok 結べず外した件数に、理由ごとの件数(記録に結べない・公開の時点を読めない・判定の時点を読めない)を同じ行に出す', mm.dropped.noRecord === 1 && /結べず外した 1 件\(判定の記録に結べない 1・公開の時点を読めない 0・判定の時点を読めない 0\)/.test(metricsBody(mm)) && mk0216({ materials: [mMat(6, '2026-11-19'), mMat(7, '2026-11-19')] }).dropped.noPublication === 1 && mk0216({ records: [mRec(5, 'YYYY-MM-DD HH:MM')] }).dropped.noJudged === 1, metricsBody(mm));
+const prxC = mk0216({ records: [{ ...mRec(5, 'YYYY-MM-DD HH:MM'), mergedAt: '2026-11-27T01:00:00Z', mergedBasis: 'commit' }] });
+check('IMPL-0216:ok 代理の根拠(PR のマージの時刻/コミットの時刻)を分けて数え、出力に出す', prx.proxyPr === 1 && prx.proxyCommit === 0 && prxC.proxyCommit === 1 && prxC.proxyPr === 0 && /PR のマージの時刻 0 件・PR を読めずコミットの時刻 1 件/.test(metricsBody(prxC)), metricsBody(prxC));
+// 低-2 祝日を挟む境: 営業日数と暦の判定がずれる(公開 11-20 → 判定 11-27 は、祝日 11-23 を挟むと4営業日で規定の5を下回る。祝日の指定が無ければ5営業日で下回らない)。0830 の通知と同じ関数を通る
+const holMetrics = (holidays) => mk0216({ issues: [mIssue(5)], materials: [mMat(5, '2026-11-20')], records: [mRec(5, '2026-11-27 10:00')], holidays });
+check('IMPL-0216:ng 祝日(11-23)を挟むと公開 11-20 から判定 11-27 は4営業日で下回り、祝日の指定が無ければ5営業日で下回らない。0830 の通知も同じ境で変わる', holMetrics(hol.days).belowRegulated === '1/1 件' && holMetrics(hol.days).daysMedian.startsWith('4 ') && holMetrics(new Set()).belowRegulated === '0/1 件' && shortPlan({ materials: published('2026-11-20'), plan: { holidays: hol.days } }).actions.some((a) => a.key.startsWith('shortened')) && !shortPlan({ materials: published('2026-11-20') }).actions.some((a) => a.key.startsWith('shortened')), JSON.stringify([holMetrics(hol.days), holMetrics(new Set())]));
 const gr = fetchGateRecords((args) => {
   const p = args[args.length - 1];
   if (/contents\/docs\/gates$/.test(p)) return JSON.stringify([[{ type: 'file', name: 'g6-5.md', path: 'docs/gates/g6-5.md' }, { type: 'dir', name: 'sub', path: 'docs/gates/sub' }]]);
