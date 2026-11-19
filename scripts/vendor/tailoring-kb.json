@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "48e7ffd9fa79d557ec294409c450272812212832",
+    "commit": "21e717c18e244f3967853399352b187b2537a74d",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -582,7 +582,7 @@
             "id": "g-ci"
           },
           "action": "strengthen",
-          "note": "故障挿入試験とミューテーション試験をCIの必須チェックに加える(附属書F F.4)"
+          "note": "ミューテーション試験(実行前の故障挿入を含む)をCIの必須チェックに加える(附属書F F.4)"
         },
         {
           "target": {
