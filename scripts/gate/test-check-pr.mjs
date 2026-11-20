@@ -1611,6 +1611,14 @@ ${instr}
   // M-2: 枠は基底の企画書から読む。同じ PR が枠の行を消す・読めない値にしても、基底の枠で数える
   scenario('IMPL-0630:ng 同じ PR が企画書の枠の行を消しても、基底の枠(1)で数えて拒む', quotaPr(), () => { write('docs/project-brief.md', '# 企画書\n\n| 項目 | 内容 |\n| --- | --- |\n'); addRow()(); }, (r) => (has(r, /枠を使い切って/) ? [] : [`拒否が出ていない: ${JSON.stringify(r.errors)} ${JSON.stringify(r.notices.filter((x) => /7\.9\.5/.test(x)))}`]));
   scenario('IMPL-0630:ng 同じ PR が枠を件数として読めない値にしても、基底の枠(1)で数えて拒む', quotaPr(), () => { write('docs/project-brief.md', BRIEF('<件数>')); addRow()(); }, (r) => (has(r, /枠を使い切って/) ? [] : [`拒否が出ていない: ${JSON.stringify(r.errors)}`]));
+  // 基底の企画書に枠の行が無く、head で初めて枠を置く PR は、head の枠で数える(基底で読めないときだけ head から読む。外すと拒否が注意に落ちる)
+  git('switch', '-q', 'main');
+  write('docs/project-brief.md', '# 企画書\n\n| 項目 | 内容 |\n| --- | --- |\n');
+  commitMain('quota: brief without quota row');
+  scenario('IMPL-0630:ng 基底の企画書に枠の行が無く、同じ PR が枠 1 を初めて置いて 7.9.4 の行を足すときは、head の枠(1)で数えて拒む', quotaPr(), () => { write('docs/project-brief.md', BRIEF(1)); addRow()(); }, (r) => (has(r, /枠を使い切って/) ? [] : [`拒否が出ていない: ${JSON.stringify(r.errors)} ${JSON.stringify(r.notices.filter((x) => /7\.9\.5/.test(x)))}`]));
+  git('switch', '-q', 'main');
+  write('docs/project-brief.md', BRIEF(1));
+  commitMain('quota: brief with quota row restored');
   // ok: ステージ移行ゲートを通過した後の台帳には #5 の行がある。累計が 0 になり、枠 1 でも通る
   git('switch', '-q', 'main');
   write('docs/gates/sg-2.md', STAGE_GATE('SG-2', '2026-09-01 10:00'));

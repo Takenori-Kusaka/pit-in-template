@@ -1887,7 +1887,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   }
   if (initial.length) result.notices.push(`閾値・除外設定の初回の設定(基底に無い): ${initial.join(', ')}。同時変更の検査の対象外`);
 
-  // --- 3d. 7.9.5 の枠(IMPL-0630。第7章 7.9.5 要求事項2・3) ---
+  // --- 3(続き). 7.9.5 の枠(IMPL-0630。第7章 7.9.5 要求事項2・3) ---
   // 7.9.4 の行(印を求めない。restrictedStateExceptions と同じ見分け方)が枠を超えたら失敗にする。企画書の枠を期の途中で増やす変更は、
   // ステージ移行ゲートの通過の記録と同じ変更でなければ失敗にする。読めないものは注意に出し、拒まない。要求事項4(事後レビュー)は人が確かめる
   {
