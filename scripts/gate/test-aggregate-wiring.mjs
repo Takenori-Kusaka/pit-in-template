@@ -262,7 +262,7 @@ if (want('0628 0612 0669')) {
   const BRIEF = (quota) => r.read('templates/06-project-brief.md').replace(/\r\n/g, '\n').split('\n').map((l) => (l.startsWith('| 例外の枠') ? `| 例外の枠(事業ステージあたり) | ${quota} |` : l)).join('\n');
   const LEDGER = (rows) => `# 技術負債台帳\n\n| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${rows.join('\n')}\n`;
   const ROW = (id, target, approver) => `| ${id} | 例外 | ${target} | ファストトラック(短縮: G-6) 急ぎ | 障害 | 再発 | 2026-12-31 まで。回収責任者 ${NAMES(2)} | 未返却 | ${NAMES(1)} | ${approver} |`;
-  const scene = ({ approver, b2 = null, quota = '2' }) => {
+  const scene = ({ approver, b2 = null, quota = '2', stage = false }) => {
     r.resetTo('base');
     const day = localDay(); // 入口(generate-profile.mjs --change)が変化点を刻む実行日(ローカル)と同じ。UTC の日付だと日付の境で食い違う
     const R = { id: 'pay-1', person: NAMES(2), paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: NAMES(1) };
@@ -272,7 +272,13 @@ if (want('0628 0612 0669')) {
     r.commitAll('fix: payments\n\nRisk: R3\nVerification: 手元で試験を実行し、通過を確かめた');
     const hash = r.git('rev-parse', 'HEAD').slice(0, 8);
     r.write(`docs/gates/g6-${hash}.md`, form04(r, { ゲート: 'G-6 独立レビュー', 対象: `コミット ${hash}`, 判定者: NAMES(2), 判定日時: '2026-11-12 10:00', 結果: '通過', 変更のリスク区分: 'R3' }) + '\n## 挙動要約\n\n支払いの金額の丸めを、端数を切り捨てる挙動へ変えたことを差分で確かめた。\n');
-    r.write('docs/debt-ledger.md', LEDGER([ROW('D-10', `コミット ${hash}`, approver)]));
+    // stage: 直前のステージ移行ゲートの通過の時点の台帳に、制限の範囲の行 D-09 がある。累計はその通過の後に足された行だけ(区切り)
+    if (stage) {
+      r.write('docs/debt-ledger.md', LEDGER([ROW('D-09', `コミット ${hash}`, approver)]));
+      r.write('docs/gates/sg-1.md', form04(r, { ゲート: 'ステージ移行ゲート', 対象: 'SG-1', 判定者: NAMES(2), 判定日時: '2026-11-13 10:00', 結果: '通過' }));
+      r.commitAll('docs: stage gate');
+    }
+    r.write('docs/debt-ledger.md', LEDGER([...(stage ? [ROW('D-09', `コミット ${hash}`, approver)] : []), ROW('D-10', `コミット ${hash}`, approver)]));
     r.write('docs/project-brief.md', BRIEF(quota));
     if (b2) r.write('docs/D-0-governance.md', r.read('docs/D-0-governance.md').split('\n').map((l) => (l.startsWith('| B-2 |') ? l.replace(/<事業決裁者>/, b2) : l)).join('\n'));
     r.commitAll('docs: ledger');
@@ -289,6 +295,9 @@ if (want('0628 0612 0669')) {
   check('IMPL-0628:ng 集約: B-2 の欄が氏名なら、その人以外の承認は決定者でない(F-13)', hit(scene({ approver: NAMES(4), b2: NAMES(3) }).gaps, DEC).length === 1);
   check('IMPL-0612:ok 集約: 印のある行の回収完了率の指標が項目7 に出る', /回収完了率/.test(lineWith(ok.report, 'ファストトラック')), lineWith(ok.report, 'ファストトラック').slice(0, 300));
   check('IMPL-0669:ok 集約: 7.9.5 の枠と行使が項目7 に出る(枠 2・行使 1・残り 1)', /枠 2・行使 1・残り 1/.test(lineWith(ok.report, '7.9.4')), lineWith(ok.report, '7.9.4').slice(0, 300));
+  // 累計の区切り(H-2): 直前のステージ移行ゲートの通過より前の行は行使に数えない。区切りを作る集約の入口の区画を通す
+  const cut = scene({ approver: NAMES(1), stage: true });
+  check('IMPL-0669:ok 集約: 直前のステージ移行ゲートの通過の前からある 7.9.4 の行は行使に数えない(枠 2・行使 1・残り 1)', /枠 2・行使 1・残り 1/.test(lineWith(cut.report, '7.9.4')), lineWith(cut.report, '7.9.4').slice(0, 300));
   r.done();
 }
 

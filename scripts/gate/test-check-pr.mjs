@@ -1606,6 +1606,11 @@ ${instr}
   const sgNew = () => write('docs/gates/sg-2.md', STAGE_GATE('SG-2', '2026-09-01 10:00'));
   scenario('IMPL-0630:ng 枠を 1 から 2 に増やし、この変更にステージ移行ゲートの通過が無ければ失敗', quotaPr(), () => write('docs/project-brief.md', BRIEF(2)), (r) => (has(r, /1 から 2 に増やして/) ? [] : [`補充の失敗が出ていない: ${JSON.stringify(r.errors)}`]));
   scenario('IMPL-0630:ok 枠を増やす変更にステージ移行ゲートの通過の記録が同じ変更に在れば通る', quotaPr(), () => { write('docs/project-brief.md', BRIEF(2)); sgNew(); }, (r) => (has(r, /例外の枠/) ? [`補充の失敗が出てはならない: ${JSON.stringify(r.errors)}`] : []));
+  // M-1: 既存のステージ移行ゲートの記録の書き換え(空行を足すだけ)は、新しい通過の記録に数えない
+  scenario('IMPL-0630:ng 既存のステージ移行ゲートの記録に空行を足すだけでは、枠を増やせない', quotaPr(), () => { write('docs/project-brief.md', BRIEF(2)); write('docs/gates/sg-1.md', read('docs/gates/sg-1.md') + '\n'); }, (r) => (has(r, /1 から 2 に増やして/) ? [] : [`補充の失敗が出ていない: ${JSON.stringify(r.errors)}`]));
+  // M-2: 枠は基底の企画書から読む。同じ PR が枠の行を消す・読めない値にしても、基底の枠で数える
+  scenario('IMPL-0630:ng 同じ PR が企画書の枠の行を消しても、基底の枠(1)で数えて拒む', quotaPr(), () => { write('docs/project-brief.md', '# 企画書\n\n| 項目 | 内容 |\n| --- | --- |\n'); addRow()(); }, (r) => (has(r, /枠を使い切って/) ? [] : [`拒否が出ていない: ${JSON.stringify(r.errors)} ${JSON.stringify(r.notices.filter((x) => /7\.9\.5/.test(x)))}`]));
+  scenario('IMPL-0630:ng 同じ PR が枠を件数として読めない値にしても、基底の枠(1)で数えて拒む', quotaPr(), () => { write('docs/project-brief.md', BRIEF('<件数>')); addRow()(); }, (r) => (has(r, /枠を使い切って/) ? [] : [`拒否が出ていない: ${JSON.stringify(r.errors)}`]));
   // ok: ステージ移行ゲートを通過した後の台帳には #5 の行がある。累計が 0 になり、枠 1 でも通る
   git('switch', '-q', 'main');
   write('docs/gates/sg-2.md', STAGE_GATE('SG-2', '2026-09-01 10:00'));
@@ -1660,6 +1665,16 @@ ${instr}
   }, (r) => {
     const sorted = (xs) => JSON.stringify([...xs].map((c) => ({ path: c.path, from: c.from ?? null, kind: c.kind })).sort((a, b) => a.path.localeCompare(b.path)));
     const direct = changeListBetween((args) => git(...args), 'main', `pr-${n}`);
+    // measureCommitSize も同じ変更の一覧を作る(H-1)。add・modify・delete・rename の種類まで一致する
+    const gitOut = (args) => {
+      try {
+        return execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        return null;
+      }
+    };
+    const mc = measureCommitSize({ git: gitOut, parent: 'main', commit: `pr-${n}`, config: JSON.parse(execFileSync('git', ['show', 'main:process.config.json'], { cwd: TMP, encoding: 'utf8' })), risk: 'R2' });
+    if (sorted(mc?.changes ?? []) !== sorted(direct)) return [`measureCommitSize の変更の一覧が一致しない: ${sorted(mc?.changes ?? [])} / ${sorted(direct)}`];
     return sorted(r.changes ?? []) === sorted(direct) && direct.some((c) => c.kind === 'rename') && direct.some((c) => c.kind === 'delete') && direct.some((c) => c.kind === 'add') ? [] : [`一致しない: ${sorted(r.changes ?? [])} / ${sorted(direct)}`];
   });
 }

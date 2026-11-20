@@ -188,7 +188,7 @@ import {
   controlApprovalBacking,
 } from './material-attribution.mjs';
 import { judgeOfForm, parseDeclaration, readRecordsBranch, recordFromForm } from './records.mjs';
-import { isClosedState, fastTrackMarkOf, stageQuotaFindings, quotaRefillProblem, latestStageGatePass, isStageGatePass } from './exception-expiry.mjs';
+import { isClosedState, fastTrackMarkOf, stageQuotaFindings, quotaRefillProblem, latestStageGatePass, isStageGatePass, quotaOfBrief } from './exception-expiry.mjs';
 import { codeownersProblems } from './roster-ids.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
@@ -1668,6 +1668,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
   const day = (git(['show', '-s', '--format=%cs', commit]) ?? '').trim() || undefined;
   const assurance = assuranceOf(config, { exists: (p) => atBase(p) !== null, ...(day ? { today: day } : {}) });
   const eff = effectiveSizeLimits(config, { assurance, risk, floor: riskFloorOf(config.riskFloor?.rules, changes).floor, touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), tracked: (() => { const t = git(['ls-tree', '-r', '-z', '--name-only', commit]); return t === null ? null : t.split('\0').filter(Boolean); })() });
+  out.changes = changes;
   out.limits = { lines: eff.maxLines, files: eff.maxFiles };
   // 超過の理由の内訳(行・ファイル・別集計)と、別集計の基準行数に対する倍率(EV-0084 の差し替え条件の観測。#296)
   out.overReasons = {
@@ -1886,13 +1887,14 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   }
   if (initial.length) result.notices.push(`閾値・除外設定の初回の設定(基底に無い): ${initial.join(', ')}。同時変更の検査の対象外`);
 
-  // --- 3b. 7.9.5 の枠(IMPL-0630。第7章 7.9.5 要求事項2・3) ---
+  // --- 3d. 7.9.5 の枠(IMPL-0630。第7章 7.9.5 要求事項2・3) ---
   // 7.9.4 の行(印を求めない。restrictedStateExceptions と同じ見分け方)が枠を超えたら失敗にする。企画書の枠を期の途中で増やす変更は、
   // ステージ移行ゲートの通過の記録と同じ変更でなければ失敗にする。読めないものは注意に出し、拒まない。要求事項4(事後レビュー)は人が確かめる
   {
     const briefAtBase = atBase('docs/project-brief.md');
     const briefAtHead = atHead('docs/project-brief.md');
-    const stagePassInPr = all.some((e) => /^docs\/gates\/.+\.md$/.test(e.path) && isStageGatePass(recordFromForm(atHead(e.path) ?? '', e.path, 'base')));
+    // 通過の記録は新しい通過に限る: head で通過の結果を持ち、基底では通過でない(ファイルが無いか、通過の結果を持たない)。既存の通過の記録の書き換えは数えない
+    const stagePassInPr = all.some((e) => /^docs\/gates\/.+\.md$/.test(e.path) && isStageGatePass(recordFromForm(atHead(e.path) ?? '', e.path, 'base')) && !isStageGatePass(recordFromForm(atBase(e.path) ?? '', e.path, 'base')));
     const refill = quotaRefillProblem({ baseBrief: briefAtBase, headBrief: briefAtHead, stagePassInPr });
     if (refill) result.errors.push(refill);
     const ledgerRows = [...parseLedger(atPolicy('docs/debt-ledger.md') ?? ''), ...parseLedger(atHead('docs/debt-ledger.md') ?? '')].filter((r, i, a) => a.findIndex((x) => x.id === r.id) === i);
@@ -1930,7 +1932,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
         const at = (git(['show', '-s', '--format=%cI', hex]) ?? '').trim() || null;
         return { label, independent: { restrictionTouched: restrictionHit(policyConfig, names.split('\0').filter(Boolean), at).hit, by: [] } };
       };
-      const q = stageQuotaFindings({ rows: ledgerRows, prNumber: pr.number ?? null, thisUnit, pastUnitOf, startIds, usedReadable, briefText: briefAtHead ?? briefAtBase ?? '' });
+      const q = stageQuotaFindings({ rows: ledgerRows, prNumber: pr.number ?? null, thisUnit, pastUnitOf, startIds, usedReadable, briefText: quotaOfBrief(briefAtBase) !== null ? briefAtBase : (briefAtHead ?? '') });
       result.errors.push(...q.errors);
       result.notices.push(...q.notices);
       result.exceptionQuota = { quota: q.quota, used: q.used, thisHit: q.thisHit };
