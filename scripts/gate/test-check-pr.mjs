@@ -1707,6 +1707,7 @@ ${instr}
   commitMsg('docs: 古い説明\n\nSeeded-Error: SE-OLD\n');
   const shaOf = (ref) => git('rev-parse', ref).trim();
   const rows = [
+    // IMPL-0191:ng(違反と適合の対。標準の実装マーク。process-compass #356)
     ['ng1: 基底=既定ブランチで標識あり → 短い SHA を出し、識別子・例外承認の案内を出さない', () => {
       prBranch('mk-ng1', 'mk-default', ['feat: x\n\nSeeded-Error: SE-1\n']);
       const e = markerErrors(run('mk-default', 'mk-default'));
@@ -1730,6 +1731,7 @@ ${instr}
       git('update-ref', 'refs/remotes/origin/mk-default', shaOf('mk-default'));
       return markerErrors(run('origin/mk-default', 'mk-default')).length === 1;
     }],
+    // IMPL-0191:ok(違反と適合の対。標準の実装マーク。process-compass #356)
     ['ok1: 標識の無いコミット → 標識の errors なし', () => {
       prBranch('mk-ok1', 'mk-default', ['feat: x\n']);
       return markerErrors(run('mk-default', 'mk-default')).length === 0;

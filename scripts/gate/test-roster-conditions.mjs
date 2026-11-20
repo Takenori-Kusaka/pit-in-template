@@ -128,11 +128,13 @@ const BASE3 = { 'value-owner': 'a', 'tech-lead': 'c', 'dev-verifier': 'b', 'inde
   // 根拠の区分(cause)と対象の人(person)の整合(IMPL-1011 / ADR-0161 決定5。cause の真偽は人の判断で、ここでは整合だけを確かめる)
   const fire = (r) => restrictionInputProblems(base, { kind: 'notice', event: 'restriction', restriction: r });
   const { person: _p, ...R1 } = { ...R, cause: '7.9.1-1' };
+  // IMPL-1011:ng(違反と適合の対。標準の実装マーク。process-compass #356)
   check('制限(cause): 7.9.1 の1 に対象の人があれば拒む', fire({ ...R1, person: '佐藤 一郎' }).some((x) => /7\.9\.1 の1.*person/.test(x)));
   check('制限(cause): 7.9.1 の2 に対象の人が無ければ拒む', fire((({ person, ...r }) => r)(R)).some((x) => /restriction\.person/.test(x)));
   check('制限(cause): 7.9.1 の2 の対象の人が名簿に無ければ拒む', fire({ ...R, person: '名簿に無い人' }).some((x) => /restriction\.person/.test(x)));
   check('制限(cause): cause が無ければ拒む', fire((({ cause, ...r }) => r)(R)).some((x) => /restriction\.cause/.test(x)));
   check('制限(cause): cause の値が区分の外なら拒む', fire({ ...R, cause: '7.9.1-3' }).some((x) => /restriction\.cause/.test(x)));
+  // IMPL-1011:ok(違反と適合の対。標準の実装マーク。process-compass #356)
   check('制限(cause): 7.9.1 の1(person なし)を受け付ける', fire(R1).length === 0, JSON.stringify(fire(R1)));
   check('制限(cause): 7.9.1 の2(名簿の person)を受け付ける', fire(R).length === 0, JSON.stringify(fire(R)));
   const st2 = restrictionState({ ...base, changeLog: [{ kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: R, notice: {} }] });
