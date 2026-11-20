@@ -2542,11 +2542,12 @@ export function diffConfig(before, after, opts = {}) {
         const wa = after.observationWindow?.months ?? WINDOW_MONTHS;
         if (wb !== wa) push(`観測の窓(差し戻し率・手戻り率の評価の期間): ${wb}か月 → ${wa}か月`, -wb, -wa, M);
       }
-      // 手戻り率の基準値(第5章 5.4.6)。上げる・外すのは緩める向き(発火しにくくなる)、下げる・新しく置くのは強める向き。未設定は最も緩い
+      // 手戻り率の基準値(第5章 5.4.6)。上げる・新しく置くのは緩める向き(新しく置くと、未設定による停止が解ける。ADR-0129 の判定不能の停止と同じ理由。ADR-0158)、
+      // 下げる・外すのは強める向き(外すと未設定になり、登録した変更種別を止める)。未設定は最も強い(止める)。過去の変化点の向きの記録は書き換えない
       {
         const bb = before.reworkBaseline?.percent ?? null;
         const ba = after.reworkBaseline?.percent ?? null;
-        const rank = (p) => (p === null ? -Infinity : -p);
+        const rank = (p) => (p === null ? Infinity : -p);
         if (bb !== ba) push(`手戻り率の基準値: ${bb === null ? '未設定' : `${bb}%`} → ${ba === null ? '未設定(外す)' : `${ba}%`}`, rank(bb), rank(ba), M);
       }
       if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
@@ -3211,7 +3212,7 @@ export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
           ? 'L1(安全関連部の適用の条件のため登録を適用しない)'
           : 'L1(手戻り率が未計測)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
-    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため発火しない' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
+    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため、登録した変更種別を止める(適用の条件の欠落)' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
       ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)}。${detectionComplete(t.basis) ? DETECTION_UNVERIFIED : '登録は拒否される(他の検知条件が未記入)'})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
@@ -4143,7 +4144,7 @@ export function renderProfileMd(config, result) {
     L.push(
       `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です(変更のリスク区分が R1・R2 の変更は、種別が L3 でも委任で進みません。条件2)。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
         '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の観測の窓の長さの継続(既定' + WINDOW_MONTHS + 'か月)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
-        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りないときは発火せず、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
+        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りない・記録を読めないときは、適用の条件の欠落として登録した変更種別を止め、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
     );
     L.push('');
     L.push(`**${MERGE_PATH_NOTE_POLITE}`);

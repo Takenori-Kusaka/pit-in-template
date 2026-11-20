@@ -315,7 +315,11 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   }
   const s0 = autonomyState(base().config, base().records);
   check('導出: 登録した変更種別は L3、それ以外は L1', s0.types[0].level === 'L3' && s0.otherLevel === 'L1');
-  check('導出: 手戻り率の記録を渡さない入力は「読めない」と出し、止めず、数えていない残りを出す', s0.types[0].rework.state === '読めない' && s0.types[0].level === 'L3' && /数えていない/.test(s0.reworkUncounted) && /数えていない/.test(reworkText(s0.types[0])));
+  // 期待を改めた場面(単位 Y2): ADR-0158 決定1(読めない)で、ADR-0129 決定3 の「止めずに表示する」1項を置き換えたため、L3 から L1 へ改めた。
+  // 入力の側も、fixture が手戻り率の記録(rework)を持つようになったため、記録を渡さない入力を明示的に作る
+  const sNoRw = (() => { const i = base(); delete i.records.rework; return autonomyState(i.config, i.records); })();
+  check('導出: 手戻り率の記録を渡さない入力は「読めない」と出し、種別を止め(適用の条件の欠落)、数えていない残りを出す', sNoRw.types[0].rework.state === '読めない' && sNoRw.types[0].level === 'L1' && sNoRw.types[0].stops.some((x) => x.kind === 'unmeasurable' && /手戻り率の記録を読めない/.test(x.reason)) && /数えていない/.test(sNoRw.reworkUncounted) && /数えていない/.test(reworkText(sNoRw.types[0])));
+  check('導出: 手戻り率の記録を持つ fixture(基準値 20%、32 件)は L3 を保ち、手戻り率は基準値以内', s0.types[0].rework.state === '基準値以内' && s0.types[0].rework.n === 32 && s0.types[0].level === 'L3', JSON.stringify(s0.types[0].rework));
   // 差し戻し率0%で止めた種別は、評価の日より後の登録で戻る
   const z = base();
   z.records.rejections = [];
@@ -391,7 +395,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const sOk = autonomyState(base().config, base().records);
   const lines0 = autonomyNoteLines(sOk).join('\n');
   // IMPL-0287:ok(適合の入力: 判定可能で停止の無い種別。判定不能と出さない)
-  check('表示: 停止の無い種別でも「異常なし」と書かず、手戻り率の数えていない残りを出す', /停止なし/.test(lines0) && !/異常なし/.test(lines0) && !/判定不能/.test(lines0) && /手戻り率: 読めない/.test(lines0) && /数えていない/.test(lines0));
+  check('表示: 停止の無い種別でも「異常なし」と書かず、手戻り率の数えていない残りを出す', /停止なし/.test(lines0) && !/異常なし/.test(lines0) && !/判定不能/.test(lines0) && /手戻り率: 窓/.test(lines0) && /基準値 20%/.test(lines0) && /数えていない/.test(lines0));
   // 保証の開示の項目3 が使う1行の表示(aggregate-evidence.mjs の rejectionText・stopsText)
   const rej1 = `${rejectionText(rs1.types[0])} / ${stopsText(rs1.types[0])}`;
   // IMPL-0288:ng(違反の入力: 判定不能の窓。開示の行に判定不能と出し、「異常なし」と書かない)
@@ -513,6 +517,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     for (let k = 0; k < late; k++) trailers.push({ ref: `l${k}`, date: '2026-10-05', tasks: [`F-001/Task-${k + 20}`], files: ['src/i18n/ja.json'] });
     for (let k = 0; k < outside; k++) for (const d of ['2026-08-10', '2026-08-20']) trailers.push({ ref: `o${k}${d}`, date: d, tasks: [`F-002/Task-${k + 1}`], files: ['src/other.js'] });
     if (pct !== null) i.config.reworkBaseline = baseline(pct, at);
+    else delete i.config.reworkBaseline;
     i.records.rework = rework ?? { available: true, trailers, plan };
     return i;
   };
@@ -536,11 +541,14 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const rOut = tOf(mk({ doubles: 6, outside: 4 }));
   check('手戻り率: 種別の範囲に入らない変更のタスクは、母数にも分子にも入れない', rOut.rework.n === 32 && rOut.rework.numerator === 6, JSON.stringify(rOut.rework));
 
+  // 期待を改めた場面(単位 Y2): ADR-0158 決定1(判定不能・読めない)/決定2(未設定)で、ADR-0129 決定3 の「止めずに表示する」1項を置き換えたため、期待を L3 から L1 へ改めた。
   const rSmall = tOf(mk({ doubles: 20, count: 29 }));
-  // IMPL-0517:ng(違反の入力: 母数 29 件。最小標本数 30 件に満たない窓を、異常なしと書かない)
-  check('手戻り率: 母数 29 件は判定不能で、発火せず止めない(「異常なし」と書かない)', rSmall.rework.state === '判定不能' && !stopsRework(rSmall) && /判定不能/.test(reworkText(rSmall)) && !/異常なし/.test(reworkText(rSmall)), JSON.stringify(rSmall.rework));
+  // IMPL-0291:ng(違反の入力: 母数 29 件。最小標本数 30 件に満たない窓は判定不能で、適用の条件の欠落として止める。「異常なし」と書かない)
+  check('手戻り率: 母数 29 件は判定不能で、種別を止め(unmeasurable)、理由に「判定不能」と「観測の窓」を出す(「異常なし」と書かない)', rSmall.rework.state === '判定不能' && rSmall.level === 'L1' && rSmall.stops.some((x) => x.kind === 'unmeasurable' && /手戻り率の窓/.test(x.reason) && /判定不能/.test(x.reason) && /観測の窓/.test(x.reason)) && /判定不能/.test(reworkText(rSmall)) && !/異常なし/.test(reworkText(rSmall)), JSON.stringify(rSmall.stops));
+  // 期待を改めた場面(単位 Y2): ADR-0158 決定2(未設定)で、ADR-0129 決定3 の「止めずに表示する」1項を置き換えたため、期待を L3 から L1 へ改めた。
   const rUnset = tOf(mk({ doubles: 12, pct: null }));
-  check('手戻り率: 基準値が未設定なら発火せず、「基準値が未設定(発火しない)」と出す(止めない)', rUnset.rework.state === '基準値未設定' && rUnset.level === 'L3' && /基準値が未設定\(発火しない\)/.test(reworkText(rUnset)), reworkText(rUnset));
+  // IMPL-0291:ng(違反の入力: 基準値が未設定。適用の条件の欠落として止める。戻る日は次の評価の日)
+  check('手戻り率: 基準値が未設定なら種別を止め、理由に「基準値」「種別 settings」と次の評価の日の日付を出す', rUnset.rework.state === '基準値未設定' && rUnset.level === 'L1' && rUnset.stops.some((x) => x.kind === 'unmeasurable' && /基準値/.test(x.reason) && /種別 settings/.test(x.reason) && /2026-11-01/.test(x.reason)), JSON.stringify(rUnset.stops));
 
   // 基準値の効力日: 記録した日が評価の日より前の値を当てる。同じ日・後の記録は、その評価の日には効かない
   const cfgTwo = (secondAt) => ({ percent: 25, history: [{ percent: 20, recordedAt: '2026-09-01', decidedBy: '鈴木 一郎', reason: '置く' }, { percent: 25, recordedAt: secondAt, decidedBy: '鈴木 一郎', reason: '上げる' }] });
@@ -554,8 +562,35 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   reReg.config.delegation.changeTypes[0].registeredAt = '2026-10-02';
   check('手戻り率: 評価の日より後に登録し直すと、引き下げは戻る(現在の窓の状態は超過と表示する)', tOf(reReg).level === 'L3' && tOf(reReg).rework.state === '基準値超過');
 
+  // 期待を改めた場面(単位 Y2): ADR-0158 決定1(読めない)で、ADR-0129 決定3 の「止めずに表示する」1項を置き換えたため、期待を L3 から L1 へ改めた。
   const rBad = tOf(mk({ rework: { available: false, reason: '浅い取得(shallow)で、履歴の全体を読めない', trailers: [], plan: [] } }));
-  check('手戻り率: 履歴を読めないときは「読めない」と出し、手戻り率では止めない', rBad.rework.state === '読めない' && !stopsRework(rBad) && /読めない/.test(reworkText(rBad)));
+  // IMPL-0291:ng(違反の入力: 手戻り率の記録だけ読めない(浅い取得)。判定できないものとして止める)
+  check('手戻り率: 記録を読めないとき(浅い取得)は「読めない」と出し、種別を止め、理由に「浅い取得」と fetch-depth: 0 を出す', rBad.rework.state === '読めない' && rBad.level === 'L1' && rBad.stops.some((x) => x.kind === 'unmeasurable' && /手戻り率の記録を読めない/.test(x.reason) && /浅い取得/.test(x.reason) && /fetch-depth: 0/.test(x.reason)) && /読めない/.test(reworkText(rBad)), JSON.stringify(rBad.stops));
+
+  // IMPL-0291:ok(適合の入力: 基準値の記録日が評価の日の前日なら効く。同じ日なら、その評価の日には効かず止める(遡らない))
+  check('手戻り率: 基準値の記録日が評価の日の前日なら L3、同じ日なら L1(遡らない)', tOf(mk({ doubles: 6, at: '2026-09-30' })).level === 'L3' && tOf(mk({ doubles: 6, at: '2026-10-01' })).level === 'L1');
+  // IMPL-0291:ok(適合の入力: 母数が 30 件へ届いた評価の日は、登録し直しを要せず戻る)
+  check('手戻り率: 母数が 30 件へ届いた評価の日は L3(登録し直しを要しない)。29 件は L1', tOf(mk({ count: 30 })).level === 'L3' && tOf(mk({ count: 29 })).level === 'L1');
+  // 表示: どの状態でも「発火しない」と書かず、判定不能・未設定を「異常なし」と書かない
+  for (const [name, t] of [['超過', r7], ['以内', r6], ['判定不能', rSmall], ['基準値未設定', rUnset], ['読めない', rBad]]) {
+    check(`手戻り率の表示(${name}): 「発火しない」と書かず、「異常なし」と書かない`, !/発火しない/.test(reworkText(t)) && !/異常なし/.test(reworkText(t)), reworkText(t));
+  }
+  check('手戻り率の表示: 判定不能・未設定は「適用の条件の欠落として止めている」と出す', /適用の条件の欠落として止めている/.test(reworkText(rSmall)) && /適用の条件の欠落として止めている/.test(reworkText(rUnset)));
+  {
+    const rji = base();
+    rji.records.history.changes = rji.records.history.changes.slice(0, 29);
+    const rj = tOf(rji);
+    check('差し戻し率の表示: 判定不能の文は「発火しない」でなく「0% の継続は判定しない。適用の条件の欠落として止める」', /0% の継続は判定しない/.test(rejectionText(rj)) && !/発火しない/.test(rejectionText(rj)) && rj.stops.some((x) => /0% の継続は判定しない。適用の条件の欠落として止める/.test(x.reason)));
+  }
+  // 移行の確認(単位 Y2 §3.3): 登録した変更種別が無い既定の構成は、手戻り率の記録が無くても止まらない(止める種別が無い)
+  {
+    const dflt = base();
+    dflt.config.delegation.changeTypes = [];
+    delete dflt.records.rework;
+    delete dflt.config.reworkBaseline;
+    const sd = autonomyState(dflt.config, dflt.records);
+    check('移行: 登録した変更種別が無い構成は、基準値も手戻り率の記録も無くても止まる種別が無い(0291 は既定の構成を止めない)', sd.types.length === 0 && sd.otherLevel === 'L1');
+  }
 
   // 表示と実態: どの状態でも、数えていない残りを省かない。/pit の注記と保証の開示の行に同じ文が出る
   for (const [name, t] of [['超過', r7], ['以内', r6], ['判定不能', rSmall], ['基準値未設定', rUnset], ['読めない', rBad], ['記録なし', tOf(base())]]) {

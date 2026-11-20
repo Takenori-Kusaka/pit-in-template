@@ -26,8 +26,9 @@
 //       (トレーラ Spec: F-NNN / Task-N)。分子はそのうち、(1) 既定ブランチの第1親の履歴に同じタスクを指すトレーラの取り込みが2つ以上ある、
 //       (2) 実装計画(specs/*/plan.md)の履歴のいずれかの版で状態が「やり直し」だった、のどちらかに当たるもの(和。重複は1つに数える)。
 //       基準値は構成の reworkBaseline(既定値なし。効力日は観測の窓と同じ)。評価の日 m では prevDay(m) 以前の記録だけで数える。
-//       最小標本数(30件)以上で比が基準値を超えた評価は、評価の日より後の登録日まで種別を止める。基準値が未設定・標本が足りないときは
-//       発火せず、その旨を表示する(止めない)。計画表に書かれない不採用の後の再作成は数えていない旨を、常に表示する
+//       最小標本数(30件)以上で比が基準値を超えた評価は、評価の日より後の登録日まで種別を止める。窓の母数が最小標本数に満たない(判定不能)・
+//       評価の日に効く基準値が無い(未設定)・手戻り率の記録を読めない(浅い取得を含む)ときも、適用の条件の欠落として種別を止める(ADR-0158)。
+//       判定を待たずに戻る(両方の窓が判定可能になった評価の日 / 基準値を記録した日より後の評価の日)。計画表に書かれない不採用の後の再作成は数えていない旨を、常に表示する
 //   登録日(registeredAt)の無い種別は、判定できないものとして止める。上限が L3 未満の構成では、すべての種別を止める
 //
 // 純粋な関数(autonomyState)と、記録を読む関数(readAutonomyRecords)を分ける。委任の判定(delegation.mjs)は
@@ -385,7 +386,7 @@ export function autonomyState(config, records) {
         }
       }
       if (latest.n < MIN_SAMPLE) {
-        stop('第2区分', 'unmeasurable', `差し戻し率の窓(${latest.from}〜${latest.to})の変更が ${latest.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。発火しない)`);
+        stop('第2区分', 'unmeasurable', `差し戻し率の窓(${latest.from}〜${latest.to})の変更が ${latest.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。0% の継続は判定しない。適用の条件の欠落として止める)`);
       }
     }
     // 第2区分: 手戻り率(差し戻し率と同じ評価の日・同じ窓。記録は評価の日の前日以前だけで数える)
@@ -393,8 +394,12 @@ export function autonomyState(config, records) {
     const rr = records.rework;
     if (!records.history?.available) {
       rework = { state: '読めない', reason: `既定ブランチの履歴を読めない(${records.history?.reason ?? '理由の記録なし'})` };
+      const shallow0 = /浅い|shallow/i.test(rework.reason) ? '。浅い取得のときは fetch-depth: 0 で取得する' : '';
+      stop('第2区分', 'unmeasurable', `手戻り率の記録を読めない(${rework.reason}${shallow0})。判定できないものとして止める`);
     } else if (!rr || !rr.available) {
       rework = { state: '読めない', reason: rr?.reason ?? '手戻り率の記録(トレーラと実装計画の履歴)を渡していない' };
+      const shallow = /浅い|shallow/i.test(rework.reason) ? '。浅い取得のときは fetch-depth: 0 で取得する' : '';
+      stop('第2区分', 'unmeasurable', `手戻り率の記録を読めない(${rework.reason}${shallow})。判定できないものとして止める`);
     } else {
       const reworkAt = (m) => {
         const c = reworkCount(config, id, rr, m, observationWindowAt(config, m));
@@ -403,6 +408,11 @@ export function autonomyState(config, records) {
         return { ...c, baseline: b.percent, baselineBy: b.decidedBy, baselineAt: b.recordedAt, state };
       };
       rework = reworkAt(monthStart(asOf));
+      if (rework.state === '判定不能') {
+        stop('第2区分', 'unmeasurable', `手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。記名と理由)`);
+      } else if (rework.state === '基準値未設定') {
+        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)。種別 settings で基準値と決め方を記録すると、記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})から戻る`);
+      }
       if (registeredAt) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
           const w = reworkAt(m);
@@ -432,7 +442,7 @@ export function rejectionText(type) {
   if (!r) return `判定できない(履歴を読めない)(${type.windowText})`;
   const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件(${r.windowText ?? `観測の窓 ${r.months ?? WINDOW_MONTHS}か月`})`;
   const und = `。${undeclaredText(r.undeclared)}`;
-  return r.state === '判定不能' ? `${head}。判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
+  return r.state === '判定不能' ? `${head}。判定不能(0% の継続は判定しない。適用の条件の欠落として止める。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
 }
 
 // ---------------------------------------------------------------- 手戻り率(第5章 5.4.6。process-compass #348)
@@ -533,10 +543,10 @@ function reworkTextBody(type) {
   if (!r) return `手戻り率: 判定できない(検知の記録を読んでいない)。${REWORK_UNCOUNTED}`;
   if (r.state === '読めない') return `手戻り率: 読めない(${r.reason})。${REWORK_UNCOUNTED}`;
   const head = `手戻り率: 窓 ${r.from}〜${r.to}: 母数 ${r.n} 件(タスク)のうち手戻り ${r.numerator} 件 = ${ratioText(r)}(内訳: トレーラの取り込みが2回以上のみ ${r.trailer} 件 / 計画表の「やり直し」のみ ${r.plan} 件 / 両方 ${r.both} 件)`;
-  const baseline = r.baseline === null ? '基準値が未設定(発火しない)' : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'})`;
+  const baseline = r.baseline === null ? '基準値が未設定(適用の条件の欠落として止めている)' : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'})`;
   const state =
     r.state === '判定不能'
-      ? `判定不能(発火しない。最小標本数 ${MIN_SAMPLE} 件に満たない)。${baseline}`
+      ? `判定不能(適用の条件の欠落として止めている。最小標本数 ${MIN_SAMPLE} 件に満たない)。${baseline}`
       : r.state === '基準値未設定'
         ? baseline
         : r.state === '基準値超過'

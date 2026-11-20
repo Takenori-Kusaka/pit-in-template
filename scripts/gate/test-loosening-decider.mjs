@@ -197,6 +197,8 @@ ${JSON.stringify(c4.observationWindow)}`
     b20.ok && cb20.reworkBaseline?.percent === 20 && cb20.reworkBaseline.history.length === 1 && cb20.reworkBaseline.history[0].decidedBy === A.name && cb20.reworkBaseline.history[0].reason === '直近の実績から置く' && /^\d{4}-\d{2}-\d{2}$/.test(cb20.reworkBaseline.history[0].recordedAt),
     `${b20.out}\n${JSON.stringify(cb20.reworkBaseline)}`
   );
+  // 単位 Y2: IMPL-0291 の後、基準値の未設定は登録した変更種別を止める。新しく置く変化点は停止を解くため、緩める向きとして残る(向きの原則: ADR-0129)
+  check('手戻り率の基準値: 未設定 → 20% の変化点は緩める向き(停止を解く)として記録される', cb20.changeLog.at(-1).direction === 'loosen', JSON.stringify(cb20.changeLog.at(-1)));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rework 20');
   const bKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 280 } } });
@@ -216,7 +218,8 @@ ${JSON.stringify(c4.observationWindow)}`
   git('commit', '-q', '-m', 'chore: rework 10');
   const bOff = settings({ summary: '基準値を外す', settings: { reworkBaseline: { percent: null } }, decidedBy: A.name, reason: '算出を見直すため' });
   const cbOff = JSON.parse(cfgText());
-  check('手戻り率の基準値: 外す(null)は緩める向きとして記名と理由を要し、履歴に残る', bOff.ok && cbOff.reworkBaseline?.percent === null && cbOff.reworkBaseline.history.at(-1).percent === null && /緩め|loosen/.test(JSON.stringify(cbOff.changeLog.at(-1))), bOff.out);
+  // 期待を改めた場面(単位 Y2): 外す(null)は、IMPL-0291 の後は未設定による停止を生むため強める向きへ改めた(旧: 緩める向き。未設定は最も緩いとしていた)。記名と理由は向きを問わず要る
+  check('手戻り率の基準値: 外す(null)は強める向き(未設定は停止)として記録され、記名と理由を要し、履歴に残る', bOff.ok && cbOff.reworkBaseline?.percent === null && cbOff.reworkBaseline.history.at(-1).percent === null && cbOff.changeLog.at(-1).direction === 'tighten', JSON.stringify(cbOff.changeLog.at(-1)));
   // 発効日(date)を過去へ置いても、窓と基準値の「記録した日」は入口を実行した日になる(過去の評価の日へ遡って当てない)
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rework off');
