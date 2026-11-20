@@ -1687,6 +1687,96 @@ ${instr}
   });
 }
 
+// ---------------------------------------------------------------- 標識を含むコミットの取り込み前の拒否(process-compass #356 / IMPL-0191 / ADR-0250)
+// 既定ブランチ(--policy-base)と同じ名の参照を基底とする PR だけを対象にする。名で比べる(SHA で比べない)
+{
+  const msgFile = path.join(os.tmpdir(), `pit-in-msg-${process.pid}.txt`);
+  const commitMsg = (msg) => {
+    fs.writeFileSync(msgFile, msg);
+    git('commit', '-q', '--allow-empty', '--cleanup=verbatim', '-F', msgFile);
+  };
+  const prM = { number: 3560, title: 'feat: x', body: BODY(), author: 'yamada', hostingLookup: BACKED, recordsBranch: NO_RECORDS };
+  const markerErrors = (r) => r.errors.filter((e) => /標識 Seeded-Error:/.test(e));
+  const run = (base, policyBase) => analyzePr({ root: TMP, base, policyBase, pr: prM });
+  const prBranch = (name, from, msgs) => {
+    git('switch', '-q', '-C', name, from);
+    for (const m of msgs) commitMsg(m);
+  };
+  // 既定ブランチの履歴に、古い標識のコミットを置く(説明のために語を書いたコミットが既に入っている状況)
+  git('switch', '-q', '-C', 'mk-default', 'main');
+  commitMsg('docs: 古い説明\n\nSeeded-Error: SE-OLD\n');
+  const shaOf = (ref) => git('rev-parse', ref).trim();
+  const rows = [
+    ['ng1: 基底=既定ブランチで標識あり → 短い SHA を出し、識別子・例外承認の案内を出さない', () => {
+      prBranch('mk-ng1', 'mk-default', ['feat: x\n\nSeeded-Error: SE-1\n']);
+      const e = markerErrors(run('mk-default', 'mk-default'));
+      return e.length === 1 && e[0].includes(shaOf('mk-ng1').slice(0, 12)) && !e[0].includes('SE-1') && !e[0].includes('例外承認で受ける');
+    }],
+    ['ng2: 行頭に空白のある標識 → 失敗', () => {
+      prBranch('mk-ng2', 'mk-default', ['feat: x\n\n  Seeded-Error: SE-2\n']);
+      return markerErrors(run('mk-default', 'mk-default')).length === 1;
+    }],
+    ['ng3: CRLF の本文 → 失敗', () => {
+      prBranch('mk-ng3', 'mk-default', ['feat: x\r\n\r\nSeeded-Error: SE-3\r\n']);
+      return markerErrors(run('mk-default', 'mk-default')).length === 1;
+    }],
+    ['ng4: 3コミットのうち2番目だけ → 2番目の SHA だけを挙げる', () => {
+      prBranch('mk-ng4', 'mk-default', ['feat: a\n', 'feat: b\n\nSeeded-Error: SE-4\n', 'feat: c\n']);
+      const e = markerErrors(run('mk-default', 'mk-default'));
+      return e.length === 1 && e[0].includes(shaOf('mk-ng4~1').slice(0, 12));
+    }],
+    ['ng5: 参照の名が origin/ つきでも同じ名として扱う', () => {
+      prBranch('mk-ng5', 'mk-default', ['feat: x\n\nSeeded-Error: SE-5\n']);
+      git('update-ref', 'refs/remotes/origin/mk-default', shaOf('mk-default'));
+      return markerErrors(run('origin/mk-default', 'mk-default')).length === 1;
+    }],
+    ['ok1: 標識の無いコミット → 標識の errors なし', () => {
+      prBranch('mk-ok1', 'mk-default', ['feat: x\n']);
+      return markerErrors(run('mk-default', 'mk-default')).length === 0;
+    }],
+    ['ok2: 基底=演習用ブランチ(既定ブランチと別の名)で標識あり → 対象にしない', () => {
+      git('switch', '-q', '-C', 'mk-drill', 'mk-default');
+      commitMsg('chore: drill\n');
+      prBranch('mk-ok2', 'mk-drill', ['feat: x\n\nSeeded-Error: SE-6\n']);
+      return markerErrors(run('mk-drill', 'mk-default')).length === 0;
+    }],
+    ['ok3: 既定ブランチの先端から切った演習用ブランチ(同じ SHA)宛でも、名で比べて対象にしない', () => {
+      git('switch', '-q', '-C', 'mk-drill-same', 'mk-default');
+      prBranch('mk-ok3', 'mk-drill-same', ['feat: x\n\nSeeded-Error: SE-7\n']);
+      return shaOf('mk-drill-same') === shaOf('mk-default') && markerErrors(run('mk-drill-same', 'mk-default')).length === 0;
+    }],
+    ['ok4: 引用・行の途中の語・コロンの前の空白は当たらない', () => {
+      prBranch('mk-ok4', 'mk-default', ['feat: a\n\n> Seeded-Error: SE-8\n', 'feat: b\n\n説明 Seeded-Error: の語\n', 'feat: c\n\nSeeded-Error : SE-9\n']);
+      return markerErrors(run('mk-default', 'mk-default')).length === 0;
+    }],
+    ['ok5: 既定ブランチの古い標識のコミットを、マージコミットで取り込んだ PR → 当たらない', () => {
+      git('switch', '-q', '-C', 'mk-main-old', 'main');
+      git('switch', '-q', '-C', 'mk-ok5', 'main');
+      commitMsg('feat: pr work\n');
+      git('merge', '-q', '--no-ff', '--no-edit', 'mk-default');
+      return markerErrors(run('mk-default', 'mk-default')).length === 0;
+    }],
+    ['ok6: --policy-base なし → 標識の errors なし、検査をしていない旨の notice', () => {
+      git('switch', '-q', 'mk-ng1');
+      const r = run('mk-default', null);
+      return markerErrors(r).length === 0 && r.notices.some((x) => /標識を含むコミットの取り込み前の検査.*していない/.test(x));
+    }],
+  ];
+  for (const [name, fn] of rows) {
+    n++;
+    let ok = false;
+    try {
+      ok = fn() === true;
+    } catch (e) {
+      console.log(`       ${e.message}`);
+    }
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} 標識の取り込み前の拒否: ${name}`);
+  }
+  git('switch', '-q', 'main');
+  fs.rmSync(msgFile, { force: true });
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log('');
 if (failures) {

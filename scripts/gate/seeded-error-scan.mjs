@@ -13,7 +13,7 @@
 //
 // 限界(記録にも書く): 標識の残存がないことだけを示す。手で写した変更・標識の形を変えた注入・GitHub 上で文を書き換えた squash・リポジトリの squash の既定の文の設定(PR の題だけ等)は、
 // この走査では拾えない。「流出がない」とは記録しない(標準 5.6.2: 4層あっても流出しないとは記録してはならない)。
-// PR の検査(check-pr.mjs)が import するための関数 markerCommitsInRange を、ここに置いている。check-pr.mjs はまだ import していない(取り込みの前の拒否は降ろしている途中。process-compass #356 / IMPL-0191)。
+// PR の検査(check-pr.mjs)が、取り込みの前の拒否(IMPL-0191。process-compass #356)のために、同じ判定の関数 markerCommitsInRange と失敗の文 PR_MARKER_HINT を import する。標識の判定は hasMarker の1か所に置く。
 // 標識の文字列は下の定数1か所に置く。標識の形が変わるとき(標識の可視性と秘匿の審議。#356 B)は、ここだけを直す。
 
 import fs from 'node:fs';

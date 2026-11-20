@@ -190,6 +190,7 @@ import {
 import { judgeOfForm, parseDeclaration, readRecordsBranch, recordFromForm } from './records.mjs';
 import { isClosedState, fastTrackMarkOf, stageQuotaFindings, quotaRefillProblem, latestStageGatePass, isStageGatePass, quotaOfBrief } from './exception-expiry.mjs';
 import { codeownersProblems } from './roster-ids.mjs';
+import { markerCommitsInRange, PR_MARKER_HINT, MARKER } from './seeded-error-scan.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
 
@@ -1681,6 +1682,11 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
   return out;
 }
 
+/** 参照の名(origin/・refs/remotes/origin/・refs/heads/ を外した名) */
+function refNameOf(ref) {
+  return String(ref ?? '').replace(/^refs\/remotes\/origin\//, '').replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+}
+
 /** PR の変更を読み、検査の結果を返す。root は検査するリポジトリ(試験では一時のリポジトリ) */
 export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head = null, requireControlApproval = false, today = null }) {
   const git = gitIn(root);
@@ -1713,6 +1719,16 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   const prHead = pr.head ?? ((git(['rev-parse', HEADREF]) ?? '').trim() || null);
   const prHosting = pr.hosting?.commits || pr.hosting?.pulls ? fixedHosting(pr.hosting.commits, pr.hosting.pulls) : (pr.hostingLookup ?? null);
   if (policyPoint !== mergeBase) result.notices.push(`基準値・名簿・区分の下限の規則・台帳の例外承認・停止の申し立ての解除は、PR の基底(${base})でなく既定ブランチ(${policyRef})の先端から読む`);
+  // 欠陥注入の標識を含むコミットの、既定ブランチへの取り込みの前の拒否(標準 第5章 5.6.2 第2層。process-compass #356 / IMPL-0191 / ADR-0250)。
+  // 対象は、基底が既定ブランチ(--policy-base)と同じ名の参照である PR だけ。名で比べる(SHA で比べると、既定ブランチの先端から切ったばかりの演習用ブランチ宛の PR を取り違える)。
+  // 演習用ブランチ宛の PR は対象にしない(見つける者の面に標識を出さない)。判定の関数は出荷の走査(seeded-error-scan.mjs)と同じ
+  if (!policyBase) {
+    result.notices.push('既定ブランチ(--policy-base)を渡していないため、標識を含むコミットの取り込み前の検査(第5章 5.6.2 第2層)をしていない');
+  } else if (refNameOf(base) === refNameOf(policyBase)) {
+    const hits = markerCommitsInRange(root, `${mergeBase}..${HEADREF}`);
+    if (hits === null) result.errors.push('標識を含むコミットの検査: PR のコミットを読めません(第5章 5.6.2 第2層)');
+    else for (const sha of hits) result.errors.push(`コミット ${sha.slice(0, 12)} の本文に標識 ${MARKER} の行があります。${PR_MARKER_HINT}`);
+  }
   const atHead = head
     ? (file) => git(['show', `${head}:${file}`])
     : (file) => {
