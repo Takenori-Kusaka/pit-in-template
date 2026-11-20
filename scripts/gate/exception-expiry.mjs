@@ -273,20 +273,113 @@ export function restrictedStateExceptions({ rows, units, isDecider = () => null 
   return { found, gaps, unconfirmed, unmarked: found.filter((x) => !x.marked).map((x) => x.id) };
 }
 
+/** 企画書の「例外の枠」の件数(7.9.5)。行が無い・件数として読めなければ null。集約の表示と check-pr の拒否が同じ定義を使う */
+export function quotaOfBrief(briefText) {
+  const line = String(briefText ?? '').split(/\r?\n/).find((l) => l.includes('例外の枠'));
+  const cell = line ? (cellsOf(line)[1] ?? '') : '';
+  const m = /^\s*(\d+)/.exec(cell.normalize('NFKC'));
+  return m ? Number(m[1]) : null;
+}
+
+/** ステージ移行ゲートの通過の記録か(判定記録の欄 gate・result)。集約と check-pr が同じ定義を使う */
+export function isStageGatePass(r) {
+  return /ステージ移行|^SG/.test(String(r?.gate ?? '').normalize('NFKC')) && String(r?.result ?? '').replace(/\*/g, '').trim() === '通過';
+}
+
+/** 判定記録の一覧のうち、直前(判定日時が最後)のステージ移行ゲートの通過の記録。無ければ undefined */
+export function latestStageGatePass(records) {
+  return (records ?? [])
+    .filter(isStageGatePass)
+    .sort((a, b) => String(a.judgedAt ?? '').localeCompare(String(b.judgedAt ?? '')))
+    .at(-1);
+}
+
+/**
+ * 当該ステージの 7.9.4 の行使(IMPL-0669・IMPL-0630)。restrictedStateExceptions の戻りに、直前のステージ移行ゲートの通過の時点の台帳に
+ * 無かった行(startIds に無い識別)の数 used を足す。集約の項目7 の表示と check-pr の枠の検査が同じ関数を呼ぶ。
+ * 範囲の外で足された行は units に無く再判定できないため、used は下限の値
+ */
+export function stageQuotaUse({ rows, units, isDecider = () => null, startIds = new Set() }) {
+  const r = restrictedStateExceptions({ rows, units, isDecider });
+  const inStage = r.found.filter((x) => !startIds.has(x.id));
+  return { ...r, inStage, used: inStage.length };
+}
+
 /**
  * 7.9.5 の枠と行使の件数(IMPL-0669)。briefText は企画書、used は当該ステージで行使した 7.9.4 の行の数、usedReadable は累計を読めたか。
  * 枠が読めなければ「確認できない」を出す。止めない
  */
 export function exceptionQuotaText({ briefText, used, usedReadable = true }) {
-  const line = String(briefText ?? '').split(/\r?\n/).find((l) => l.includes('例外の枠'));
-  const cell = line ? (cellsOf(line)[1] ?? '') : '';
-  const m = /^\s*(\d+)/.exec(cell.normalize('NFKC'));
-  const quota = m ? Number(m[1]) : null;
+  const quota = quotaOfBrief(briefText);
   const base = '制限された状態での例外決裁(7.9.4)の対応づけは 7.9.4 の条件による';
   if (!usedReadable) return base + '。ステージの累計を確認できない(直前のステージ移行ゲートの通過のコミットの台帳を読めない)';
   if (quota === null) return base + '。枠: 確認できない(企画書の「例外の枠」が件数として読めない) / 行使 ' + used + ' 件';
   const rest = quota - used;
   return base + '。枠 ' + quota + '・行使 ' + used + '・残り ' + rest + (rest < 0 ? '(超過)' : '') + '。止めない。累計は範囲の中で 7.9.4 の条件に当たる行の数(範囲の外で足された行は再判定できず、下限の値)';
+}
+
+/**
+ * 7.9.5 の枠の検査(IMPL-0630。PR の時点)。この PR を対象とする区分「例外」の行が 7.9.4 に当たり(対象の変更が一時制限の範囲に触れ、
+ * 数えた承認が 2 名に満たない。見分け方は restrictedStateExceptions と同じ。印は求めない。ADR-0217 決定2)、
+ * 当該ステージの行使(この PR の行を除く)が枠以上なら拒む(errors)。拒否の数え方と集約の表示は stageQuotaUse を共有する。
+ *   rows: 台帳の行(基底の行とこの PR で足した行)。prNumber: この PR の番号
+ *   thisUnit: この PR の { label, independent: { restrictionTouched, by } }。レビューを読めないなど確定できなければ null
+ *   pastUnitOf(label): 過去の行が名指す変更の同じ形。求められなければ null
+ *   startIds / usedReadable: 直前のステージ移行ゲートの通過の時点の台帳の識別子 / それを読めたか
+ * 枠を読めない・累計を読めない・この PR の判定の入力を読めない・過去の行を確定できないときは、拒まず注意(notices)に出す。
+ * 累計は確定できた行の数で、下限の値(範囲の外で足された行は再判定できない)
+ */
+export function stageQuotaFindings({ rows, prNumber, thisUnit, pastUnitOf, startIds = new Set(), usedReadable = true, briefText }) {
+  const errors = [];
+  const notices = [];
+  const refersThis = (target) => prNumber != null && new RegExp('PR\\s*#\\s*' + prNumber + '(?!\\d)', 'i').test(String(target ?? '').normalize('NFKC'));
+  const candidates = (rows ?? []).filter((r) => r.kind === '例外' && String(r.target ?? '').trim() && !/^\s*(G|SG)-?\d/.test(String(r.target).normalize('NFKC')));
+  const thisRows = candidates.filter((r) => refersThis(r.target));
+  if (!thisRows.length) return { errors, notices, used: null, quota: null, thisHit: false };
+  const labelOf = (target) => {
+    const t = String(target ?? '').normalize('NFKC');
+    const pr = /PR\s*#\s*(\d+)/i.exec(t)?.[1];
+    if (pr) return '#' + pr;
+    const hex = /\b[0-9a-f]{7,40}\b/i.exec(t)?.[0];
+    return hex ? 'コミット ' + hex.toLowerCase() : null;
+  };
+  const units = [];
+  const unresolved = [];
+  if (thisUnit) units.push(thisUnit);
+  for (const r of candidates) {
+    if (refersThis(r.target) || startIds.has(r.id)) continue;
+    const label = labelOf(r.target);
+    const u = label ? pastUnitOf?.(label) ?? null : null;
+    if (u) units.push(u);
+    else unresolved.push(r.id);
+  }
+  const q = stageQuotaUse({ rows: candidates, units, startIds });
+  const thisFound = q.found.filter((x) => thisRows.some((r) => r.id === x.id));
+  const prior = q.inStage.filter((x) => !thisRows.some((r) => r.id === x.id)).length;
+  const quota = quotaOfBrief(briefText);
+  if (!thisUnit) {
+    notices.push('7.9.5 の枠: この PR の変更ファイルかレビューを読めず、台帳の行が 7.9.4 に当たるかを確定できない。枠の検査をしない');
+    return { errors, notices, used: prior, quota, thisHit: false };
+  }
+  if (!thisFound.length) return { errors, notices, used: prior, quota, thisHit: false };
+  if (unresolved.length) notices.push('7.9.5 の枠: 過去の行 ' + unresolved.join('・') + ' が名指す変更を読めず、枠の行使を確定できない。確定できた行使 ' + prior + ' 件は下限の値');
+  if (!usedReadable) notices.push('7.9.5 の枠: 直前のステージ移行ゲートの通過のコミットの台帳を読めず、ステージの累計を確認できない。枠の検査をしない');
+  else if (quota === null) notices.push('7.9.5 の枠: 企画書の「例外の枠」が件数として読めない。枠の検査をしない(行使 ' + prior + ' 件)');
+  else if (prior >= quota) {
+    errors.push('制限された状態での例外決裁(7.9.4)の枠を使い切っています(枠 ' + quota + '・行使 ' + prior + ')。この PR の行 ' + thisFound.map((x) => x.id).join('・') + ' は 7.9.4 に当たり(承認権限の一時制限の範囲に触れ、数えた承認が 2 名に満たない)、使い切った後は認めません(第7章 7.9.5 要求事項3)。枠は事業ステージあたりで、期の途中で補充できません');
+  } else notices.push('7.9.5 の枠: この PR の行 ' + thisFound.map((x) => x.id).join('・') + ' は 7.9.4 に当たる。枠 ' + quota + '・行使 ' + prior + '・残り ' + (quota - prior) + '(この PR の行を除く)');
+  return { errors, notices, used: prior, quota, thisHit: true };
+}
+
+/**
+ * 枠の補充の検査(IMPL-0630 要求事項2)。企画書の「例外の枠」の件数が基底より増えたのに、この PR の変更にステージ移行ゲートの通過の記録が
+ * 無ければ問題を返す(無ければ null)。数値が無い状態から初めて書くのは補充に数えない(G-1 で定める行為)。読めない値は比べない
+ */
+export function quotaRefillProblem({ baseBrief, headBrief, stagePassInPr }) {
+  const b = quotaOfBrief(baseBrief);
+  const h = quotaOfBrief(headBrief);
+  if (b === null || h === null || h <= b || stagePassInPr) return null;
+  return '企画書の「例外の枠」を ' + b + ' から ' + h + ' に増やしていますが、この変更にステージ移行ゲートの通過の記録がありません。枠は事業ステージあたりで、期の途中で補充できません(第7章 7.9.5 要求事項2)。ステージ移行ゲートを通過した記録と同じ変更で改めます';
 }
 
 /** 記録の欠落の文(集約の gaps へ出す) */

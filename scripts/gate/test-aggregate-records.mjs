@@ -53,7 +53,7 @@ import {
   samplingMonthlyText,
 } from './aggregate-evidence.mjs';
 import { stopFindings } from './check-pr.mjs';
-import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
+import { fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText, stageQuotaUse, stageQuotaFindings } from './exception-expiry.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { ROOT, sealChangeLog, unmetShipGaps, derivedUnmet, delegationSamplingProblems } from './config.mjs';
@@ -669,7 +669,15 @@ const config = {
   const brief = '| 項目 | 内容 |\n| --- | --- |\n| 例外の枠(事業ステージあたり) | 2 |\n';
   check('IMPL-0669:ng 枠 2・行使 3 で「残り -1(超過)」を出し、止めない旨を添える', /枠 2・行使 3・残り -1\(超過\).*止めない/.test(exceptionQuotaText({ briefText: brief, used: 3 })), exceptionQuotaText({ briefText: brief, used: 3 }));
   // IMPL-0669:ok(適合の入力。枠が読めない・累計が読めないときは「確認できない」)
-  check('IMPL-0669:ok 枠が件数として読めない、またはステージの累計を読めないとき、確認できないと出す', /枠: 確認できない/.test(exceptionQuotaText({ briefText: '| 例外の枠(事業ステージあたり) | <件数> |', used: 1 })) && /累計を確認できない/.test(exceptionQuotaText({ briefText: brief, used: 0, usedReadable: false })));
+  // IMPL-0630:共有(集約の表示の累計と、check-pr の拒否の累計が同じ関数。同じ行・同じ範囲の台帳で同じ件数になる)
+  {
+    const prior = [ex('D-10', 'PR #10', 'x'), ex('D-13', 'abcdef1234', 'x')];
+    const startIds = new Set(['D-13']);
+    const shown = stageQuotaUse({ rows: prior, units, isDecider, startIds });
+    const refused = stageQuotaFindings({ rows: [...prior, ex('D-30', 'PR #30', 'x')], prNumber: 30, thisUnit: { label: '#30', independent: { restrictionTouched: true, by: [] } }, pastUnitOf: (l) => units.find((u) => u.label === l) ?? null, startIds, briefText: brief });
+    check('IMPL-0630:共有 集約の表示の行使(stageQuotaUse)と check-pr の拒否の行使が同じ件数(1 件。範囲の始点の台帳にある行は数えない)', shown.used === 1 && refused.used === 1 && /残り 1/.test(exceptionQuotaText({ briefText: brief, used: shown.used })), JSON.stringify({ shown: shown.used, refused: refused.used }));
+  }
+  check('IMPL-0669:ok 枠が件数として読めない、またはステージの累計を読めないとき、確認できないと出す',/枠: 確認できない/.test(exceptionQuotaText({ briefText: '| 例外の枠(事業ステージあたり) | <件数> |', used: 1 })) && /累計を確認できない/.test(exceptionQuotaText({ briefText: brief, used: 0, usedReadable: false })));
 }
 
 // ---------------------------------------------------------------- 判定記録(IMPL-0667・IMPL-0622・IMPL-0638)

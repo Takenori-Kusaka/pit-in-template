@@ -162,6 +162,7 @@ import {
   hasWriteAssociation,
   directionLabel,
   unquoteGitPath,
+  restrictionHit,
 } from './config.mjs';
 import { riskClassOf } from './delegation.mjs';
 import { readPolicy, parseStopRelease, STOP_LABEL, POLICY_FILE } from './org-assurance.mjs';
@@ -186,8 +187,8 @@ import {
   idMigrationRoster,
   controlApprovalBacking,
 } from './material-attribution.mjs';
-import { judgeOfForm, parseDeclaration, readRecordsBranch } from './records.mjs';
-import { isClosedState, fastTrackMarkOf } from './exception-expiry.mjs';
+import { judgeOfForm, parseDeclaration, readRecordsBranch, recordFromForm } from './records.mjs';
+import { isClosedState, fastTrackMarkOf, stageQuotaFindings, quotaRefillProblem, latestStageGatePass, isStageGatePass } from './exception-expiry.mjs';
 import { codeownersProblems } from './roster-ids.mjs';
 import { SPEC_FILE, changedSpecSections, compareSpecSections } from './spec-sections.mjs';
 import { parseClRecord } from './cl-judgment.mjs';
@@ -977,16 +978,23 @@ const KIND_OF_STATUS = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'ad
 /**
  * 2 つの版の間の変更の一覧(path・from・kind)。区分の下限の規則(riskFloorOf)へ渡す。
  * 名前の変更を検出し(from を持つ。kind は 'rename')、他の種類は --no-renames の name-status から読む。
- * measureCommitSize と PR の検査が使うものと同じ作り方。G-5 の段 mutation(mutation-stage.mjs)も、新しく定義せずこれを呼ぶ。
+ * measureCommitSize と PR の検査(analyzePr)も、変更の一覧を changesOf で作る(同じ関数を通す)。G-5 の段 mutation(mutation-stage.mjs)も、新しく定義せずこれを呼ぶ。
  * git は (args) => 出力 | null の関数。取れなければ null
  */
 export function changeListBetween(git, from, to) {
   const raw = git(['diff', '--numstat', '-z', '-M', from, to]);
   if (raw === null) return null;
-  const status = new Map(
-    (git(['diff', '--name-status', '-z', '--no-renames', from, to]) ?? '').split('\0').reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
-  );
-  return parseNumstatZ(raw).map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  return changesOf(parseNumstatZ(raw), statusMapOf(git(['diff', '--name-status', '-z', '--no-renames', from, to])));
+}
+
+/** `git diff --name-status -z --no-renames` の出力から、パス → 状態の文字(A・M・D ほか)の対応を作る。出力が無ければ空 */
+export function statusMapOf(raw) {
+  return new Map(String(raw ?? '').split('\0').reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), []));
+}
+
+/** numstat の項目(parseNumstatZ の戻り)と状態の対応から、変更の一覧(path・from・kind)を作る。変更の一覧の作り方の唯一の定義 */
+export function changesOf(entries, status) {
+  return entries.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
 }
 
 /**
@@ -1656,10 +1664,7 @@ export function measureCommitSize({ git, parent, commit, config = null, risk = n
     out.reason = '変更の起点の構成が未設定(初回)のため判定しない';
     return out;
   }
-  const status = new Map(
-    (git(['diff', '--name-status', '-z', '--no-renames', parent, commit]) ?? '').split('\0').reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
-  );
-  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  const changes = changesOf(all, statusMapOf(git(['diff', '--name-status', '-z', '--no-renames', parent, commit])));
   const day = (git(['show', '-s', '--format=%cs', commit]) ?? '').trim() || undefined;
   const assurance = assuranceOf(config, { exists: (p) => atBase(p) !== null, ...(day ? { today: day } : {}) });
   const eff = effectiveSizeLimits(config, { assurance, risk, floor: riskFloorOf(config.riskFloor?.rules, changes).floor, touched: all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), tracked: (() => { const t = git(['ls-tree', '-r', '-z', '--name-only', commit]); return t === null ? null : t.split('\0').filter(Boolean); })() });
@@ -1738,11 +1743,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   // 空白を無視した差分。空白だけが変わったファイル(一括整形)は、この出力に現れない。取得に失敗した場合は、空白を含めて数える
   const wsOut = git(['diff', '--numstat', '-z', '-M', '-w', '--ignore-blank-lines', mergeBase, HEADREF]);
   const ws = wsOut === null ? null : new Map(parseNumstatZ(wsOut).map((e) => [e.path, e]));
-  const status = new Map(
-    (git(['diff', '--name-status', '-z', '--no-renames', mergeBase, HEADREF]) ?? '')
-      .split('\0')
-      .reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
-  );
+  const status = statusMapOf(git(['diff', '--name-status', '-z', '--no-renames', mergeBase, HEADREF]));
 
   // --- 2. 変更規模(#295 / ADR-0058) ---
   // 超過は失敗にしない(標準 第4章「タスクの分割基準」。遮断として運用しない)。超過した PR は、(a) 結果に size:over を出し、
@@ -1754,7 +1755,8 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   const isTestPath = (f) => [...TEST_PATTERNS, ...extraNonProduct].some((g) => matchGlob(g, f));
   const { excluded, counted, testCounted } = classifySize(all, ws, { atBase, atHead, genPatterns, isTestPath });
   // 区分の下限の規則と変更の種類。size:over の下限(7)と、基準なし(null)の適用条件の両方が使う
-  const changes = all.map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+  const changes = changesOf(all, status);
+  result.changes = changes;
   const assurance = assuranceOf(limitsFrom, { exists: (p) => atPolicy(p) !== null });
   const declaredRisk = riskClassOf(pr.body);
   const eff = effectiveSizeLimits(limitsFrom, {
@@ -1883,6 +1885,57 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     result.notices.push(`閾値・除外設定だけを変える PR です(${thresholdChanges.join(', ')})。緩める向きの変更は /process-change と記名を要する`);
   }
   if (initial.length) result.notices.push(`閾値・除外設定の初回の設定(基底に無い): ${initial.join(', ')}。同時変更の検査の対象外`);
+
+  // --- 3b. 7.9.5 の枠(IMPL-0630。第7章 7.9.5 要求事項2・3) ---
+  // 7.9.4 の行(印を求めない。restrictedStateExceptions と同じ見分け方)が枠を超えたら失敗にする。企画書の枠を期の途中で増やす変更は、
+  // ステージ移行ゲートの通過の記録と同じ変更でなければ失敗にする。読めないものは注意に出し、拒まない。要求事項4(事後レビュー)は人が確かめる
+  {
+    const briefAtBase = atBase('docs/project-brief.md');
+    const briefAtHead = atHead('docs/project-brief.md');
+    const stagePassInPr = all.some((e) => /^docs\/gates\/.+\.md$/.test(e.path) && isStageGatePass(recordFromForm(atHead(e.path) ?? '', e.path, 'base')));
+    const refill = quotaRefillProblem({ baseBrief: briefAtBase, headBrief: briefAtHead, stagePassInPr });
+    if (refill) result.errors.push(refill);
+    const ledgerRows = [...parseLedger(atPolicy('docs/debt-ledger.md') ?? ''), ...parseLedger(atHead('docs/debt-ledger.md') ?? '')].filter((r, i, a) => a.findIndex((x) => x.id === r.id) === i);
+    if (ledgerRows.some((r) => r.kind === '例外') && policyConfigured) {
+      const lsGates = (git(['ls-tree', '-r', '--name-only', policyPoint, 'docs/gates/']) ?? '').split(/\r?\n/).filter((f) => /\.md$/.test(f));
+      const stageGate = latestStageGatePass(lsGates.map((f) => recordFromForm(git(['show', `${policyPoint}:${f}`]) ?? '', f, 'base')));
+      let startIds = new Set();
+      let usedReadable = true;
+      if (stageGate) {
+        const sha = lastCommitOfFile(git, policyPoint, stageGate.file);
+        const t = sha ? git(['show', `${sha}:docs/debt-ledger.md`]) : null;
+        if (t) startIds = new Set(parseLedger(t).map((r) => r.id));
+        else usedReadable = false;
+      }
+      const thisFiles = all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path]));
+      const author = prAuthorRef(pr);
+      const pull = Array.isArray(pr.reviews) ? pullInfoOf({ number: pr.number ?? null, author, reviews: pr.reviews, head: prHead }) : null;
+      const thisUnit = pull
+        ? { label: `#${pr.number}`, independent: { restrictionTouched: restrictionHit(policyConfig, thisFiles).hit, by: pull.approvers.filter((a) => a.login !== pull.author).map((a) => a.login) } }
+        : null;
+      const pastUnitOf = (label) => {
+        const n = /^#(\d+)$/.exec(label)?.[1];
+        if (n) {
+          const info = prHosting?.pullOf?.(n) ?? null;
+          const files = prHosting?.pullFilesOf?.(n) ?? null;
+          if (!info || !Array.isArray(files)) return null;
+          const p = pullInfoOf({ number: Number(n), author: info.author, reviews: info.reviews, head: null });
+          if (!p) return null;
+          return { label, independent: { restrictionTouched: restrictionHit(policyConfig, files, info.mergedAt).hit, by: p.approvers.filter((a) => a.login !== p.author).map((a) => a.login) } };
+        }
+        const hex = /^コミット ([0-9a-f]+)$/.exec(label)?.[1];
+        if (!hex) return null;
+        const names = git(['diff', '--name-only', '-z', `${hex}^`, hex]);
+        if (names === null) return null;
+        const at = (git(['show', '-s', '--format=%cI', hex]) ?? '').trim() || null;
+        return { label, independent: { restrictionTouched: restrictionHit(policyConfig, names.split('\0').filter(Boolean), at).hit, by: [] } };
+      };
+      const q = stageQuotaFindings({ rows: ledgerRows, prNumber: pr.number ?? null, thisUnit, pastUnitOf, startIds, usedReadable, briefText: briefAtHead ?? briefAtBase ?? '' });
+      result.errors.push(...q.errors);
+      result.notices.push(...q.notices);
+      result.exceptionQuota = { quota: q.quota, used: q.used, thisHit: q.thisHit };
+    }
+  }
 
   // --- 3a. 判定記録の写しと、台帳の行・閾値・停止の解除の様式の同時変更(IMPL-0554。第4章 G-5 の PR 単位の検査) ---
   // 判定記録の写し(docs/records/reviews/)を含む PR が、技術負債台帳(docs/debt-ledger.md)・閾値のファイルと構成の ci・task・guard・

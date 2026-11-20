@@ -15,8 +15,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
+import { ghHosting } from './material-attribution.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, extensionVerdict, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, extensionVerdict, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, stageQuotaFindings, quotaRefillProblem, quotaOfBrief, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -448,6 +449,54 @@ if (process.platform === 'win32') {
   const tx = fastTrackMetricsText(mm);
   check('IMPL-0612:ng 印 5 件・範囲に対応 1 件・変更 2 件で発生率 50%(250% にしない)', mm.markedInRange === 1 && /発生率 50%/.test(tx) && !/250%/.test(tx), tx);
   check('IMPL-0612:ok 全体 5 件の表示と、範囲へ対応づかない行 4 件の併記が残る', /印のある行 5 件/.test(tx) && /範囲へ対応づかない行 4 件/.test(tx), tx);
+}
+
+// ---- 7.9.5 の枠の拒否と補充の検査(IMPL-0630。束 B28 U5)
+{
+  const ex = (id, target) => ({ id, kind: '例外', target, content: '印なしの例外', state: '未返却', due: '2026-12-31 まで。回収責任者 名簿 丙', approver: '名簿 乙' });
+  const brief = (n) => `| 項目 | 内容 |\n| --- | --- |\n| 例外の枠(事業ステージあたり) | ${n} |\n`;
+  const hit = (label, by = []) => ({ label, independent: { restrictionTouched: true, by } });
+  const noHit = (label) => ({ label, independent: { restrictionTouched: false, by: [] } });
+  const past = { '#5': hit('#5'), '#6': noHit('#6'), '#7': hit('#7', ['a', 'b']) };
+  const find = (o) => stageQuotaFindings({ prNumber: 20, thisUnit: hit('#20'), pastUnitOf: (l) => past[l] ?? null, briefText: brief(1), ...o });
+  // ng: 枠 1・行使 1 の段で、7.9.4 に当たる新しい行(印の無い行。ADR-0217 決定2)は拒む
+  const ng = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')] });
+  check('IMPL-0630:ng 枠 1・行使 1 の段で 7.9.4 に当たる新しい行(印なし)は拒む', ng.errors.length === 1 && /枠を使い切って/.test(ng.errors[0]) && ng.used === 1, JSON.stringify(ng));
+  // ok: 枠 2・行使 1 は通り、残りを注意に出す
+  const ok2 = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], briefText: brief(2) });
+  check('IMPL-0630:ok 枠 2・行使 1 は通り、残り 1 を注意に出す', ok2.errors.length === 0 && /残り 1/.test(ok2.notices.join()), JSON.stringify(ok2));
+  // ok: 制限の範囲に触れない行・2 名の承認がある行は 7.9.4 でなく、行使に数えない
+  const notCounted = find({ rows: [ex('D-6', 'PR #6'), ex('D-7', 'PR #7'), ex('D-20', 'PR #20')] });
+  check('IMPL-0630:ok 範囲に触れない行・2 名承認の行は行使に数えず、枠 1 でも通る', notCounted.errors.length === 0 && notCounted.used === 0, JSON.stringify(notCounted));
+  // ok: この PR の行が 7.9.4 に当たらなければ(範囲に触れない)、枠を使い切っていても拒まない
+  const notThis = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], thisUnit: noHit('#20') });
+  check('IMPL-0630:ok この PR の行が 7.9.4 に当たらなければ、枠を使い切っていても拒まない', notThis.errors.length === 0 && notThis.thisHit === false, JSON.stringify(notThis));
+  // ok: 直前のステージ移行ゲートの通過の時点の台帳にある行は、ステージの累計に数えない
+  const carried = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], startIds: new Set(['D-5']) });
+  check('IMPL-0630:ok ステージ移行ゲートの通過の時点の台帳にある行は行使に数えない(枠 1 でも通る)', carried.errors.length === 0 && carried.used === 0, JSON.stringify(carried));
+  // ok: 過去の行の PR を読めない → 注意で通る(確定できた行使は下限)。枠・累計が読めない場合も同様
+  const unres = find({ rows: [ex('D-9', 'PR #9'), ex('D-20', 'PR #20')] });
+  check('IMPL-0630:ok 過去の行の PR を読めないときは、枠の行使を確定できないと注意に出して通る', unres.errors.length === 0 && /D-9.*確定できない/.test(unres.notices.join()), JSON.stringify(unres));
+  const noQuota = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], briefText: '| 例外の枠(事業ステージあたり) | <件数> |' });
+  const noRead = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], usedReadable: false });
+  check('IMPL-0630:ok 枠が件数として読めない・累計を読めないときは、注意に出して拒まない', noQuota.errors.length === 0 && noRead.errors.length === 0 && /読めない/.test(noQuota.notices.join()) && /読めず/.test(noRead.notices.join()));
+  const noUnit = find({ rows: [ex('D-5', 'PR #5'), ex('D-20', 'PR #20')], thisUnit: null });
+  check('IMPL-0630:ok この PR のレビューを読めない(thisUnit が null)ときは、注意に出して拒まない', noUnit.errors.length === 0 && /確定できない/.test(noUnit.notices.join()));
+  // ok: この PR を対象とする行が無ければ何も出さない。ゲートの判定を対象とする行は数えない
+  check('IMPL-0630:ok この PR を対象とする例外の行が無ければ何も出さない', find({ rows: [ex('D-5', 'PR #5')] }).errors.length === 0 && find({ rows: [ex('D-5', 'PR #5')] }).notices.length === 0);
+  // 補充: 枠を増やす変更にステージ移行ゲートの通過が無ければ失敗。ある・初めて書く・減らすは通す
+  check('IMPL-0630:ng 枠を 2 から 3 に増やし、この変更にステージ移行ゲートの通過が無ければ問題を返す', /2 から 3/.test(quotaRefillProblem({ baseBrief: brief(2), headBrief: brief(3), stagePassInPr: false }) ?? ''));
+  check('IMPL-0630:ok 通過の記録が同じ変更にあれば通す', quotaRefillProblem({ baseBrief: brief(2), headBrief: brief(3), stagePassInPr: true }) === null);
+  check('IMPL-0630:ok 数値が無い状態から初めて書くのは補充に数えない。減らす変更も通す', quotaRefillProblem({ baseBrief: '| 例外の枠(事業ステージあたり) | <件数> |', headBrief: brief(3), stagePassInPr: false }) === null && quotaRefillProblem({ baseBrief: brief(3), headBrief: brief(2), stagePassInPr: false }) === null);
+  // 集約の表示と同じ定義(quotaOfBrief・stageQuotaUse・latestStageGatePass)
+  check('IMPL-0630:共有 quotaOfBrief は全角の数字・行が無いときの扱いを集約の表示(exceptionQuotaText)と揃える', quotaOfBrief(brief(2)) === 2 && quotaOfBrief('| 例外の枠 | 3件 |') === 3 && quotaOfBrief('x') === null && /枠 2・行使 1/.test(exceptionQuotaText({ briefText: brief(2), used: 1 })));
+  const recs = [{ gate: 'ステージ移行ゲート', result: '通過', judgedAt: '2026-01-01 10:00', file: 'a' }, { gate: 'SG-2', result: '**通過**', judgedAt: '2026-03-01 10:00', file: 'b' }, { gate: 'SG-3', result: '差し戻し', judgedAt: '2026-05-01 10:00', file: 'c' }, { gate: 'G-5', result: '通過', judgedAt: '2026-06-01 10:00', file: 'd' }];
+  check('IMPL-0630:共有 latestStageGatePass は通過のステージ移行ゲートのうち判定日時が最後の記録を返す', latestStageGatePass(recs)?.file === 'b' && latestStageGatePass([]) === undefined);
+  // ホスティングの読み(gh)。過去の行の PR の変更ファイルを、rename の旧い名も含めて返す。読めなければ null(注意で通る側へ倒れる)
+  const calls = [];
+  const hosted = ghHosting('o/r', { run: (args) => { calls.push(args.join(' ')); return [{ filename: 'src/pay/new.js', previous_filename: 'src/pay/old.js' }, { filename: 'src/b.js' }]; } });
+  check('IMPL-0630:ok ghHosting.pullFilesOf は PR の変更ファイル(rename の旧い名を含む)を返し、同じ PR を引き直さない', hosted.pullFilesOf(5).join() === 'src/pay/new.js,src/pay/old.js,src/b.js' && hosted.pullFilesOf(5).length === 3 && calls.length === 1 && /pulls\/5\/files/.test(calls[0]), calls.join('|'));
+  check('IMPL-0630:ok ghHosting.pullFilesOf は gh が失敗したら null を返す(拒まず注意に出す側)', ghHosting('o/r', { run: () => { throw new Error('x'); } }).pullFilesOf(5) === null && ghHosting('', { run: () => [] }).pullFilesOf(5) === null);
 }
 
 console.log(`\n${checks - failures}/${checks} 合格`);

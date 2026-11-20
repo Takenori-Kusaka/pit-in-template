@@ -560,6 +560,21 @@ export function ghHosting(repo, { run = null } = {}) {
       cache.set(k, out);
       return out;
     },
+    /** PR の変更ファイルの一覧(rename は新旧の名)。7.9.5 の枠の検査が、過去の行の PR が一時制限の範囲に触れたかを求めるときに使う。読めなければ null */
+    pullFilesOf(number) {
+      if (!repo || !number) return null;
+      const k = `pullFiles:${number}`;
+      if (cache.has(k)) return cache.get(k);
+      let out = null;
+      try {
+        const files = call(['api', '--paginate', `repos/${repo}/pulls/${number}/files`]);
+        out = Array.isArray(files) ? files.flatMap((f) => [f?.filename, f?.previous_filename].filter(Boolean)) : null;
+      } catch {
+        out = null;
+      }
+      cache.set(k, out);
+      return out;
+    },
     /** PR のコミットの作成者([{ login, id }])。PR の時点の検査が、検査する PR 自身の帰属を確かめるときに使う(#428)。読めなければ null */
     pullCommitAuthors(number) {
       if (!repo || !number) return null;
@@ -592,6 +607,8 @@ export function fixedHosting(commits, pulls = null) {
     commitOf: (sha) => (sha && own(m, sha) && m[sha]?.number == null ? m[sha] : null),
     pullCommitAuthors: (number) => (own(p, number) ? (p[String(number)]?.commitAuthors ?? null) : null),
     // pulls の { author, mergedAt, reviews }(REST の形)。無ければ null(PR を引けない)
+    // pulls の files(変更ファイルの一覧)。無ければ null
+    pullFilesOf: (number) => (own(p, number) && Array.isArray(p[String(number)]?.files) ? p[String(number)].files : null),
     pullOf: (number) => (own(p, number) && p[String(number)]?.reviews !== undefined ? { number: Number(number), author: p[String(number)].author ?? null, mergedAt: p[String(number)].mergedAt ?? null, reviews: p[String(number)].reviews } : null),
   };
 }

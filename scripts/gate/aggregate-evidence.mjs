@@ -138,7 +138,7 @@ import {
   unmetShipGaps,
   derivedUnmet,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, restrictedStateExceptions, exceptionQuotaText } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
@@ -4632,13 +4632,9 @@ if (isMain) {
       const p = resolveSigner(config, approver);
       return p ? holderId === p.id : false;
     };
-    const restricted = restrictedStateExceptions({ rows, units: changeUnits, isDecider });
-    for (const g of restricted.gaps) gaps.push(g);
+    // 累計の数え方は check-pr の枠の検査と同じ関数(exception-expiry.mjs の stageQuotaUse)。startIds は下で直前のステージ移行ゲートの台帳から作る
     // ステージの累計: 直前のステージ移行ゲートの通過のコミットの台帳と先端の台帳の差
-    const stageGate = gateRecordList
-      .filter((r) => /ステージ移行|^SG/.test(String(r.gate ?? '').normalize('NFKC')) && resultWord(r.result) === '通過')
-      .sort((a, b) => String(a.judgedAt ?? '').localeCompare(String(b.judgedAt ?? '')))
-      .at(-1);
+    const stageGate = latestStageGatePass(gateRecordList);
     let startIds = new Set();
     let usedReadable = true;
     if (stageGate) {
@@ -4647,7 +4643,9 @@ if (isMain) {
       if (t) startIds = new Set(parseLedger(t).map((r) => r.id));
       else usedReadable = false;
     }
-    const used = restricted.found.filter((x) => !startIds.has(x.id)).length;
+    const restricted = stageQuotaUse({ rows, units: changeUnits, isDecider, startIds });
+    for (const g of restricted.gaps) gaps.push(g);
+    const used = restricted.used;
     const briefText = exists('docs/project-brief.md') ? fs.readFileSync(path.join(ROOT, 'docs/project-brief.md'), 'utf8') : '';
     const defectText = exists(DEFECT_FILE) ? fs.readFileSync(path.join(ROOT, DEFECT_FILE), 'utf8') : null;
     return {

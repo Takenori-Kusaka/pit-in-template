@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { specSections, changedSpecSections } from './spec-sections.mjs';
 import { isProseDocument } from './check-pr.mjs';
-import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf } from './check-pr.mjs';
+import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf, changeListBetween } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
 const git = (...args) => execFileSync('git', args, { cwd: TMP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1555,6 +1555,113 @@ ${instr}
   u('isProseDocument: 強制層・構成(ワークフロー・scripts/gate・process.config.json・.claude)は偽', !isProseDocument('.github/workflows/zz.yml') && !isProseDocument('scripts/gate/zz-extra.mjs') && !isProseDocument('process.config.json') && !isProseDocument('.claude/settings.json'));
   u('isProseDocument: 強制層の置き場の *.md は偽(.github の様式・スキル・scripts/gate の README)', !isProseDocument('.github/PULL_REQUEST_TEMPLATE.md') && !isProseDocument('.claude/skills/pit/SKILL.md') && !isProseDocument('scripts/gate/README.md'));
   u('isProseDocument: 製品のコード・ロックファイル・置き場の外の md・文書の置き場のコードは偽', !isProseDocument('src/a.js') && !isProseDocument('package-lock.json') && !isProseDocument('yarn.lock') && !isProseDocument('src/notes.md') && !isProseDocument('docs/tool.js'));
+}
+
+// ---------------------------------------------------------------- 7.9.5 の枠の検査(IMPL-0630。束 B28 U5)
+// 制限(src/pay/**)を発動した構成と、枠・ステージ移行ゲートの記録・過去の行を持つ基底を作り、PR の行が 7.9.4 に当たるときの拒否・通過を見る。
+// 7.9.4 の行の見分けは印を求めない(ADR-0217 決定2)。過去の行の PR は hostingLookup の pullOf・pullFilesOf から求める
+{
+  const BRIEF = (q) => `# 企画書\n\n| 項目 | 内容 |\n| --- | --- |\n| 例外の枠(事業ステージあたり) | ${q} |\n`;
+  const STAGE_GATE = (id, at) => `| ゲート | ステージ移行ゲート |\n| 対象 | ${id} |\n| 結果 | 通過 |\n| 判定日時 | ${at} |\n`;
+  const quotaRow = (id, pr) => exceptionRow(id, pr, { content: '制限中の範囲の変更を単独承認で通す' });
+  const commitMain = (msg) => {
+    git('add', '-A');
+    git('commit', '-q', '-m', msg);
+  };
+  git('switch', '-q', 'main');
+  write('process.config.json', {
+    ...config,
+    changeLog: [{ kind: 'notice', event: 'restriction', at: '2026-01-01T00:00:00+09:00', date: '2026-01-01', restriction: { id: 'r-pay', person: '佐藤 花子', paths: ['src/pay/**'], basis: 'x', recordedBy: '鈴木 一郎' } }],
+  });
+  write('docs/project-brief.md', BRIEF(1));
+  write('docs/gates/sg-1.md', STAGE_GATE('SG-1', '2026-06-01 10:00'));
+  commitMain('quota: stage gate 1 and restriction');
+  write('docs/debt-ledger.md', read('docs/debt-ledger.md') + quotaRow('D-005', 5));
+  commitMain('quota: past exception row');
+  // 過去の PR #5 は src/pay/** に触れ、承認なし(7.9.4 に当たる)。#6 は範囲の外
+  const pulls = { 5: { files: ['src/pay/x.js'], reviews: [], mergedAt: '2026-07-01T00:00:00Z' }, 6: { files: ['src/other.js'], reviews: [], mergedAt: '2026-07-01T00:00:00Z' } };
+  const hosting = (known = [5, 6]) => ({
+    ...BACKED,
+    pullOf: (k) => (known.includes(Number(k)) ? { number: Number(k), author: { login: 'tester', id: UID.tester }, mergedAt: pulls[k].mergedAt, reviews: pulls[k].reviews } : null),
+    pullFilesOf: (k) => (known.includes(Number(k)) ? pulls[k].files : null),
+  });
+  const quotaPr = (extra = {}) => () => ({ reviews: [], hostingLookup: hosting(), ...extra });
+  const addRow = (file = 'src/pay/y.js') => () => {
+    write(file, lines(3, 'p'));
+    write('docs/debt-ledger.md', read('docs/debt-ledger.md') + quotaRow('D-020', 100 + n));
+  };
+  const quotaErr = (r) => r.errors.filter((e) => /7\.9\.[45]|例外の枠/.test(e));
+  const noQuotaErr = (r) => (quotaErr(r).length ? [`枠の失敗が出てはならない: ${quotaErr(r)}`] : []);
+  const quotaNote = (re) => (r) => (r.notices.some((x) => re.test(x)) ? [] : [`${re} の注意が出ていない: ${JSON.stringify(r.notices.filter((x) => /7\.9\.5/.test(x)))}`]);
+
+  // ng: 枠 1・行使 1(#5)の段で、7.9.4 に当たる新しい行(印なし)→ 失敗
+  scenario('IMPL-0630:ng 枠 1・行使 1 の段で、7.9.4 に当たる新しい行(印なし)は G-5 を失敗させる', quotaPr(), addRow(), (r) => (has(r, /枠を使い切って/) && r.exceptionQuota?.used === 1 ? [] : [`失敗が出ていない: ${JSON.stringify(r.errors)} ${JSON.stringify(r.exceptionQuota)}`]));
+  // ok: 範囲に触れない変更の行は 7.9.4 でなく、枠を使い切っていても通る
+  scenario('IMPL-0630:ok この PR の行が 7.9.4 に当たらない(制限の範囲に触れない)なら、枠を使い切っていても拒まない', quotaPr(), addRow('src/other2.js'), (r) => [...noQuotaErr(r), ...(r.exceptionQuota?.thisHit === false ? [] : ['thisHit が偽でない'])]);
+  // ok: 過去の行の PR を読めない → 注意で通る
+  scenario('IMPL-0630:ok 過去の行の PR を読めないときは、枠の行使を確定できないと注意に出して通る', quotaPr({ hostingLookup: hosting([]) }), addRow(), (r) => [...noQuotaErr(r), ...quotaNote(/D-005.*確定できない/)(r)]);
+  // ok: この PR のレビューを読めない → 注意で通る
+  scenario('IMPL-0630:ok この PR のレビューを読めないときは、7.9.4 に当たるかを確定できないと注意に出して通る', () => ({ reviews: undefined, hostingLookup: hosting() }), addRow(), (r) => [...noQuotaErr(r), ...quotaNote(/確定できない/)(r)]);
+  // 補充
+  const sgNew = () => write('docs/gates/sg-2.md', STAGE_GATE('SG-2', '2026-09-01 10:00'));
+  scenario('IMPL-0630:ng 枠を 1 から 2 に増やし、この変更にステージ移行ゲートの通過が無ければ失敗', quotaPr(), () => write('docs/project-brief.md', BRIEF(2)), (r) => (has(r, /1 から 2 に増やして/) ? [] : [`補充の失敗が出ていない: ${JSON.stringify(r.errors)}`]));
+  scenario('IMPL-0630:ok 枠を増やす変更にステージ移行ゲートの通過の記録が同じ変更に在れば通る', quotaPr(), () => { write('docs/project-brief.md', BRIEF(2)); sgNew(); }, (r) => (has(r, /例外の枠/) ? [`補充の失敗が出てはならない: ${JSON.stringify(r.errors)}`] : []));
+  // ok: ステージ移行ゲートを通過した後の台帳には #5 の行がある。累計が 0 になり、枠 1 でも通る
+  git('switch', '-q', 'main');
+  write('docs/gates/sg-2.md', STAGE_GATE('SG-2', '2026-09-01 10:00'));
+  commitMain('quota: stage gate 2');
+  scenario('IMPL-0630:ok 次のステージ移行ゲートの通過の後は累計が 0 になり、枠 1 でも通る', quotaPr(), addRow(), (r) => [...noQuotaErr(r), ...(r.exceptionQuota?.used === 0 && r.exceptionQuota?.thisHit === true ? [] : [`used/thisHit: ${JSON.stringify(r.exceptionQuota)}`])]);
+  // 規則集・段のコマンド・閾値の変更を製品のコードと同じ PR で変える(IMPL-0836。項目7)
+  git('switch', '-q', 'main');
+  const cfg = JSON.parse(read('process.config.json'));
+  write('process.config.json', { ...cfg, ci: { ...cfg.ci, mutationThreshold: 80 } });
+  const nodeAdapter = JSON.parse(read('adapters/node.json'));
+  write('adapters/node.json', { ...nodeAdapter, thresholdFiles: [...nodeAdapter.thresholdFiles, 'regulatory/rules.yaml'] });
+  write('regulatory/rules.yaml', 'rules: [a, b]\n');
+  write('scripts/regulatory-check.sh', 'echo ok\n');
+  commitMain('quota: mutation threshold and regulatory rules');
+  const mixed = (re) => (r) => (has(r, /閾値・除外設定と製品のコードが同じ PR/) && r.thresholds.changed.some((c) => re.test(c)) ? [] : [`同時変更の失敗が出ていない: ${JSON.stringify(r.thresholds)} ${JSON.stringify(r.errors)}`]);
+  scenario('IMPL-0836:ng ci.mutationThreshold を下げる変更を製品のコードと同じ PR に入れると失敗する', {}, () => {
+    const c = JSON.parse(read('process.config.json'));
+    write('process.config.json', { ...c, ci: { ...c.ci, mutationThreshold: 50 } });
+    write('src/a.js', lines(21));
+  }, mixed(/process\.config\.json\(ci\)/));
+  scenario('IMPL-0836:ng 段のコマンド(アダプタの phases.mutation)を変える変更を製品のコードと同じ PR に入れると失敗する', {}, () => {
+    const a = JSON.parse(read('adapters/node.json'));
+    write('adapters/node.json', { ...a, phases: { ...a.phases, mutation: 'npx stryker run' } });
+    write('src/a.js', lines(21));
+  }, mixed(/adapters\/node\.json/));
+  scenario('IMPL-0836:ng 段のコマンド(phases.regulatory)を空にする変更を製品のコードと同じ PR に入れると失敗する', {}, () => {
+    const a = JSON.parse(read('adapters/node.json'));
+    write('adapters/node.json', { ...a, phases: { ...a.phases, regulatory: '' } });
+    write('src/a.js', lines(21));
+  }, mixed(/adapters\/node\.json/));
+  scenario('IMPL-0836:ng 採用者が thresholdFiles へ登録した規則集のファイルの変更は、製品のコードと同じ PR に入れると失敗する', {}, () => {
+    write('regulatory/rules.yaml', 'rules: [a]\n');
+    write('src/a.js', lines(21));
+  }, mixed(/regulatory\/rules\.yaml/));
+  scenario('IMPL-0836:ok 規則集の変更だけの PR は同時変更の失敗にならない', {}, () => {
+    write('regulatory/rules.yaml', 'rules: [a]\n');
+  }, (r) => (has(r, /閾値・除外設定と製品のコードが同じ PR/) ? ['同時変更の失敗が出てはならない(統制の設定の陰性の確認は別に要る)'] : []));
+  scenario('IMPL-0836:限界 thresholdFiles に登録していない規則集のファイルは、同時変更の検査に掛からない(登録は採用者の責務)', {}, () => {
+    write('scripts/regulatory-check.sh', 'echo changed\n');
+    write('src/a.js', lines(21));
+  }, (r) => (has(r, /閾値・除外設定と製品のコードが同じ PR/) ? ['登録していないファイルまで閾値として扱っている(限界の記述が事実と合わない)'] : []));
+  // M2-1: 変更の一覧は check-pr の判定と段 mutation で同じ関数を通る(rename・delete・add・modify の一致)
+  git('switch', '-q', 'main');
+  write('src/old-name.js', lines(30, 'o'));
+  write('src/gone.js', lines(10, 'g'));
+  commitMain('changes: rename base');
+  scenario('M2-1:共有 analyzePr が使う変更の一覧が changeListBetween と一致する(add・modify・delete・rename)', {}, () => {
+    git('mv', 'src/old-name.js', 'src/new-name.js');
+    remove('src/gone.js');
+    write('src/added.js', lines(4, 'n'));
+    write('src/a.js', lines(25));
+  }, (r) => {
+    const sorted = (xs) => JSON.stringify([...xs].map((c) => ({ path: c.path, from: c.from ?? null, kind: c.kind })).sort((a, b) => a.path.localeCompare(b.path)));
+    const direct = changeListBetween((args) => git(...args), 'main', `pr-${n}`);
+    return sorted(r.changes ?? []) === sorted(direct) && direct.some((c) => c.kind === 'rename') && direct.some((c) => c.kind === 'delete') && direct.some((c) => c.kind === 'add') ? [] : [`一致しない: ${sorted(r.changes ?? [])} / ${sorted(direct)}`];
+  });
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
