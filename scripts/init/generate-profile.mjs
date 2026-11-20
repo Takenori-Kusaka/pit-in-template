@@ -2433,7 +2433,7 @@ export function diffConfig(before, after, opts = {}) {
       );
     }
     // 段 mutation の閾値(ci.mutationThreshold。CL3・附属書F の適用で合否を決める値)。カバレッジの下限と同じ扱いで、
-    // 下げる変更と設定済みの値を外す変更は緩める向き、初めて入れる変更と上げる変更は緩める向きではない(束 B28。ADR-0224 決定6)
+    // 下げる変更と設定済みの値を外す変更は緩める向き、初めて入れる変更と上げる変更は緩める向きではない(束 B28。カバレッジの下限と同じ扱い。閾値を G-1 で定めて記名する根拠は ADR-0224 決定6)
     {
       const bm = num(before.ci?.mutationThreshold);
       const am = num(after.ci?.mutationThreshold);
