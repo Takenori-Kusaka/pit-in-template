@@ -312,7 +312,7 @@ export function autonomyState(config, records) {
         const phaseNote = d.phase === '運用' ? '' : '。検出の時点が空欄のため、運用の事象として数える';
         const label = `${d.id || '(ID なし)'} ${d.severity}(AI 起因: ${cause || '空欄'}${phaseNote})`;
         // 登録外の ID の行は空欄と同じ扱い。機械は書き誤りと種別の取り下げを見分けられないため、戻し方を理由に書く
-        const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る。行の記録は書き換えない` : '';
+        const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。${cause === 'あり' ? '取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る' : '取り下げた種別の行でも、原因を特定するまで止まる(特定した後は、残りの種別は事象の日より後の登録の判定で戻る)'}。行の記録は書き換えない` : '';
         if (!ai) {
           // 原因を特定できない事象は、原因を特定する(AI 起因を「あり」か「なし」にする)まで止める。登録し直しでは解かない(N-6 の5。突合 X-3)
           stop('第1区分', 'cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`);
@@ -408,10 +408,13 @@ export function autonomyState(config, records) {
         return { ...c, baseline: b.percent, baselineBy: b.decidedBy, baselineAt: b.recordedAt, state };
       };
       rework = reworkAt(monthStart(asOf));
+      rework.pendingBaseline = pendingBaselineOf(config, monthStart(asOf));
       if (rework.state === '判定不能') {
-        stop('第2区分', 'unmeasurable', `手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。記名と理由)`);
+        stop('第2区分', 'unmeasurable', `手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。緩める向きの決定者の記名と理由)`);
       } else if (rework.state === '基準値未設定') {
-        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)。種別 settings で基準値と決め方を記録すると、記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})から戻る`);
+        const pb = rework.pendingBaseline;
+        const pbText = pb ? `。記録済みの基準値 ${pb.percent}%(記録した日 ${pb.recordedAt})は、次の評価の日 ${pb.effectiveFrom} から効く(記録し直さなくてよい)` : '';
+        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)${pbText}。${pb ? '' : '種別 settings で基準値を記録すると、'}記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})から戻る`);
       }
       if (registeredAt) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
@@ -538,12 +541,23 @@ export function reworkText(type) {
   return basis ? `${body}。${basis}` : body;
 }
 
+/** 評価の日 day にまだ効いていない記録済みの基準値(recordedAt が day 以後で最後の、値のある記録)。無ければ null。config.mjs は変えず、ここで履歴を読む */
+function pendingBaselineOf(config, day) {
+  const h = Array.isArray(config?.reworkBaseline?.history) ? config.reworkBaseline.history : [];
+  let e = null;
+  for (const x of h) {
+    if (typeof x?.percent === 'number' && Number.isFinite(x.percent) && x.percent >= 0 && x.percent <= 100 && isRealDay(x?.recordedAt) && String(x.recordedAt) >= String(day)) e = x;
+  }
+  return e ? { percent: e.percent, recordedAt: String(e.recordedAt), effectiveFrom: addMonths(monthStart(String(e.recordedAt)), 1) } : null;
+}
+
 function reworkTextBody(type) {
   const r = type.rework;
   if (!r) return `手戻り率: 判定できない(検知の記録を読んでいない)。${REWORK_UNCOUNTED}`;
   if (r.state === '読めない') return `手戻り率: 読めない(${r.reason})。${REWORK_UNCOUNTED}`;
   const head = `手戻り率: 窓 ${r.from}〜${r.to}: 母数 ${r.n} 件(タスク)のうち手戻り ${r.numerator} 件 = ${ratioText(r)}(内訳: トレーラの取り込みが2回以上のみ ${r.trailer} 件 / 計画表の「やり直し」のみ ${r.plan} 件 / 両方 ${r.both} 件)`;
-  const baseline = r.baseline === null ? '基準値が未設定(適用の条件の欠落として止めている)' : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'})`;
+  const pend = r.pendingBaseline ? `。記録済みの基準値 ${r.pendingBaseline.percent}%(記録した日 ${r.pendingBaseline.recordedAt})は、次の評価の日 ${r.pendingBaseline.effectiveFrom} から効く` : '';
+  const baseline = r.baseline === null ? `基準値が未設定(適用の条件の欠落として止めている)${pend}` : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'})`;
   const state =
     r.state === '判定不能'
       ? `判定不能(適用の条件の欠落として止めている。最小標本数 ${MIN_SAMPLE} 件に満たない)。${baseline}`
@@ -1034,7 +1048,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
     out.push(`AI自律レベル: ${HANDOVER_FILE} の節2 のコア機能「${u.name}」の「関わる登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い)。この機能は空欄と同じ扱いで、理解保持者数が1名以下のあいだ、すべての登録した変更種別を止める`);
   }
   for (const u of state.defectUnregistered ?? []) {
-    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る。行の記録は書き換えない`);
+    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。AI 起因が「あり」の行で取り下げた種別なら、残りの種別は事象の日より後の登録の判定で戻る(原因を特定できない行は、原因を特定するまで止まる)。行の記録は書き換えない`);
   }
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
   return out;

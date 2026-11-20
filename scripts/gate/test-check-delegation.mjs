@@ -567,6 +567,15 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   // IMPL-0291:ng(違反の入力: 手戻り率の記録だけ読めない(浅い取得)。判定できないものとして止める)
   check('手戻り率: 記録を読めないとき(浅い取得)は「読めない」と出し、種別を止め、理由に「浅い取得」と fetch-depth: 0 を出す', rBad.rework.state === '読めない' && rBad.level === 'L1' && rBad.stops.some((x) => x.kind === 'unmeasurable' && /手戻り率の記録を読めない/.test(x.reason) && /浅い取得/.test(x.reason) && /fetch-depth: 0/.test(x.reason)) && /読めない/.test(reworkText(rBad)), JSON.stringify(rBad.stops));
 
+  // 記録済みで、評価の日にまだ効かない基準値は、停止の理由と手戻り率の表示に「次の評価の日から効く」と出す(観測の窓の併記と同じ形)
+  const rPend = tOf(mk({ doubles: 12, pct: 20, at: '2026-10-20' }));
+  check('手戻り率: 評価の日の後に記録した基準値は、判定を変えず(L1)、停止の理由と表示に記録済みの値・記録した日・効く日を出す', rPend.level === 'L1' && rPend.rework.state === '基準値未設定' && rPend.stops.some((x) => /記録済みの基準値 20%/.test(x.reason) && /2026-10-20/.test(x.reason) && /2026-11-01 から効く/.test(x.reason)) && /記録済みの基準値 20%/.test(reworkText(rPend)) && /2026-11-01 から効く/.test(reworkText(rPend)) && !/記録すると/.test(rPend.stops.map((x) => x.reason).join()), JSON.stringify(rPend.stops));
+  check('手戻り率: 基準値を何も記録していなければ、記録済みの基準値は出さない', !/記録済みの基準値/.test(rUnset.stops.map((x) => x.reason).join()) && !/記録済みの基準値/.test(reworkText(rUnset)));
+  check('手戻り率: 停止の理由は、受け付けない「決め方」の記録を案内しない', !/決め方/.test(rUnset.stops.map((x) => x.reason).join()));
+  // 既定ブランチの履歴を読めないとき、手戻り率の理由が停止に出る(差し戻し率の停止とは別に)
+  const rNoHist = tOf((() => { const i = mk({}); i.records.history = { available: false, reason: '浅い取得', changes: [] }; return i; })());
+  check('手戻り率: 既定ブランチの履歴を読めないとき、手戻り率の記録を読めない旨が停止の理由にある', rNoHist.stops.some((x) => /手戻り率の記録を読めない/.test(x.reason) && /浅い取得/.test(x.reason)) && rNoHist.rework.state === '読めない', JSON.stringify(rNoHist.stops));
+
   // IMPL-0291:ok(適合の入力: 基準値の記録日が評価の日の前日なら効く。同じ日なら、その評価の日には効かず止める(遡らない))
   check('手戻り率: 基準値の記録日が評価の日の前日なら L3、同じ日なら L1(遡らない)', tOf(mk({ doubles: 6, at: '2026-09-30' })).level === 'L3' && tOf(mk({ doubles: 6, at: '2026-10-01' })).level === 'L1');
   // IMPL-0291:ok(適合の入力: 母数が 30 件へ届いた評価の日は、登録し直しを要せず戻る)
@@ -1089,6 +1098,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('欠陥の台帳 H: 登録の ID と登録外の ID が混ざる行は、両方が止まる', h.a === true && h.b === true);
   const cu = run(['存在しない種別'], { cause: '特定できない' });
   check('欠陥の台帳: 原因を特定できない行で登録外の ID のとき、両方の種別に停止がある', [cu.st.types[0], cu.st.types[1]].every((t) => t.stops.some((s) => s.kind === 'cause-unknown')));
+  check('欠陥の台帳: 原因を特定できない行の理由は「戻る」だけの文を出さず、原因を特定するまで止まると書く', cu.st.types.every((t) => t.stops.filter((s) => s.kind === 'cause-unknown').every((s) => /取り下げた種別の行でも、原因を特定するまで止まる/.test(s.reason) && !/取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る/.test(s.reason))) && /原因を特定できない行は、原因を特定するまで止まる/.test(autonomyNoteLines(cu.st).join('\n')));
   const dot = run([`${first}・決済`]);
   check('欠陥の台帳: 「種別1・種別2」は区切らず1つの登録外の ID として読み、両方が止まる', dot.a === true && dot.b === true && dot.st.defectUnregistered[0]?.ids.length === 1);
   const withdrawn = run(['存在しない種別'], { registeredAtTwo: '2026-10-10' });
