@@ -1095,6 +1095,8 @@ export function buildConfig(answers, opts = {}) {
       failOnSeverity,
       allowedLicenses,
       ...(opts.provisionalLicenses?.length ? { provisionalLicenses: opts.provisionalLicenses } : {}),
+      // 段 mutation の閾値。設定された値だけを保ち、無ければ書かない(再生成で消さない)
+      ...(opts.mutationThreshold !== undefined ? { mutationThreshold: opts.mutationThreshold } : {}),
       strengthened: ciStrengthened,
     },
     review: {
@@ -5483,6 +5485,10 @@ if (isMain) {
     if (S.ci?.coverageThreshold !== undefined && S.ci.coverageThreshold !== 'derived' && !(typeof S.ci.coverageThreshold === 'number' && S.ci.coverageThreshold >= 0 && S.ci.coverageThreshold <= 100)) {
       bad.push('settings.ci.coverageThreshold は 0〜100 の数値(較正した値)か、"derived"(標準の導出値へ戻す)で書きます');
     }
+    // G-5 の段 mutation の閾値(附属書F F.6・ADR-0224 決定6)。既定値は置かない。値が無ければ書かない
+    if (S.ci?.mutationThreshold !== undefined && !(typeof S.ci.mutationThreshold === 'number' && Number.isFinite(S.ci.mutationThreshold) && S.ci.mutationThreshold >= 0 && S.ci.mutationThreshold <= 100)) {
+      bad.push('settings.ci.mutationThreshold は 0〜100 の数値で書きます(既定値はありません。既存コードの実測から較正した値を、G-1 で定めて入れます)');
+    }
     for (const k of ['failOnSeverity', 'allowedLicenses']) if (S.ci?.[k] !== undefined && !strList(S.ci[k])) bad.push(`settings.ci.${k} は文字列の配列で書きます`);
     if (S.ci?.provisionalLicenses !== undefined) bad.push(...provisionalLicenseProblems({ ci: { provisionalLicenses: S.ci.provisionalLicenses } }).map((p) => `settings.${p}`));
     if (S.ci?.coverageScope !== undefined && !['changed', 'whole'].includes(S.ci.coverageScope)) bad.push('settings.ci.coverageScope は "changed"(変更で加えた・変えたコード)か "whole"(全体)で書きます');
@@ -5803,6 +5809,7 @@ if (isMain) {
       guard: guardNow,
       allowedLicenses: ciNow.allowedLicenses,
       provisionalLicenses: ciNow.provisionalLicenses,
+      mutationThreshold: ciNow.mutationThreshold,
       // 下限の由来(#318 / ADR-0088 決定5)。種別 settings の数値は較正、"derived" は導出値へ戻す(緩める向きなら差分に出て記名を要する)
       coverageThreshold: S.ci?.coverageThreshold === 'derived' ? undefined : ciNow.coverageThreshold,
       coverageOrigin:

@@ -535,6 +535,39 @@ for (const stack of ['python', 'python-poetry', 'python-uv', 'go', 'none', 'unde
   check('名義の問い: 名簿が空の初期化で共有の相手(person)を書いた回答を拒否する', !withPerson.init.ok && /person/.test(withPerson.init.out), withPerson.init.out);
 }
 
+// 段 mutation の閾値を書く経路(束 B28 の回帰の落ちの直し。ADR-0224 決定6)。
+// 初期化の直後の CL3 の案件は、閾値が未設定のため契約検査が落ちる(既定値を置かない)。`/process-change` の種別 settings
+// で値を入れると構成に残り、再生成でも消えない。範囲の外・文字列は拒否し、値が無いときは書かない。
+// 構成の JSON を直接書き換えず、生成器の経路だけを通す。
+{
+  const W = workspace('mut');
+  dirs.push(W.dir);
+  const settings = (obj) => {
+    const p = answersFile({ kind: 'settings', summary: '段 mutation の閾値を入れる', settings: obj });
+    return W.node('scripts/init/generate-profile.mjs', '--change', p);
+  };
+  const ci = () => JSON.parse(W.read('process.config.json')).ci;
+  const init = W.node('scripts/init/generate-profile.mjs', '--answers', answersFile({ 'q-team-size': 'size-3-9', 'q-biz-phase': 'mvp', ...COMMON, 'q-criticality': 'cl3' }), '--stack', 'node');
+  check('閾値の経路: CL3(3名)の初期化が通る', init.ok, init.out);
+  check('閾値の経路: 値が無いとき、構成に ci.mutationThreshold を書かない(既定値を置かない)', !('mutationThreshold' in ci()), JSON.stringify(ci()));
+  let r = W.node('scripts/gate/verify-gate-contract.mjs');
+  check('閾値の経路: 初期化の直後の CL3 の案件は、閾値が未設定のため契約検査が落ちる', !r.ok && /構成に ci\.mutationThreshold/.test(r.out), r.out);
+  for (const [label, v] of [['文字列', '60'], ['範囲の上の外', 101], ['範囲の下の外', -1], ['null', null]]) {
+    const bad = settings({ ci: { mutationThreshold: v } });
+    check(`閾値の経路: 値が ${label} の settings は拒否し、構成に書かない`, !bad.ok && /mutationThreshold は 0〜100 の数値/.test(bad.out) && !('mutationThreshold' in ci()), bad.out);
+  }
+  const ok = settings({ ci: { mutationThreshold: 60 } });
+  check('閾値の経路: settings の ci.mutationThreshold(60)が通り、構成に残る', ok.ok && ci().mutationThreshold === 60, ok.out);
+  r = W.node('scripts/gate/verify-gate-contract.mjs');
+  check('閾値の経路: 閾値を入れると、CL3 の案件の契約検査が閾値の問題で落ちない', !/ci\.mutationThreshold/.test(r.out), r.out);
+  const other = settings({ ci: { failOnSeverity: ['critical', 'high'] } });
+  check('閾値の経路: 別の値の settings の変更でも閾値が消えない', other.ok && ci().mutationThreshold === 60, other.out);
+  const regen = W.node('scripts/init/generate-profile.mjs', '--answers', 'process.config.json');
+  check('閾値の経路: 構成からの再生成でも閾値が消えない', regen.ok && ci().mutationThreshold === 60, regen.out);
+  const zero = settings({ ci: { mutationThreshold: 0 } });
+  check('閾値の経路: 0 は有効な値として残る(未設定と取り違えない)', zero.ok && ci().mutationThreshold === 0, zero.out);
+}
+
 // ワークフローの定義
 const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/gate-g5.yml'), 'utf8');
 check('ワークフロー: spec-lint ジョブは引数なしで実行する(手元の既定の範囲と同じ)', /run: node scripts\/gate\/spec-lint\.mjs\s*$/m.test(wf));
