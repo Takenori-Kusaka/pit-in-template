@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES, localDay } from './config.mjs';
 import { effectiveAllowedLicenses } from './license-allowlist.mjs';
-import { decideStage, evaluateMutation } from './mutation-stage.mjs';
+import { breachExceptionOf, decideStage, evaluateMutation } from './mutation-stage.mjs';
 
 const [, , mode, phase] = process.argv;
 const config = loadConfig();
@@ -168,7 +168,7 @@ if (phase === 'mutation') {
   const m = spawnSync(command, { shell: true, stdio: ['inherit', 'pipe', 'inherit'], cwd, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   process.stdout.write(m.stdout ?? '');
   if ((m.status ?? 1) !== 0) process.exit(m.status ?? 1);
-  const ev = evaluateMutation({ out: m.stdout ?? '', stage });
+  const ev = evaluateMutation({ out: m.stdout ?? '', stage, exceptionOf: () => breachExceptionOf({ config, day: localDay() }) });
   for (const x of ev.messages) (x.level === 'error' ? fail : notice)(x.text);
   process.exit(ev.ok ? 0 : 1);
 }

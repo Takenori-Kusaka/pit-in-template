@@ -524,6 +524,180 @@ for (const id of ['python-poetry', 'python-uv']) {
   check('出荷の集約が、この注意を機械検査の表へ出す', ev.includes('mutationThresholdNote: mutationThresholdNote(config,') && ev.includes('A.machineChecks.mutationThresholdNote'));
 }
 
+// ---------------------------------------------------------------- 8. 閾値割れを台帳の行(G-5 PR-<番号>)で受ける(ADR-0243。process-compass #445)
+// 期限は固定の日付(2099 年=期限内、2000 年=期限切れ)で書く。実行の時計に依らない。段の実行を作業ツリーで流し、台帳・PR の記録(JSON)・基底の構成を渡す
+{
+  const baseCmds = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', 'node.json'), 'utf8')).commands;
+  const sh = (W, ...a) => execFileSync('git', a, { cwd: W.dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const R1BODY = '## リスク区分\n\nR1\n';
+  const R2BODY = '## リスク区分\n\nR2\n';
+  const PEOPLE = [
+    { id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1001 }] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 1002 }] },
+    { id: 'p3', name: '佐藤 花子', accounts: [{ login: 'sato', id: 1003 }] },
+  ];
+  const PRHEAD = 'a'.repeat(40);
+  const LH = '| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n';
+  const lrow = (o = {}) => {
+    const r = { id: 'D-012', kind: '例外', target: 'G-5 PR-12', content: '変異試験の閾値割れ(スコア 70 を受容)', reason: '期限を優先する', due: '2099-01-01 まで', state: '未返却', approver: '鈴木 一郎', ...o };
+    return `| ${r.id} | ${r.kind} | ${r.target} | ${r.content} | ${r.reason} | 不具合 | ${r.due} | ${r.state} | 山田 太郎 | ${r.approver} |\n`;
+  };
+  const rev = (o = {}) => ({ id: 1, state: 'COMMENTED', body: '例外承認: D-012\n\nスコアを読んだ', submitted_at: '2026-11-05T10:00:00Z', commit_id: PRHEAD, author_association: 'MEMBER', author: { login: 'suzuki', id: 1002, is_bot: false }, edited_by: null, ...o });
+  // 1 場面: 閾値 80(基底)・スコア 70 の段を、台帳と PR の記録つきで流す。返す値は段の終了コードと出力
+  const scene = (o = {}) => {
+    const { rows = [lrow()], inBase = true, reviews = [rev()], prNum = 12, event = 'pull_request', author = { login: 'yamada', id: 1001 }, body = R2BODY, ctxExtra = {}, headCi = null, cl3 = true, noCtx = false, cmd = null, ledgerHead = null, postBase = null } = o;
+    const W = workspace('node', { 'package.json': '{ "name": "x" }\n' }, { commands: { ...baseCmds, mutation: cmd ?? `node -e "console.log('mutation-result: score=70 survivors=s.json')"` } });
+    const cfgF = path.join(W.dir, 'process.config.json');
+    const cfg0 = JSON.parse(fs.readFileSync(cfgF, 'utf8'));
+    const cfg = { ...cfg0, people: PEOPLE, aiNames: ['Claude'], answers: { ...cfg0.answers, ...(cl3 ? { 'q-criticality': 'cl3' } : {}) }, ci: { ...cfg0.ci, mutationThreshold: 80 } };
+    fs.writeFileSync(cfgF, JSON.stringify(cfg, null, 2));
+    const ledgerPath = path.join(W.dir, 'docs', 'debt-ledger.md');
+    const writeLedger = (text) => {
+      fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+      fs.writeFileSync(ledgerPath, text);
+      sh(W, 'add', '-A');
+      sh(W, 'commit', '-q', '-m', 'ledger');
+    };
+    const commitChange = () => {
+      fs.mkdirSync(path.join(W.dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(W.dir, 'src/a.js'), 'x = 1;\n');
+      sh(W, 'add', '-A');
+      sh(W, 'commit', '-q', '-m', 'change');
+    };
+    let base;
+    if (inBase) {
+      writeLedger(`# 技術負債台帳\n\n${LH}${rows.join('')}`);
+      base = sh(W, 'rev-parse', 'HEAD');
+      commitChange();
+    } else {
+      base = sh(W, 'rev-parse', 'HEAD');
+      commitChange();
+      writeLedger(`# 技術負債台帳\n\n${LH}${rows.join('')}`);
+    }
+    if (ledgerHead) writeLedger(`# 技術負債台帳\n\n${LH}${ledgerHead.join('')}`);
+    if (postBase) postBase(W);
+    const bcF = path.join(W.dir, 'base-config.json');
+    fs.writeFileSync(bcF, JSON.stringify(cfg));
+    if (headCi) fs.writeFileSync(cfgF, JSON.stringify({ ...cfg, ci: { ...cfg.ci, ...headCi } }, null, 2));
+    const cdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-ctx-'));
+    dirs.push(cdir);
+    const ctxF = path.join(cdir, 'pr-context.json');
+    fs.writeFileSync(ctxF, JSON.stringify({ route: event === 'push' ? 'push' : 'pull_request', pr: { number: prNum, authorLogin: author.login, authorId: author.id, headSha: PRHEAD, body, baseRef: 'main' }, reviews, problem: null, ...ctxExtra }));
+    const env = event === 'push' ? { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base } : { PIT_IN_EVENT: 'pull_request', PIT_IN_DIFF_BASE: base, PIT_IN_PR_BODY: body };
+    Object.assign(env, { PIT_IN_BASE_CONFIG: bcF, PIT_IN_POLICY_BASE: base });
+    if (!noCtx) env.PIT_IN_PR_CONTEXT = ctxF;
+    return W.adapter('mutation', '0', env);
+  };
+  const okScene = (name, o) => {
+    const r = scene(o);
+    check(`IMPL-0931:ok ${name}`, r.code === 0 && /閾値割れを第7章 7\.3 の例外承認 D-012 で受けた/.test(r.out) && /閾値 80/.test(r.out), r.out);
+  };
+  const ngScene = (name, o, re = null) => {
+    const r = scene(o);
+    check(`IMPL-0931:ng ${name}`, r.code === 1 && /スコア 70 が閾値 80 に届きません/.test(r.out) && !/で受けた/.test(r.out) && (re ? re.test(r.out) : true), r.out);
+  };
+
+  // --- ok
+  okScene('案件の条件(CL3)・基底の台帳の行・承認した者本人の宣言行のレビュー(先頭一致)で閾値割れを受ける(下限は無い)');
+  okScene('R1 の PR(案件の条件に当たらない構成)でも同じ行で受ける', { cl3: false, body: R1BODY });
+  okScene('PR の中で足した行も、(A) のレビューがあれば受ける', { inBase: false });
+  okScene('印の強調(太字・全角)を正規化して読む', { rows: [lrow({ content: '**変異試験の閾値割れ** スコア 70' })] });
+  okScene('印の後ろは自由(スコアの下限を書かなくてもよい)', { rows: [lrow({ content: '変異試験の閾値割れ' })] });
+  okScene('閾値を変える PR で行を足しても、基底の構成の閾値 80 で読む(PR の側の閾値 50 でも 70 は割れで、行で受ける)', { headCi: { mutationThreshold: 50 }, inBase: false });
+  okScene('push の経路: PR の先頭が HEAD と異なっても(squash)、PR の先頭に対するレビューで (A) が通る', { event: 'push', inBase: false });
+
+  // --- ng(条件ごとに1つ)
+  ngScene('台帳に行が無い(案内を出す)', { rows: [] }, /G-5 PR-<この PR の番号>/);
+  ngScene('レビューが無い', { reviews: [] }, /帰属を確かめられない/);
+  ngScene('レビューの対象が PR の先頭でない(先頭が変わった)', { reviews: [rev({ commit_id: 'c'.repeat(40) })] }, /先頭が変わった/);
+  ngScene('承認した者が PR の作成者', { author: { login: 'suzuki', id: 1002 } }, /PR の作成者/);
+  ngScene('承認した者が空欄', { rows: [lrow({ approver: '' })] }, /承認した者が未記入/);
+  ngScene('承認した者が名簿に無い', { rows: [lrow({ approver: '外部 太郎' })] }, /名簿の人へ対応づかない/);
+  ngScene('承認した者が AI の名義', { rows: [lrow({ approver: 'Claude' })] }, /AI の名義/);
+  ngScene('状態が返却済み', { rows: [lrow({ state: '返却済み' })] }, /状態が有効を示す値でない/);
+  ngScene('期限が過去(2000 年)', { rows: [lrow({ due: '2000-01-01 まで' })] }, /期限.*を過ぎている/);
+  ngScene('期限が日付として読めない', { rows: [lrow({ due: 'いつか' })] }, /日付として解釈できない/);
+  ngScene('対象が G-5 PR-13(別の PR)', { rows: [lrow({ target: 'G-5 PR-13' })] }, /G-5 PR-<この PR の番号>/);
+  ngScene('対象が G-5 PR-120(番号は完全一致)', { rows: [lrow({ target: 'G-5 PR-120' })] });
+  ngScene('対象が PR #12 の形', { rows: [lrow({ target: 'PR #12' })] });
+  ngScene('対象が別のゲート(G-6 PR-12)', { rows: [lrow({ target: 'G-6 PR-12' })] });
+  ngScene('区分が例外でない', { rows: [lrow({ kind: '負債' })] });
+  ngScene('印が無い(先頭一致でない。内容の途中に書いても受けない)', { rows: [lrow({ content: 'スコア 70 を受容(変異試験の閾値割れ)' })] }, /印「変異試験の閾値割れ」でない/);
+  ngScene('受容した理由が空', { rows: [lrow({ reason: '' })] }, /理由/);
+  ngScene('作成を指示した者が承認した者本人', { body: '## 作成を指示した者\n\n鈴木 一郎\n' }, /作成を指示した者/);
+  ngScene('作成を指示した者が @アカウント(段はトークンを持たず識別子で確かめられない)', { body: '## 作成を指示した者\n\n@yamada\n' }, /識別子で確かめられない/);
+  ngScene('基底の行の期限を PR の中で未来へ書き換えても、基底の内容(期限切れ)で読んで受けない', { rows: [lrow({ due: '2000-01-01 まで' })], ledgerHead: [lrow({ due: '2099-01-01 まで' })] }, /を過ぎている/);
+  ngScene('レビューを読めない(取得の失敗)', { reviews: null }, /読めない/);
+  ngScene('レビューの本文を書き手以外が編集した', { reviews: [rev({ edited_by: 'yamada' })] }, /編集/);
+  ngScene('宣言行が別の行の ID', { reviews: [rev({ body: '例外承認: D-013' })] }, /帰属を確かめられない/);
+  {
+    const r = scene({ cmd: `node -e "console.log('mutation-result: score=70 survivors=s.json');process.exit(1)"` });
+    check('IMPL-0931:ng コマンドの終了コードが 0 でなければ、行が正しくても受けない(閾値割れの評価の前に失敗する)', r.code === 1 && !/で受けた/.test(r.out), r.out);
+  }
+  ngScene('PR の記録が渡されない(PIT_IN_PR_CONTEXT なし)', { noCtx: true }, /PIT_IN_PR_CONTEXT/);
+  ngScene('PR の記録の取得に失敗した(problem つき)', { ctxExtra: { problem: 'PR のレビューを取得できない' } }, /取得できなかった/);
+  ngScene('push の経路で PR の記録が経路と一致しない', { event: 'push', ctxExtra: { route: 'pull_request' } }, /経路が起動の経路と一致しない/);
+  ngScene('push の経路で、マージの照合が取れない(0件・2件・base の不一致)ときの problem', { event: 'push', ctxExtra: { pr: null, reviews: null, problem: '先頭 aaaaaaa をマージのコミットとする PR が無い' } }, /取得できなかった/);
+
+  // 段の失敗の種別は変えない: 閾値が未設定・段が空・出力の行が無いときは、行があっても受けない(スコアの評価に届かない)
+  {
+    const r = scene({ cmd: `node -e "console.log('x')"` });
+    check('IMPL-0931:ng 出力の行が無ければ、行があっても受けない', r.code === 1 && /mutation-result: score=/.test(r.out) && !/で受けた/.test(r.out), r.out);
+    const e = scene({ cmd: '' });
+    check('IMPL-0931:ng 段が空なら、行があっても受けない(7.3 は段が空のままの通過に使えない)', e.code === 1 && /が空です/.test(e.out) && !/で受けた/.test(e.out), e.out);
+  }
+}
+
+// ---------------------------------------------------------------- 9. PR の記録の取得(mutation-pr-context.mjs)と push の経路のマージの照合
+{
+  const { pickMergedPr, buildContext, fetchReviews, REVIEWS_JQ } = await import('./mutation-pr-context.mjs');
+  const SHA = 'f'.repeat(40);
+  const P = (o = {}) => ({ number: 12, merged: true, merge_commit_sha: SHA, base: { ref: 'main' }, user: { login: 'yamada', id: 1001 }, head: { sha: 'a'.repeat(40) }, body: '本文', ...o });
+  check('pickMergedPr:ok マージ済み・先頭がマージのコミット・base が既定ブランチの PR がちょうど1件', pickMergedPr([P()], { sha: SHA, defaultBranch: 'main' }).pr?.number === 12);
+  check('pickMergedPr:ng 0件は受けない', !!pickMergedPr([], { sha: SHA, defaultBranch: 'main' }).problem);
+  check('pickMergedPr:ng 2件以上は受けない', /2 件/.test(pickMergedPr([P(), P({ number: 13 })], { sha: SHA, defaultBranch: 'main' }).problem ?? ''));
+  check('pickMergedPr:ng base.ref が既定ブランチでない(スタックの中間の層)', !!pickMergedPr([P({ base: { ref: 'feature/x' } })], { sha: SHA, defaultBranch: 'main' }).problem);
+  check('pickMergedPr:ng merge_commit_sha が先頭と一致しない', !!pickMergedPr([P({ merge_commit_sha: 'e'.repeat(40) })], { sha: SHA, defaultBranch: 'main' }).problem);
+  check('pickMergedPr:ng マージされていない(merged が偽)', !!pickMergedPr([P({ merged: false })], { sha: SHA, defaultBranch: 'main' }).problem);
+  check('pickMergedPr:ng 一覧を読めない(null)・先頭か既定ブランチが無い', !!pickMergedPr(null, { sha: SHA, defaultBranch: 'main' }).problem && !!pickMergedPr([P()], { sha: SHA, defaultBranch: '' }).problem);
+  check('pickMergedPr:ok 一覧の記録が merged を持たず merged_at だけを持つ場合も、候補にする(1件の記録で確かめ直す)', pickMergedPr([{ ...P(), merged: undefined, merged_at: '2026-11-20T00:00:00Z' }], { sha: SHA, defaultBranch: 'main' }).pr?.number === 12);
+
+  const REV_LINES = JSON.stringify({ id: 7, state: 'COMMENTED', body: '例外承認: D-012', submitted_at: 't', commit_id: 'a'.repeat(40), author_association: 'MEMBER', author: { login: 'suzuki', id: 1002, is_bot: false } });
+  const fakeGh = (over = {}) => (args) => {
+    const key = args.join(' ');
+    for (const [re, v] of Object.entries(over)) if (new RegExp(re).test(key)) return typeof v === 'function' ? v(args) : v;
+    if (/commits\/.*\/pulls/.test(key)) return JSON.stringify([{ ...P(), merged: undefined, merged_at: 't' }]);
+    if (/pulls\/12\/reviews/.test(key)) return `${REV_LINES}\n`;
+    if (/pulls\/12$/.test(key)) return JSON.stringify(P());
+    if (/graphql/.test(key)) return JSON.stringify({ 7: '' });
+    return null;
+  };
+  const PUSH_ENV = { EVENT_NAME: 'push', REPO: 'o/r', SHA, DEFAULT_BRANCH: 'main' };
+  const c = buildContext(PUSH_ENV, fakeGh());
+  check('buildContext:ok push の経路で PR 12 の記録とレビュー(edited_by つき)を作る。PR の先頭は HEAD(squash の SHA)と異なる', c.problem === null && c.pr.number === 12 && c.pr.headSha === 'a'.repeat(40) && c.pr.headSha !== SHA && c.reviews.length === 1 && c.reviews[0].edited_by === null, JSON.stringify(c));
+  check('buildContext:ng push の経路で候補が0件なら problem', !!buildContext(PUSH_ENV, fakeGh({ 'commits/.*/pulls': '[]' })).problem);
+  check('buildContext:ng push の経路で候補が2件なら problem', !!buildContext(PUSH_ENV, fakeGh({ 'commits/.*/pulls': JSON.stringify([P(), P({ number: 13 })]) })).problem);
+  check('buildContext:ng push の経路で base.ref が既定ブランチでなければ problem', !!buildContext(PUSH_ENV, fakeGh({ 'commits/.*/pulls': JSON.stringify([P({ base: { ref: 'dev' } })]) })).problem);
+  check('buildContext:ng push の経路で PR の取得に失敗すれば problem', !!buildContext(PUSH_ENV, () => null).problem);
+  check('buildContext:ng push の経路で PR 1件の記録が merged でなければ problem', !!buildContext(PUSH_ENV, fakeGh({ 'pulls/12$': JSON.stringify(P({ merged: false })) })).problem);
+  check('buildContext:ng push の経路でレビューを取得できなければ problem(reviews は null)', (() => { const x = buildContext(PUSH_ENV, fakeGh({ 'pulls/12/reviews': () => null })); return !!x.problem && x.reviews === null; })());
+  const PR_ENV = { EVENT_NAME: 'pull_request', REPO: 'o/r', PR_NUMBER: '12', PR_AUTHOR: 'yamada', PR_AUTHOR_ID: '1001', PR_HEAD_SHA: 'a'.repeat(40), PR_BASE_REF: 'main', PR_BODY: '本文' };
+  const pc = buildContext(PR_ENV, fakeGh());
+  check('buildContext:ok PR の経路で、イベントの値とレビューから記録を作る', pc.problem === null && pc.pr.authorId === 1001 && pc.pr.headSha === 'a'.repeat(40) && pc.reviews.length === 1, JSON.stringify(pc));
+  check('buildContext:ng PR の経路で番号か先頭が無ければ problem・workflow_dispatch など他の経路は problem', !!buildContext({ ...PR_ENV, PR_NUMBER: '' }, fakeGh()).problem && !!buildContext({ ...PR_ENV, EVENT_NAME: 'workflow_dispatch' }, fakeGh()).problem);
+  check('fetchReviews:ng editor を引けないレビューには edited_by を足さない(検査は編集の記録を読めないとして数えない側に倒れる)', fetchReviews('o/r', 12, fakeGh({ graphql: () => null }))[0].edited_by === undefined);
+  check('fetchReviews:ng 整形の結果が壊れていれば null', fetchReviews('o/r', 12, fakeGh({ 'pulls/12/reviews': 'not json\n' })) === null);
+  // pr-rules の「PR のレビュー」ステップと同じ整形(2か所が食い違うと edited_by が欠けて (A) が全て落ちる)
+  const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'gate-g5.yml'), 'utf8').replace(/\r\n/g, '\n');
+  check('PR のレビューの整形の式は、gate-g5.yml の pr-rules のステップと一致する', yml.includes(`--jq '${REVIEWS_JQ}'`));
+  // 段のステップ(変異試験)へ GH_TOKEN を渡さない: 取得は別のステップで、GH_TOKEN を付けるのはそのステップだけ
+  const noComment = (t) => t.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+  const mutJob = noComment(yml.split(/^  mutation:\n/m)[1]?.split(/^  regulatory:\n/m)[0] ?? '');
+  const stageStep = mutJob.split('      - name: 変異試験\n')[1] ?? '';
+  const fetchStep = mutJob.split('      - name: PR の記録の取得\n')[1]?.split(/^      - /m)[0] ?? '';
+  check('workflow: 段 mutation のコマンドのステップに GH_TOKEN を渡さず、取得の別のステップだけが持つ', stageStep.length > 0 && !/GH_TOKEN|github\.token/.test(stageStep) && /GH_TOKEN: \$\{\{ github\.token \}\}/.test(fetchStep) && !/GH_TOKEN/.test(mutJob.replace(fetchStep, '')), stageStep.slice(0, 200));
+}
+
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 console.log('');
 if (failures) {

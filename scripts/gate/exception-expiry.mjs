@@ -8,7 +8,8 @@
 // 例外承認の当否、期限の妥当性、承認し直しの識別が正しい行を指すか(意味)は、機械では確かめない(出荷判定者・内部監査)。
 // 日付は引数で渡す。この関数は時計を読まない(回帰の時計依存を避ける)。
 
-import { ACTIVE_EXCEPTION_STATES, dueDayOf, isRealDay, parseLedger } from './config.mjs';
+import { ACTIVE_EXCEPTION_STATES, aiNameBlocked, dueDayOf, gateExceptionTarget, identifyAccount, isFilledValue, isRealDay, parseLedger, resolveSigner } from './config.mjs';
+import { exceptionReviewBacking } from './material-attribution.mjs';
 
 /** 状態の値の正規化(強調の `*`、全角、前後の空白を除く) */
 export function stateOf(row) {
@@ -462,4 +463,65 @@ export function unjudgedGateExceptions(rows, judged) {
     }
   }
   return out;
+}
+
+/**
+ * G-5 の段 mutation の閾値割れを第7章 7.3 の例外承認で受ける台帳の行の約束(ADR-0243。process-compass #445)。
+ * 内容の先頭の印は固定語だけにする。スコアの下限は書かせない(書き手が 0 と書けば空になる。承認した者が段の出力のスコアを読む)
+ */
+export const MUTATION_BREACH_MARK = '変異試験の閾値割れ';
+
+/** 行の内容の先頭が印か。強調の `*`・`` ` ``・`_` と全角は正規化して読む(fastTrackMarkOf と同じ読み)。印なら { mark }、でなければ null */
+export function mutationBreachMarkOf(content) {
+  const t = String(content ?? '').normalize('NFKC').replace(/[*`_]/g, '').trim();
+  return t.startsWith(MUTATION_BREACH_MARK) ? { mark: MUTATION_BREACH_MARK } : null;
+}
+
+/**
+ * 段 mutation が閾値割れを受けてよい台帳の行(対象が `G-5 PR-<当該の PR の番号>` の区分「例外」の行)を探す。
+ * すべてを満たす行だけを matched に入れる。満たさない候補は rejected に理由つきで入れる。時計は読まない(day は呼び出し側が渡す)。
+ *   条件: 区分=例外 / 対象=G-5 PR-<番号>(完全一致) / 内容の先頭=印 / 状態=有効の値 / 返却の目安が日付で、期限の日まで
+ *         / 承認した者=記入あり・名簿の人・AI の名義でない・PR の作成者でない / 作成を指示した者の全員が名簿に対応づく
+ *         / 受容した理由=記入あり / 帰属=(A) 承認した者本人が当該の PR の上で宣言行のレビューを出し、対象のコミットが PR の先頭と一致する
+ * 基底にある ID は基底の内容で読む(PR の中で期限・状態を書き換えても効かない)。帰属は (A) だけ(名前の一致だけでは数えない。ADR-0106)
+ *   author: PR の作成者 { login, id }。instructorIds: 作成を指示した者の名簿の id。instructorUnresolved: 名簿に対応づかなかった指示者の記載
+ */
+export function mutationBreachExceptionFor({ config, baseLedgerText = null, headLedgerText = null, prNumber, day, author = null, reviews = null, head = null, instructorIds = [], instructorUnresolved = [] }) {
+  const matched = [];
+  const rejected = [];
+  if (!prNumber) return { matched, rejected, reason: 'PR の番号が分からないため、台帳の行と対応づけられません' };
+  if (!validDay(day)) return { matched, rejected, reason: '段の実行の日が分からないため、期限を比べられません' };
+  if (!baseLedgerText && !headLedgerText) return { matched, rejected, reason: '台帳(docs/debt-ledger.md)がありません' };
+  const want = `PR-${prNumber}`;
+  const baseRows = baseLedgerText ? parseLedger(baseLedgerText) : [];
+  const baseIds = new Set(baseRows.map((r) => r.id));
+  const headOnly = headLedgerText ? parseLedger(headLedgerText).filter((r) => !baseIds.has(r.id)).map((r) => ({ ...r, inHead: true })) : [];
+  const authorPerson = author ? identifyAccount(config, author).person : null;
+  for (const r of [...baseRows, ...headOnly]) {
+    if (r.kind !== '例外' || r.target === null) continue;
+    const t = gateExceptionTarget(r.target);
+    if (!t || t.gate !== 'G-5' || t.subject.toUpperCase() !== want) continue;
+    const why = [];
+    if (!mutationBreachMarkOf(r.content)) why.push(`内容の先頭が印「${MUTATION_BREACH_MARK}」でない`);
+    if (!ACTIVE_EXCEPTION_STATES.includes(stateOf(r))) why.push(`状態が有効を示す値でない(${r.state || '未記入'})`);
+    if (!isFilledValue(r.due) || !dueDayOf(r.due)) why.push('期限(返却の目安)が未記入、または日付として解釈できない');
+    else if (exceptionStanding(r, day) !== 'active') why.push(`期限(${dueDayOf(r.due)})を過ぎている(実行の日 ${day})`);
+    let signer = null;
+    if (!isFilledValue(r.approver)) why.push('承認した者が未記入');
+    else {
+      if (aiNameBlocked(config, r.approver)) why.push('承認した者が AI の名義である');
+      signer = resolveSigner(config, r.approver);
+      if (!signer) why.push(`承認した者 "${r.approver}" が人の名簿の人へ対応づかない`);
+      else if (authorPerson && authorPerson.id === signer.id) why.push('承認した者が PR の作成者である');
+    }
+    if (!isFilledValue(r.content) || (r.reason !== null && !isFilledValue(r.reason))) why.push('理由(内容・受容した理由)が未記入');
+    if (instructorUnresolved.length) why.push(`作成を指示した者 ${instructorUnresolved.join(' / ')} を名簿と対応づけられない`);
+    if (!why.length) {
+      const a = exceptionReviewBacking(config, r, signer, { reviews, author, head, instructorIds });
+      if (a.backed) matched.push({ id: r.id, approver: signer.name ?? r.approver, due: dueDayOf(r.due), backing: `承認した者本人のレビュー(@${a.review.login}、${a.review.submittedAt ?? '提出日時なし'})` });
+      else why.push(`帰属を確かめられない(名前の一致だけでは数えない): ${a.why.join(' / ')}。対象の PR の上で、承認した者本人が宣言行「例外承認: ${r.id}」のレビューを出す`);
+    }
+    if (why.length) rejected.push(`${r.id}${r.inHead ? '(PR の中で足した行)' : ''}: ${why.join('、')}`);
+  }
+  return { matched, rejected, reason: null };
 }

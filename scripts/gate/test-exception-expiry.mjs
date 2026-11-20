@@ -17,7 +17,7 @@ import path from 'node:path';
 import { ROOT, sealChangeLog, parseLedger, gateExceptionTarget } from './config.mjs';
 import { ghHosting } from './material-attribution.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
-import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, extensionVerdict, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, stageQuotaFindings, quotaRefillProblem, quotaOfBrief, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
+import { exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, overdueExceptionNote, unjudgedGateExceptions, extendedDueRows, lapsedSimilarRows, extensionVerdict, fastTrackMarkOf, fastTrackMetrics, fastTrackMetricsText, stageQuotaFindings, quotaRefillProblem, quotaOfBrief, latestStageGatePass, exceptionQuotaText, mutationBreachExceptionFor, mutationBreachMarkOf } from './exception-expiry.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -497,6 +497,46 @@ if (process.platform === 'win32') {
   const hosted = ghHosting('o/r', { run: (args) => { calls.push(args.join(' ')); return [{ filename: 'src/pay/new.js', previous_filename: 'src/pay/old.js' }, { filename: 'src/b.js' }]; } });
   check('IMPL-0630:ok ghHosting.pullFilesOf は PR の変更ファイル(rename の旧い名を含む)を返し、同じ PR を引き直さない', hosted.pullFilesOf(5).join() === 'src/pay/new.js,src/pay/old.js,src/b.js' && hosted.pullFilesOf(5).length === 3 && calls.length === 1 && /pulls\/5\/files/.test(calls[0]), calls.join('|'));
   check('IMPL-0630:ok ghHosting.pullFilesOf は gh が失敗したら null を返す(拒まず注意に出す側)', ghHosting('o/r', { run: () => { throw new Error('x'); } }).pullFilesOf(5) === null && ghHosting('', { run: () => [] }).pullFilesOf(5) === null);
+}
+
+// ---- 閾値割れを台帳の行で受ける約束(ADR-0243。mutationBreachExceptionFor)。日付は引数。期限は固定の日付(2099 年=期限内、2000 年=期限切れ)
+{
+  const PEOPLE = [
+    { id: 'p1', name: '山田 太郎', accounts: [{ login: 'yamada', id: 1001 }] },
+    { id: 'p2', name: '鈴木 一郎', accounts: [{ login: 'suzuki', id: 1002 }] },
+  ];
+  const cfg = { aiNames: ['Claude'], people: PEOPLE };
+  const PRHEAD = 'a'.repeat(40);
+  const rowB = (o = {}) => {
+    const r = { id: 'D-012', kind: '例外', target: 'G-5 PR-12', content: '変異試験の閾値割れ', reason: '期限を優先する', due: '2099-01-01 まで', state: '未返却', approver: '鈴木 一郎', ...o };
+    return `| ${r.id} | ${r.kind} | ${r.target} | ${r.content} | ${r.reason} | 不具合 | ${r.due} | ${r.state} | 山田 太郎 | ${r.approver} |\n`;
+  };
+  const rv = (o = {}) => ({ id: 1, state: 'COMMENTED', body: '例外承認: D-012', submitted_at: 't', commit_id: PRHEAD, author_association: 'MEMBER', author: { login: 'suzuki', id: 1002, is_bot: false }, edited_by: null, ...o });
+  const run = (o = {}) => {
+    const { rows = [rowB()], headRows = null, ...rest } = o;
+    return mutationBreachExceptionFor({ config: cfg, baseLedgerText: ledger(...rows), headLedgerText: headRows ? ledger(...headRows) : null, prNumber: 12, day: DAY, author: { login: 'yamada', id: 1001 }, reviews: [rv()], head: PRHEAD, instructorIds: ['p1'], ...rest });
+  };
+  const ok = (r) => r.matched.length === 1 && r.matched[0].id === 'D-012';
+  const ng = (r, re = null) => r.matched.length === 0 && (re ? re.test(r.rejected.join('\n') + (r.reason ?? '')) : true);
+  check('IMPL-0931:ok 行の約束を満たす閾値割れの行は受ける(下限は無い)', ok(run()));
+  check('IMPL-0931:ok 期限の日の当日は受ける(期限の比較は exceptionStanding と同じ)', ok(run({ rows: [rowB({ due: '2026-11-20 まで' })] })));
+  check('IMPL-0931:ok 印の強調・全角を正規化して先頭一致で読む', ok(run({ rows: [rowB({ content: '**変異試験の閾値割れ**(スコア 60)' })] })) && mutationBreachMarkOf('`変異試験の閾値割れ` 70') !== null);
+  check('IMPL-0931:ok PR の中で足した行も、(A) のレビューがあれば受ける', ok(run({ rows: [], headRows: [rowB()] })));
+  check('IMPL-0931:ng 印が先頭でない', ng(run({ rows: [rowB({ content: '受容(変異試験の閾値割れ)' })] }), /印/) && mutationBreachMarkOf('スコア低下') === null);
+  check('IMPL-0931:ng 期限が過去(2000 年)', ng(run({ rows: [rowB({ due: '2000-01-01 まで' })] }), /を過ぎている/));
+  check('IMPL-0931:ng 期限の翌日は受けない(日付は引数で渡し、時計を読まない)', ng(run({ rows: [rowB({ due: '2026-11-19 まで' })] }), /を過ぎている/) && ok(run({ rows: [rowB({ due: '2026-11-19 まで' })], day: '2026-11-19' })));
+  check('IMPL-0931:ng 承認した者が PR の作成者(排除)', ng(run({ author: { login: 'suzuki', id: 1002 }, reviews: [rv()] }), /PR の作成者/));
+  check('IMPL-0931:ng 承認した者が AI の名義・名簿に無い・空', ng(run({ rows: [rowB({ approver: 'Claude' })] }), /AI の名義/) && ng(run({ rows: [rowB({ approver: '外部 太郎' })] }), /名簿/) && ng(run({ rows: [rowB({ approver: '' })] }), /未記入/));
+  check('IMPL-0931:ng 状態が有効の値でない', ng(run({ rows: [rowB({ state: '取り下げ' })] }), /状態/));
+  check('IMPL-0931:ng 対象が別の PR・別のゲート・PR #12・番号の前方一致', [ 'G-5 PR-13', 'G-5 PR-120', 'G-6 PR-12', 'PR #12', 'G-5 P-001' ].every((t) => ng(run({ rows: [rowB({ target: t })] }))));
+  check('IMPL-0931:ng 区分が例外でない', ng(run({ rows: [rowB({ kind: '負債' })] })));
+  check('IMPL-0931:ng (A) のレビューが無い・先頭が変わった・読めない', ng(run({ reviews: [] }), /帰属/) && ng(run({ reviews: [rv({ commit_id: 'c'.repeat(40) })] }), /先頭が変わった/) && ng(run({ reviews: null }), /読めない/));
+  check('IMPL-0931:ng 作成を指示した者が承認した者本人・名簿に対応づかない', ng(run({ instructorIds: ['p2'] }), /指示した者/) && ng(run({ instructorUnresolved: ['@x'] }), /指示した者/));
+  check('IMPL-0931:ng 基底にある ID は基底の内容で読む(PR の中で期限を未来へ書き換えても効かない)', ng(run({ rows: [rowB({ due: '2000-01-01 まで' })], headRows: [rowB({ due: '2099-01-01 まで' })] }), /を過ぎている/));
+  check('IMPL-0931:ng PR の番号・実行の日・台帳が無いときは理由つきで受けない', ng(run({ prNumber: null }), /PR の番号/) && ng(run({ day: 'x' }), /実行の日/) && ng(mutationBreachExceptionFor({ config: cfg, prNumber: 12, day: DAY }), /台帳/));
+  // IMPL-0996 の挙動は変えない(U6c の前に緩めない): G-5 の行は、対象の形に依らず常に欠落
+  const un = unjudgedGateExceptions([{ label: 'D-012', t: gateExceptionTarget('G-5 PR-12') }, { label: 'D-013', t: gateExceptionTarget('G-5 P-001') }], () => true);
+  check('IMPL-0996:ng unjudgedGateExceptions は G-5 PR-12 の行も欠落にする(この単位では変えない)', un.length === 2);
 }
 
 console.log(`\n${checks - failures}/${checks} 合格`);

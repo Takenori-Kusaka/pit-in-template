@@ -23,7 +23,7 @@ on:
   # 例外承認・停止の解除は、対象の PR の上の記名者本人のレビュー(宣言行つき)でも受け付ける(標準 第4章「判定記録を基底ブランチへ
   # 入れる操作」。process-compass #380 / ADR-0106)。pull_request_review では起動しない(github.base_ref が空になり、
   # 基底との比較を前提とするジョブが飛ばされたまま gate-g5 が通過しうるため)。レビューを出した後は、このワークフローの
-  # 最後の実行を再実行する。PR のレビューの手順は実行のたびに API から読み直す
+  # 最後の実行を再実行する(段 mutation の閾値割れの行は「失敗したジョブの再実行」で足りる)。PR のレビューの手順は実行のたびに API から読み直す
   # PR を経ない体制でも、構成の書き換え(変化点を経ない書き換え、記録の切り詰め)を出荷までに検出する。
   # 既定ブランチへの push で契約検査を走らせ、push の直前のコミットの構成と比べる(標準 第3章 3.13.5)。
   # push の契機はこのファイルに置かない。gate-g5-push.yml が、既定ブランチへの push に限ってこのファイルを呼ぶ(workflow_call)。
@@ -416,13 +416,43 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .github/gate-node-version
+      # 閾値割れを台帳の行(対象 G-5 PR-<番号>、第7章 7.3。ADR-0243)で受けるための、PR の記録(作成者・先頭・本文・レビュー)の取得。
+      # GH_TOKEN を付けるのはこのステップだけで、段のコマンド(PR 側のテスト)のステップへは渡さない。段へ渡すのは出力の所在だけ。
+      # 取得に失敗しても終了コード 0 で、problem を書いた記録を出す(段は閾値割れを受けない側に倒れる)。権限は上の permissions で足りる。
+      # push の経路は、先頭がマージのコミットの PR を、ホスティングの記録で1件だけ引く(squash が対象。取れなければ受けない)。
+      # レビューを出した後は「失敗したジョブの再実行」で再評価する(pull_request_review では起動しない)
+      - name: PR の記録の取得
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node scripts/gate/mutation-pr-context.mjs --out "${RUNNER_TEMP}/pr-context.json" || true
+          if [ -s "${RUNNER_TEMP}/pr-context.json" ]; then
+            echo "PIT_IN_PR_CONTEXT=${RUNNER_TEMP}/pr-context.json" >> "$GITHUB_ENV"
+          fi
       - uses: ./.github/actions/setup-stack
       - name: 比較の起点と基底ブランチの構成を取り出す
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # 台帳の行を基底の内容で読む点: PR は既定ブランチの先端、push は push の直前のコミット(HEAD^ ではない。rebase で PR のコミットが入るため)
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "PIT_IN_POLICY_BASE=origin/${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            echo "PIT_IN_POLICY_BASE=${BEFORE}" >> "$GITHUB_ENV"
+          fi
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="origin/${BASE_REF}"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then

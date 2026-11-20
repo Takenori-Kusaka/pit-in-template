@@ -17,7 +17,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { ROOT } from './config.mjs';
 import { riskClassOf, trailerValues } from './delegation.mjs';
-import { riskFloorOf, changeListBetween } from './check-pr.mjs';
+import { riskFloorOf, changeListBetween, prAuthorRef, instructorsOf, instructorTokensOf, instructorSectionTokens } from './check-pr.mjs';
+import { mutationBreachExceptionFor } from './exception-expiry.mjs';
 import { clJudgmentState, readF2Q1Text } from './cl-judgment.mjs';
 
 function gitOut(args, root = ROOT) {
@@ -152,8 +153,66 @@ export function decideStage({ phase, config, env = process.env, root = ROOT, git
   return { phase, required: caseCond.required || r1.r1, caseRequired: caseCond.required, r1, reasons, threshold: t.value, thresholdProblem: t.problem ?? null, q1Unreadable: caseCond.q1Unreadable };
 }
 
-/** 段の結果の評価(コマンドが終了コード 0 で終わった後)。{ ok, messages: [{level, text}] } */
-export function evaluateMutation({ out, stage }) {
+/**
+ * 閾値割れを第7章 7.3 の例外承認の行で受けられるか(ADR-0243)。閾値割れのときだけ adapter.mjs が呼ぶ。
+ * 入力: PIT_IN_EVENT(pull_request | push)・PIT_IN_PR_CONTEXT(mutation-pr-context.mjs の出力の所在)・
+ *       PIT_IN_POLICY_BASE(基底の台帳を読む点。PR は既定ブランチの先端、push は push の直前のコミット)。
+ * 返す値: { matched, rejected, reason }。取れない入力はすべて受けない側(reason)に倒す。day は呼び出し側が渡す(時計を読まない)
+ */
+export function breachExceptionOf({ config, day, env = process.env, root = ROOT, git = gitOut }) {
+  const none = (reason) => ({ matched: [], rejected: [], reason });
+  const event = env.PIT_IN_EVENT;
+  if (event !== 'pull_request' && event !== 'push') return none(event ? `この起動の経路(${event})では閾値割れを台帳の行で受けない` : '起動の経路(PIT_IN_EVENT)が分からない');
+  if (!env.PIT_IN_PR_CONTEXT) return none('PR の記録(PIT_IN_PR_CONTEXT)が渡されない');
+  let ctx;
+  try {
+    ctx = JSON.parse(fs.readFileSync(env.PIT_IN_PR_CONTEXT, 'utf8'));
+  } catch {
+    return none('PR の記録(PIT_IN_PR_CONTEXT)を読めない');
+  }
+  if (!ctx || ctx.problem) return none(`PR の記録を取得できなかった: ${ctx?.problem ?? '不明'}`);
+  if (ctx.route !== event || !ctx.pr?.number) return none('PR の記録の経路が起動の経路と一致しない');
+  if (!env.PIT_IN_POLICY_BASE) return none('基底の台帳を読む点(PIT_IN_POLICY_BASE)が渡されない');
+  // 規則(名簿・AI の名義)は基底の構成から読む。渡されなければ作業ツリーの構成
+  let baseConfig = config;
+  if (env.PIT_IN_BASE_CONFIG) {
+    try {
+      baseConfig = JSON.parse(fs.readFileSync(env.PIT_IN_BASE_CONFIG, 'utf8'));
+    } catch {
+      return none('基底の構成を読めない');
+    }
+  }
+  const baseLedgerText = git(['show', `${env.PIT_IN_POLICY_BASE}:docs/debt-ledger.md`], root);
+  let headLedgerText = null;
+  try {
+    headLedgerText = fs.readFileSync(`${root}/docs/debt-ledger.md`, 'utf8');
+  } catch {
+    headLedgerText = null;
+  }
+  const author = prAuthorRef({ author: ctx.pr.authorLogin, authorId: ctx.pr.authorId });
+  const body = ctx.pr.body ?? '';
+  // 段はトークンを持たず、@アカウントを数値の識別子へ解決できない。@ で書かれた指示者は対応づかないものとして受けない側へ倒す
+  const handles = instructorSectionTokens(body).filter((t) => t.startsWith('@') || t.startsWith('＠'));
+  const unresolved = [...instructorTokensOf(baseConfig, body, author, null).unresolved, ...handles.map((t) => `${t}(段は @アカウントを識別子で確かめられない)`)];
+  return mutationBreachExceptionFor({
+    config: baseConfig,
+    baseLedgerText: baseLedgerText || null,
+    headLedgerText,
+    prNumber: ctx.pr.number,
+    day,
+    author,
+    reviews: ctx.reviews ?? null,
+    head: ctx.pr.headSha ?? null,
+    instructorIds: instructorsOf(baseConfig, body, author, null).map((i) => i.id),
+    instructorUnresolved: unresolved,
+  });
+}
+
+/**
+ * 段の結果の評価(コマンドが終了コード 0 で終わった後)。{ ok, messages: [{level, text}] }
+ * exceptionOf: 閾値割れのときだけ呼ばれ、{ matched, rejected, reason } を返す関数(breachExceptionOf)。渡されなければ閾値割れは常に失敗
+ */
+export function evaluateMutation({ out, stage, exceptionOf = null }) {
   const msgs = [];
   if (stage.thresholdProblem) return { ok: false, messages: [{ level: 'error', text: stage.thresholdProblem }] };
   if (stage.caseRequired && stage.threshold === undefined) {
@@ -170,8 +229,21 @@ export function evaluateMutation({ out, stage }) {
     return { ok: true, messages: msgs };
   }
   if (r.score < stage.threshold) {
-    // 閾値割れを 7.3 の例外承認で受ける機械は ADR-0243(別の単位)。ここでは失敗にする
-    return { ok: false, messages: [{ level: 'error', text: `スコア ${r.score} が閾値 ${stage.threshold} に届きません(survivors=${r.survivors})` }] };
+    const breach = `スコア ${r.score} が閾値 ${stage.threshold} に届きません(survivors=${r.survivors})`;
+    const ex = exceptionOf ? exceptionOf() : null;
+    if (ex?.matched?.length) {
+      const m = ex.matched[0];
+      // 証跡の1行。G-7 が見るのは行の形と帰属・期限だけで、段がこの行で受けた事実はこの出力と承認した者の宣言行に頼る
+      return { ok: true, messages: [{ level: 'notice', text: `閾値割れを第7章 7.3 の例外承認 ${m.id} で受けた(score=${r.score}、閾値 ${stage.threshold}、承認した者 ${m.approver}、返却の目安 ${m.due}、survivors=${r.survivors})` }] };
+    }
+    const errs = [{ level: 'error', text: breach }];
+    if (ex) {
+      if (ex.reason) errs.push({ level: 'error', text: `台帳の行で受けられません: ${ex.reason}` });
+      for (const x of ex.rejected) errs.push({ level: 'error', text: `台帳の行 ${x}` });
+      if (!ex.reason && !ex.rejected.length) errs.push({ level: 'error', text: '台帳(docs/debt-ledger.md)に対象が `G-5 PR-<この PR の番号>` の区分「例外」の行が無いため、7.3 で受けられません。行の書き方: .claude/skills/gate/reference/exception-paths.md' });
+      else errs.push({ level: 'error', text: '承認した者がレビューを出した後は、gate-g5 の「失敗したジョブの再実行」で再評価する' });
+    }
+    return { ok: false, messages: errs };
   }
   msgs.push({ level: 'notice', text: `スコア ${r.score} は閾値 ${stage.threshold} 以上です(survivors=${r.survivors})` });
   return { ok: true, messages: msgs };
