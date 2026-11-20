@@ -2265,7 +2265,7 @@ if (isMain) {
     if (byNames.length < required) {
       const copied = about.copiedSummaries.length ? `。先に数えた承認者と同一の文の挙動要約のため数えない承認者: ${about.copiedSummaries.join('、')}(自分の言葉で書く)` : '';
       const rest = restricted.hit
-        ? `。承認権限の一時制限(第7章 7.9.2)の範囲に触れる: ${restricted.restrictions.map((r) => `${r.id}(${r.paths.join(', ')}。対象 ${r.person ?? '不明'})`).join(' / ')}。範囲の変更は独立レビュア2名を要する`
+        ? `。承認権限の一時制限(第7章 7.9.2)の範囲に触れる: ${restricted.restrictions.map((r) => `${r.id}(${r.paths.join(', ')})`).join(' / ')}。範囲の変更は独立レビュア2名を要する`
         : '';
       // 制限で要求が上がった変更は、構成の要求の文ではなく制限の文で出す(要求の出所を取り違えさせない)
       const base =
@@ -4285,7 +4285,7 @@ if (isMain) {
       const st = restrictionState(config);
       return {
         active: st.active,
-        legacy: st.legacy,
+        legacy: st.legacy, causeless: st.causeless,
         notCounted: count(changeUnits, (c) => (c.independent.restrictedBy?.length ?? 0) > 0),
         touched: count(changeUnits, (c) => c.independent.restrictionTouched === true),
         g6Applied: g6AppliedStructure
@@ -6429,9 +6429,9 @@ if (isMain) {
     );
     // 承認権限の一時制限(第7章 7.9)。範囲を記録していない旧い発動は、範囲を判定できない(#357 / ADR-0127 決定5)
     const rs = A.independence.restrictions;
-    if (rs && (rs.active.length || rs.legacy || rs.notCounted || rs.touched)) {
+    if (rs && (rs.active.length || rs.legacy || rs.causeless || rs.notCounted || rs.touched)) {
       R.push(
-        `| 承認権限の一時制限(第7章 7.9.2) | 解除されていない制限 ${rs.active.length} 件${rs.active.length ? `(${rs.active.map((r) => `${r.id}: ${r.paths.join(', ')}`).join(' / ')})` : ''}。範囲に触れた変更 ${rs.touched} 件${rs.g6Applied ? `(うち、独立レビュア2名に満たず数えなかった変更 ${rs.notCounted} 件)` : '(この体制は G-6 を適用していないため、範囲に触れても2名を要する扱いにしていない。数えなかった変更の件数は出さない)'}${rs.legacy ? `。範囲を記録していない旧い発動の記録 ${rs.legacy} 件(範囲を判定できない。/process-change の種別 notice で範囲を書いた発動を記録し直す。旧い発動の記録は解除できず、この件数は残り続ける)` : ''} | — |`
+        `| 承認権限の一時制限(第7章 7.9.2) | 解除されていない制限 ${rs.active.length} 件${rs.active.length ? `(${rs.active.map((r) => `${r.id}: ${r.paths.join(', ')}`).join(' / ')})` : ''}。範囲に触れた変更 ${rs.touched} 件${rs.g6Applied ? `(うち、独立レビュア2名に満たず数えなかった変更 ${rs.notCounted} 件)` : '(この体制は G-6 を適用していないため、範囲に触れても2名を要する扱いにしていない。数えなかった変更の件数は出さない)'}${rs.legacy ? `。範囲を記録していない旧い発動の記録 ${rs.legacy} 件(範囲を判定できない。/process-change の種別 notice で範囲を書いた発動を記録し直す。旧い発動の記録は解除できず、この件数は残り続ける)` : ''}${rs.causeless ? `。根拠の区分(cause)の無い旧い発動 ${rs.causeless} 件(範囲の照合は続ける。対象の人は表示しない)` : ''} | — |`
       );
     }
     // 段と価値責任者の照合を通ったときも、機械が確かめた範囲を出す(通ったことを確かめ済みと読ませない。#357 / ADR-0127 決定6・7)
@@ -6770,6 +6770,7 @@ if (isMain) {
         (evidence.claim.blockers.length ? `。理由: ${evidence.claim.blockers.join(' / ')}` : '') +
         (evidence.claim.listedDeviations.length ? `。列挙する逸脱: ${evidence.claim.listedDeviations.join(' / ')}` : '')
     );
+    R.push('- 述べられる名が数えない欠陥注入の秘匿の不成立(第1章 1.10.2。IMPL-1003。人が確かめる): 1〜2名の体制で、注入する者と見つける者を分けられない場合に当たる。当たれば、この範囲で述べられるのは適用の表明まで(列挙に無い離脱)。機械は数えない(測定の記録の blind の値によらない。ADR-0147)。確かめる材料は、項目6 の測定した見つける者と人の名簿');
     R.push('- 述べられる名が数えない認証情報の共有(第1章 1.10.2。IMPL-1004。採用者が確かめる): 構成に申告されない共有、別の自然人どうしが同じ認証情報を使う構成(個別の認証の記録の実在と突合)、ホスティングのアカウントの外の認証情報。兼務を禁止していない組の席どうし(AI の担い手どうしを含む)の共有は、離脱に数えない');
     {
       // 適用の表明に併記する事項の値(第1章 1.10.2。IMPL-0120。値だけ。表明の文は表明する者が書く)。外へ渡す形では離脱の内容(保持者の名を含みうる)を出さず件数だけにする

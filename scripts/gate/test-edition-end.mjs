@@ -194,7 +194,7 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
     kind: 'notice',
     summary: '一時制限の発動を記録した',
     event: 'restriction',
-    restriction: { id: 'r1', person: '名簿 丁', paths: ['src/payments/**'], basis: '試験の注入の記録', recordedBy: '名簿 丁' },
+    restriction: { id: 'r1', cause: '7.9.1-2', person: '名簿 丁', paths: ['src/payments/**'], basis: '試験の注入の記録', recordedBy: '名簿 丁' },
     notice: { to: '名簿 丁', at: new Date().toLocaleDateString('sv-SE') },
   });
   check('終了の後も、種別 notice は受け付ける', rNotice.ok, rNotice.out);

@@ -265,7 +265,7 @@ if (want('0628 0612 0669')) {
   const scene = ({ approver, b2 = null, quota = '2', stage = false }) => {
     r.resetTo('base');
     const day = localDay(); // 入口(generate-profile.mjs --change)が変化点を刻む実行日(ローカル)と同じ。UTC の日付だと日付の境で食い違う
-    const R = { id: 'pay-1', person: NAMES(2), paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: NAMES(1) };
+    const R = { id: 'pay-1', cause: '7.9.1-2', person: NAMES(2), paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: NAMES(1) };
     const fired = r.runChange({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: NAMES(3), at: day } });
     r.commitAll('chore: restriction');
     r.write('src/payments/pay.js', 'export const v = 1;\n');

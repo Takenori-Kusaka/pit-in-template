@@ -103,10 +103,10 @@ const BASE3 = { 'value-owner': 'a', 'tech-lead': 'c', 'dev-verifier': 'b', 'inde
   check('確認者の力量: AI の名義の確認した者は受け付けない', reviewCompetenceProblems({ people: [A, ai] }, ai).some((x) => /AI の名義/.test(x)));
 }
 
-// ---------------------------------------------------------------- 承認権限の一時制限(IMPL-0118)
+// ---------------------------------------------------------------- 承認権限の一時制限(IMPL-0118。対象の人は 7.9.1 の2 の発動だけ: IMPL-1011 / ADR-0161 決定5)
 {
   const base = cfg(ANS(), [A, B, C], BASE3);
-  const R = { id: 'r1', person: '佐藤 一郎', paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: '鈴木 花子' };
+  const R = { id: 'r1', cause: '7.9.1-2', person: '佐藤 一郎', paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: '鈴木 花子' };
   check('制限: 範囲(paths)の無い発動を拒む', restrictionInputProblems(base, { kind: 'notice', event: 'restriction', restriction: { ...R, paths: [] } }).some((x) => /paths/.test(x)));
   check('制限: 記録した者が AI の名義なら拒む(機械による発動は行わない)', restrictionInputProblems(base, { kind: 'notice', event: 'restriction', restriction: { ...R, recordedBy: 'Claude' } }).some((x) => /AI の名義/.test(x)));
   check('制限: 発動の記録の無い識別子の解除を拒む', restrictionInputProblems(base, { kind: 'notice', event: 'restriction-release', restriction: { id: 'r9', basis: '連続2回の検出', recordedBy: '鈴木 花子' } }).some((x) => /解除されていない制限/.test(x)));
@@ -125,6 +125,23 @@ const BASE3 = { 'value-owner': 'a', 'tech-lead': 'c', 'dev-verifier': 'b', 'inde
   const released = { ...withR, changeLog: [...withR.changeLog, { kind: 'notice', date: '2026-11-10', event: 'restriction-release', restriction: { id: 'r1', basis: '連続2回の検出', recordedBy: '鈴木 花子' } }] };
   check('制限: 解除の後の変更は当たらず、解除の前の変更は当たる', !restrictionHit(released, ['src/payments/pay.js'], '2026-11-11').hit && restrictionHit(released, ['src/payments/pay.js'], '2026-11-09').hit);
   check('制限: 解除した識別子は再び使えない', restrictionInputProblems(released, { kind: 'notice', event: 'restriction', restriction: R }).some((x) => /既に使われています/.test(x)));
+  // 根拠の区分(cause)と対象の人(person)の整合(IMPL-1011 / ADR-0161 決定5。cause の真偽は人の判断で、ここでは整合だけを確かめる)
+  const fire = (r) => restrictionInputProblems(base, { kind: 'notice', event: 'restriction', restriction: r });
+  const { person: _p, ...R1 } = { ...R, cause: '7.9.1-1' };
+  check('制限(cause): 7.9.1 の1 に対象の人があれば拒む', fire({ ...R1, person: '佐藤 一郎' }).some((x) => /7\.9\.1 の1.*person/.test(x)));
+  check('制限(cause): 7.9.1 の2 に対象の人が無ければ拒む', fire((({ person, ...r }) => r)(R)).some((x) => /restriction\.person/.test(x)));
+  check('制限(cause): 7.9.1 の2 の対象の人が名簿に無ければ拒む', fire({ ...R, person: '名簿に無い人' }).some((x) => /restriction\.person/.test(x)));
+  check('制限(cause): cause が無ければ拒む', fire((({ cause, ...r }) => r)(R)).some((x) => /restriction\.cause/.test(x)));
+  check('制限(cause): cause の値が区分の外なら拒む', fire({ ...R, cause: '7.9.1-3' }).some((x) => /restriction\.cause/.test(x)));
+  check('制限(cause): 7.9.1 の1(person なし)を受け付ける', fire(R1).length === 0, JSON.stringify(fire(R1)));
+  check('制限(cause): 7.9.1 の2(名簿の person)を受け付ける', fire(R).length === 0, JSON.stringify(fire(R)));
+  const st2 = restrictionState({ ...base, changeLog: [{ kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: R, notice: {} }] });
+  check('制限(cause): 読み出した発動は person の鍵を持たず、cause を持つ(出力に人を出さない)', st2.active.length === 1 && !('person' in st2.active[0]) && st2.active[0].cause === '7.9.1-2', JSON.stringify(st2));
+  const { cause: _c, ...old } = R;
+  const stOld = restrictionState({ ...base, changeLog: [{ kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: old, notice: {} }] });
+  check('制限(cause): cause の無い旧い記録は causeless に数え、legacy(範囲の無い発動)に数えない', stOld.causeless === 1 && stOld.legacy === 0 && stOld.active.length === 1 && stOld.active[0].cause === null && !('person' in stOld.active[0]), JSON.stringify(stOld));
+  const stLegacy = restrictionState({ ...base, changeLog: [{ kind: 'notice', date: '2026-11-03', notice: { reasons: ['承認権限の一時制限(標準 第7章 7.9)の発動'] } }] });
+  check('制限(cause): 範囲の無い旧い通知は legacy に数え、causeless に数えない', stLegacy.legacy === 1 && stLegacy.causeless === 0, JSON.stringify(stLegacy));
 }
 
 // ---------------------------------------------------------------- 段の反証(IMPL-0344・0452・0184)
@@ -189,7 +206,8 @@ function workspace(config, extraFiles = {}) {
   const aggregate = () => {
     const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs'], { cwd: dir, encoding: 'utf8', env });
     const report = fs.existsSync(path.join(dir, 'evidence/quality-report.md')) ? fs.readFileSync(path.join(dir, 'evidence/quality-report.md'), 'utf8') : '';
-    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, report };
+    const ev = (rel) => (fs.existsSync(path.join(dir, 'evidence', rel)) ? fs.readFileSync(path.join(dir, 'evidence', rel), 'utf8') : '');
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, report, ev };
   };
   const cfgNow = () => JSON.parse(fs.readFileSync(path.join(dir, 'process.config.json'), 'utf8'));
   // PR を経ないコミットと、それを対象とする G-6 の判定記録(判定者と挙動要約)を積む
@@ -226,7 +244,7 @@ const NOTICE_DAY = localDay();
   check('入口: 外部の確認者を価値責任者に置く任免を拒む(IMPL-0463)', !toExt.ok && /独立レビュアの席に限る/.test(toExt.out), toExt.out);
   const noScope = w.change({ kind: 'notice', summary: '制限', event: 'restriction', notice: { to: A.name, at: NOTICE_DAY } });
   check('入口: 範囲・対象の人の無い制限の発動を拒む', !noScope.ok && /restriction を/.test(noScope.out), noScope.out);
-  const R = { id: 'pay-1', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
+  const R = { id: 'pay-1', cause: '7.9.1-2', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
   const fire = w.change({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: A.name, at: NOTICE_DAY } });
   const rec = w.cfgNow().changeLog.at(-1);
   check('入口: 制限の発動の範囲・対象の人・根拠・記録した者を記録に残す(7.9.6)', fire.ok && rec.event === 'restriction' && rec.restriction?.paths?.[0] === 'src/payments/**' && rec.restriction?.recordedBy === B.name, `${fire.out}\n${JSON.stringify(rec)}`);
@@ -348,7 +366,7 @@ const NOTICE_DAY = localDay();
 {
   // 範囲に触れた変更の件数は G-6 の適用に依らず数える。G-6 を適用しない体制では「0 件」と出さず、数えなかった件数を出さないと表示する(IMPL-0118・ADR-0127 決定5)
   const base = cfg(ANS(), [A, B, C], BASE3);
-  const R = { id: 'pay-1', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
+  const R = { id: 'pay-1', cause: '7.9.1-2', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
   const log = { kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: R, notice: { reasons: ['承認権限の一時制限(標準 第7章 7.9)の発動'] } };
   const noG6 = { ...base, gates: { ...base.gates, g6: { ...base.gates.g6, state: 'omitted' } }, changeLog: [...base.changeLog, log] };
   const w = workspace(noG6);
@@ -363,6 +381,29 @@ const NOTICE_DAY = localDay();
   );
 }
 
+
+{
+  // 集約の出力に対象の人を出さない・cause の無い旧い発動の件数・IMPL-1003 の行(IMPL-1011・IMPL-1003 / ADR-0161 決定5・ADR-0147)
+  const base = cfg(ANS(), [A, B, C], BASE3);
+  const R = { id: 'pay-1', cause: '7.9.1-2', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
+  const mk = (r) => ({ ...base, changeLog: [...base.changeLog, { kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: r, notice: { reasons: ['承認権限の一時制限(標準 第7章 7.9)の発動'] } }] });
+  const rowText = (rep) => rep.split(/\r?\n/).filter((l) => l.includes('承認権限の一時制限(第7章 7.9.2)')).join(' ');
+  const w = workspace(mk(R));
+  w.commitWithG6('src/payments/pay.js', A.name);
+  const agg = w.aggregate();
+  const ev = JSON.parse(agg.ev('evidence.json') || '{}');
+  const findRestrictions = (o) => (o && typeof o === 'object' ? (Array.isArray(o.restrictions?.active) ? o.restrictions.active : Object.values(o).map(findRestrictions).find((x) => x?.length) ?? []) : []);
+  const act = findRestrictions(ev);
+  const ext = agg.ev('assurance-disclosure.external.md');
+  w.done();
+  check('集約: cause 2 の制限の対象の人を、制限の行・evidence.json に出さない(IMPL-1011)', act.length === 1 && !('person' in act[0]) && !rowText(agg.report).includes('対象') && !agg.out.includes('対象 ' + C.name), JSON.stringify(act));
+  check('集約: 保証の開示に IMPL-1003 の行を出す(内部と外へ渡す形。文字列の存在だけを確かめ、合否には使わない)', /IMPL-1003/.test(agg.report) && /IMPL-1003/.test(ext), '');
+  const { cause: _c, ...old } = R;
+  const w2 = workspace(mk(old));
+  const agg2 = w2.aggregate();
+  w2.done();
+  check('集約: cause の無い旧い発動の件数を開示に出す(対象の人は出さない)', /根拠の区分\(cause\)の無い旧い発動 1 件/.test(agg2.report) && !agg2.report.includes('対象 ' + C.name), rowText(agg2.report));
+}
 
 // IMPL-0117:ok 力量を確認した者が、その変更の作成を指示した者(コミットの作成者 = 開発者の席の責任者)である確認を、件数 1 で固定する
 {

@@ -1699,13 +1699,21 @@ export const PERSON_KEYS = ['id', 'name', 'external', 'accounts', 'nameConfirmed
 // 強制する承認の数(reviewersRequiredOf・ブランチ保護)には入れない(ADR-0088 決定6。範囲の限定を全 PR へ広げない)。期限の欄は置かない(7.9.3)
 
 const RESTRICTION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+/** 根拠の区分(標準 第7章 7.9.1 の1 は "7.9.1-1"=見逃しの反復、2 は "7.9.1-2"=意図的な違反)。真偽の判別は人(品質保証の機能)。機械は cause と person の整合だけを確かめる */
+const RESTRICTION_CAUSES = ['7.9.1-1', '7.9.1-2'];
 
-/** 構成の変化点の記録から、制限の発動と解除を読む。active は解除されていない制限、legacy は範囲の無い旧い発動の記録 */
+/**
+ * 構成の変化点の記録から、制限の発動と解除を読む。active は解除されていない制限、
+ * legacy は範囲(paths)の無い旧い発動の記録、causeless は範囲はあるが根拠の区分(cause)の無い旧い発動の件数(両者は別の概念)。
+ * 要素は対象の人(person)を持たない。person は記録の欄にだけ残し、集約の出力へ出さない
+ * (ADR-0161 決定5: 対象の人は 7.9.1 の2 による発動だけに書き、5.6.3 の措置との照合のためだけに使う)。cause は無ければ null
+ */
 export function restrictionState(config) {
   const log = Array.isArray(config?.changeLog) ? config.changeLog : [];
   const active = new Map();
   const released = [];
   let legacy = 0;
+  let causeless = 0;
   log.forEach((e, index) => {
     if (e?.kind !== 'notice' || e.noticeFor != null) return;
     const r = e.restriction;
@@ -1715,12 +1723,14 @@ export function restrictionState(config) {
       if (active.has(r.id)) released.push({ ...active.get(r.id), releasedAt: when, releasedIndex: index });
       active.delete(r.id);
     } else if (r?.id && Array.isArray(r.paths)) {
-      active.set(r.id, { id: r.id, person: r.person ?? null, paths: r.paths, basis: r.basis ?? null, recordedBy: r.recordedBy ?? null, at: when, index });
+      const cause = RESTRICTION_CAUSES.includes(r.cause) ? r.cause : null;
+      if (cause === null) causeless++;
+      active.set(r.id, { id: r.id, cause, paths: r.paths, basis: r.basis ?? null, recordedBy: r.recordedBy ?? null, at: when, index });
     } else if (!r && (e.notice?.reasons ?? []).some((x) => String(x).includes('一時制限') && String(x).includes('発動'))) {
       legacy++;
     }
   });
-  return { active: [...active.values()], released, legacy };
+  return { active: [...active.values()], released, legacy, causeless };
 }
 
 /** 種別 notice の制限の入力の問題(変化点の入口)。prior は変化点の前の構成 */
@@ -1729,10 +1739,11 @@ export function restrictionInputProblems(prior, change) {
   const isRelease = change?.event === 'restriction-release';
   const shape = isRelease
     ? '{ "id": "<発動の記録の識別子>", "basis": "<解除の根拠。7.9.3 の連続2回の検出>", "recordedBy": "<記録した者>" }'
-    : '{ "id": "<識別子>", "person": "<検出能力の低下を検知された者>", "paths": ["<範囲のパスのパターン>"], "basis": "<根拠となった測定結果の所在>", "recordedBy": "<記録した者>" }';
+    : '{ "id": "<識別子>", "cause": "7.9.1-1", "paths": ["<範囲のパスのパターン>"], "basis": "<根拠となった測定結果の所在>", "recordedBy": "<記録した者>" }(7.9.1 の1 見逃しの反復)、'
+      + 'または { "id": "<識別子>", "cause": "7.9.1-2", "person": "<7.9.1 の2 の対象の人>", "paths": ["<範囲のパスのパターン>"], "basis": "<根拠となった測定結果の所在>", "recordedBy": "<記録した者>" }(7.9.1 の2 意図的な違反)';
   if (!r || typeof r !== 'object' || Array.isArray(r)) return [`restriction を ${shape} で書きます(標準 第7章 7.9.6 の「対象とした範囲」「根拠となった測定結果」)`];
   const out = [];
-  const allowed = isRelease ? ['id', 'basis', 'recordedBy'] : ['id', 'person', 'paths', 'basis', 'recordedBy'];
+  const allowed = isRelease ? ['id', 'basis', 'recordedBy'] : ['id', 'cause', 'person', 'paths', 'basis', 'recordedBy'];
   const unknown = Object.keys(r).filter((k) => !allowed.includes(k));
   if (unknown.length) out.push(`restriction に書けない欄があります(${unknown.join(', ')})。書けるのは ${allowed.join(' / ')} です`);
   const ctx = { ...prior, people: change.people ?? prior?.people ?? [] };
@@ -1742,7 +1753,13 @@ export function restrictionInputProblems(prior, change) {
     out.push(`restriction.id "${r.id}" は、解除されていない制限の発動の記録にありません${st.active.length ? `(解除されていない制限: ${st.active.map((a) => a.id).join(' / ')})` : ''}`);
   } else if (!isRelease && [...st.active, ...st.released].some((a) => a.id === r.id)) out.push(`restriction.id "${r.id}" は既に使われています。発動ごとに別の識別子を書きます`);
   if (!isRelease) {
-    if (!(typeof r.person === 'string' && r.person.trim()) || !resolveSigner(ctx, r.person)) out.push('restriction.person(検出能力の低下を検知された者)を、人の名簿の氏名または id で書きます');
+    // 根拠の区分と対象の人の整合(ADR-0161 決定5)。cause の真偽(1 と2 のどちらに当たるか)は人の判断で、機械は確かめない
+    if (!RESTRICTION_CAUSES.includes(r.cause)) out.push('restriction.cause(根拠の区分。標準 第7章 7.9.1 の1 は "7.9.1-1"、2 は "7.9.1-2")を書きます');
+    else if (r.cause === '7.9.1-1') {
+      if (r.person != null) out.push('7.9.1 の1(見逃しの反復)による発動に、対象の人(person)を書きません(7.9.6。見逃しは範囲で数え、人で数えない)');
+    } else if (!(typeof r.person === 'string' && r.person.trim()) || !resolveSigner(ctx, r.person)) {
+      out.push('restriction.person(7.9.1 の2 の区分の対象の人。5.6.3 の措置との照合のためだけに記録する)を、人の名簿の氏名または id で書きます');
+    }
     if (!Array.isArray(r.paths) || !r.paths.length || r.paths.some((p) => !(typeof p === 'string' && p.trim()))) {
       out.push('restriction.paths(見逃した欠陥の類型に対応する範囲。パスのパターンの配列)を書きます。範囲を限定しない制限は 7.9.2 の「適用の範囲」に反します');
     }
