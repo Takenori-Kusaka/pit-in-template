@@ -312,7 +312,7 @@ export function autonomyState(config, records) {
         const phaseNote = d.phase === '運用' ? '' : '。検出の時点が空欄のため、運用の事象として数える';
         const label = `${d.id || '(ID なし)'} ${d.severity}(AI 起因: ${cause || '空欄'}${phaseNote})`;
         // 登録外の ID の行は空欄と同じ扱い。機械は書き誤りと種別の取り下げを見分けられないため、戻し方を理由に書く
-        const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。${cause === 'あり' ? '取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る' : '取り下げた種別の行でも、原因を特定するまで止まる(特定した後は、残りの種別は事象の日より後の登録の判定で戻る)'}。行の記録は書き換えない` : '';
+        const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。${ai && isRealDay(d.date) ? '取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る' : ai ? '取り下げた種別の行でも、発生日を記入するまで止まる(記入した後は、残りの種別は事象の日より後の登録の判定で戻る)' : '取り下げた種別の行でも、原因を特定するまで止まる(特定した後は、残りの種別は事象の日より後の登録の判定で戻る)'}。行の記録は書き換えない` : '';
         if (!ai) {
           // 原因を特定できない事象は、原因を特定する(AI 起因を「あり」か「なし」にする)まで止める。登録し直しでは解かない(N-6 の5。突合 X-3)
           stop('第1区分', 'cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`);
@@ -414,7 +414,7 @@ export function autonomyState(config, records) {
       } else if (rework.state === '基準値未設定') {
         const pb = rework.pendingBaseline;
         const pbText = pb ? `。記録済みの基準値 ${pb.percent}%(記録した日 ${pb.recordedAt})は、次の評価の日 ${pb.effectiveFrom} から効く(記録し直さなくてよい)` : '';
-        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)${pbText}。${pb ? '' : '種別 settings で基準値を記録すると、'}記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})から戻る`);
+        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)${pbText}。${pb ? '' : '種別 settings で基準値を記録すると、'}${pb ? 'その評価の日' : `記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})`}から戻る`);
       }
       if (registeredAt) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
@@ -541,14 +541,12 @@ export function reworkText(type) {
   return basis ? `${body}。${basis}` : body;
 }
 
-/** 評価の日 day にまだ効いていない記録済みの基準値(recordedAt が day 以後で最後の、値のある記録)。無ければ null。config.mjs は変えず、ここで履歴を読む */
+/** 評価の日 day にまだ効いていないが、次の評価の日に効く記録済みの基準値(次の評価の日の時点で最後の記録。外した記録(null)なら無し。記録した日が day 以後のものだけ)。無ければ null。config.mjs は変えず、reworkBaselineInfo を使う */
 function pendingBaselineOf(config, day) {
-  const h = Array.isArray(config?.reworkBaseline?.history) ? config.reworkBaseline.history : [];
-  let e = null;
-  for (const x of h) {
-    if (typeof x?.percent === 'number' && Number.isFinite(x.percent) && x.percent >= 0 && x.percent <= 100 && isRealDay(x?.recordedAt) && String(x.recordedAt) >= String(day)) e = x;
-  }
-  return e ? { percent: e.percent, recordedAt: String(e.recordedAt), effectiveFrom: addMonths(monthStart(String(e.recordedAt)), 1) } : null;
+  const effectiveFrom = addMonths(monthStart(String(day)), 1);
+  const b = reworkBaselineInfo(config, effectiveFrom);
+  if (b.percent === null || !isRealDay(b.recordedAt) || String(b.recordedAt) < String(day)) return null;
+  return { percent: b.percent, recordedAt: String(b.recordedAt), effectiveFrom };
 }
 
 function reworkTextBody(type) {
@@ -1048,7 +1046,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
     out.push(`AI自律レベル: ${HANDOVER_FILE} の節2 のコア機能「${u.name}」の「関わる登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い)。この機能は空欄と同じ扱いで、理解保持者数が1名以下のあいだ、すべての登録した変更種別を止める`);
   }
   for (const u of state.defectUnregistered ?? []) {
-    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。AI 起因が「あり」の行で取り下げた種別なら、残りの種別は事象の日より後の登録の判定で戻る(原因を特定できない行は、原因を特定するまで止まる)。行の記録は書き換えない`);
+    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。AI 起因が「あり」で発生日のある行で取り下げた種別なら、残りの種別は事象の日より後の登録の判定で戻る(発生日の無い行は、発生日を記入するまで、原因を特定できない行は、原因を特定するまで止まる)。行の記録は書き換えない`);
   }
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
   return out;

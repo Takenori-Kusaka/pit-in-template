@@ -570,6 +570,17 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   // 記録済みで、評価の日にまだ効かない基準値は、停止の理由と手戻り率の表示に「次の評価の日から効く」と出す(観測の窓の併記と同じ形)
   const rPend = tOf(mk({ doubles: 12, pct: 20, at: '2026-10-20' }));
   check('手戻り率: 評価の日の後に記録した基準値は、判定を変えず(L1)、停止の理由と表示に記録済みの値・記録した日・効く日を出す', rPend.level === 'L1' && rPend.rework.state === '基準値未設定' && rPend.stops.some((x) => /記録済みの基準値 20%/.test(x.reason) && /2026-10-20/.test(x.reason) && /2026-11-01 から効く/.test(x.reason)) && /記録済みの基準値 20%/.test(reworkText(rPend)) && /2026-11-01 から効く/.test(reworkText(rPend)) && !/記録すると/.test(rPend.stops.map((x) => x.reason).join()), JSON.stringify(rPend.stops));
+  // 記録済みの基準値の併記は、次の評価の日に効く値(外した記録を含む最後の記録)だけを出す
+  const hEnt = (percent, recordedAt) => ({ percent, recordedAt, decidedBy: '鈴木 一郎', reason: '直近の実績から置く' });
+  const withHist = (history) => { const i = mk({ doubles: 12, pct: null }); i.config.reworkBaseline = { percent: history[history.length - 1].percent, history }; return tOf(i); };
+  const joinStops = (t) => t.stops.map((x) => x.reason).join();
+  const rOff = withHist([hEnt(20, '2026-10-10'), hEnt(null, '2026-10-15')]);
+  check('手戻り率: 値を記録した後に同じ月に外したとき(null)は、併記を出さず「記録し直さなくてよい」と言わない', rOff.level === 'L1' && rOff.rework.state === '基準値未設定' && !/記録済みの基準値/.test(joinStops(rOff)) && !/記録し直さなくてよい/.test(joinStops(rOff)) && !/記録済みの基準値/.test(reworkText(rOff)), JSON.stringify(rOff.stops));
+  const rFuture = withHist([hEnt(20, '2026-11-01')]);
+  check('手戻り率: 記録した日が次の評価の日以後なら併記を出さず、日付を2つ言わない', rFuture.level === 'L1' && !/記録済みの基準値/.test(joinStops(rFuture)) && /記録した日より後の評価の日\(次は 2026-11-01\)から戻る/.test(joinStops(rFuture)), JSON.stringify(rFuture.stops));
+  const rTwo = withHist([hEnt(20, '2026-10-10'), hEnt(30, '2026-11-15')]);
+  check('手戻り率: 次の評価の日に効く値(20%)を併記し、その後の値(30%)は出さない', rTwo.level === 'L1' && /記録済みの基準値 20%/.test(joinStops(rTwo)) && /2026-11-01 から効く/.test(joinStops(rTwo)) && !/30%/.test(joinStops(rTwo)) && !/30%/.test(reworkText(rTwo)), JSON.stringify(rTwo.stops));
+  check('手戻り率: 併記があるとき、後半は「その評価の日から戻る」へ縮め、日付を重ねない', rPend.stops.some((x) => /記録し直さなくてよい\)。その評価の日から戻る/.test(x.reason) && !/次は 2026-11-01/.test(x.reason)), JSON.stringify(rPend.stops));
   check('手戻り率: 基準値を何も記録していなければ、記録済みの基準値は出さない', !/記録済みの基準値/.test(rUnset.stops.map((x) => x.reason).join()) && !/記録済みの基準値/.test(reworkText(rUnset)));
   check('手戻り率: 停止の理由は、受け付けない「決め方」の記録を案内しない', !/決め方/.test(rUnset.stops.map((x) => x.reason).join()));
   // 既定ブランチの履歴を読めないとき、手戻り率の理由が停止に出る(差し戻し率の停止とは別に)
@@ -1099,6 +1110,11 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const cu = run(['存在しない種別'], { cause: '特定できない' });
   check('欠陥の台帳: 原因を特定できない行で登録外の ID のとき、両方の種別に停止がある', [cu.st.types[0], cu.st.types[1]].every((t) => t.stops.some((s) => s.kind === 'cause-unknown')));
   check('欠陥の台帳: 原因を特定できない行の理由は「戻る」だけの文を出さず、原因を特定するまで止まると書く', cu.st.types.every((t) => t.stops.filter((s) => s.kind === 'cause-unknown').every((s) => /取り下げた種別の行でも、原因を特定するまで止まる/.test(s.reason) && !/取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る/.test(s.reason))) && /原因を特定できない行は、原因を特定するまで止まる/.test(autonomyNoteLines(cu.st).join('\n')));
+  const noDate = run(['存在しない種別'], { date: '', registeredAtTwo: '2026-10-10' });
+  const noDateReasons = noDate.st.types.flatMap((x) => x.stops.filter((s) => s.kind === 'downgrade').map((s) => s.reason));
+  check('欠陥の台帳: AI 起因「あり」で発生日の無い行は、発生日を記入するまで止まると書き、「戻る」だけの文を出さない(注記も同じ)', noDate.b === true && noDateReasons.length > 0 && noDateReasons.every((r) => /発生日を記入するまで止まる/.test(r) && !/取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る/.test(r)) && /発生日の無い行は、発生日を記入するまで/.test(autonomyNoteLines(noDate.st).join('\n')));
+  const withDate = run(['存在しない種別'], { date: '2026-10-05', registeredAtTwo: '2026-10-10' });
+  check('欠陥の台帳: AI 起因「あり」で発生日のある行は、元の「戻る」の文のまま出し、種別2 は戻る', withDate.b === false && /取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る/.test(withDate.reasons) && !/発生日を記入するまで止まる/.test(withDate.reasons));
   const dot = run([`${first}・決済`]);
   check('欠陥の台帳: 「種別1・種別2」は区切らず1つの登録外の ID として読み、両方が止まる', dot.a === true && dot.b === true && dot.st.defectUnregistered[0]?.ids.length === 1);
   const withdrawn = run(['存在しない種別'], { registeredAtTwo: '2026-10-10' });
