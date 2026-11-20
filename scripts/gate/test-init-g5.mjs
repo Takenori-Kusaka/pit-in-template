@@ -558,14 +558,62 @@ for (const stack of ['python', 'python-poetry', 'python-uv', 'go', 'none', 'unde
   }
   const ok = settings({ ci: { mutationThreshold: 60 } });
   check('閾値の経路: settings の ci.mutationThreshold(60)が通り、構成に残る', ok.ok && ci().mutationThreshold === 60, ok.out);
+  const log = () => JSON.parse(W.read('process.config.json')).changeLog.at(-1);
+  // 初めて入れる変更は緩める向きではない(記名なしで通る)。差分に行が出て、記録は変更ありで残る
+  check(
+    '閾値の経路: 初めて入れる変更は、差分に閾値の行が出て「構成の変更なし」と出ず、記録が変更ありで残る(記名なしで通る)',
+    /段 mutation の閾値: なし → 60/.test(ok.out) && !/構成の変更なし/.test(ok.out) && log().result !== 'no-change' && log().diff.some((l) => /段 mutation の閾値/.test(l)),
+    ok.out + JSON.stringify(log())
+  );
   r = W.node('scripts/gate/verify-gate-contract.mjs');
-  check('閾値の経路: 閾値を入れると、CL3 の案件の契約検査が閾値の問題で落ちない', !/ci\.mutationThreshold/.test(r.out), r.out);
+  check('閾値の経路: 閾値を入れると、CL3 の案件の契約検査が閾値の問題で落ちない(契約検査が通る)', r.ok && !/ci\.mutationThreshold/.test(r.out), r.out);
   const other = settings({ ci: { failOnSeverity: ['critical', 'high'] } });
   check('閾値の経路: 別の値の settings の変更でも閾値が消えない', other.ok && ci().mutationThreshold === 60, other.out);
   const regen = W.node('scripts/init/generate-profile.mjs', '--answers', 'process.config.json');
   check('閾値の経路: 構成からの再生成でも閾値が消えない', regen.ok && ci().mutationThreshold === 60, regen.out);
-  const zero = settings({ ci: { mutationThreshold: 0 } });
-  check('閾値の経路: 0 は有効な値として残る(未設定と取り違えない)', zero.ok && ci().mutationThreshold === 0, zero.out);
+}
+
+// 段 mutation の閾値を変える変更の向き(束 B28。カバレッジの下限と同じ扱い)。下げる変更は緩める向きで決定者の記名を要し、
+// 初めて入れる変更・上げる変更は緩める向きでない。差分に行が出て、変化点の記録は変更ありで残る。
+// 記名を受ける名簿を置くため、1〜2名の構成(成立しない兼務禁止に当たらない)で行う。生成器の経路だけを通す。
+{
+  const W = workspace('mut-dir');
+  dirs.push(W.dir);
+  const change = (obj, signed) => {
+    const p = answersFile({ kind: 'settings', summary: '段 mutation の閾値を変える', settings: obj, ...(signed ? { decidedBy: '名簿 戊', reason: '試験のための記名' } : {}) });
+    return W.node('scripts/init/generate-profile.mjs', '--change', p);
+  };
+  const ci = () => JSON.parse(W.read('process.config.json')).ci;
+  const log = () => JSON.parse(W.read('process.config.json')).changeLog.at(-1);
+  const init = W.node('scripts/init/generate-profile.mjs', '--answers', answersFile({ ...ANSWERS[1], ...COMMON }), '--stack', 'node');
+  check('閾値の向き: 1〜2名の初期化が通る', init.ok, init.out);
+  // 記名を受ける名簿と D-0(試験のための人。すべての席に就く)を置く
+  W.write('docs/D-0-governance.md', W.read('templates/00-d0-governance.md').replace(/^(\| 決裁の権限の出所 \|)[^\n]*\|\s*$/m, '$1 個人事業主本人(試験) |'));
+  const person = { id: 'p1', name: '名簿 戊', accounts: [{ login: 'bo-test', id: 4001 }] };
+  const seats = Object.fromEntries(['biz-approver', 'value-owner', 'tech-lead', 'dev-verifier', 'independent-reviewer', 'qa-gatekeeper', 'context-owner', 'ai-maintainer', 'ai-ops'].map((id) => [id, { accountable: person.name }]));
+  const fill = W.node('scripts/init/generate-profile.mjs', '--change', answersFile({ kind: 'accountable', summary: '名簿を置く', people: [person], seats, decidedBy: person.name, reason: '試験の初期の設定' }));
+  check('閾値の向き: 記名を受ける名簿を置く前提の変化点が通る', fill.ok, fill.out);
+  const first = change({ ci: { mutationThreshold: 60 } }, false);
+  check(
+    '閾値の向き: 初めて入れる変更は、記名なしで通り、差分に閾値の行が出て「構成の変更なし」と出ず、記録が変更ありで残る',
+    first.ok && ci().mutationThreshold === 60 && /段 mutation の閾値: なし → 60/.test(first.out) && !/構成の変更なし/.test(first.out) && log().result !== 'no-change' && log().direction !== 'loosen' && log().diff.some((l) => /段 mutation の閾値: なし → 60/.test(l)),
+    first.out + JSON.stringify(log())
+  );
+  const down = change({ ci: { mutationThreshold: 5 } }, false);
+  check('閾値の向き: 60 から 5 へ下げる変更は、記名なしでは止まり、構成の値を変えない', !down.ok && /段 mutation の閾値: 60 → 5/.test(down.out) && /緩める向き/.test(down.out) && ci().mutationThreshold === 60, down.out);
+  const downSigned = change({ ci: { mutationThreshold: 5 } }, true);
+  check(
+    '閾値の向き: 記名つきで 60 から 5 へ下げると通り、記録が緩める向きの変更ありで残る',
+    downSigned.ok && ci().mutationThreshold === 5 && log().result !== 'no-change' && log().direction === 'loosen' && log().decidedBy === '名簿 戊' && log().diff.some((l) => /段 mutation の閾値: 60 → 5/.test(l)),
+    downSigned.out + JSON.stringify(log())
+  );
+  const up = change({ ci: { mutationThreshold: 70 } }, false);
+  check('閾値の向き: 5 から 70 へ上げる変更は、記名なしで通り、差分に閾値の行が出て「構成の変更なし」と出ない', up.ok && ci().mutationThreshold === 70 && /段 mutation の閾値: 5 → 70/.test(up.out) && !/構成の変更なし/.test(up.out) && log().direction !== 'loosen', up.out);
+  check('閾値の向き: 値があるとき、PROCESS-PROFILE.md の CI の設定値に閾値が出る(カバレッジの下限と同じ)', /\| 段 mutation の閾値 \| 70 \|/.test(W.read('PROCESS-PROFILE.md')), W.read('PROCESS-PROFILE.md').slice(0, 300));
+  // 0 は有効な値として残る(下げる変更なので記名つき)
+  const zero = change({ ci: { mutationThreshold: 0 } }, true);
+  check('閾値の向き: 0 は有効な値として残る(未設定と取り違えない)', zero.ok && ci().mutationThreshold === 0, zero.out);
+
 }
 
 // ワークフローの定義

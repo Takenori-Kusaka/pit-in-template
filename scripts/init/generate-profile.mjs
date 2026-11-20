@@ -2432,6 +2432,15 @@ export function diffConfig(before, after, opts = {}) {
         M
       );
     }
+    // 段 mutation の閾値(ci.mutationThreshold。CL3・附属書F の適用で合否を決める値)。カバレッジの下限と同じ扱いで、
+    // 下げる変更と設定済みの値を外す変更は緩める向き、初めて入れる変更と上げる変更は緩める向きではない(束 B28。ADR-0224 決定6)
+    {
+      const bm = num(before.ci?.mutationThreshold);
+      const am = num(after.ci?.mutationThreshold);
+      if (bm !== am) {
+        push(`段 mutation の閾値: ${bm ?? 'なし'} → ${am ?? 'なし'}`, bm ?? -Infinity, am ?? -Infinity, M);
+      }
+    }
     // 由来の記録の無い下限は、黙って下げない(ADR-0085)。戻す候補を示し、採用者が記名で決める
     if (after.ci?.coverageOrigin === 'unknown' && num(after.ci?.derivedCoverageThreshold) !== null && ac !== null && ac > after.ci.derivedCoverageThreshold) {
       remaining.push(
@@ -4220,6 +4229,8 @@ export function renderProfileMd(config, result) {
   L.push(
     `| カバレッジの下限 | ${config.ci.coverageThreshold}%${coverageOriginNote(config.ci)} |`
   );
+  // 段 mutation の閾値は、値があるときだけ出す(既定値は無い。CL3・附属書F の適用で契約検査が見る値)
+  if (typeof config.ci.mutationThreshold === 'number') L.push(`| 段 mutation の閾値 | ${config.ci.mutationThreshold} |`);
   L.push(
     `| カバレッジの測る範囲 | ${config.ci.coverageScope === 'whole' ? 'コードの全体(変更の未被覆は全体の被覆で薄まる。保証の開示に出る)' : config.ci.coverageScope === 'changed' ? '変更で加えた・変えたコード' : '未記入(アダプタの既定で測る)'}。企画書(G-1)の「カバレッジの測る範囲(G-5 基準3)」と揃える |`
   );
