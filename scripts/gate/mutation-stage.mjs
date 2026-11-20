@@ -17,10 +17,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { ROOT } from './config.mjs';
 import { riskClassOf, trailerValues } from './delegation.mjs';
-import { riskFloorOf } from './check-pr.mjs';
+import { riskFloorOf, changeListBetween } from './check-pr.mjs';
 import { clJudgmentState, readF2Q1Text } from './cl-judgment.mjs';
-
-const KIND = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'add', T: 'modify' };
 
 function gitOut(args, root = ROOT) {
   try {
@@ -56,13 +54,13 @@ export function caseConditionOf(config, d0Text) {
  */
 export function r1Of({ event, body, diffBase, baseConfig, git = gitOut }) {
   const unreadable = (why) => ({ r1: true, unreadable: true, why });
-  if (event !== 'pull_request' && event !== 'push') return unreadable('起動の経路(PIT_IN_EVENT)が分からず、リスク区分を判定できない');
+  if (event !== 'pull_request' && event !== 'push') {
+    return unreadable(event ? `この起動の経路(${event})ではリスク区分を判定しない` : '起動の経路(PIT_IN_EVENT)が分からず、リスク区分を判定できない');
+  }
   if (!diffBase) return unreadable('比較の起点(PIT_IN_DIFF_BASE)が渡されず、変更ファイルを取れない');
-  const names = git(['diff', '--name-status', '-z', '--no-renames', diffBase, 'HEAD']);
-  if (names === null) return unreadable(`${diffBase} との差分を取れない(浅い取得か、起点が無い)`);
-  const toks = names.split('\0');
-  const changes = [];
-  for (let i = 0; i + 1 < toks.length; i += 2) if (toks[i]) changes.push({ path: toks[i + 1], kind: KIND[toks[i][0]] ?? 'modify' });
+  // 変更の一覧は check-pr と同じもの(名前の変更を検出し from を持つ)。ここで新しく定義しない(束 B28 の突合 M-3)
+  const changes = changeListBetween(git, diffBase, 'HEAD');
+  if (changes === null) return unreadable(`${diffBase} との差分を取れない(浅い取得か、起点が無い)`);
   const floor = riskFloorOf(baseConfig?.riskFloor?.rules, changes).floor;
   let declared = null;
   if (event === 'pull_request') {
@@ -102,10 +100,14 @@ export function thresholdOf(ci) {
  * 出荷の集約(G-7 の材料)へ出す、構成に閾値が無いことの注意の1行。構成の値を読むだけ(決定可能。ruling-1 §1.1)。
  * 閾値が数値で在れば null(注意を出さない)。無ければ「閾値なしで通過する」と出す。型が不正なら不正と出す
  */
-export function mutationThresholdNote(config) {
+export function mutationThresholdNote(config, d0Text = null) {
   const t = thresholdOf(config?.ci);
   if (t.problem) return `**注意**: ${t.problem}。G-5 の段 mutation の閾値として使えません`;
   if (t.value !== undefined) return null;
+  // 案件の条件(CL3・Q1「はい」)に当たる構成では、閾値が無いと段も契約検査も失敗にする(ADR-0224 決定6)。通過するとは言わない
+  if (caseConditionOf(config, d0Text).required) {
+    return '**注意**: 構成に閾値(ci.mutationThreshold)がありません。案件の条件(附属書F F.2 の Q1 が「はい」または CL3)に当たる構成なので、閾値が未設定のため、段と契約検査が失敗にします。/process-change(種別 settings)で値を書いてください';
+  }
   return '**注意**: 構成に閾値(ci.mutationThreshold)がありません。G-5 の段 mutation は、走った事実と生き残りの所在だけを証跡として「閾値なしで通過」します。検出力が足りるとは示していません(附属書H H.1・H.4)';
 }
 

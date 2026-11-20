@@ -150,6 +150,14 @@ const env = {
 // process-compass #363 の突合 X-4)
 if (adapter.runtime === 'python' && adapter.runtimeVersion && !process.env.UV_PYTHON) env.UV_PYTHON = String(adapter.runtimeVersion);
 
+// 段 mutation は、必須でない変更(案件の条件にも R1 にも当たらない)ではコマンドを走らせず、注意で通す。
+// 附属書H H.1: R2 は週次の定期実行で合否条件にしない、R3 は任意。コマンドを書いたことで全ての PR の合否条件にしない(束 B28 の突合 H-1)
+if (phase === 'mutation' && stage && !stage.required) {
+  notice(`アダプタ ${adapter.id}: "mutation" のコマンドはこの変更では必須ではありません。走らせません(R1 の変更の PR と、案件の条件に当たる構成では走らせます)。この事実は証跡へ残ります`);
+  if (stage.q1Unreadable) notice('附属書F F.2 の Q1 の記録を読めないため、案件の条件では必須にしていません(D-0 の記入は check-d0 と出荷の集約が止めます)');
+  process.exit(0);
+}
+
 if (!always && state.dir !== '.') console.log(`(所在: ${state.dir})`);
 if (always && !state.present) console.log(`(製品のコードの有無に依らず実施する検査です。リポジトリの直下で実行します)`);
 console.log(`$ ${command}`);

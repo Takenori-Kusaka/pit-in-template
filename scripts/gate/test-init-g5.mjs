@@ -276,6 +276,23 @@ for (const n of [1, 3]) {
     check(`${tag}: アダプタの projectDir が無いディレクトリを指すと、契約検査が落ちる`, !r.ok && /projectDir "no-such-dir" のディレクトリがありません/.test(r.out), r.out);
     W.write(aPath, aText);
   }
+  // 段 mutation の閾値(附属書F F.6・ADR-0224 決定6)。契約検査が閾値の型と、案件の条件での在否を見る(束 B28 の突合 M-5)
+  {
+    const cfgText = W.read('process.config.json');
+    const cfgObj = JSON.parse(cfgText);
+    const put = (patch) => W.write('process.config.json', JSON.stringify({ ...cfgObj, ...patch }, null, 2));
+    put({ ci: { ...cfgObj.ci, mutationThreshold: '80' } });
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 閾値(ci.mutationThreshold)が文字列の構成では、契約検査が落ちる`, !r.ok && /ci\.mutationThreshold/.test(r.out) && /0〜100 の数値ではありません/.test(r.out), r.out);
+    const { mutationThreshold: _t, ...ciNoThreshold } = cfgObj.ci ?? {};
+    put({ ci: ciNoThreshold, answers: { ...cfgObj.answers, 'q-criticality': 'cl3' } });
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: CL3 の案件で閾値が未設定の構成では、契約検査が落ちる`, !r.ok && /構成に ci\.mutationThreshold/.test(r.out), r.out);
+    put({ ci: { ...cfgObj.ci, mutationThreshold: 80 } });
+    r = W.node('scripts/gate/verify-gate-contract.mjs');
+    check(`${tag}: 閾値が数値(80)の構成では、閾値の問題で契約検査が落ちない`, !/ci\.mutationThreshold/.test(r.out), r.out);
+    W.write('process.config.json', cfgText);
+  }
   // 承認は承認した差分に対して数える(標準 第4章 G-6。#296 L-2)。適用するルールセットの dismiss_stale_reviews_on_push を外すと契約検査が落ちる
   {
     const cfg = JSON.parse(W.read('process.config.json'));

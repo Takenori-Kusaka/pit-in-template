@@ -353,6 +353,68 @@ for (const id of ['python-poetry', 'python-uv']) {
     const r3 = W3.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base3, PIT_IN_BASE_CONFIG: bc3 });
     check('IMPL-1029:ng push でトレーラが R2 でも、下限が R1 なら必須(トレーラを省く・低く書く経路を塞ぐ)', r3.code === 1 && /区分の下限が R1/.test(r3.out), r3.out);
   }
+  // --- 区分の下限: 名前の変更の規則(check-pr と同じ変更の一覧を使う。束 B28 の突合 M-3)
+  {
+    const RENAME_FLOOR = { riskFloor: { rules: [{ id: 'auth-rename', paths: ['src/auth/**'], kinds: ['rename'], floor: 'R1', why: '認証の名前の変更' }] } };
+    const body = 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\nexport const d = 4;\nexport const e = 5;\n';
+    const scene = (op, trailer) => {
+      const W = mk('');
+      fs.mkdirSync(path.join(W.dir, 'src/auth'), { recursive: true });
+      fs.writeFileSync(path.join(W.dir, 'src/auth/a.js'), body);
+      sh(W, 'add', '-A');
+      sh(W, 'commit', '-q', '-m', 'seed');
+      const base = sh(W, 'rev-parse', 'HEAD');
+      if (op === 'rename') sh(W, 'mv', 'src/auth/a.js', 'src/auth/b.js');
+      else fs.writeFileSync(path.join(W.dir, 'src/auth/a.js'), body + 'export const f = 6;\n');
+      sh(W, 'add', '-A');
+      sh(W, 'commit', '-q', '-m', `change\n\n${trailer}`);
+      return { W, base, bc: baseCfg(W, RENAME_FLOOR) };
+    };
+    const a = scene('rename', 'Risk: R2\nVerification: test');
+    const push = a.W.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: a.base, PIT_IN_BASE_CONFIG: a.bc });
+    check('IMPL-1029:ng push で kinds: [rename] の規則に名前の変更が当たれば、トレーラが R2 でも必須(check-pr と同じ変更の一覧)', push.code === 1 && /区分の下限が R1/.test(push.out), push.out);
+    const prr = a.W.adapter('mutation', '0', pr(a.base, R2BODY, { PIT_IN_BASE_CONFIG: a.bc }));
+    check('IMPL-1029:ng PR でも kinds: [rename] の規則に名前の変更が当たれば必須', prr.code === 1 && /区分の下限が R1/.test(prr.out), prr.out);
+    const m = scene('modify', 'Risk: R2\nVerification: test');
+    const modPush = m.W.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: m.base, PIT_IN_BASE_CONFIG: m.bc });
+    check('IMPL-1029:ok kinds: [rename] の規則は、名前の変更でない変更(modify)には当たらない', modPush.code === 0 && /必須ではありません/.test(modPush.out), modPush.out);
+  }
+  // --- 必須でない変更(R2・R3)では、コマンドを書いても走らせず、注意で通す(束 B28 の突合 H-1。附属書H H.1: R2 は合否条件にしない)
+  {
+    const FLAG = `node -e "require('fs').writeFileSync('ran.flag','1')"`;
+    const ranOf = (W) => fs.existsSync(path.join(W.dir, 'ran.flag'));
+    const W = mk(FLAG);
+    const base = change(W);
+    const bc = baseCfg(W, { ci: { ...cfgOf(W).ci, mutationThreshold: 80 } });
+    const r2 = W.adapter('mutation', '0', pr(base, R2BODY, { PIT_IN_BASE_CONFIG: bc }));
+    check('IMPL-1029:ok R2 の PR では、コマンドがあっても走らせず、注意を出して終了 0 にする', r2.code === 0 && !ranOf(W) && /この変更では必須ではありません/.test(r2.out) && /走らせません/.test(r2.out), r2.out);
+    const r1 = W.adapter('mutation', '0', pr(base, R1BODY, { PIT_IN_BASE_CONFIG: bc }));
+    check('IMPL-1029:ng R1 の PR ではコマンドを走らせる(出力の行が無いので失敗する)', r1.code === 1 && ranOf(W) && /mutation-result: score=/.test(r1.out), r1.out);
+    fs.rmSync(path.join(W.dir, 'ran.flag'), { force: true });
+    const low = mk(emit('mutation-result: score=10 survivors=s.json'));
+    const lbase = change(low);
+    const lbc = baseCfg(low, { ci: { ...cfgOf(low).ci, mutationThreshold: 80 } });
+    const lr = low.adapter('mutation', '0', pr(lbase, R2BODY, { PIT_IN_BASE_CONFIG: lbc }));
+    check('IMPL-1029:ok R2 の PR・閾値 80・スコア 10 でも終了 0(合否条件にしない)', lr.code === 0 && !/届きません/.test(lr.out), lr.out);
+    const lp = low.adapter('mutation', '0', pr(lbase, R1BODY, { PIT_IN_BASE_CONFIG: lbc }));
+    check('IMPL-0930:ng 同じ出力でも R1 の PR なら閾値割れで失敗する', lp.code === 1 && /10 が閾値 80 に届きません/.test(lp.out), lp.out);
+    const noline = mk('node -e "console.log(1)"');
+    const nbase = change(noline);
+    const nr = noline.adapter('mutation', '0', pr(nbase, R2BODY));
+    check('IMPL-1029:ok R2 の PR・出力の行なしでも終了 0', nr.code === 0 && /この変更では必須ではありません/.test(nr.out), nr.out);
+    const cl3 = mk(FLAG);
+    setConfig(cl3, { answers: { ...cfgOf(cl3).answers, 'q-criticality': 'cl3' }, ci: { ...cfgOf(cl3).ci, mutationThreshold: 80 } });
+    const cbase = change(cl3);
+    const cr = cl3.adapter('mutation', '0', pr(cbase, R2BODY));
+    check('IMPL-0763:ng 案件の条件(CL3)に当たる構成は、R2 の PR でも走らせる(区分に依らず必須。ADR-0224)', ranOf(cl3) && /mutation-result: score=/.test(cr.out), cr.out);
+  }
+  // --- 起動の経路の理由(束 B28 の突合 M-2)
+  {
+    const W = mk('');
+    const base = change(W);
+    const wd = W.adapter('mutation', '0', { PIT_IN_EVENT: 'workflow_dispatch', PIT_IN_DIFF_BASE: base });
+    check('IMPL-1029:ng workflow_dispatch では必須の側に倒れ、理由に起動の経路の名を出す(「分からず」としない)', wd.code === 1 && /この起動の経路\(workflow_dispatch\)ではリスク区分を判定しない/.test(wd.out) && !/PIT_IN_EVENT\)が分からず/.test(wd.out), wd.out);
+  }
   // --- 案件の条件
   {
     const W = mk('');
@@ -380,6 +442,8 @@ for (const id of ['python-poetry', 'python-uv']) {
   {
     const cases = [
       ['行が無い', 'node -e "console.log(1)"', 1, /mutation-result: score=/],
+      ['行頭でない行(先頭に空白)は読まない', emit(' mutation-result: score=90 survivors=s.json'), 1, /mutation-result: score=/],
+      ['行頭でない行(前に語がある)は読まない', emit('x mutation-result: score=90 survivors=s.json'), 1, /mutation-result: score=/],
       ['スコアが数値でも none でもない', emit('mutation-result: score=abc survivors=s.json'), 1, /数値でも none でもありません/],
       ['スコアが範囲外', emit('mutation-result: score=150 survivors=s.json'), 1, /数値でも none でもありません/],
       ['所在が空', emit('mutation-result: score=90 survivors='), 1, /所在\(survivors=\)が空/],
@@ -399,6 +463,8 @@ for (const id of ['python-poetry', 'python-uv']) {
     for (const [label, cmd, v, code, re] of [
       ['閾値 80・スコア 70 は失敗', emit('mutation-result: score=70 survivors=s.json'), 80, 1, /70 が閾値 80 に届きません/],
       ['閾値 80・スコア 85 は通る', emit('mutation-result: score=85 survivors=s.json'), 80, 0, /閾値 80 以上/],
+      ['閾値 80・スコア 80(境界)は通る', emit('mutation-result: score=80 survivors=s.json'), 80, 0, /閾値 80 以上/],
+      ['閾値 80・スコア 79.9 は失敗', emit('mutation-result: score=79.9 survivors=s.json'), 80, 1, /79\.9 が閾値 80 に届きません/],
       ['閾値があっても none は比較せず通る', emit('mutation-result: score=none survivors=-'), 80, 0, /閾値の比較はしません/],
       ['閾値が数値でなければ失敗', OKLINE, '80', 1, /0〜100 の数値ではありません/],
     ]) {
@@ -409,6 +475,24 @@ for (const id of ['python-poetry', 'python-uv']) {
       if (code === 1) check(`IMPL-0930:ng 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
       else check(`IMPL-0930:ok 閾値の合否: R1 の PR で${label}`, r.code === code && re.test(r.out), r.out);
     }
+  }
+  // 基底と作業ツリーで閾値が違う組(束 B28 の突合 M-4)。閾値は基底の構成から読む。PR 側で外す・下げる経路を段が許さない
+  {
+    const seven = emit('mutation-result: score=70 survivors=s.json');
+    for (const [label, headCi] of [['作業ツリーに閾値が無い', (ci) => { const { mutationThreshold: _x, ...rest } = ci; return rest; }], ['作業ツリーの閾値が 50', (ci) => ({ ...ci, mutationThreshold: 50 })]]) {
+      const W = mk(seven);
+      const base = change(W);
+      const bc = baseCfg(W, { ci: { ...cfgOf(W).ci, mutationThreshold: 80 } });
+      setConfig(W, { ci: headCi(cfgOf(W).ci) });
+      const r = W.adapter('mutation', '0', pr(base, R1BODY, { PIT_IN_BASE_CONFIG: bc }));
+      check(`IMPL-0930:ng 基底の閾値 80 を使う: ${label}・スコア 70 は失敗`, r.code === 1 && /70 が閾値 80 に届きません/.test(r.out), r.out);
+    }
+    // 基底の構成が渡されない(push・手元)ときは作業ツリーの構成の閾値を使う
+    const W = mk(seven);
+    const base = change(W);
+    setConfig(W, { ci: { ...cfgOf(W).ci, mutationThreshold: 80 } });
+    const r = W.adapter('mutation', '0', pr(base, R1BODY));
+    check('IMPL-0930:ng 基底の構成が渡されないときは作業ツリーの閾値 80 を使い、スコア 70 は失敗', r.code === 1 && /70 が閾値 80 に届きません/.test(r.out), r.out);
   }
   // 閾値の型の契約(verify-gate-contract.mjs が使う)
   {
@@ -432,8 +516,12 @@ for (const id of ['python-poetry', 'python-uv']) {
   check('IMPL-0763:ok 閾値が数値で在れば注意を出さない(0 も在る扱い)', mutationThresholdNote({ ci: { mutationThreshold: 80 } }) === null && mutationThresholdNote({ ci: { mutationThreshold: 0 } }) === null);
   const bad = mutationThresholdNote({ ci: { mutationThreshold: '80' } });
   check('閾値の型が不正なら、不正と注意を出す', typeof bad === 'string' && /0〜100 の数値ではありません/.test(bad), bad);
+  // 案件の条件(CL3・Q1「はい」)に当たる構成では、段も契約検査も閾値なしを失敗にする。文は「通過する」と言わない(束 B28 の突合 L-5)
+  const caseNote = mutationThresholdNote({ ci: {}, answers: { 'q-criticality': 'cl3' } });
+  check('IMPL-0763:ng 案件の条件(CL3)で閾値が無ければ、段と契約検査が失敗にする旨の注意を出す(通過するとは言わない)', typeof caseNote === 'string' && /閾値が未設定のため、段と契約検査が失敗にします/.test(caseNote) && !/「閾値なしで通過」/.test(caseNote), caseNote);
+  check('IMPL-0763:ok 案件の条件に当たらない構成(CL0)では、従来どおり閾値なしで通過する旨の注意', /「閾値なしで通過」/.test(mutationThresholdNote({ ci: {}, answers: { "q-criticality": "cl0" } })));
   const ev = fs.readFileSync(path.join(ROOT, 'scripts/gate/aggregate-evidence.mjs'), 'utf8');
-  check('出荷の集約が、この注意を機械検査の表へ出す', ev.includes('mutationThresholdNote: mutationThresholdNote(config)') && ev.includes('A.machineChecks.mutationThresholdNote'));
+  check('出荷の集約が、この注意を機械検査の表へ出す', ev.includes('mutationThresholdNote: mutationThresholdNote(config,') && ev.includes('A.machineChecks.mutationThresholdNote'));
 }
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });

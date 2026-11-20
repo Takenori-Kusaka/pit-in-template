@@ -189,6 +189,46 @@ const aggBody = jobsOf(wf).get('gate-g5');
   }
 }
 
+// 9b. 段のジョブの中身の結線(束 B28 の独立の突合 H-2・M-4)。ジョブ mutation・regulatory が adapter.mjs を呼び、
+// 判定の入力(経路・比較の起点・PR の本文・基底の構成)を渡し、全履歴を取得することを、値の一致で固定する。
+// 字面の `if: false` などは固定しない(実行時は集約の success の検査が止める。b26 の裁定 2.4)
+{
+  const lf = wf.replace(/\r\n/g, '\n');
+  const jobBlock = (text, job) => {
+    const m = new RegExp(`\\n  ${job}:\\n([\\s\\S]*?)(?=\\n  [A-Za-z0-9_-]+:\\n|\\n[A-Za-z]|$)`).exec(text);
+    return m ? m[1] : null;
+  };
+  const stageProblems = (text, job) => {
+    const b = jobBlock(text, job);
+    if (b === null) return [`ジョブ ${job} がありません`];
+    const out = [];
+    if (!/^ {8}run: node scripts\/gate\/adapter\.mjs run ([a-z]+)$/m.test(b) || /run: node scripts\/gate\/adapter\.mjs run ([a-z]+)/.exec(b)[1] !== job) out.push(`手順が adapter.mjs run ${job} を呼びません`);
+    if (!/uses: actions\/checkout@v4\n {8}with:\n {10}fetch-depth: 0\n/.test(b)) out.push('checkout が fetch-depth: 0 ではありません');
+    if (job === 'mutation') {
+      if (!/^ {10}PIT_IN_PR_BODY: \$\{\{ github\.event\.pull_request\.body \}\}$/m.test(b)) out.push('PIT_IN_PR_BODY が PR の本文のペイロードを渡していません');
+      if (!b.includes('echo "PIT_IN_EVENT=${EVENT_NAME}" >> "$GITHUB_ENV"')) out.push('PIT_IN_EVENT を渡していません');
+      if (!b.includes('EVENT_NAME: ${{ github.event_name }}')) out.push('EVENT_NAME が github.event_name ではありません');
+      if (!b.includes('echo "PIT_IN_DIFF_BASE=${base}" >> "$GITHUB_ENV"')) out.push('PIT_IN_DIFF_BASE を渡していません');
+      if (!b.includes('echo "PIT_IN_BASE_CONFIG=${RUNNER_TEMP}/base-process.config.json" >> "$GITHUB_ENV"')) out.push('PIT_IN_BASE_CONFIG を渡していません');
+      if (!b.includes('git show "${base}:process.config.json" > "${RUNNER_TEMP}/base-process.config.json"')) out.push('基底の process.config.json を書き出していません');
+      if (!b.includes('base="origin/${BASE_REF}"')) out.push('PR の比較の起点が基底ブランチではありません');
+    }
+    return out;
+  };
+  for (const job of ['mutation', 'regulatory']) {
+    const ps = stageProblems(lf, job);
+    check(`IMPL-0930:ok ジョブ ${job} は adapter.mjs run ${job} を呼び、全履歴を取得する${job === 'mutation' ? '(経路・比較の起点・PR の本文・基底の構成も渡す)' : ''}`, ps.length === 0, ps.join(' / '));
+  }
+  const mut = (from, to) => lf.replace(from, to);
+  check('IMPL-0930:ng 段 mutation の呼び出しを `run: "true"` へ替えると不備が出る', stageProblems(mut('run: node scripts/gate/adapter.mjs run mutation', 'run: "true"'), 'mutation').some((p) => /adapter\.mjs run mutation を呼びません/.test(p)));
+  check('IMPL-0836:ng 段 regulatory の呼び出しを `run: "true"` へ替えると不備が出る', stageProblems(mut('run: node scripts/gate/adapter.mjs run regulatory', 'run: "true"'), 'regulatory').some((p) => /adapter\.mjs run regulatory を呼びません/.test(p)));
+  check('IMPL-0930:ng 段 mutation が別の段(regulatory)を呼ぶ形も不備にする', stageProblems(mut('run: node scripts/gate/adapter.mjs run mutation', 'run: node scripts/gate/adapter.mjs run regulatory'), 'mutation').length > 0);
+  check('IMPL-0930:ng 基底の構成の書き出しを外すと不備が出る(M-4)', stageProblems(mut('echo "PIT_IN_BASE_CONFIG=${RUNNER_TEMP}/base-process.config.json" >> "$GITHUB_ENV"', 'true'), 'mutation').some((p) => /PIT_IN_BASE_CONFIG/.test(p)));
+  check('IMPL-0930:ng PR の本文を渡さないと不備が出る', stageProblems(mut('PIT_IN_PR_BODY: ${{ github.event.pull_request.body }}', 'PIT_IN_PR_BODY: ""'), 'mutation').some((p) => /PIT_IN_PR_BODY/.test(p)));
+  check('IMPL-0930:ng 経路・比較の起点を渡さないと不備が出る', stageProblems(mut('echo "PIT_IN_EVENT=${EVENT_NAME}" >> "$GITHUB_ENV"', 'true'), 'mutation').some((p) => /PIT_IN_EVENT/.test(p)) && stageProblems(mut('echo "PIT_IN_DIFF_BASE=${base}" >> "$GITHUB_ENV"', 'true'), 'mutation').some((p) => /PIT_IN_DIFF_BASE/.test(p)));
+  check('IMPL-0930:ng 浅い取得(fetch-depth を外す)にすると不備が出る', stageProblems(mut(/(  mutation:[\s\S]*?)fetch-depth: 0/.exec(lf)[0], /(  mutation:[\s\S]*?)fetch-depth: 0/.exec(lf)[0].replace('fetch-depth: 0', 'fetch-depth: 1')), 'mutation').some((p) => /fetch-depth/.test(p)));
+}
+
 // 10. ワークフロー: contract でこの試験を実行する
 check('ワークフロー: contract で、この試験を実行する', /node scripts\/gate\/test-g5-aggregate\.mjs/.test(wf));
 

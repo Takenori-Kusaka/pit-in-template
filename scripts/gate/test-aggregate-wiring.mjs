@@ -474,4 +474,28 @@ if (want('1008')) {
   r.done();
 }
 
+// ---------------------------------------------------------------- IMPL-0763・0930(構成に閾値が無いことの注意が、出荷の集約の報告へ出る。束 B28 の突合 M-6・L-5)
+if (want('0763 0930')) {
+  const ROW = /^\| 段 mutation の閾値\(構成の ci\.mutationThreshold\) \|/m;
+  const base = buildCfg({}, { stack: 'node' });
+  const r = makeRepo({ config: base });
+  const run = (cfg) => {
+    r.resetTo('base');
+    r.writeConfig(cfg);
+    r.commitAll('chore: config');
+    return agg(r);
+  };
+  const withCi = (cfg, patch) => ({ ...JSON.parse(JSON.stringify(cfg)), ci: { ...cfg.ci, ...patch } });
+  const { mutationThreshold: _x, ...ciNo } = base.ci ?? {};
+  const none = run({ ...base, ci: ciNo });
+  check('IMPL-0930:ng 集約: 構成に閾値が無ければ、報告に「閾値なしで通過」の注意の行が出る', ROW.test(none.report) && /閾値なしで通過/.test(lineWith(none.report, '段 mutation の閾値')), lineWith(none.report, '段 mutation').slice(0, 300));
+  const has = run(withCi(base, { mutationThreshold: 80 }));
+  check('IMPL-0930:ok 集約: 構成に閾値(80)があれば、その行は出ない', !ROW.test(has.report));
+  const cl3cfg = buildCfg({ 'q-criticality': 'cl3' }, { stack: 'node' });
+  const { mutationThreshold: _y, ...ciNo3 } = cl3cfg.ci ?? {};
+  const cl3 = run({ ...cl3cfg, ci: ciNo3 });
+  check('IMPL-0763:ng 集約: 案件の条件(CL3)で閾値が無ければ、「通過」ではなく「段と契約検査が失敗にします」と出る', ROW.test(cl3.report) && /段と契約検査が失敗にします/.test(lineWith(cl3.report, '段 mutation の閾値')) && !/閾値なしで通過/.test(lineWith(cl3.report, '段 mutation の閾値')), lineWith(cl3.report, '段 mutation').slice(0, 300));
+  r.done();
+}
+
 finish();

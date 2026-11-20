@@ -975,6 +975,21 @@ const RISK_RANK = { R3: 1, R2: 2, R1: 3 };
 const KIND_OF_STATUS = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'add', T: 'modify' };
 
 /**
+ * 2 つの版の間の変更の一覧(path・from・kind)。区分の下限の規則(riskFloorOf)へ渡す。
+ * 名前の変更を検出し(from を持つ。kind は 'rename')、他の種類は --no-renames の name-status から読む。
+ * measureCommitSize と PR の検査が使うものと同じ作り方。G-5 の段 mutation(mutation-stage.mjs)も、新しく定義せずこれを呼ぶ。
+ * git は (args) => 出力 | null の関数。取れなければ null
+ */
+export function changeListBetween(git, from, to) {
+  const raw = git(['diff', '--numstat', '-z', '-M', from, to]);
+  if (raw === null) return null;
+  const status = new Map(
+    (git(['diff', '--name-status', '-z', '--no-renames', from, to]) ?? '').split('\0').reduce((acc, t, i, arr) => (i % 2 === 0 && t ? [...acc, [arr[i + 1], t[0]]] : acc), [])
+  );
+  return parseNumstatZ(raw).map((e) => ({ path: e.path, from: e.from, kind: e.from ? 'rename' : (KIND_OF_STATUS[status.get(e.path)] ?? 'modify') }));
+}
+
+/**
  * 区分の下限の規則(構成の riskFloor.rules)に当たる変更から、下限を導く。rules は基底ブランチの構成から渡す。
  * 規則: { id, paths: [glob], floor: 'R1' | 'R2', kinds?: ['add' | 'modify' | 'delete' | 'rename'], why }
  */

@@ -4590,7 +4590,7 @@ if (isMain) {
     secretScan: phase('secretScan', 'secret-scan'),
     // 集約が合否に使う検査の不備(基準を実装するジョブが needs に無い等)。項目は増やさず、項目4 の値の出所として出す
     // 構成に閾値(ci.mutationThreshold)が無いことの注意(閾値が数値で在れば null)。構成の値を読むだけ
-    mutationThresholdNote: mutationThresholdNote(config),
+    mutationThresholdNote: mutationThresholdNote(config, fs.existsSync(path.join(ROOT, 'docs/D-0-governance.md')) ? fs.readFileSync(path.join(ROOT, 'docs/D-0-governance.md'), 'utf8') : null),
     aggregateProblems: g5Aggregate ? g5Aggregate.problems : ['集約 gate-g5 の定義(.github/workflows/gate-g5.yml)が無い'],
     dependencyDiff: depDiff ? '実施' : NO_RECORD,
     // 実環境の統制の確認(附属書I I.11 要件⑦。#288 第6巡)。ブランチ保護の適用・PR のレビューの取得・ship-evidence の成果物の取得を、
