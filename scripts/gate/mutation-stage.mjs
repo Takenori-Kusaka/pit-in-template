@@ -10,8 +10,20 @@
 // 段の出力の約束(コマンドは、次の1行を標準出力へ出す。外部の記録を照らすコマンドも同じ):
 //   mutation-result: score=<0〜100 の数値 または none> survivors=<生き残りの一覧の所在(空でない文字列)>
 //   none は「対象の変異体なし」(差分に変異を作れる箇所が無い)。none は閾値があっても比較せず通す
-// 機械が見るのは、この行の構文・閾値の型・スコアと閾値の大小まで。コマンドの実質(変異を作ったか)、外部の記録の真正と新しさ、
-// 生き残りの所在の実在は確かめない(manual。確かめる者: G-6 の判定者。EV-0339)。
+// 機械が見る範囲(束 B31・B33 の裁定。ADR-0243):
+//   - 行の構文・閾値の型・スコアと閾値の大小(段の本体)
+//   - 閾値割れ(終了コード 0・行の構文が正しい・スコア < 基底の閾値)を、第7章 7.3 の例外承認の台帳の行で受けられるか。
+//     行の約束 8 条件(対象 G-5 PR-<番号>・区分「例外」・印 `変異試験の閾値割れ`・状態・返却の目安・承認した者・受容した理由・
+//     帰属 = 承認した者本人の宣言行のレビューが PR の先頭と一致)は exception-expiry.mjs の mutationBreachExceptionFor。
+//     受けたときは終了 0 で、出力の1行(スコア・閾値・行の ID・承認した者)を証跡とする。受けないものは従来どおり失敗:
+//     段が空・閾値が未設定か数値でない・出力の行が無いか壊れている・コマンドの終了コードが 0 でない・規制要件の段・手動の実行・PR の記録が取れない
+//   - 週次の型(PIT_IN_MUTATION_MODE=weekly。附属書H H.1 の R2 の週次の定期実行。IMPL-1036)。イベントが schedule か workflow_dispatch の
+//     ときだけ有効で、pull_request・push では無視して通常の判定に戻る(weeklyModeOf)。必須の判定をせず、コマンドが空なら注意で終了 0、
+//     閾値割れも終了 0 で段の出力の1行とジョブの要約(GITHUB_STEP_SUMMARY)へ出す(合否にしない)。比較の起点は置かない(範囲は段のコマンドが決める)。
+//     コマンドの終了コードが 0 でない・出力の行が壊れているときだけ失敗(実行できなかった事実の表示)
+// 機械が見ないもの(manual): コマンドの実質(変異を作ったか)、外部の記録の真正と新しさ、生き残りの所在の実在(EV-0339。確かめる者: G-6 の判定者)。
+// 受けたスコアの妥当性・理由の当否・回収の中身(確かめる者: 承認した者・G-6 の判定者)。G-7 が見るのは行の形と帰属・期限だけで、
+// 段がその行で閾値割れを受けた事実は段の出力(ジョブのログ。保持の期限がある)と承認した者の宣言行に頼る。週次の実行が動いていること・結果を読むこと(G-6 の判定者)。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -247,4 +259,29 @@ export function evaluateMutation({ out, stage, exceptionOf = null }) {
   }
   msgs.push({ level: 'notice', text: `スコア ${r.score} は閾値 ${stage.threshold} 以上です(survivors=${r.survivors})` });
   return { ok: true, messages: msgs };
+}
+
+/**
+ * 週次の型(PIT_IN_MUTATION_MODE=weekly)が有効か。イベントが schedule か workflow_dispatch のときだけ有効にする。
+ * pull_request・push・読めないイベントでは無視して通常の判定に戻す(PR の必須の判定を週次の型で緩められないため。IMPL-1036)
+ */
+export function weeklyModeOf(env = process.env) {
+  return env.PIT_IN_MUTATION_MODE === 'weekly' && (env.PIT_IN_EVENT === 'schedule' || env.PIT_IN_EVENT === 'workflow_dispatch');
+}
+
+/**
+ * 週次の型の結果の評価(コマンドが終了コード 0 で終わった後)。{ ok, messages: [{level, text}], summary }
+ * 閾値割れでも ok(合否にしない。附属書H H.1)。出力の行が壊れているときだけ ok = false。summary はジョブの要約へ出す1行(無ければ null)
+ */
+export function evaluateWeeklyMutation({ out, threshold, thresholdProblem = null }) {
+  const r = parseMutationResult(out);
+  if (!r.ok) return { ok: false, messages: [{ level: 'error', text: r.problem }], summary: null };
+  if (r.none) return { ok: true, messages: [{ level: 'notice', text: `週次: 対象の変異体なし(survivors=${r.survivors})` }], summary: null };
+  if (thresholdProblem) return { ok: true, messages: [{ level: 'notice', text: `週次: スコア ${r.score}(survivors=${r.survivors})。${thresholdProblem}ため比較しません` }], summary: null };
+  if (threshold === undefined) return { ok: true, messages: [{ level: 'notice', text: `週次: スコア ${r.score}(survivors=${r.survivors})。閾値(ci.mutationThreshold)が無いため比較しません` }], summary: null };
+  if (r.score < threshold) {
+    const text = `週次: スコア ${r.score} が閾値 ${threshold} を下回っています(survivors=${r.survivors})。合否にはしません(附属書H H.1)。G-6 の判定者が結果を読み、対処を決めます`;
+    return { ok: true, messages: [{ level: 'notice', text }], summary: text };
+  }
+  return { ok: true, messages: [{ level: 'notice', text: `週次: スコア ${r.score} は閾値 ${threshold} 以上です(survivors=${r.survivors})` }], summary: `週次: スコア ${r.score}(閾値 ${threshold} 以上)` };
 }

@@ -1,0 +1,51 @@
+# G-5 の段 mutation(変異試験)の週次の定期実行(標準 附属書H H.1 の R2「週次の定期実行。合否条件にしない」。ADR-0243。IMPL-1036)
+#
+# **PR の必須チェックにしません。gate-g5 の集約(needs)にも入れません。** ジョブの名を gate-g5 にしないのは、
+# 名が gate-g5 の check run が別の契機で付くと必須チェックを満たしてしまうためです(scripts/gate/push-trigger.mjs が形を確かめます)。
+# ここで行うのは測定と記録だけです。
+#
+# 週次の型(PIT_IN_MUTATION_MODE=weekly)の段(scripts/gate/mutation-stage.mjs・adapter.mjs):
+#   - 必須の判定をしません。commands.mutation が空なら「何も測っていません」と注意を出して終了コード 0 で終わります(既定のコマンドは空)
+#   - コマンドがあれば走らせ、出力の行(mutation-result: score=… survivors=…)を読みます。スコアが閾値(ci.mutationThreshold)を
+#     下回っても終了コード 0 で、段の出力の1行とジョブの要約(GITHUB_STEP_SUMMARY)へ出します。合否にしません
+#   - コマンドの終了コードが 0 でない・出力の行が壊れているときだけ、ジョブを失敗にします(実行できなかった事実の表示)
+#   - 比較の起点は置きません。測る範囲は、段のコマンドが決めます
+#   - この型は schedule と workflow_dispatch のときだけ有効です。pull_request・push では無視して通常の判定に戻ります
+#
+# 確かめていないこと: 実際の GitHub 上の定期の起動(cron)・手動の起動・週次の実行の所要時間と費用。
+# 定期実行が止まったことを検知する経路はありません。結果を読むのは G-6 の判定者です(manual)。
+
+name: mutation-weekly
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  weekly:
+    name: mutation-weekly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .github/gate-node-version
+      - id: read
+        run: |
+          v=$(node -e "const c=require('./process.config.json');console.log(c.configured===false?'false':'true')")
+          echo "configured=$v" >> "$GITHUB_OUTPUT"
+          if [ "$v" = "false" ]; then
+            echo "::notice::プロセス構成が未設定です。/process-init を実行するまで週次の変異試験は実施しません"
+          fi
+      - uses: ./.github/actions/setup-stack
+        if: steps.read.outputs.configured == 'true'
+      - name: 変異試験(週次の型)
+        if: steps.read.outputs.configured == 'true'
+        env:
+          PIT_IN_EVENT: ${{ github.event_name }}
+          PIT_IN_MUTATION_MODE: weekly
+        run: node scripts/gate/adapter.mjs run mutation

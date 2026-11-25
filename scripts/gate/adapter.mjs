@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, loadAdapter, ROOT, fail, notice, targetState, nestedTargetProblem, ALWAYS_PHASES, localDay } from './config.mjs';
 import { effectiveAllowedLicenses } from './license-allowlist.mjs';
-import { breachExceptionOf, decideStage, evaluateMutation } from './mutation-stage.mjs';
+import { breachExceptionOf, decideStage, evaluateMutation, evaluateWeeklyMutation, weeklyModeOf } from './mutation-stage.mjs';
 
 const [, , mode, phase] = process.argv;
 const config = loadConfig();
@@ -78,6 +78,28 @@ if (!always && !state.present) {
 const OPTIONAL = new Set(['lint', 'audit', 'licenses', 'coverage', 'install']);
 
 const stage = STAGE_PHASES.has(phase) ? decideStage({ phase, config }) : null;
+
+// 週次の型(附属書H H.1 の R2 の週次の定期実行。IMPL-1036)。schedule・workflow_dispatch のときだけ有効。必須の判定をせず、合否にしない
+const weekly = phase === 'mutation' && weeklyModeOf();
+
+// 週次のジョブの要約(GITHUB_STEP_SUMMARY)へ1行足す。書けなくても段は止めない
+function summarize(text) {
+  if (!text || !process.env.GITHUB_STEP_SUMMARY) return;
+  try {
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}
+
+`);
+  } catch {
+    /* 要約は補助。書けないことで段を落とさない */
+  }
+}
+
+if (weekly && !cmd.trim()) {
+  const text = `週次: アダプタ ${adapter.id} の "mutation" のコマンドが空のため、何も測っていません(週次の型は合否にしません。測るには commands.mutation へコマンドを書きます)`;
+  notice(text);
+  summarize(text);
+  process.exit(0);
+}
 
 if (!cmd.trim()) {
   if (stage) {
@@ -152,7 +174,7 @@ if (adapter.runtime === 'python' && adapter.runtimeVersion && !process.env.UV_PY
 
 // 段 mutation は、必須でない変更(案件の条件にも R1 にも当たらない)ではコマンドを走らせず、注意で通す。
 // 附属書H H.1: R2 は週次の定期実行で合否条件にしない、R3 は任意。コマンドを書いたことで全ての PR の合否条件にしない(束 B28 の突合 H-1)
-if (phase === 'mutation' && stage && !stage.required) {
+if (phase === 'mutation' && stage && !stage.required && !weekly) {
   notice(`アダプタ ${adapter.id}: "mutation" のコマンドはこの変更では必須ではありません。走らせません(R1 の変更の PR と、案件の条件に当たる構成では走らせます)。この事実は証跡へ残ります`);
   if (stage.q1Unreadable) notice('附属書F F.2 の Q1 の記録を読めないため、案件の条件では必須にしていません(D-0 の記入は check-d0 と出荷の集約が止めます)');
   process.exit(0);
@@ -168,6 +190,12 @@ if (phase === 'mutation') {
   const m = spawnSync(command, { shell: true, stdio: ['inherit', 'pipe', 'inherit'], cwd, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   process.stdout.write(m.stdout ?? '');
   if ((m.status ?? 1) !== 0) process.exit(m.status ?? 1);
+  if (weekly) {
+    const wk = evaluateWeeklyMutation({ out: m.stdout ?? '', threshold: stage.threshold, thresholdProblem: stage.thresholdProblem });
+    for (const x of wk.messages) (x.level === 'error' ? fail : notice)(x.text);
+    summarize(wk.summary ?? wk.messages.map((x) => x.text).join(' / '));
+    process.exit(wk.ok ? 0 : 1);
+  }
   const ev = evaluateMutation({ out: m.stdout ?? '', stage, exceptionOf: () => breachExceptionOf({ config, day: localDay() }) });
   for (const x of ev.messages) (x.level === 'error' ? fail : notice)(x.text);
   process.exit(ev.ok ? 0 : 1);

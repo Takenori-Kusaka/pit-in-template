@@ -505,6 +505,102 @@ for (const id of ['python-poetry', 'python-uv']) {
     const a = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters', `${id}.json`), 'utf8')).commands;
     check(`${id}: アダプタは空の mutation・regulatory を持つ(既定のコマンドは置かない)`, a.mutation === '' && a.regulatory === '');
   }
+
+  // --- 週次の型(附属書H H.1 の R2 の週次の定期実行。ADR-0243。IMPL-1036)。schedule・workflow_dispatch のときだけ有効。合否にしない
+  {
+    const { weeklyModeOf, evaluateWeeklyMutation } = await import('./mutation-stage.mjs');
+    const wk = (event, extra = {}) => ({ PIT_IN_EVENT: event, PIT_IN_MUTATION_MODE: 'weekly', ...extra });
+    const LOW = emit('mutation-result: score=70 survivors=s.json');
+    const withCi = (W, v) => setConfig(W, { ci: { ...cfgOf(W).ci, mutationThreshold: v } });
+    const sumOf = (W) => {
+      const p = path.join(W.dir, 'summary.md');
+      return { path: p, read: () => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '') };
+    };
+    check('IMPL-1036:ok weeklyModeOf は schedule・workflow_dispatch のときだけ有効', weeklyModeOf(wk('schedule')) && weeklyModeOf(wk('workflow_dispatch')));
+    check('IMPL-1036:ng weeklyModeOf は pull_request・push・イベント不明・型の指定なしでは無効', !weeklyModeOf(wk('pull_request')) && !weeklyModeOf(wk('push')) && !weeklyModeOf({ PIT_IN_MUTATION_MODE: 'weekly' }) && !weeklyModeOf({ PIT_IN_EVENT: 'schedule' }) && !weeklyModeOf({ PIT_IN_EVENT: 'schedule', PIT_IN_MUTATION_MODE: 'daily' }));
+    for (const ev of ['schedule', 'workflow_dispatch']) {
+      // 空のコマンド: 必須の判定をせず、何も測っていないと出して終了 0
+      {
+        const W = mk('');
+        const r = W.adapter('mutation', '0', wk(ev));
+        check(`IMPL-1036:ok 週次の型(${ev})で mutation が空なら、何も測っていないと注意を出して終了 0`, r.code === 0 && /週次/.test(r.out) && /何も測っていません/.test(r.out), r.out);
+      }
+      // 閾値割れ: 終了 0 で、段の出力の1行とジョブの要約へ出す(失敗にしない)
+      {
+        const W = mk(LOW);
+        withCi(W, 80);
+        const sm = sumOf(W);
+        const r = W.adapter('mutation', '0', wk(ev, { GITHUB_STEP_SUMMARY: sm.path }));
+        check(`IMPL-1036:ok 週次の型(${ev})で閾値割れは終了 0。段の出力の1行とジョブの要約へ出す`, r.code === 0 && /スコア 70 が閾値 80 を下回っています/.test(r.out) && /合否にはしません/.test(r.out) && /スコア 70 が閾値 80 を下回っています/.test(sm.read()), r.out + sm.read());
+      }
+      // 閾値以上
+      {
+        const W = mk(OKLINE);
+        withCi(W, 80);
+        const sm = sumOf(W);
+        const r = W.adapter('mutation', '0', wk(ev, { GITHUB_STEP_SUMMARY: sm.path }));
+        check(`IMPL-1036:ok 週次の型(${ev})でスコアが閾値以上なら終了 0`, r.code === 0 && /閾値 80 以上/.test(r.out) && /閾値 80 以上/.test(sm.read()), r.out);
+      }
+      // 実行できなかった事実は失敗
+      for (const [label, cmd, code, re] of [
+        ['コマンドの終了コードが 0 でない', 'node -e "process.exit(3)"', 3, /./],
+        ['出力の行が無い', 'node -e "console.log(1)"', 1, /mutation-result: score=/],
+        ['スコアが数値でも none でもない', emit('mutation-result: score=abc survivors=s.json'), 1, /数値でも none でもありません/],
+        ['所在が空', emit('mutation-result: score=90 survivors='), 1, /所在\(survivors=\)が空/],
+      ]) {
+        const W = mk(cmd);
+        withCi(W, 80);
+        const r = W.adapter('mutation', '0', wk(ev));
+        check(`IMPL-1036:ng 週次の型(${ev})でも、${label}なら失敗にする(実行できなかった事実)`, r.code === code && re.test(r.out), r.out);
+      }
+    }
+    // 比較の起点を置かない: 週次の型は PIT_IN_DIFF_BASE を要さず、壊れた値が渡されても読まない
+    {
+      const W = mk(OKLINE);
+      const r = W.adapter('mutation', '0', wk('schedule', { PIT_IN_DIFF_BASE: 'no-such-ref' }));
+      check('IMPL-1036:ok 週次の型は比較の起点を置かず、起点が壊れていても走る', r.code === 0 && /スコア 90|score=90/.test(r.out), r.out);
+    }
+    // 週次の型は pull_request・push では無視して通常の判定に戻る(PR の必須の判定を緩められない)
+    {
+      const W = mk('');
+      const base = change(W);
+      const r = W.adapter('mutation', '0', { ...pr(base, R1BODY), PIT_IN_MUTATION_MODE: 'weekly' });
+      check('IMPL-1036:ng pull_request では週次の型を無視する。R1 の PR で mutation が空なら失敗のまま', r.code === 1 && /"mutation" が空です/.test(r.out), r.out);
+      const rp = W.adapter('mutation', '0', { PIT_IN_EVENT: 'push', PIT_IN_MUTATION_MODE: 'weekly' });
+      check('IMPL-1036:ng push でも週次の型を無視する(R1 かを判定できず必須の側に倒れる)', rp.code === 1 && /"mutation" が空です/.test(rp.out), rp.out);
+      const low = mk(LOW);
+      const lbase = change(low);
+      const lbc = baseCfg(low, { ci: { ...cfgOf(low).ci, mutationThreshold: 80 } });
+      const lr = low.adapter('mutation', '0', { ...pr(lbase, R1BODY, { PIT_IN_BASE_CONFIG: lbc }), PIT_IN_MUTATION_MODE: 'weekly' });
+      check('IMPL-1036:ng pull_request では週次の型を無視する。閾値割れは失敗のまま', lr.code === 1 && /70 が閾値 80 に届きません/.test(lr.out), lr.out);
+    }
+    // 型の指定が無い schedule は、通常の判定(イベントを判定できず必須の側に倒れる)
+    {
+      const W = mk('');
+      const r = W.adapter('mutation', '0', { PIT_IN_EVENT: 'schedule' });
+      check('IMPL-1036:ng 型の指定が無ければ schedule でも通常の判定(空は失敗)', r.code === 1 && /"mutation" が空です/.test(r.out), r.out);
+    }
+    // 評価関数の単体
+    {
+      const none = evaluateWeeklyMutation({ out: 'mutation-result: score=none survivors=-', threshold: 80 });
+      const noTh = evaluateWeeklyMutation({ out: 'mutation-result: score=10 survivors=s', threshold: undefined });
+      const badTh = evaluateWeeklyMutation({ out: 'mutation-result: score=10 survivors=s', threshold: undefined, thresholdProblem: '閾値が不正' });
+      check('IMPL-1036:ok 評価: none・閾値なし・閾値の型の不正は合否にしない(ok のまま、要約は出さない)', none.ok && noTh.ok && badTh.ok && none.summary === null && noTh.summary === null && badTh.summary === null);
+    }
+    // workflow の形(定義を静的に読む)
+    {
+      const dir = path.join(ROOT, '.github', 'workflows');
+      const read = (n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n');
+      const noCmt = (t) => t.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+      const w = noCmt(read('mutation-weekly.yml'));
+      check('IMPL-1036:ok mutation-weekly.yml は schedule(週1回)と workflow_dispatch を契機に持つ', /^on:\n {2}schedule:\n {4}- cron: '\S+ \S+ \S+ \* [0-6]'\n {2}workflow_dispatch:/m.test(w), w.slice(0, 300));
+      check('IMPL-1036:ng mutation-weekly.yml は pull_request・push・workflow_call を契機に持たない', !/^ {2}(pull_request|pull_request_target|push|workflow_call):/m.test(w));
+      check('IMPL-1036:ok 週次の型の環境変数を渡し、イベント名を PIT_IN_EVENT へ渡す', /PIT_IN_MUTATION_MODE: weekly/.test(w) && /PIT_IN_EVENT: \$\{\{ github\.event_name \}\}/.test(w) && /adapter\.mjs run mutation/.test(w));
+      check('IMPL-1036:ng ジョブの ID・名を gate-g5 にしない。権限は contents: read だけ。ジョブの失敗を握りつぶさない', !/^ {2}gate-g5:/m.test(w) && !/name: gate-g5\s*$/m.test(w) && /permissions:\n {2}contents: read\n/.test(w) && !/continue-on-error|\|\| true/.test(w), w);
+      const g5 = noCmt(read('gate-g5.yml'));
+      check('IMPL-1036:ng gate-g5 の集約に週次を入れない', !/mutation-weekly|weekly/.test(g5));
+    }
+  }
 }
 
 // 8. 出荷の集約へ出す、構成に閾値が無いことの注意(ruling-1 §1.1。構成の値を読むだけ)
