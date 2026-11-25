@@ -505,18 +505,75 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('上限: CL2 の L2 は案件の上限で、安全関連部は F.3 により L1 固定、準拠テンプレートは範囲を持たないため登録を適用しない旨を出す', /案件の上限/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? '') && /L1 固定/.test(autonomyCap({ configured: true, answers: { 'q-criticality': 'cl2' } }).reason ?? ''));
 }
 
+// 一発承認率(IMPL-0268。ADR-0172 決定2。process-compass #441)。分母は窓の中で既定ブランチへ取り込んだ変更のうち承認された変更、
+// 分子はそのうち、帰属を確かめた G-6 の差し戻し(判定基準の番号の有無を問わない)が対応づかない変更。差し戻し率と同じ行に出し、単独の行を作らない。
+// 評価の日(2026-10-01)の窓は 2026-08-01〜2026-09-30。fixture の変更は PR #40〜#71 の 32 件(すべて窓の中)
+{
+  const prs = (from, to) => Array.from({ length: to - from + 1 }, (_, k) => String(from + k));
+  const mkA = ({ approved = prs(40, 69), rej = [], undeclared, available = true } = {}) => {
+    const i = base();
+    i.records.rejections = rej.map(([n, cited]) => ({ file: `docs/gates/g6-PR-${n}.md`, date: '2026-08-07', target: `PR #${n}`, cited }));
+    if (available !== null) i.records.approvals = { available, prs: available ? approved : [] };
+    if (undeclared) i.records.undeclared = { available: true, items: undeclared.map((n) => ({ file: `records/reviews/pr-${n}.json`, date: '2026-08-10', target: `PR #${n}`, reviewId: 1 })) };
+    return i;
+  };
+  const stOf = (i) => autonomyState(i.config, i.records).types[0];
+  const rateOf = (t) => rejectionText(t).split('一発承認率:')[1] ?? '';
+  // IMPL-0268:ok(適合の入力: 承認 30・差し戻しを受けた 3 → 90%。差し戻し率と同じ行)
+  const a90 = stOf(mkA({ rej: [[45, true], [46, false], [47, true]] }));
+  // IMPL-0268:ok(適合の入力: 承認 30 件のうち差し戻しを受けず承認された変更 27 件 = 90.0%。差し戻し率と同じ行)
+  check('一発承認率: 承認された変更 30 件のうち差し戻しを受けた 3 件を除き 27 件 = 90.0% を、差し戻し率と同じ行に出す(判定基準の番号を引かない差し戻しも分子から外す)', a90.rejection.approval.approved === 30 && a90.rejection.approval.firstPass === 27 && /取り込んだ変更 32 件のうち承認された変更 30 件、差し戻しを受けずに承認された変更 27 件 = 90\.0%/.test(rejectionText(a90)) && /差し戻し 2 件/.test(rejectionText(a90)), rejectionText(a90));
+  // IMPL-0268:ng(違反の入力: 承認 29 件。最小標本数に満たない窓は値を出さない)
+  const a29 = stOf(mkA({ approved: prs(40, 68), rej: [[45, true]] }));
+  // IMPL-0268:ng(違反の入力: 承認された変更 29 件。最小標本数に満たない窓は値を出さない)
+  check('一発承認率: 承認された変更が 29 件(最小標本数 30 件に満たない)なら値を出さず「判断に用いない」と出す', /判断に用いない/.test(rateOf(a29)) && !/\d+(\.\d)?%/.test(rateOf(a29)) && a29.rejection.approval.approved === 29, rateOf(a29));
+  // IMPL-0268:ng(起案の分母の誤り: 取り込み 32・承認 30・承認の無い 2 件は差し戻しなし → 分母 30。32 にすると落ちる)
+  const aDen = stOf(mkA({ approved: prs(40, 69), rej: [] }));
+  check('一発承認率: 分母は取り込んだ変更(32 件)でなく承認された変更(30 件)。承認の無い 2 件を一発承認に数えない', aDen.rejection.n === 32 && aDen.rejection.approval.approved === 30 && aDen.rejection.approval.firstPass === 30 && /承認された変更 30 件、差し戻しを受けずに承認された変更 30 件 = 100\.0%/.test(rateOf(aDen)), rateOf(aDen));
+  // 承認されていない変更への差し戻しは分子にも分母にも入らない
+  const aRejUn = stOf(mkA({ rej: [[70, true]] }));
+  check('一発承認率: 承認の無い変更(PR #70)への差し戻しは、分母にも分子の減りにも入らない', aRejUn.rejection.approval.approved === 30 && aRejUn.rejection.approval.firstPass === 30);
+  // 宣言行の無い CHANGES_REQUESTED は分子を減らさず、件数を別に出す
+  const aUnd = stOf(mkA({ rej: [], undeclared: [46] }));
+  check('一発承認率: 宣言行の無い CHANGES_REQUESTED は分子を減らさず、件数を同じ行に別に出す', aUnd.rejection.approval.firstPass === 30 && /数えていない差し戻しの要求 1 件/.test(rejectionText(aUnd)) && /差し戻しを受けずに承認された変更 30 件/.test(rejectionText(aUnd)), rejectionText(aUnd));
+  // 記録用ブランチを読めない・承認の記録を渡していない → 「読めない」。0%・100% と出さない
+  const aNo = stOf(mkA({ available: false }));
+  const aMissing = stOf(mkA({ available: null }));
+  check('一発承認率: 記録用ブランチを読めないときは「読めない」と出し、0%・100% と出さない(記録を渡していないときも同じ)', aNo.rejection.approval === null && aMissing.rejection.approval === null && /一発承認率: 読めない/.test(rejectionText(aNo)) && !/\d+(\.\d)?%/.test(rateOf(aNo).replace(/^[^(]*/, '').slice(0, 0) + rateOf(aNo)) && /一発承認率: 読めない/.test(rejectionText(aMissing)), rateOf(aNo));
+  // 合否・欠落・停止に数えない: 一発承認率が 100% でも 0% でも L と停止が同じ
+  const aAll = stOf(mkA({ rej: [] }));
+  const aNone = stOf(mkA({ rej: Array.from({ length: 30 }, (_, k) => [40 + k, false]) }));
+  check('一発承認率: 100% でも 0% でも、L と停止は同じ(合否・欠落・停止に数えない)', aAll.rejection.approval.firstPass === 30 && aNone.rejection.approval.firstPass === 0 && aAll.level === aNone.level && stopsText(aAll) === stopsText(aNone) && aAll.level === stOf(mkA({ available: false })).level);
+  // 単独の行を作らない: 一発承認率を含む行は、差し戻し率も含む
+  const noteLines = autonomyNoteLines(autonomyState(mkA({ rej: [[45, true]] }).config, mkA({ rej: [[45, true]] }).records)).filter((l) => /一発承認率/.test(l));
+  check('一発承認率: 次の一手の注記に、一発承認率だけの行を作らない(差し戻し率と同じ行)', noteLines.length > 0 && noteLines.every((l) => /差し戻し率/.test(l)), noteLines.join('\n'));
+  // readRejectionRecords: 承認された PR の集合(承認者ごとの最後の状態が承認の人が1名以上)
+  {
+    const rv = (id, login, state) => ({ id, user: { login, id: login.charCodeAt(0) }, body: 'x', state, commit_id: 'a'.repeat(40), submitted_at: '2026-08-10T01:00:00Z' });
+    const reviews = new Map([[12, { pr: 12, reviews: [rv(1, 'a', 'APPROVED')] }], [13, { pr: 13, reviews: [rv(2, 'b', 'CHANGES_REQUESTED')] }], [14, { pr: 14, reviews: [rv(3, 'a', 'APPROVED'), rv(4, 'a', 'CHANGES_REQUESTED')] }], [15, { pr: 15, reviews: [rv(5, 'a', 'CHANGES_REQUESTED'), rv(6, 'a', 'APPROVED')] }]]);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'appr-'));
+    try {
+      const ok = readRejectionRecords({ root: tmp, fetch: false, branch: { available: true, reviews, gates: [] } });
+      const no = readRejectionRecords({ root: tmp, fetch: false, branch: { available: false, reason: '試験', reviews: new Map(), gates: [] } });
+      check('一発承認率: 承認された PR は、承認者ごとの最後の状態が承認の人が1名以上のもの(変更要求の後に承認し直した PR を含み、承認の後の変更要求は除く)。記録用ブランチを読めないときは available が false', ok.approvals.available === true && ok.approvals.prs.sort().join() === '12,15' && no.approvals.available === false, JSON.stringify([ok.approvals, no.approvals]));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+}
+
 // 手戻り率(標準 第5章 5.4.6。process-compass #348)。母数は窓の中に種別の範囲の取り込みを持つタスク。分子はトレーラの取り込み2回以上と
 // 実装計画の履歴の「やり直し」の和。評価の日(2026-10-01)の窓は 2026-08-01〜2026-09-30。日付は固定で、実行日に依らない
 {
   const changes0 = base().records.history.changes;
-  const baseline = (pct, at = '2026-09-01') => ({ percent: pct, history: [{ percent: pct, recordedAt: at, decidedBy: '鈴木 一郎', reason: '直近の実績から置く' }] });
-  const mk = ({ doubles = 0, plan = [], pct = 20, at, late = 0, outside = 0, count = 32, rework } = {}) => {
+  const baseline = (pct, at = '2026-09-01', method = 'pre-measurement') => ({ percent: pct, history: [{ percent: pct, ...(method ? { method } : {}), recordedAt: at, decidedBy: '鈴木 一郎', reason: '直近の実績から置く' }] });
+  const mk = ({ doubles = 0, plan = [], pct = 20, at, late = 0, outside = 0, count = 32, rework, method = 'pre-measurement' } = {}) => {
     const i = base();
     const trailers = changes0.slice(0, count).map((c, k) => ({ ref: c.ref, date: c.date, tasks: [`F-001/Task-${k + 1}`], files: c.files }));
     for (let k = 0; k < doubles; k++) trailers.push({ ref: `d${k}`, date: '2026-09-20', tasks: [`F-001/Task-${k + 1}`], files: ['src/i18n/ja.json'] });
     for (let k = 0; k < late; k++) trailers.push({ ref: `l${k}`, date: '2026-10-05', tasks: [`F-001/Task-${k + 20}`], files: ['src/i18n/ja.json'] });
     for (let k = 0; k < outside; k++) for (const d of ['2026-08-10', '2026-08-20']) trailers.push({ ref: `o${k}${d}`, date: d, tasks: [`F-002/Task-${k + 1}`], files: ['src/other.js'] });
-    if (pct !== null) i.config.reworkBaseline = baseline(pct, at);
+    if (pct !== null) i.config.reworkBaseline = baseline(pct, at, method);
     else delete i.config.reworkBaseline;
     i.records.rework = rework ?? { available: true, trailers, plan };
     return i;
@@ -582,7 +639,48 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('手戻り率: 次の評価の日に効く値(20%)を併記し、その後の値(30%)は出さない', rTwo.level === 'L1' && /記録済みの基準値 20%/.test(joinStops(rTwo)) && /2026-11-01 から効く/.test(joinStops(rTwo)) && !/30%/.test(joinStops(rTwo)) && !/30%/.test(reworkText(rTwo)), JSON.stringify(rTwo.stops));
   check('手戻り率: 併記があるとき、後半は「その評価の日から戻る」へ縮め、日付を重ねない', rPend.stops.some((x) => /記録し直さなくてよい\)。その評価の日から戻る/.test(x.reason) && !/次は 2026-11-01/.test(x.reason)), JSON.stringify(rPend.stops));
   check('手戻り率: 基準値を何も記録していなければ、記録済みの基準値は出さない', !/記録済みの基準値/.test(rUnset.stops.map((x) => x.reason).join()) && !/記録済みの基準値/.test(reworkText(rUnset)));
-  check('手戻り率: 停止の理由は、受け付けない「決め方」の記録を案内しない', !/決め方/.test(rUnset.stops.map((x) => x.reason).join()));
+  // IMPL-1006:ok(適合の入力: 基準値未設定の停止の理由は、基準値と決め方の記録を案内する)
+  check('手戻り率: 基準値未設定の停止の理由は、「基準値と決め方」を種別 settings で記録すると戻ると案内する', /基準値と決め方を記録すると/.test(rUnset.stops.map((x) => x.reason).join()), rUnset.stops.map((x) => x.reason).join());
+
+  // 基準値の決め方(IMPL-1006。第5章 5.4.6 の値の決め方 / ADR-0158)。表示と、先立つ判定可能な窓の有無
+  {
+    const txt = (t) => reworkText(t);
+    const addPrior = (i, n, date) => {
+      for (let k = 0; k < n; k++) i.records.rework.trailers.push({ ref: `p${k}`, date, tasks: [`F-009/Task-${k + 1}`], files: ['src/i18n/ja.json'] });
+      return i;
+    };
+    const pre = tOf(mk({ doubles: 6, method: 'pre-measurement' }));
+    // IMPL-1006:ok(適合の入力: 実測前の組織の値は「実測前の組織の値」と出す。決め方だけが違う構成は L・停止が同じ)
+    check('IMPL-1006 ok: pre-measurement は「実測前の組織の値」と出し、「実測から」「窓が無い」とは出さない', /決め方: 実測前の組織の値/.test(txt(pre)) && !/実測から/.test(txt(pre)) && !/先立つ判定可能な窓が無い/.test(txt(pre)), txt(pre));
+    // 先立つ窓: 2026-07-10 の 35 件(窓 2 か月)。記録した日 2026-08-20 の月初 2026-08-01 の窓 [06-01, 07-31] に 35 件が入る
+    const mPrior = tOf(addPrior(mk({ doubles: 6, method: 'measured', at: '2026-08-20' }), 35, '2026-07-10'));
+    check('IMPL-1006 ok: measured で先立つ判定可能な窓がある値は「実測から(申告)」だけを出す(併記も「実測前」も出さない)', /決め方: 実測から\(申告\)/.test(txt(mPrior)) && !/先立つ判定可能な窓が無い/.test(txt(mPrior)) && !/実測前/.test(txt(mPrior)) && mPrior.rework.noPriorWindow === false, txt(mPrior));
+    // 先立つ窓が無い: 記録した日以前の月に、母数が 30 件に届く窓が1つも無い
+    const mNone = tOf(mk({ doubles: 6, method: 'measured', at: '2026-08-20' }));
+    // IMPL-1006:ng(違反の入力: 実測から と記録したが、先立つ判定可能な窓が無い。「実測前」とは出さず、その旨を併記する)
+    // IMPL-1006:ng(違反の入力: 実測から と記録したが先立つ判定可能な窓が無い値。その旨を併記し「実測前」と出さない)
+    check('IMPL-1006 ng(表示の偽り): measured で先立つ判定可能な窓が無い値は、その旨を併記し、「実測前」と出さない', mNone.rework.noPriorWindow === true && /この構成の窓に先立つ判定可能な窓が無い/.test(txt(mNone)) && !/実測前/.test(txt(mNone)) && /実測から\(申告\)/.test(txt(mNone)), txt(mNone));
+    check('IMPL-1006 ok: 決め方は記名者の申告で、実測との照合は機械では確かめていない旨を出し、「確認済み」「検証済み」と書かない', /決め方は記名者の申告で、実測との照合は機械では確かめていない/.test(txt(mNone)) && !/確認済み|検証済み/.test(txt(mNone)) && !/確認済み|検証済み/.test(txt(pre)));
+    // method の無い旧い記録
+    const legacyI = mk({ doubles: 6, method: null });
+    const legacy = tOf(legacyI);
+    check('IMPL-1006 ok: method の無い旧い記録は拒まず(構成の検査は問題なし)「決め方の記録なし」と出す', reworkBaselineProblems(legacyI.config).length === 0 && /決め方の記録なし/.test(txt(legacy)) && !/実測前|実測から/.test(txt(legacy)) && legacy.level === 'L3', txt(legacy));
+    // 列挙外
+    const badI = mk({ doubles: 6, method: 'guess' });
+    check('IMPL-1006 ng: method が列挙外(guess)の記録は、構成の検査が問題として返す', reworkBaselineProblems(badI.config).some((p) => /method/.test(p)) && reworkBaselineProblems(mk({ doubles: 6, method: 'measured' }).config).length === 0 && reworkBaselineProblems(mk({ doubles: 6, method: 'pre-measurement' }).config).length === 0, JSON.stringify(reworkBaselineProblems(badI.config)));
+    // 決め方は L3 の導出に効かない
+    const lv = (m) => { const t = tOf(mk({ doubles: 6, method: m, at: '2026-08-20' })); return `${t.level}|${stopsText(t)}|${t.rework.state}`; };
+    check('IMPL-1006 ok: 決め方だけが違う構成は、L・停止・状態が同じ(決め方は L3 の導出に効かせない)', lv('pre-measurement') === lv('measured') && lv('measured') === lv(null), `${lv('pre-measurement')} / ${lv('measured')} / ${lv(null)}`);
+    // 併記の判定の固定: 記録した日より後に観測の窓を長くしても、併記の判定は変わらない
+    const longer = mk({ doubles: 6, method: 'measured', at: '2026-08-20' });
+    longer.config.observationWindow = { months: 6, history: [{ months: 6, recordedAt: '2026-10-10', decidedBy: '鈴木 一郎', reason: '試験' }] };
+    check('IMPL-1006 ok(固定): 記録した日より後に観測の窓を長くしても、「先立つ判定可能な窓が無い」の判定は変わらない(その日に効いていた窓で数える)', tOf(longer).rework.noPriorWindow === mNone.rework.noPriorWindow && tOf(longer).rework.noPriorWindow === true);
+    // 記録した日以後に積んだ記録で判定しない(m の前日以前だけで数える)
+    const after = tOf(addPrior(mk({ doubles: 6, method: 'measured', at: '2026-08-20' }), 35, '2026-09-10'));
+    check('IMPL-1006 ok(固定): 記録した日より後の記録(2026-09-10 の 35 件)は、先立つ窓に数えない', after.rework.noPriorWindow === true, txt(after));
+    // 基準値を外した状態・未設定は決め方を出さない
+    check('IMPL-1006 ok: 基準値が未設定なら、決め方は出さない', !/決め方/.test(txt(rUnset)));
+  }
   // 既定ブランチの履歴を読めないとき、手戻り率の理由が停止に出る(差し戻し率の停止とは別に)
   const rNoHist = tOf((() => { const i = mk({}); i.records.history = { available: false, reason: '浅い取得', changes: [] }; return i; })());
   check('手戻り率: 既定ブランチの履歴を読めないとき、手戻り率の記録を読めない旨が停止の理由にある', rNoHist.stops.some((x) => /手戻り率の記録を読めない/.test(x.reason) && /浅い取得/.test(x.reason)) && rNoHist.rework.state === '読めない', JSON.stringify(rNoHist.stops));

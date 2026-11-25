@@ -141,7 +141,10 @@ import {
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy } from './autonomy.mjs';
+
+// 承認の数の定義は autonomy.mjs が持つ(一発承認率と共有。IMPL-0268)。既存の呼び出しと試験のため、同じ名で書き出し直す
+export { approvalCountOfCopy };
 import { seatSeparationFindings, outageText, rosterEditText, pendingTightenings, paramNotes, pendingSeparationProblems } from '../init/generate-profile.mjs';
 import { discouragedText, deviationTagHits, aiFreePracticeState, aiFreePracticeTexts } from './org-assurance.mjs';
 import {
@@ -510,19 +513,6 @@ export function lastReviewStates(reviews, headOid = undefined) {
   }
   for (const v of last.values()) if (v.state !== 'APPROVED' && v.withdrew) withdrawn++;
   return { last, withdrawn, stale, unbound };
-}
-
-/** 承認の数。承認者ごとの最後の状態(APPROVED / CHANGES_REQUESTED / DISMISSED)が承認である人の数。写しの状態をそのまま数える */
-export function approvalCountOfCopy(copy) {
-  const last = new Map();
-  for (const r of Array.isArray(copy?.reviews) ? copy.reviews : []) {
-    const login = r?.user?.login;
-    const state = String(r?.state ?? '').toUpperCase();
-    if (!login || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) continue;
-    const id = numericAccountId(r?.user?.id ?? null);
-    last.set(id !== null ? `#${id}` : login, state);
-  }
-  return [...last.values()].filter((s) => s === 'APPROVED').length;
 }
 
 const sameInstant = (a, b) => {

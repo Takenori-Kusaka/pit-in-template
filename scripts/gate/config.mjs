@@ -3084,10 +3084,13 @@ export function observationWindowProblems(config) {
 // ---------------------------------------------------------------- 手戻り率の基準値(第5章 5.4.6。process-compass #348)
 
 /**
- * 構成の手戻り率の基準値(百分率)の形: reworkBaseline = { percent: 0〜100 の数値 | null, history: [{ percent, recordedAt, decidedBy, reason }] }。
- * 既定値を置かない(根拠が無い)。欄が無い構成・外した構成(percent が null)は「基準値が未設定」であり、発火しない。
+ * 構成の手戻り率の基準値(百分率)の形: reworkBaseline = { percent: 0〜100 の数値 | null, history: [{ percent, method?, recordedAt, decidedBy, reason }] }。
+ * method は基準値の決め方(pre-measurement = 実測前の組織の値 / measured = 実測から。IMPL-1006)。値を置く記録は入口(settings)が必須にする。
+ * 構成の検査は、在るなら列挙の値であることだけを確かめる(無い旧い記録は問題にしない。「決め方の記録なし」と表示する)。決め方は L3 の導出に効かせない。
+ * 既定値を置かない(根拠が無い)。欄が無い構成・外した構成(percent が null)は「基準値が未設定」であり、登録した変更種別を止める(適用の条件の欠落。ADR-0158)。
  * 効力日は観測の窓と同じ: 記録した日(recordedAt)が評価の日より前の最後の値。同じ日に記録した値は、その日の評価には効かない(遡らない)
  */
+export const REWORK_BASELINE_METHODS = ['pre-measurement', 'measured'];
 const validBaselinePercent = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
 
 /** 評価の日 day に効く手戻り率の基準値(百分率)。未設定なら null */
@@ -3095,7 +3098,7 @@ export function reworkBaselineAt(config, day) {
   return reworkBaselineInfo(config, day).percent;
 }
 
-/** 評価の日 day に効く基準値と、その値を記録した者・日・理由。未設定なら percent が null */
+/** 評価の日 day に効く基準値と、その値の決め方(method。無い旧い記録は null)、記録した者・日・理由。未設定なら percent が null */
 export function reworkBaselineInfo(config, day) {
   const h = Array.isArray(config?.reworkBaseline?.history) ? config.reworkBaseline.history : [];
   let entry = null;
@@ -3103,10 +3106,11 @@ export function reworkBaselineInfo(config, day) {
     if ((e?.percent === null || validBaselinePercent(e?.percent)) && isRealDay(e?.recordedAt) && String(e.recordedAt) < String(day)) entry = e;
   }
   const percent = validBaselinePercent(entry?.percent) ? entry.percent : null;
-  return { percent, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
+  const method = percent !== null && REWORK_BASELINE_METHODS.includes(entry?.method) ? entry.method : null;
+  return { percent, method, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
 }
 
-/** 手戻り率の基準値の欄の検査。範囲(0〜100)・記名と理由・日付の順・最後の値と percent の一致。欄が無い構成は問題なし(未設定) */
+/** 手戻り率の基準値の欄の検査。範囲(0〜100)・決め方 method(在るなら列挙の値)・記名と理由・日付の順・最後の値と percent の一致。欄が無い構成は問題なし(未設定) */
 export function reworkBaselineProblems(config) {
   const w = config?.reworkBaseline;
   if (w === undefined || w === null) return [];
@@ -3122,6 +3126,7 @@ export function reworkBaselineProblems(config) {
   let prev = null;
   h.forEach((e, i) => {
     if (!ok(e?.percent) || e?.percent === undefined) out.push(`history[${i}].percent は 0〜100 の数値(外した記録は null)で書く`);
+    if (e?.method !== undefined && !REWORK_BASELINE_METHODS.includes(e.method)) out.push(`history[${i}].method は ${REWORK_BASELINE_METHODS.join(' か ')} で書く(基準値の決め方。実測前の組織の値 / 実測から)`);
     if (!isRealDay(e?.recordedAt)) out.push(`history[${i}].recordedAt は実在する日付(YYYY-MM-DD)で書く`);
     else if (prev !== null && String(e.recordedAt) < prev) out.push(`history[${i}].recordedAt が前の記録より前の日付である(日付の順に並べる)`);
     if (isRealDay(e?.recordedAt)) prev = String(e.recordedAt);

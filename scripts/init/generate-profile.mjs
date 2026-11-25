@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
-import { enforcementComplete, CHANGE_TYPE_ENFORCEMENT } from '../gate/config.mjs';
+import { enforcementComplete, CHANGE_TYPE_ENFORCEMENT, REWORK_BASELINE_METHODS } from '../gate/config.mjs';
 import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
 import { provisionalLicenseProblems } from '../gate/license-allowlist.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
@@ -1740,6 +1740,16 @@ export function awaitingSelfConfirmations(before, after) {
   return out;
 }
 
+/** 手戻り率の基準値の決め方(IMPL-1006)の表示名 */
+const METHOD_LABEL = { 'pre-measurement': '実測前の組織の値', measured: '実測から' };
+/** 構成の手戻り率の基準値の、最後の記録の決め方(値を外した状態・記録の無い旧い値は null) */
+function baselineMethodOf(cfg) {
+  const w = cfg?.reworkBaseline;
+  if (!w || w.percent === null || w.percent === undefined) return null;
+  const last = Array.isArray(w.history) ? w.history[w.history.length - 1] : null;
+  return REWORK_BASELINE_METHODS.includes(last?.method) ? last.method : null;
+}
+
 export function diffConfig(before, after, opts = {}) {
   const diff = [];
   const loosenItems = [];
@@ -2559,7 +2569,12 @@ export function diffConfig(before, after, opts = {}) {
         const bb = before.reworkBaseline?.percent ?? null;
         const ba = after.reworkBaseline?.percent ?? null;
         const rank = (p) => (p === null ? Infinity : -p);
-        if (bb !== ba) push(`手戻り率の基準値: ${bb === null ? '未設定' : `${bb}%`} → ${ba === null ? '未設定(外す)' : `${ba}%`}`, rank(bb), rank(ba), M);
+        const mb = baselineMethodOf(before);
+        const ma = baselineMethodOf(after);
+        const label = (m) => (m === null ? '記録なし' : METHOD_LABEL[m] ?? m);
+        if (bb !== ba) push(`手戻り率の基準値: ${bb === null ? '未設定' : `${bb}%`} → ${ba === null ? '未設定(外す)' : `${ba}%`}${ba !== null && mb !== ma ? `(決め方: ${label(mb)} → ${label(ma)})` : ''}`, rank(bb), rank(ba), M);
+        // 決め方だけの変化(値は同じ)。実測前の値を、実測の後に「実測から」へ記録し直す経路(要求事項2 の置き換え)。向きは付けない(L3 の導出を変えない。IMPL-1006)
+        else if (ba !== null && mb !== ma) push(`手戻り率の基準値の決め方(値は ${ba}% のまま): ${label(mb)} → ${label(ma)}(記録の更新。緩める向きにも強める向きにも数えない)`, 0, 0, M);
       }
       if (JSON.stringify(before.dependencies ?? null) !== JSON.stringify(after.dependencies ?? null)) {
         diff.push(`依存先の欄(通知の期間・データ): ${(before.dependencies ?? []).length} 件 → ${(after.dependencies ?? []).length} 件`);
@@ -5473,19 +5488,28 @@ if (isMain) {
         }
       }
     }
-    // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。{ "percent": <0〜100 の数値> }、外すときは { "percent": null }。既定値を置かない。
-    // 値を変える(新しく置く・上げる・下げる・外す)ときは、向きを問わず決定した者の記名(AI の名義でない)と理由を要する。上げる・外すのは緩める向き
+    // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。{ "percent": <0〜100 の数値>, "method": "pre-measurement" | "measured" }、外すときは { "percent": null }。既定値を置かない。
+    // 値を置く記録は決め方 method を必須にする(IMPL-1006)。値を変える(新しく置く・上げる・下げる・外す)、または決め方だけを改める(値は同じ)ときは、
+    // 向きを問わず決定した者の記名(AI の名義でない)と理由を要する。上げる・新しく置くのは緩める向き、決め方だけの変化は向きなし
     if (S.reworkBaseline !== undefined) {
       const B = S.reworkBaseline;
-      if (!isObject(B)) bad.push('settings.reworkBaseline は { "percent": <0〜100 の数値。外すときは null> } で書きます');
+      if (!isObject(B)) bad.push('settings.reworkBaseline は { "percent": <0〜100 の数値。外すときは null>, "method": "pre-measurement" か "measured" } で書きます');
       else {
-        const extra = Object.keys(B).filter((k) => k !== 'percent');
-        if (extra.length) bad.push(`settings.reworkBaseline に書けない欄があります(${extra.join(', ')})。書けるのは percent だけです`);
+        const extra = Object.keys(B).filter((k) => !['percent', 'method'].includes(k));
+        if (extra.length) bad.push(`settings.reworkBaseline に書けない欄があります(${extra.join(', ')})。書けるのは percent と method だけです`);
         const pctOk = B.percent === null || (typeof B.percent === 'number' && Number.isFinite(B.percent) && B.percent >= 0 && B.percent <= 100);
         if (!pctOk) bad.push('settings.reworkBaseline.percent は 0〜100 の数値(基準値を外すときは null)で書きます。既定値はありません');
-        else if (B.percent !== (prior?.reworkBaseline?.percent ?? null)) {
+        else {
+          // 決め方: 値を置く記録では必須(列挙の値)。値を外す記録では持たない
+          if (B.percent === null) {
+            if (B.method !== undefined) bad.push('settings.reworkBaseline.method は、基準値を外す(percent が null の)記録では書きません。決め方は値を置く記録に付けます');
+          } else if (!REWORK_BASELINE_METHODS.includes(B.method)) {
+            bad.push(`settings.reworkBaseline.method は "pre-measurement"(実測前の組織の値)か "measured"(実測から)で書きます。基準値を置く記録では必須です`);
+          }
+        }
+        if (pctOk && (B.percent !== (prior?.reworkBaseline?.percent ?? null) || (B.percent !== null && REWORK_BASELINE_METHODS.includes(B.method) && B.method !== baselineMethodOf(prior)))) {
           if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) {
-            bad.push('手戻り率の基準値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(上げる・下げる・外す)を問わず要ります');
+            bad.push('手戻り率の基準値(または決め方だけ)を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(上げる・下げる・外す)を問わず要ります');
           } else if (aiNameReason(change.decidedBy, { account: true })) {
             bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。手戻り率の基準値の決定は人が記名します`);
           }
@@ -5876,10 +5900,12 @@ if (isMain) {
   {
     const priorB = prior?.reworkBaseline ?? null;
     const cur = priorB?.percent ?? null;
-    if (S.reworkBaseline && S.reworkBaseline.percent !== cur) {
+    const curMethod = baselineMethodOf(prior);
+    const newMethod = S.reworkBaseline && S.reworkBaseline.percent !== null ? S.reworkBaseline.method : null;
+    if (S.reworkBaseline && (S.reworkBaseline.percent !== cur || (S.reworkBaseline.percent !== null && newMethod !== curMethod))) {
       config.reworkBaseline = {
         percent: S.reworkBaseline.percent,
-        history: [...(priorB?.history ?? []), { percent: S.reworkBaseline.percent, recordedAt: today, decidedBy: change.decidedBy, reason: change.reason }],
+        history: [...(priorB?.history ?? []), { percent: S.reworkBaseline.percent, ...(newMethod ? { method: newMethod } : {}), recordedAt: today, decidedBy: change.decidedBy, reason: change.reason }],
       };
     } else if (priorB) config.reworkBaseline = priorB;
     else delete config.reworkBaseline;

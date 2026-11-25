@@ -180,16 +180,16 @@ ${JSON.stringify(c4.observationWindow)}`
   // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。種別 settings の reworkBaseline。0〜100・既定値なし。
   // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。上げる・外すのは緩める向き
   const b0 = cfgText();
-  const b150 = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 150 } }, decidedBy: A.name, reason: '試験' });
+  const b150 = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 150, method: 'pre-measurement' } }, decidedBy: A.name, reason: '試験' });
   check('手戻り率の基準値: 0〜100 の範囲外(150)を拒否し、構成を書き換えない', !b150.ok && /reworkBaseline.percent/.test(b150.out) && cfgText() === b0, b150.out);
-  const bExtra = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20, minSample: 10 } }, decidedBy: A.name, reason: '試験' });
+  const bExtra = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20, method: 'pre-measurement', minSample: 10 } }, decidedBy: A.name, reason: '試験' });
   check('手戻り率の基準値: percent 以外の欄を拒否する', !bExtra.ok && /minSample/.test(bExtra.out) && cfgText() === b0, bExtra.out);
-  const bNoName = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20 } } });
+  const bNoName = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20, method: 'pre-measurement' } } });
   // IMPL-0517:ng(違反の入力: 記名と理由の無い基準値の設定)
   check('手戻り率の基準値: 決定した者の記名と理由の無い設定を拒否し、構成を書き換えない', !bNoName.ok && /決定した者/.test(bNoName.out) && cfgText() === b0, bNoName.out);
-  const bAi = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20 } }, decidedBy: 'Claude', reason: '試験' });
+  const bAi = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 20, method: 'pre-measurement' } }, decidedBy: 'Claude', reason: '試験' });
   check('手戻り率の基準値: AI の名義の記名を拒否する', !bAi.ok && cfgText() === b0, bAi.out);
-  const b20 = settings({ summary: '基準値を置く', settings: { reworkBaseline: { percent: 20 } }, decidedBy: A.name, reason: '直近の実績から置く' });
+  const b20 = settings({ summary: '基準値を置く', settings: { reworkBaseline: { percent: 20, method: 'pre-measurement' } }, decidedBy: A.name, reason: '直近の実績から置く' });
   const cb20 = JSON.parse(cfgText());
   // IMPL-0517:ok(適合の入力: 記名と理由のある基準値の設定。値・記録した日・決定した者・理由が構成に残る)
   check(
@@ -199,20 +199,40 @@ ${JSON.stringify(c4.observationWindow)}`
   );
   // 単位 Y2: IMPL-0291 の後、基準値の未設定は登録した変更種別を止める。新しく置く変化点は停止を解くため、緩める向きとして残る(向きの原則: ADR-0129)
   check('手戻り率の基準値: 未設定 → 20% の変化点は緩める向き(停止を解く)として記録される', cb20.changeLog.at(-1).direction === 'loosen', JSON.stringify(cb20.changeLog.at(-1)));
+  // IMPL-1006:ok(適合の入力: 決め方 pre-measurement を履歴に残す)
+  check('手戻り率の基準値の決め方: 値を置く記録の method(pre-measurement)が履歴に残る', cb20.reworkBaseline.history[0].method === 'pre-measurement' && /実測前/.test(JSON.stringify(cb20.changeLog.at(-1))), JSON.stringify(cb20.reworkBaseline.history[0]));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rework 20');
+  {
+    const base = cfgText();
+    // IMPL-1006:ng(違反の入力: 決め方の無い値の記録)
+    const mNone = settings({ summary: '基準値を上げる(決め方なし)', settings: { reworkBaseline: { percent: 30 } }, decidedBy: A.name, reason: '試験' });
+    check('手戻り率の基準値の決め方: 値を置く記録に method が無いと拒否し、構成を書き換えない', !mNone.ok && /method/.test(mNone.out) && cfgText() === base, mNone.out);
+    // IMPL-1006:ng(違反の入力: 列挙外の決め方)
+    const mBad = settings({ summary: '基準値の決め方', settings: { reworkBaseline: { percent: 20, method: 'guess' } }, decidedBy: A.name, reason: '試験' });
+    check('手戻り率の基準値の決め方: 列挙外の method(guess)を拒否し、構成を書き換えない', !mBad.ok && /method/.test(mBad.out) && cfgText() === base, mBad.out);
+    // IMPL-1006:ng(違反の入力: 値を外す記録に決め方を付ける)
+    const mOffM = settings({ summary: '基準値を外す(決め方つき)', settings: { reworkBaseline: { percent: null, method: 'measured' } }, decidedBy: A.name, reason: '試験' });
+    check('手戻り率の基準値の決め方: 値を外す記録に method を付けると拒否する', !mOffM.ok && /method/.test(mOffM.out) && cfgText() === base, mOffM.out);
+    // IMPL-1006:ng(違反の入力: 決め方だけを改める記録に記名が無い)
+    const mNoName = settings({ summary: '決め方だけを改める', settings: { reworkBaseline: { percent: 20, method: 'measured' } } });
+    check('手戻り率の基準値の決め方: 値が同じで決め方だけを改める記録も、記名と理由が無ければ拒否する', !mNoName.ok && /決定した者/.test(mNoName.out) && cfgText() === base, mNoName.out);
+    // IMPL-1006:ng(違反の入力: AI の名義)
+    const mAi = settings({ summary: '決め方だけを改める', settings: { reworkBaseline: { percent: 20, method: 'measured' } }, decidedBy: 'Claude', reason: '試験' });
+    check('手戻り率の基準値の決め方: 決め方だけを改める記録の AI の名義の記名を拒否する', !mAi.ok && cfgText() === base, mAi.out);
+  }
   const bKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 280 } } });
   check('手戻り率の基準値: ほかの設定の変化点で基準値と履歴を失わない', bKeep.ok && JSON.parse(cfgText()).reworkBaseline?.percent === 20 && JSON.parse(cfgText()).reworkBaseline.history.length === 1, bKeep.out);
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: task 280');
-  const bUpNo = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30 } } });
+  const bUpNo = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30, method: 'pre-measurement' } } });
   check('手戻り率の基準値: 上げる向き(緩める)も、記名と理由が無ければ拒否する', !bUpNo.ok && /決定した者/.test(bUpNo.out), bUpNo.out);
-  const bUp = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30 } }, decidedBy: A.name, reason: '標本が小さいため' });
+  const bUp = settings({ summary: '基準値を上げる', settings: { reworkBaseline: { percent: 30, method: 'pre-measurement' } }, decidedBy: A.name, reason: '標本が小さいため' });
   const cb30 = JSON.parse(cfgText());
   check('手戻り率の基準値: 上げる向きは緩める向きとして変化点に残り、履歴に足す', bUp.ok && cb30.reworkBaseline?.percent === 30 && cb30.reworkBaseline.history.length === 2 && /緩め|loosen/.test(JSON.stringify(cb30.changeLog.at(-1))), JSON.stringify(cb30.changeLog.at(-1)));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rework 30');
-  const bDown = settings({ summary: '基準値を下げる', settings: { reworkBaseline: { percent: 10 } }, decidedBy: A.name, reason: '厳しくする' });
+  const bDown = settings({ summary: '基準値を下げる', settings: { reworkBaseline: { percent: 10, method: 'pre-measurement' } }, decidedBy: A.name, reason: '厳しくする' });
   check('手戻り率の基準値: 下げる向き(強める)も、記名と理由があれば受け付け、履歴に足す', bDown.ok && JSON.parse(cfgText()).reworkBaseline?.percent === 10 && JSON.parse(cfgText()).reworkBaseline.history.length === 3, bDown.out);
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rework 10');
@@ -241,7 +261,7 @@ ${JSON.stringify(cw.observationWindow)}`
     );
     git('add', '-A');
     git('commit', '-q', '-m', 'chore: window 6');
-    const pastB = settings({ summary: '基準値を過去の発効日で置く', date: '2026-06-03', settings: { reworkBaseline: { percent: 25 } }, decidedBy: A.name, reason: '試験' });
+    const pastB = settings({ summary: '基準値を過去の発効日で置く', date: '2026-06-03', settings: { reworkBaseline: { percent: 25, method: 'pre-measurement' } }, decidedBy: A.name, reason: '試験' });
     const cbp = JSON.parse(cfgText());
     // IMPL-0517:ng/ok(違反の入力: 過去の発効日。記録した日は実行日で、過去の評価の日には前の値が効く)
     check(
@@ -250,6 +270,27 @@ ${JSON.stringify(cw.observationWindow)}`
       `${pastB.out}
 ${JSON.stringify(cbp.reworkBaseline)}`
     );
+  }
+  // IMPL-1006:ok(適合の入力: 値は同じ 25 のまま、決め方だけを pre-measurement → measured へ改める。履歴が1件増え、向きは付かない)
+  {
+    const cmBefore = JSON.parse(cfgText()).reworkBaseline.history.length;
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: rework 25');
+    const mOk = settings({ summary: '決め方だけを改める', settings: { reworkBaseline: { percent: 25, method: 'measured' } }, decidedBy: A.name, reason: '2四半期の実測で確かめた' });
+    const cm = JSON.parse(cfgText());
+    const lastH = cm.reworkBaseline.history.at(-1);
+    check(
+      '手戻り率の基準値の決め方: 値が同じで決め方だけを pre-measurement → measured へ改める記録を、記名と理由のもとで受け付け、履歴を1件足し、percent は 25 のまま',
+      mOk.ok && cm.reworkBaseline.percent === 25 && cm.reworkBaseline.history.length === cmBefore + 1 && lastH.method === 'measured' && lastH.percent === 25 && lastH.decidedBy === A.name && lastH.reason === '2四半期の実測で確かめた',
+      `${mOk.out}\n${JSON.stringify(cm.reworkBaseline)}`
+    );
+    check('手戻り率の基準値の決め方: 決め方だけの変化は向きなし(緩める向きにも強める向きにも数えない)', !['loosen', 'tighten'].includes(cm.changeLog.at(-1).direction), JSON.stringify(cm.changeLog.at(-1)));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: rework 25 measured');
+    // 値を外す(null)の記録は method を持たない(受け付ける)
+    const mOff = settings({ summary: '基準値を外す', settings: { reworkBaseline: { percent: null } }, decidedBy: A.name, reason: '算出を見直すため' });
+    const co = JSON.parse(cfgText());
+    check('手戻り率の基準値の決め方: 値を外す(null)記録は method なしで受け付け、履歴の記録は method を持たない', mOff.ok && co.reworkBaseline.percent === null && co.reworkBaseline.history.at(-1).method === undefined, `${mOff.out}\n${JSON.stringify(co.reworkBaseline)}`);
   }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
