@@ -527,6 +527,7 @@ if (process.platform === 'win32') {
   check('IMPL-0931:ng 期限の翌日は受けない(日付は引数で渡し、時計を読まない)', ng(run({ rows: [rowB({ due: '2026-11-19 まで' })] }), /を過ぎている/) && ok(run({ rows: [rowB({ due: '2026-11-19 まで' })], day: '2026-11-19' })));
   check('IMPL-0931:ng 承認した者が PR の作成者(排除)', ng(run({ author: { login: 'suzuki', id: 1002 }, reviews: [rv()] }), /PR の作成者/));
   check('IMPL-0931:ng 承認した者が AI の名義・名簿に無い・空', ng(run({ rows: [rowB({ approver: 'Claude' })] }), /AI の名義/) && ng(run({ rows: [rowB({ approver: '外部 太郎' })] }), /名簿/) && ng(run({ rows: [rowB({ approver: '' })] }), /未記入/));
+  check('IMPL-0931:ng 状態が返却済みで期限内の行は、期限切れの理由を出さない', (() => { const r = run({ rows: [rowB({ state: '返却済み' })] }); const t = JSON.stringify(r); return /状態/.test(t) && !/を過ぎている/.test(t); })());
   check('IMPL-0931:ng 状態が有効の値でない', ng(run({ rows: [rowB({ state: '取り下げ' })] }), /状態/));
   check('IMPL-0931:ng 対象が別の PR・別のゲート・PR #12・番号の前方一致', [ 'G-5 PR-13', 'G-5 PR-120', 'G-6 PR-12', 'PR #12', 'G-5 P-001' ].every((t) => ng(run({ rows: [rowB({ target: t })] }))));
   check('IMPL-0931:ng 区分が例外でない', ng(run({ rows: [rowB({ kind: '負債' })] })));

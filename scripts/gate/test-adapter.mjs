@@ -641,7 +641,7 @@ for (const id of ['python-poetry', 'python-uv']) {
   const rev = (o = {}) => ({ id: 1, state: 'COMMENTED', body: '例外承認: D-012\n\nスコアを読んだ', submitted_at: '2026-11-05T10:00:00Z', commit_id: PRHEAD, author_association: 'MEMBER', author: { login: 'suzuki', id: 1002, is_bot: false }, edited_by: null, ...o });
   // 1 場面: 閾値 80(基底)・スコア 70 の段を、台帳と PR の記録つきで流す。返す値は段の終了コードと出力
   const scene = (o = {}) => {
-    const { rows = [lrow()], inBase = true, reviews = [rev()], prNum = 12, event = 'pull_request', author = { login: 'yamada', id: 1001 }, body = R2BODY, ctxExtra = {}, headCi = null, cl3 = true, noCtx = false, cmd = null, ledgerHead = null, postBase = null } = o;
+    const { rows = [lrow()], inBase = true, reviews = [rev()], prNum = 12, event = 'pull_request', author = { login: 'yamada', id: 1001 }, body = R2BODY, ctxExtra = {}, headCi = null, headPeople = null, envDrop = [], envOver = {}, cl3 = true, noCtx = false, cmd = null, ledgerHead = null, postBase = null } = o;
     const W = workspace('node', { 'package.json': '{ "name": "x" }\n' }, { commands: { ...baseCmds, mutation: cmd ?? `node -e "console.log('mutation-result: score=70 survivors=s.json')"` } });
     const cfgF = path.join(W.dir, 'process.config.json');
     const cfg0 = JSON.parse(fs.readFileSync(cfgF, 'utf8'));
@@ -674,7 +674,7 @@ for (const id of ['python-poetry', 'python-uv']) {
     if (postBase) postBase(W);
     const bcF = path.join(W.dir, 'base-config.json');
     fs.writeFileSync(bcF, JSON.stringify(cfg));
-    if (headCi) fs.writeFileSync(cfgF, JSON.stringify({ ...cfg, ci: { ...cfg.ci, ...headCi } }, null, 2));
+    if (headCi || headPeople) fs.writeFileSync(cfgF, JSON.stringify({ ...cfg, ...(headPeople ? { people: headPeople } : {}), ci: { ...cfg.ci, ...(headCi ?? {}) } }, null, 2));
     const cdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-ctx-'));
     dirs.push(cdir);
     const ctxF = path.join(cdir, 'pr-context.json');
@@ -682,6 +682,8 @@ for (const id of ['python-poetry', 'python-uv']) {
     const env = event === 'push' ? { PIT_IN_EVENT: 'push', PIT_IN_DIFF_BASE: base } : { PIT_IN_EVENT: 'pull_request', PIT_IN_DIFF_BASE: base, PIT_IN_PR_BODY: body };
     Object.assign(env, { PIT_IN_BASE_CONFIG: bcF, PIT_IN_POLICY_BASE: base });
     if (!noCtx) env.PIT_IN_PR_CONTEXT = ctxF;
+    Object.assign(env, envOver);
+    for (const k of envDrop) delete env[k];
     return W.adapter('mutation', '0', env);
   };
   const okScene = (name, o) => {
@@ -723,6 +725,19 @@ for (const id of ['python-poetry', 'python-uv']) {
   ngScene('作成を指示した者が承認した者本人', { body: '## 作成を指示した者\n\n鈴木 一郎\n' }, /作成を指示した者/);
   ngScene('作成を指示した者が @アカウント(段はトークンを持たず識別子で確かめられない)', { body: '## 作成を指示した者\n\n@yamada\n' }, /識別子で確かめられない/);
   ngScene('基底の行の期限を PR の中で未来へ書き換えても、基底の内容(期限切れ)で読んで受けない', { rows: [lrow({ due: '2000-01-01 まで' })], ledgerHead: [lrow({ due: '2099-01-01 まで' })] }, /を過ぎている/);
+  // 基底から読む入力が取れないときは、作業ツリーの側へ倒れず受けない(中2)
+  const EXTRA = { id: 'p4', name: '外部 太郎', accounts: [{ login: 'gaibu', id: 1004 }] };
+  const extraRev = [rev({ author: { login: 'gaibu', id: 1004, is_bot: false } })];
+  ngScene('基底の構成が渡されない(PIT_IN_BASE_CONFIG なし)は、作業ツリーの構成で照らさず受けない', { envDrop: ['PIT_IN_BASE_CONFIG'] }, /基底の構成/);
+  ngScene('PR の側の構成に名簿の人を足して承認した者にしても、基底の構成が取れなければ受けない', { rows: [lrow({ approver: '外部 太郎' })], headPeople: [...PEOPLE, EXTRA], reviews: extraRev, envDrop: ['PIT_IN_BASE_CONFIG'] }, /基底の構成/);
+  ngScene('PR の側の構成に名簿の人を足しても、基底の構成の名簿で読んで受けない', { rows: [lrow({ approver: '外部 太郎' })], headPeople: [...PEOPLE, EXTRA], reviews: extraRev }, /名簿の人へ対応づかない/);
+  ngScene('基底の台帳を読む点(PIT_IN_POLICY_BASE)が渡されない(基底の行の期限を書き換えても受けない)', { rows: [lrow({ due: '2000-01-01 まで' })], ledgerHead: [lrow({ due: '2099-01-01 まで' })], envDrop: ['PIT_IN_POLICY_BASE'] }, /PIT_IN_POLICY_BASE/);
+  ngScene('基底の台帳を読む点が引けない(存在しない参照)は受けない', { envOver: { PIT_IN_POLICY_BASE: 'no-such-ref-xyz' } }, /引けない/);
+  ngScene('起動の経路が workflow_dispatch なら、整った記録(route 一致)があっても受けない', { envOver: { PIT_IN_EVENT: 'workflow_dispatch' }, ctxExtra: { route: 'workflow_dispatch' } }, /この起動の経路/);
+  {
+    const r = scene({ rows: [lrow({ state: '返却済み' })] });
+    check('IMPL-0931:ng 状態が返却済みの行には、期限切れの理由を出さない(期限内の日付)', r.code === 1 && /状態が有効を示す値でない/.test(r.out) && !/を過ぎている/.test(r.out), r.out);
+  }
   ngScene('レビューを読めない(取得の失敗)', { reviews: null }, /読めない/);
   ngScene('レビューの本文を書き手以外が編集した', { reviews: [rev({ edited_by: 'yamada' })] }, /編集/);
   ngScene('宣言行が別の行の ID', { reviews: [rev({ body: '例外承認: D-013' })] }, /帰属を確かめられない/);

@@ -169,7 +169,7 @@ export function decideStage({ phase, config, env = process.env, root = ROOT, git
  * 閾値割れを第7章 7.3 の例外承認の行で受けられるか(ADR-0243)。閾値割れのときだけ adapter.mjs が呼ぶ。
  * 入力: PIT_IN_EVENT(pull_request | push)・PIT_IN_PR_CONTEXT(mutation-pr-context.mjs の出力の所在)・
  *       PIT_IN_POLICY_BASE(基底の台帳を読む点。PR は既定ブランチの先端、push は push の直前のコミット)。
- * 返す値: { matched, rejected, reason }。取れない入力はすべて受けない側(reason)に倒す。day は呼び出し側が渡す(時計を読まない)
+ * 返す値: { matched, rejected, reason }。取れない入力はすべて受けない側(reason)に倒す。基底の構成・基底の台帳を読む点が取れないときも作業ツリーへ倒さず受けない。day は呼び出し側が渡す(時計を読まない)
  */
 export function breachExceptionOf({ config, day, env = process.env, root = ROOT, git = gitOut }) {
   const none = (reason) => ({ matched: [], rejected: [], reason });
@@ -185,16 +185,23 @@ export function breachExceptionOf({ config, day, env = process.env, root = ROOT,
   if (!ctx || ctx.problem) return none(`PR の記録を取得できなかった: ${ctx?.problem ?? '不明'}`);
   if (ctx.route !== event || !ctx.pr?.number) return none('PR の記録の経路が起動の経路と一致しない');
   if (!env.PIT_IN_POLICY_BASE) return none('基底の台帳を読む点(PIT_IN_POLICY_BASE)が渡されない');
-  // 規則(名簿・AI の名義)は基底の構成から読む。渡されなければ作業ツリーの構成
-  let baseConfig = config;
-  if (env.PIT_IN_BASE_CONFIG) {
-    try {
-      baseConfig = JSON.parse(fs.readFileSync(env.PIT_IN_BASE_CONFIG, 'utf8'));
-    } catch {
-      return none('基底の構成を読めない');
-    }
+  // 規則(名簿・AI の名義)は基底の構成から読む。取れないときは作業ツリーの構成へ倒さず、受けない(PR の側で書き換えた名簿で照らさない)
+  if (!env.PIT_IN_BASE_CONFIG) return none('基底の構成(PIT_IN_BASE_CONFIG)が渡されない');
+  let baseConfig;
+  try {
+    baseConfig = JSON.parse(fs.readFileSync(env.PIT_IN_BASE_CONFIG, 'utf8'));
+  } catch {
+    return none('基底の構成を読めない');
   }
-  const baseLedgerText = git(['show', `${env.PIT_IN_POLICY_BASE}:docs/debt-ledger.md`], root);
+  if (!baseConfig || typeof baseConfig !== 'object') return none('基底の構成を読めない');
+  // 基底の台帳: 基底の点を引けない・読み出しが失敗したときは受けない。基底に台帳が無いときは、全行を PR の中で足した行(帰属の確認が要る)として読む
+  const policy = env.PIT_IN_POLICY_BASE;
+  if (git(['rev-parse', '--verify', '--quiet', `${policy}^{commit}`], root) === null) return none(`基底の台帳を読む点(${policy})を引けない`);
+  let baseLedgerText = null;
+  if (git(['cat-file', '-e', `${policy}:docs/debt-ledger.md`], root) !== null) {
+    baseLedgerText = git(['show', `${policy}:docs/debt-ledger.md`], root);
+    if (baseLedgerText === null) return none('基底の台帳を読めない');
+  }
   let headLedgerText = null;
   try {
     headLedgerText = fs.readFileSync(`${root}/docs/debt-ledger.md`, 'utf8');

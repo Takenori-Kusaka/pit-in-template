@@ -505,7 +505,7 @@ export function mutationBreachExceptionFor({ config, baseLedgerText = null, head
     if (!mutationBreachMarkOf(r.content)) why.push(`内容の先頭が印「${MUTATION_BREACH_MARK}」でない`);
     if (!ACTIVE_EXCEPTION_STATES.includes(stateOf(r))) why.push(`状態が有効を示す値でない(${r.state || '未記入'})`);
     if (!isFilledValue(r.due) || !dueDayOf(r.due)) why.push('期限(返却の目安)が未記入、または日付として解釈できない');
-    else if (exceptionStanding(r, day) !== 'active') why.push(`期限(${dueDayOf(r.due)})を過ぎている(実行の日 ${day})`);
+    else if (exceptionStanding(r, day) === 'overdue') why.push(`期限(${dueDayOf(r.due)})を過ぎている(実行の日 ${day})`);
     let signer = null;
     if (!isFilledValue(r.approver)) why.push('承認した者が未記入');
     else {
