@@ -370,6 +370,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
           fetch-depth: 0
+      # 持ち込みの最初の PR では、基底(持ち込みの前の既定ブランチ)に準拠テンプレートの道具が無い。道具を基底から読む設計のため、
+      # この PR は検査できない。Node の版の設定が無いと、次の setup-node が原因を示さずに失敗する。ここで理由を出して失敗にする
+      # (通過にしない。誤った緑を作らない。#361 D-4)。通常の PR では出ない(基底に道具がある)
+      - name: 基底に準拠テンプレートの道具があるか確かめる
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/gate-node-version ]; then
+            echo "::error::基底ブランチに準拠テンプレートの道具(.github/gate-node-version)がありません。持ち込みの最初の PR(テンプレートの道具を基底に持たない PR)は、基底の道具で検査するこの検査の対象にできないため、検査できません。採用者の既存の保護の必須チェックに従って取り込みます。取り込みの後の PR からは検査できます"
+            exit 1
+          fi
       # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
       # 製品の実行環境(アダプタの runtimeVersion)は、後の setup-stack が別に用意する
       - uses: actions/setup-node@v4

@@ -129,6 +129,19 @@ const readPrev = (cwd) => {
 };
 const readSource = (cwd) => JSON.parse(fs.readFileSync(path.join(cwd, 'evidence', 'previous-source.json'), 'utf8'));
 
+// --- 持ち込みの最初の PR(#361 D-4。違反と適合の対) ---
+{
+  const body = stepBody('基底に準拠テンプレートの道具があるか確かめる');
+  const none = mkRepo();
+  const r1 = runStep(none, body);
+  check('#361 D-4:ng 基底に .github/gate-node-version が無い(持ち込みの最初の PR)と、理由を出して失敗にする(通過にしない)', r1.status !== 0 && /検査できません/.test(r1.out) && /gate-node-version/.test(r1.out), r1.out);
+  const has = mkRepo();
+  fs.mkdirSync(path.join(has, '.github'), { recursive: true });
+  fs.writeFileSync(path.join(has, '.github', 'gate-node-version'), '22\n');
+  const r2 = runStep(has, body);
+  check('#361 D-4:ok 基底に道具があれば(通常の PR)、何も出さずに通る', r2.status === 0 && r2.out.trim() === '', r2.out);
+}
+
 // --- 前回の証跡(IMPL-0522:ng / IMPL-0522:ok) ---
 const prevBody = stepBody('前回の出荷の証跡を取り込む');
 {
