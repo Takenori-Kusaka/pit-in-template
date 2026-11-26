@@ -183,6 +183,15 @@ if (process.platform === 'win32') {
   // IMPL-0316:ok(適合の入力: 権限不足で読めない場合は、理由つきの未確認)
   const denied = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Resource not accessible by integration (HTTP 403)' } }));
   check('権限不足で読めないルールセットは「未確認(権限不足で読めない)」', denied.items.ruleset?.status === 'unconfirmed' && denied.items.ruleset?.reason === 'permission' && /権限不足で読めない/.test(denied.out), JSON.stringify(denied.items.ruleset));
+  // #361 D-3:ng(違反の入力: Free の private のプランの制約による 403。権限を上げても直らないため、権限不足と分ける)
+  const PLAN_MSG = 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)';
+  const plan = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: PLAN_MSG } }));
+  check('プランの制約による 403(Upgrade to GitHub Pro or make this repository public)は「未確認(プランの制約で使えない)」で、権限不足と分ける', plan.items.ruleset?.status === 'unconfirmed' && plan.items.ruleset?.reason === 'plan' && /プランの制約で使えない/.test(plan.out) && !/権限不足で読めない/.test(plan.items.ruleset?.detail ?? ''), JSON.stringify(plan.items.ruleset));
+  // #361 D-3:ok(適合の入力: 状態コードが 403 でない・文言が違う応答は、プランの制約に読み替えない)
+  const planNo403 = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 404)' } }));
+  check('同じ文言でも HTTP 403 でなければプランの制約にしない(unreadable のまま)', planNo403.items.ruleset?.reason === 'unreadable', JSON.stringify(planNo403.items.ruleset));
+  const perm403 = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Must have admin rights to Repository. (HTTP 403)' } }));
+  check('文言が違う 403 は、従来どおり権限不足(permission)に戻る(権限を直すべき採用者を、プランの制約と読み誤らせない)', perm403.items.ruleset?.reason === 'permission', JSON.stringify(perm403.items.ruleset));
   const mock = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: '' } }));
   check('出力の無い gh(模擬)は「未確認(読めない)」で、権限不足と区別する', mock.items.ruleset?.status === 'unconfirmed' && mock.items.ruleset?.reason === 'unreadable', JSON.stringify(mock.items.ruleset));
 

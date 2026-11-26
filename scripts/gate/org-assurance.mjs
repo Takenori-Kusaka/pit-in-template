@@ -1456,6 +1456,7 @@ export const ENV_STATUS_TEXT = { confirmed: '確認済み', mismatch: '不一致
 /** 未確認の理由。権限不足で読めない・実行していない を区別する(#315 R-4) */
 export const ENV_REASON_TEXT = {
   permission: '権限不足で読めない',
+  plan: 'プランの制約で使えない(権限を上げても直らない。公開か有料のプランで使える)',
   'not-run': '実行していない',
   unreadable: '読めない(gh が無い・未認証・模擬)',
   'no-subject': '確かめる対象がまだ無い',

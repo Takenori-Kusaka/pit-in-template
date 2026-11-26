@@ -1376,9 +1376,17 @@ function recordsFindings({ repo, branch, latestPr }) {
 
 /**
  * gh を呼び、JSON として読む。読めなければ { value: null, why, reason, http }。
- * reason は未確認の理由(#315 R-4): 権限不足(HTTP 401・403、admin の権限を要する旨の応答)は permission、それ以外の失敗は unreadable。
+ * reason は未確認の理由(#315 R-4): 権限不足(HTTP 401・403、admin の権限を要する旨の応答)は permission、
+ * プランの制約(HTTP 403 で、プランの引き上げか公開を求める旨の応答)は plan、それ以外の失敗は unreadable。
+ * plan は permission より先に判定する(権限を上げても直らないため。#361 D-3)。一致しなければ permission に戻す(安全側)
  * http は gh の出力の「(HTTP NNN)」から読む(404 の意味は API ごとに違うため、呼ぶ側で解く)
  */
+/**
+ * プランの制約による 403 の応答の文(Free の private で、ルールセット・旧来の保護の API に GitHub が返す。2026-11-26 に実機で観測)。
+ * 文言は GitHub が変えうるため、HTTP 403 と組で判定し、この1か所の定数に置く。一致しなければ権限不足(permission)のまま
+ */
+export const PLAN_LIMIT_MESSAGE = /Upgrade to GitHub (?:Pro|Team)[^.]*or make this repository public/i;
+
 function ghJson(args) {
   let raw;
   try {
@@ -1387,8 +1395,9 @@ function ghJson(args) {
     const text = String(e.stderr || e.message || '');
     const err = text.split('\n').find((l) => l.trim()) ?? 'gh を実行できない';
     const http = Number(text.match(/\(HTTP (\d{3})\)/)?.[1] ?? 0) || null;
-    const permission = http === 401 || http === 403 || /Must have admin rights|Resource not accessible by (?:integration|personal access token)|requires? (?:admin|authentication)/i.test(text);
-    return { value: null, why: `gh を実行できない、または失敗した(${err.slice(0, 120)})`, reason: permission ? 'permission' : 'unreadable', http, message: err };
+    const planLimit = http === 403 && PLAN_LIMIT_MESSAGE.test(text);
+    const permission = !planLimit && (http === 401 || http === 403 || /Must have admin rights|Resource not accessible by (?:integration|personal access token)|requires? (?:admin|authentication)/i.test(text));
+    return { value: null, why: `gh を実行できない、または失敗した(${err.slice(0, 120)})`, reason: planLimit ? 'plan' : permission ? 'permission' : 'unreadable', http, message: err };
   }
   if (!String(raw ?? '').trim()) return { value: null, why: 'gh の出力が空(模擬の gh、または対象が無い)。読めない', reason: 'unreadable', http: null };
   try {
@@ -1559,7 +1568,7 @@ function envEnvironments(repo, branch, notConformance, confirmedWith, fromFailur
     const unread = failures.length ? `。読めなかったもの: ${failures.map((f) => f.text).join('・')}` : '';
     return { status: 'mismatch', detail: `${findings.map((f) => text[f.kind](f)).join('。')}${facts.length ? `(${facts.join('。')})` : ''}${unread}。${scopeNote}。Environment は GITHUB_TOKEN の権限を限らない。${notConformance}`, evidence };
   }
-  if (failures.length) return fromFailure({ why: failures.map((f) => f.text).join('・'), reason: failures.some((f) => f.reason === 'permission') ? 'permission' : 'unreadable' }, 'Environment の項目を読めない');
+  if (failures.length) return fromFailure({ why: failures.map((f) => f.text).join('・'), reason: failures.some((f) => f.reason === 'permission') ? 'permission' : failures.some((f) => f.reason === 'plan') ? 'plan' : 'unreadable' }, 'Environment の項目を読めない');
   if (!list.length) {
     // 委任のマージを有効にする前に delegated-merge を作り、既定ブランチに限る(README)。作らずにマージのジョブが走ると
     // 保護の無い Environment が自動で作られ、次の env-check で「配備の参照の限定が無い」と出る
@@ -1612,7 +1621,7 @@ function envCheck() {
     branch = v.value?.defaultBranchRef?.name ?? (git(['rev-parse', '--verify', '--quiet', 'refs/heads/main']) !== null ? 'main' : 'master');
   }
   const items = {};
-  // 未確認は理由を伴う(#315 R-4)。reason: permission(権限不足で読めない)/ unreadable / not-run / no-subject / no-evidence
+  // 未確認は理由を伴う(#315 R-4)。reason: permission(権限不足で読めない)/ plan(プランの制約で使えない。#361 D-3)/ unreadable / not-run / no-subject / no-evidence
   const unconfirmed = (why, reason = 'unreadable') => ({ status: 'unconfirmed', reason, detail: why });
   const fromFailure = (r, fallback) => unconfirmed(r.why ?? fallback, r.reason ?? 'unreadable');
   const noRepo = () => unconfirmed('対象のリポジトリ(owner/name)を特定できない(--repo で指定する)', 'not-run');
