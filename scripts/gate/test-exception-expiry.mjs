@@ -351,6 +351,7 @@ if (process.platform === 'win32') {
       'const args = process.argv.slice(2);',
       "const map = JSON.parse(fs.readFileSync(process.env.FAKE_GH_MAP, 'utf8'));",
       "const target = args.find((a) => a.startsWith('repos/')) ?? '';",
+      "if (args[0] === 'pr' && args[1] === 'view' && Object.prototype.hasOwnProperty.call(map, 'pr:' + args[2])) { process.stdout.write(JSON.stringify(map['pr:' + args[2]])); process.exit(0); }",
       "if (args[0] === 'api' && Object.prototype.hasOwnProperty.call(map, target)) { process.stdout.write(JSON.stringify(map[target])); process.exit(0); }",
       "if (args[0] === 'api' && /\\/(pulls|reviews|commits)$/.test(target)) { process.stdout.write('[]'); process.exit(0); }",
       'process.exit(1);',
@@ -414,6 +415,52 @@ if (process.platform === 'win32') {
   check('集約 IMPL-0996:ng 他の機能(F-002)の記録だけでは、G-4 F-001 の行は成立しない', gapOf(c.ev, new RegExp(`${c.id(0)}\\(G-4 F-001\\).*G-4 の判定記録.*無い`)).length === 1 && !shows(c.ev, `${c.id(0)}(G-4 F-001)`), JSON.stringify(c.ev?.gaps?.filter((g) => /例外承認/.test(g))));
   const d = scene(['G-4 F-001'], { 'g4-f001.md': form('G-4 機能仕様承認', 'F-001 / 1a2b3c4', '差し戻し') });
   check('集約 IMPL-0996:ok G-4 F-001 の判定記録(差し戻し)がある行は、欠落に出ず、例外承認として数える', gapOf(d.ev, new RegExp(`${d.id(0)}\\(G-4 F-001\\)`)).length === 0 && shows(d.ev, `${d.id(0)}(G-4 F-001)`), JSON.stringify(d.ev?.gaps?.filter((g) => /例外承認/.test(g))));
+  // U6c: 段 mutation が閾値割れを受ける行(G-5 PR-<番号>・印あり)を、集約が帰属まで見て欠落にしない。
+  // 行の承認した者は名簿 己(acc5)。行を入れた PR(別の番号)の作成者でも承認者でもないので、(B) では裏づかず、対象の PR の上の宣言行のレビュー (A) だけが帰属になる
+  const breach = (target, { declare = true, mark = true, pr = 301, inRange = true, approver = '名簿 己' } = {}) => {
+    fs.rmSync(path.join(w.dir, 'docs/gates'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(w.dir, 'u6c.txt'), `${pr}\n`);
+    const target1 = w.commit(`feat: 変更 ${pr}\n\nRisk: R3\nVerification: 手元で試験を実行した`);
+    const id = `D-${pr}`;
+    fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(w.dir, 'docs/debt-ledger.md'), ledger(`| ${id} | 例外 | ${target} | ${mark ? '変異試験の閾値割れ(スコア 40・閾値 60)' : 'スコア低下'} | 閾値を暫定で受ける | 品質の低下 | 2026-12-31 まで | 未返却 | 名簿 甲 | ${approver} |\n`));
+    // 対象の PR の写し(承認レビューの写し。本文の編集者 edited_by を持つ)。帰属 (A) は写しのレビューで数える
+    if (inRange) {
+      fs.mkdirSync(path.join(w.dir, 'docs/records/reviews'), { recursive: true });
+      fs.writeFileSync(path.join(w.dir, `docs/records/reviews/pr-${pr}.json`), JSON.stringify({ repository: R, pr, title: `変更 ${pr}`, body: 'Risk: R3', head_ref: 'feat', merge_commit_sha: target1, head_sha: `head-${pr}`, author: user('acc0'), merged_at: '2026-11-01T00:00:00Z', merged_by: { login: 'acc3' }, base: { ref: 'main' }, default_branch: 'main', reviews: [{ id: 900, user: { ...user('acc5'), type: 'User' }, state: 'COMMENTED', commit_id: `head-${pr}`, body: declare ? `例外承認: D-${pr}` : '確認した', edited_by: null, submitted_at: '2026-10-31T00:00:00Z' }] }));
+    }
+    const to = w.commit(`docs: 台帳 ${pr}\n\nRisk: R3\nVerification: 手元で試験を実行した`);
+    map[`repos/${R}/commits/${target1}/pulls`] = [{ number: pr, merged_at: '2026-11-01T00:00:00Z', merge_commit_sha: target1, head: { sha: `head-${pr}` }, user: user('acc0') }];
+    map[`repos/${R}/pulls/${pr}/reviews`] = [{ id: 900, user: { ...user('acc5'), type: 'User' }, state: 'COMMENTED', commit_id: `head-${pr}`, submitted_at: '2026-10-31T00:00:00Z', body: declare ? `例外承認: ${id}` : '確認した' }];
+    map[`repos/${R}/pulls/${pr}/commits`] = [{ author: user('acc0') }];
+    map[`repos/${R}/pulls/${pr}`] = { number: pr, merged_at: '2026-11-01T00:00:00Z', user: user('acc0') };
+    if (inRange) map[`pr:${pr}`] = { number: pr, title: `変更 ${pr}`, author: { login: 'acc0' }, reviews: [], statusCheckRollup: [], body: 'Risk: R3', mergeCommit: { oid: target1 }, commits: [{ oid: target1, authors: [{ login: 'acc0' }] }], labels: [], createdAt: '2026-10-30T00:00:00Z', mergedAt: '2026-11-01T00:00:00Z', headRefOid: `head-${pr}`, headRefName: 'feat' };
+    map[`repos/${R}/commits/${to}/pulls`] = [{ number: pr + 1, merged_at: '2026-11-02T00:00:00Z', merge_commit_sha: to, head: { sha: `head-${pr + 1}` }, user: user('acc0') }];
+    map[`repos/${R}/pulls/${pr + 1}/reviews`] = ['acc1', 'acc3'].map((l, i) => ({ id: 910 + i, user: { ...user(l), type: 'User' }, state: 'APPROVED', commit_id: `head-${pr + 1}`, body: '' }));
+    map[`repos/${R}/pulls/${pr + 1}/commits`] = [{ author: user('acc0') }];
+    const mapFile = path.join(BIN, `map-breach-${pr}.json`);
+    fs.writeFileSync(mapFile, JSON.stringify(map));
+    const r = spawnSync(process.execPath, ['scripts/gate/aggregate-evidence.mjs', '--from', from, '--to', to, '--exception-day', DAY], { cwd: w.dir, encoding: 'utf8', env: { ...process.env, PATH: `${BIN}${path.delimiter}${process.env.PATH}`, FAKE_GH_MAP: mapFile, GITHUB_BASE_REF: '', GITHUB_REPOSITORY: R, GH_TOKEN: '', GITHUB_TOKEN: '' } });
+    let ev = null;
+    try {
+      ev = JSON.parse(fs.readFileSync(path.join(w.dir, 'evidence/evidence.json'), 'utf8'));
+    } catch {
+      // 読めなければ null
+    }
+    return { out: `${r.stdout ?? ''}${r.stderr ?? ''}`, ev, id };
+  };
+  const exGaps = (x) => JSON.stringify((x.ev?.gaps ?? []).filter((g) => new RegExp(x.id).test(g)));
+  const u1 = breach('G-5 PR-301', { pr: 301 });
+  check('集約 IMPL-0931:ok G-5 PR-301 で印あり・PR-301 に承認した者本人の宣言行のレビューがある行は、欠落にならず例外承認として数える', u1.ev !== null && exGaps(u1) === '[]' && shows(u1.ev, `${u1.id}(G-5 PR-301)`), u1.out.slice(-600) + exGaps(u1));
+  const hasGap = (x, label, re) => (x.ev?.gaps ?? []).some((g) => g.includes(`${x.id}(${label})`) && re.test(g));
+  const u2 = breach('G-5 PR-311', { pr: 311, mark: false, approver: '名簿 乙' });
+  check('集約 IMPL-0931:ng 印の無い G-5 PR-311 の行は欠落のまま', hasGap(u2, 'G-5 PR-311', /gate-g5/) && !shows(u2.ev, `${u2.id}(G-5 PR-311)`), exGaps(u2));
+  const u3 = breach('G-5 PR-321', { pr: 321, declare: false });
+  check('集約 IMPL-0931:ng 対象の PR に宣言行のレビューが無い行は、帰属を確かめられない欠落になる', hasGap(u3, 'G-5 PR-321', /帰属を確かめられない/), exGaps(u3));
+  const u4 = breach('G-5 PR-399', { pr: 331, inRange: false });
+  check('集約 IMPL-0931:ng 対象の PR の写しが範囲に無い行は、帰属を確かめられない欠落になり、理由に写しが無いことを出す', hasGap(u4, 'G-5 PR-399', /写しが出荷の範囲に無い/), exGaps(u4));
+  const u5 = breach('G-5 P-001', { pr: 341, approver: '名簿 乙' });
+  check('集約 IMPL-0996:ng 印があっても G-5 P-001 の行は欠落のまま', hasGap(u5, 'G-5 P-001', /gate-g5/) && !shows(u5.ev, `${u5.id}(G-5 P-001)`), exGaps(u5));
   w.done();
 }
 
@@ -535,9 +582,15 @@ if (process.platform === 'win32') {
   check('IMPL-0931:ng 作成を指示した者が承認した者本人・名簿に対応づかない', ng(run({ instructorIds: ['p2'] }), /指示した者/) && ng(run({ instructorUnresolved: ['@x'] }), /指示した者/));
   check('IMPL-0931:ng 基底にある ID は基底の内容で読む(PR の中で期限を未来へ書き換えても効かない)', ng(run({ rows: [rowB({ due: '2000-01-01 まで' })], headRows: [rowB({ due: '2099-01-01 まで' })] }), /を過ぎている/));
   check('IMPL-0931:ng PR の番号・実行の日・台帳が無いときは理由つきで受けない', ng(run({ prNumber: null }), /PR の番号/) && ng(run({ day: 'x' }), /実行の日/) && ng(mutationBreachExceptionFor({ config: cfg, prNumber: 12, day: DAY }), /台帳/));
-  // IMPL-0996 の挙動は変えない(U6c の前に緩めない): G-5 の行は、対象の形に依らず常に欠落
-  const un = unjudgedGateExceptions([{ label: 'D-012', t: gateExceptionTarget('G-5 PR-12') }, { label: 'D-013', t: gateExceptionTarget('G-5 P-001') }], () => true);
-  check('IMPL-0996:ng unjudgedGateExceptions は G-5 PR-12 の行も欠落にする(この単位では変えない)', un.length === 2);
+  // U6c: 集約の照合(unjudgedGateExceptions)は、段と同じ関数の読みで、対象が G-5 PR-<番号> で印のある行だけを欠落にしない
+  const MARK = '変異試験の閾値割れ(スコア 40・閾値 60)';
+  const g5 = (label, target, content) => ({ label, t: gateExceptionTarget(target), ...(content === undefined ? {} : { content }) });
+  const un = unjudgedGateExceptions([g5('D-012', 'G-5 PR-12', MARK), g5('D-013', 'G-5 P-001', MARK), g5('D-014', 'G-5 PR-12', 'スコア低下'), g5('D-015', 'G-5 PR-12')], () => true);
+  check('IMPL-0931:ok G-5 PR-12 で印のある行は欠落にしない(段が受ける行)', !un.some((x) => x.label === 'D-012'), JSON.stringify(un));
+  check('IMPL-0931:ng 印の無い G-5 PR-12 の行は欠落のまま', un.some((x) => x.label === 'D-014' && /gate-g5/.test(x.text)));
+  check('IMPL-0931:ng 内容が渡されない G-5 PR-12 の行は、subject の形だけでは判定せず欠落のまま', un.some((x) => x.label === 'D-015'));
+  check('IMPL-0996:ng 印があっても G-5 P-001 などほかの G-5 の行は欠落のまま', un.some((x) => x.label === 'D-013') && un.length === 3, JSON.stringify(un.map((x) => x.label)));
+  check('IMPL-0931:ok 強調の印も段と同じ読みで受ける(欠落にしない)', unjudgedGateExceptions([g5('D-1', 'G-5 PR-12', '**変異試験の閾値割れ**')], () => true).length === 0);
 }
 
 console.log(`\n${checks - failures}/${checks} 合格`);

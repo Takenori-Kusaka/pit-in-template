@@ -138,7 +138,7 @@ import {
   unmetShipGaps,
   derivedUnmet,
 } from './config.mjs';
-import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
+import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, mutationBreachPrOf, mutationBreachMarkOf, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
 import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy, specLinesOf, defectUnregisteredDisclosure } from './autonomy.mjs';
@@ -2977,14 +2977,27 @@ if (isMain) {
     if (!filled(r.content) || (r.reason !== null && !filled(r.reason))) why.push('理由(内容・受容した理由)が未記入');
     if (!filled(r.due) || !dueDayOf(r.due)) why.push(`期限(返却の目安)が未記入、または日付として解釈できない(${r.due || '未記入'})`);
     if (!why.length) {
-      const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver));
-      if (u) why.push(u);
+      // 段 mutation が閾値割れを受ける行(G-5 PR-<番号> で印あり。ADR-0243)は、段と同じ関数の読み(mutationBreachPrOf・mutationBreachMarkOf)で
+      // 見分け、対象の PR の写しの上のレビュー・作成者・マージ時の先頭で (A) を数える。PR が範囲に無い・写しが無いときは、いまの (B) だけで読む
+      let material = null;
+      let instructorIds = [];
+      const breachPr = mutationBreachMarkOf(r.content) ? mutationBreachPrOf(t) : null;
+      const bp = breachPr !== null ? prByNumber.get(Number(breachPr)) : null;
+      if (bp?.material) {
+        material = bp.material;
+        instructorIds = (bp.g6.independent.instructors ?? []).map((n) => personKey(config, n));
+        if (bp.g6.independent.unresolvedInstructors?.length) why.push(`作成を指示した者を名簿と対応づけられない(${bp.g6.independent.unresolvedInstructors.join(' / ')})`);
+      }
+      if (!why.length) {
+        const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver), { material, instructorIds });
+        if (u) why.push(breachPr !== null && !bp ? `${u}(対象の PR(PR-${breachPr})の写しが出荷の範囲に無い)` : u);
+      }
     }
     const label = `${r.id}(${t.gate} ${t.subject})`;
     if (why.length) gateExceptions.rejected.push(`${label}: ${why.join('、')}`);
     else {
       gateExceptions.matched.push(label);
-      gateExceptionRows.push({ label, t });
+      gateExceptionRows.push({ label, t, content: r.content });
     }
   }
 
@@ -3541,7 +3554,7 @@ if (isMain) {
   // ゲートの判定を対象とする例外承認の行のうち、判定を行わないまま 7.3 で進めるものを成立させない(IMPL-0996 / ADR-0153 決定2)。
   //   G-4: 当該の機能仕様の G-4 の判定記録(様式、または判定者本人のレビューの宣言行)が無い行。結果は通過か差し戻しの語を数える
   //        (判定を行った証跡を見る。版の一致は G-4 の通過の側の検査が持つため、headMatch は問わない)。出所は g4Passes と同じ
-  //   G-5: 常に成立させない。準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
+  //   G-5: 常に成立させない。ただし対象が G-5 PR-<番号> で内容の先頭が印の行(段 mutation が閾値割れを受ける行。ADR-0243)は、帰属の照合を通ったものを成立させる。準拠テンプレートの G-5 は PR ごとの gate-g5 で、それ以外の失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
   const g4Judged = (spec) =>
     gateDetails.some((g) => /G-4/.test(g.gate ?? '') && ['通過', '差し戻し'].includes(resultWord(g.result)) && specRe(spec).test(String(g.target ?? ''))) ||
     reviewJudgements.some((j) => j.gate === 'G-4' && ['通過', '差し戻し'].includes(resultWord(j.result)) && j.judgeOk !== false && j.specs.includes(spec));

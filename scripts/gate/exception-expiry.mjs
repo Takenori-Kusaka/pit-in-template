@@ -450,16 +450,20 @@ export function overdueExceptionNote({ ledgerText, today }) {
 /**
  * ゲートの判定を対象とする例外承認の行のうち、判定を行わないまま 7.3 で進めるものを選ぶ(IMPL-0996 / ADR-0153 決定2)。
  *   G-4: 当該の機能仕様の G-4 の判定記録が無い行(judged(subject) が偽)。判定を行った証跡を見る
- *   G-5: 常に。準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
- *   それ以外のゲートは変えない。rows は { label, t: { gate, subject } } の配列。戻りは { label, text } の配列
+ *   G-5: 常に。ただし対象が `G-5 PR-<番号>` で内容の先頭が印(変異試験の閾値割れ)の行は除く(ADR-0243。段 mutation が受ける行)。準拠テンプレートの G-5 は PR ごとの gate-g5 で、それ以外の失敗は例外承認で解かず、台帳の行を当該の集約の結果へ機械は結べない
+ *   それ以外のゲートは変えない。rows は { label, t: { gate, subject }, content? } の配列。戻りは { label, text } の配列
  */
 export function unjudgedGateExceptions(rows, judged) {
   const out = [];
-  for (const { label, t } of rows) {
+  for (const { label, t, content } of rows) {
     if (t.gate === 'G-4' && !judged(t.subject)) {
       out.push({ label, text: `ゲートの判定を対象とする例外承認 ${label}: 当該の機能仕様の G-4 の判定記録(様式、または判定者本人のレビューの宣言行)が無い。判定を行わないまま 7.3 で進めることはできない(第7章 7.3・7.4、ADR-0153 決定2)。G-4 を判定してから記録し直すか、状態を「取り下げ」にする` });
     } else if (t.gate === 'G-5') {
-      out.push({ label, text: `ゲートの判定を対象とする例外承認 ${label}: 準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かない。台帳の行を当該の集約の結果へ機械は結べない(第7章 7.3、ADR-0153 決定2)。状態を「取り下げ」にする` });
+      // 段 mutation が閾値割れを受ける行(対象が G-5 PR-<番号>・内容の先頭が印。ADR-0243)は欠落にしない。段と同じ関数で読む。
+      // 行の内容が渡されない呼び出しは印を確かめられないので、従来どおり欠落にする(subject の形だけでは判定しない)。
+      // 帰属は呼び出し側(集約の ledgerRowUnbacked)が行ごとに確かめ、満たさない行はここへ渡らない
+      if (mutationBreachPrOf(t) !== null && mutationBreachMarkOf(content)) continue;
+      out.push({ label, text: `ゲートの判定を対象とする例外承認 ${label}: 準拠テンプレートの G-5 は PR ごとの gate-g5 で、その失敗は例外承認で解かない。台帳の行を当該の集約の結果へ機械は結べない(第7章 7.3、ADR-0153 決定2)。状態を「取り下げ」にする(段 mutation の閾値割れは、対象を \`G-5 PR-<番号>\`・内容の先頭を印「変異試験の閾値割れ」とした行で受ける。ADR-0243)` });
     }
   }
   return out;
@@ -470,6 +474,12 @@ export function unjudgedGateExceptions(rows, judged) {
  * 内容の先頭の印は固定語だけにする。スコアの下限は書かせない(書き手が 0 と書けば空になる。承認した者が段の出力のスコアを読む)
  */
 export const MUTATION_BREACH_MARK = '変異試験の閾値割れ';
+
+/** 対象(gateExceptionTarget の戻り)が `G-5 PR-<番号>`(完全一致)なら PR の番号(文字列)、でなければ null。段と集約が同じ読みをする */
+export function mutationBreachPrOf(t) {
+  const m = t && t.gate === 'G-5' ? /^PR-(\d+)$/i.exec(String(t.subject ?? '')) : null;
+  return m ? m[1] : null;
+}
 
 /** 行の内容の先頭が印か。強調の `*`・`` ` ``・`_` と全角は正規化して読む(fastTrackMarkOf と同じ読み)。印なら { mark }、でなければ null */
 export function mutationBreachMarkOf(content) {
@@ -492,7 +502,6 @@ export function mutationBreachExceptionFor({ config, baseLedgerText = null, head
   if (!prNumber) return { matched, rejected, reason: 'PR の番号が分からないため、台帳の行と対応づけられません' };
   if (!validDay(day)) return { matched, rejected, reason: '段の実行の日が分からないため、期限を比べられません' };
   if (!baseLedgerText && !headLedgerText) return { matched, rejected, reason: '台帳(docs/debt-ledger.md)がありません' };
-  const want = `PR-${prNumber}`;
   const baseRows = baseLedgerText ? parseLedger(baseLedgerText) : [];
   const baseIds = new Set(baseRows.map((r) => r.id));
   const headOnly = headLedgerText ? parseLedger(headLedgerText).filter((r) => !baseIds.has(r.id)).map((r) => ({ ...r, inHead: true })) : [];
@@ -500,7 +509,7 @@ export function mutationBreachExceptionFor({ config, baseLedgerText = null, head
   for (const r of [...baseRows, ...headOnly]) {
     if (r.kind !== '例外' || r.target === null) continue;
     const t = gateExceptionTarget(r.target);
-    if (!t || t.gate !== 'G-5' || t.subject.toUpperCase() !== want) continue;
+    if (mutationBreachPrOf(t) !== String(prNumber)) continue;
     const why = [];
     if (!mutationBreachMarkOf(r.content)) why.push(`内容の先頭が印「${MUTATION_BREACH_MARK}」でない`);
     if (!ACTIVE_EXCEPTION_STATES.includes(stateOf(r))) why.push(`状態が有効を示す値でない(${r.state || '未記入'})`);

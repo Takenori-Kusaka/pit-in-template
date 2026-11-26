@@ -1656,6 +1656,13 @@ ${instr}
   scenario('IMPL-0836:ok 規則集の変更だけの PR は同時変更の失敗にならない', {}, () => {
     write('regulatory/rules.yaml', 'rules: [a]\n');
   }, (r) => (has(r, /閾値・除外設定と製品のコードが同じ PR/) ? ['同時変更の失敗が出てはならない(統制の設定の陰性の確認は別に要る)'] : []));
+  scenario('IMPL-0836:ok ci.mutationThreshold だけを変える PR は同時変更の失敗にならず、基準値の変更として thresholds.changed に process.config.json(ci) が出る(束 B31 U8)', {}, () => {
+    const c = JSON.parse(read('process.config.json'));
+    write('process.config.json', { ...c, ci: { ...c.ci, mutationThreshold: 50 } });
+  }, (r) => [
+    ...(has(r, /閾値・除外設定と製品のコードが同じ PR/) ? ['閾値だけの PR が同時変更の失敗になっている'] : []),
+    ...(r.thresholds.changed.some((c) => /process\.config\.json\(ci\)/.test(c)) ? [] : [`基準値の変更として識別していない: ${JSON.stringify(r.thresholds)}`]),
+  ]);
   scenario('IMPL-0836:限界 thresholdFiles に登録していない規則集のファイルは、同時変更の検査に掛からない(登録は採用者の責務)', {}, () => {
     write('scripts/regulatory-check.sh', 'echo changed\n');
     write('src/a.js', lines(21));
