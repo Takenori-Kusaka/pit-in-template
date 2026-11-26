@@ -55,13 +55,17 @@ const SEPARATE = seatsOf({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier
 const RECORD_ROW = '| 価値責任者 × 技術判断者 | 名簿 甲 | 技術判断を担える人が他にいない | 2026-10-23 |';
 const PATTERN = /非推奨の兼務です.*記載の欠落です/;
 
-function workspace(seats, recordRow, changeLog = null) {
+// crlfSource: 複製の元が CRLF だった場合(Windows の git archive・core.autocrlf=true の複製)を模す。
+// 試験の入力は改行で変わらないよう LF へ正規化する(#361 R-14。CRLF では表の正規表現が当たらず 4 件が落ちた)
+function workspace(seats, recordRow, changeLog = null, crlfSource = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-discouraged-'));
   copyTemplateTree(dir, { skip: SKIP });
   const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats }).config);
   if (changeLog) config.changeLog = changeLog;
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
   let d0 = fs.readFileSync(path.join(dir, 'templates/00-d0-governance.md'), 'utf8');
+  if (crlfSource) d0 = d0.replace(/\r?\n/g, '\r\n');
+  d0 = d0.replace(/\r\n/g, '\n');
   if (recordRow) d0 = d0.replace(/(\| 兼務する組 \| 責任者 \| 兼務を選んだ理由 \| 記録日 \|\n\| --- \| --- \| --- \| --- \|\n)\| \| \| \| \|/, `$1${recordRow}`);
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'docs/D-0-governance.md'), d0);
@@ -109,6 +113,14 @@ function workspace(seats, recordRow, changeLog = null) {
   const ok = workspace(SHARED, REF_ROW, [{ date: '2026-10-01T09:00:00+09:00', decidedBy: '名簿 甲', reason: '増員までの暫定' }]);
   // IMPL-0298:ok(指した日付の行が在り、決定した者と理由を持つ参照は、欠落にしない)
   check('H-4 ok: 指した日付の行が在り理由を持てば、欠落は出ない', /を出力しました/.test(ok.out) && !ok.out.split('\n').some((l) => PATTERN.test(l)), ok.out);
+}
+// #361 R-14: 複製の元が CRLF でも、表への書き込みと欠落の判定は変わらない
+{
+  const r = workspace(SHARED, RECORD_ROW, null, true);
+  check('R-14 ok: 複製の元が CRLF でも、D-0 の記録の表へ行を書き込める', r.recorded);
+  check('R-14 ok: 複製の元が CRLF でも、記録のある構成は欠落を出さない', /を出力しました/.test(r.out) && !r.out.split('\n').some((l) => PATTERN.test(l)), r.out);
+  const none = workspace(SHARED, null, null, true);
+  check('R-14 ng: 複製の元が CRLF でも、記録が無ければ欠落を出す', none.out.split('\n').filter((l) => PATTERN.test(l)).length === 1, none.out);
 }
 {
   const r = workspace(SEPARATE, null);
