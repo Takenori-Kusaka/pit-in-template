@@ -192,6 +192,11 @@ if (process.platform === 'win32') {
   check('同じ文言でも HTTP 403 でなければプランの制約にしない(unreadable のまま)', planNo403.items.ruleset?.reason === 'unreadable', JSON.stringify(planNo403.items.ruleset));
   const perm403 = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { code: 1, stderr: 'gh: Must have admin rights to Repository. (HTTP 403)' } }));
   check('文言が違う 403 は、従来どおり権限不足(permission)に戻る(権限を直すべき採用者を、プランの制約と読み誤らせない)', perm403.items.ruleset?.reason === 'permission', JSON.stringify(perm403.items.ruleset));
+  // #361 D-14:ng(違反の入力: 未知のオプション --dry-run。黙って無視して記録を書かない)
+  const wu = workspace(TEAM);
+  const unk = wu.run(ghMap(), ['--dry-run']);
+  wu.done();
+  check('未知のオプション(--dry-run)は終了コード 2 で拒み、記録を書かない', unk.code === 2 && /未知のオプション --dry-run/.test(unk.out) && unk.record === null, JSON.stringify({ code: unk.code, out: unk.out.slice(0, 120), record: unk.record !== null }));
   const mock = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: '' } }));
   check('出力の無い gh(模擬)は「未確認(読めない)」で、権限不足と区別する', mock.items.ruleset?.status === 'unconfirmed' && mock.items.ruleset?.reason === 'unreadable', JSON.stringify(mock.items.ruleset));
 

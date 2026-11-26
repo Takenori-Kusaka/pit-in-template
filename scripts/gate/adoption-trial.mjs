@@ -1577,7 +1577,15 @@ function envEnvironments(repo, branch, notConformance, confirmedWith, fromFailur
   return confirmedWith('environments', `${facts.join('。')}。委任のトークンは Environment の外に無い。${scopeNote}。Environment は GITHUB_TOKEN の権限を限らない(environment: を消したジョブには掛からない)。${notConformance}`, evidence);
 }
 
+/** env-check が受け付けるオプション。未知のオプションは拒む(綴りの誤りを黙って無視し、意図と違う対象で記録を書かない。#361 D-14) */
+export const ENV_CHECK_OPTIONS = ['--by', '--repo', '--branch', '--pr', '--seat'];
+
 function envCheck() {
+  const unknown = argv.slice(1).filter((a) => a.startsWith('--') && !ENV_CHECK_OPTIONS.includes(a));
+  if (unknown.length) {
+    fail("未知のオプション " + unknown.join(' ') + " です。env-check が受け付けるのは " + ENV_CHECK_OPTIONS.join(' ') + " だけです(記録は書きません)");
+    return 2;
+  }
   const config = loadConfig();
   if (config.configured === false) {
     fail('プロセス構成が未設定です。/process-init の後に実行します');
