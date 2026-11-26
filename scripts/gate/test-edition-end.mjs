@@ -460,6 +460,18 @@ ${factsLineOf(c1.__full.report)}`);
   check('集約(Spec): 末尾の段落の Spec: F-002(タスクなし)は仕様に数え、段落の外の件数は出さない', /仕様 1 件/.test(g4Line(last)) && !/段落の外/.test(g4Line(last)), g4Line(last));
   const lastFull = aggWith({}, ['feat: c\n\nSpec: F-003 / Task-2\nCo-Authored-By: Claude <c@example.com>']);
   check('集約(Spec): 末尾の段落の Spec: F-003 / Task-2 は仕様に数える(手戻り率の読み方と同じ段落)', /仕様 1 件/.test(g4Line(lastFull)), g4Line(lastFull));
+  // Spec: setup のように F-NNN を含まない行は、末尾の段落の外にあっても「数えていない」の件数に入れない(次の一手と同じ述語)
+  const midSetup = aggWith({}, ['chore: d\n\nSpec: setup\n\nCo-Authored-By: Claude <c@example.com>']);
+  check('集約(Spec): F-NNN を含まない Spec 行(Spec: setup)は、段落の外の件数に入れない', !/段落の外/.test(g4Line(midSetup)), g4Line(midSetup));
+  // 本文の読み出しが失敗したとき(ここでは maxBuffer を極小にして再現)、0 件と出さず「読めず」と出し、確かめられない側へ入れる
+  process.env.AGGREGATE_BODY_MAXBUFFER = '64';
+  let unread;
+  try {
+    unread = aggWith({}, ['feat: e\n\nSpec: F-009 / Task-1']);
+  } finally {
+    delete process.env.AGGREGATE_BODY_MAXBUFFER;
+  }
+  check('集約(Spec): 本文を読めなければ、G-4 の行に「本文を読めず、トレーラ Spec を数えていない」を出し、確かめられない側へ入れる', /本文を読めず、トレーラ Spec を数えていない/.test(unread.disclosure) && /本文を読めず、トレーラ Spec を数えていません/.test(JSON.stringify(unread.ev)), unread.disclosure.split('\n').filter((l) => /G-4/.test(l)).join('\n').slice(0, 400));
 
 
   // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める

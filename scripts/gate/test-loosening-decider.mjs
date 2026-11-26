@@ -178,7 +178,7 @@ ${JSON.stringify(c4.observationWindow)}`
   git('commit', '-q', '-m', 'chore: window 2');
 
   // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。種別 settings の reworkBaseline。0〜100・既定値なし。
-  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。上げる・外すのは緩める向き
+  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。上げる・新しく置くのは緩める向き、下げる・外すのは強める向き
   const b0 = cfgText();
   const b150 = settings({ summary: '基準値', settings: { reworkBaseline: { percent: 150, method: 'pre-measurement' } }, decidedBy: A.name, reason: '試験' });
   check('手戻り率の基準値: 0〜100 の範囲外(150)を拒否し、構成を書き換えない', !b150.ok && /reworkBaseline.percent/.test(b150.out) && cfgText() === b0, b150.out);

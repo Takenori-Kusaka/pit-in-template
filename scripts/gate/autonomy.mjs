@@ -367,7 +367,7 @@ export function autonomyState(config, records) {
           stop('第1区分', 'unmeasurable', `${HANDOVER_FILE} の履歴を読めず(${coreHistory.reason ?? '理由の記録なし'})、コア機能「${c.name}」の理解保持者数が1名以下だった時点を確かめられない`);
         } else if (c.lowUntil && !(registeredAt && registeredAt > c.lowUntil)) {
           // 保持者数が回復しても、回復の後の登録の判定があるまで戻さない(5.4.6 の後段。突合 X-2)
-          stop('第1区分', 'downgrade', `コア機能「${c.name}」の理解保持者数は ${c.lowUntil} まで1名以下だった。回復の後の登録の判定まで止める`);
+          stop('第1区分', 'downgrade', `コア機能「${c.name}」の理解保持者数は ${c.lowUntil} まで1名以下だった。回復の後の登録の判定まで止める${unregisteredText}`);
         }
       }
     }

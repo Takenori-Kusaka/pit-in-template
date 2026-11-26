@@ -249,7 +249,9 @@ const NOTICE_DAY = localDay();
   const R = { id: 'pay-1', cause: '7.9.1-2', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
   const fire = w.change({ kind: 'notice', summary: '制限の発動', event: 'restriction', restriction: R, notice: { to: A.name, at: NOTICE_DAY } });
   const rec = w.cfgNow().changeLog.at(-1);
-  check('入口: 制限の発動の範囲・対象の人・根拠・記録した者を記録に残す(7.9.6)', fire.ok && rec.event === 'restriction' && rec.restriction?.paths?.[0] === 'src/payments/**' && rec.restriction?.recordedBy === B.name, `${fire.out}\n${JSON.stringify(rec)}`);
+  check('入口: 制限の発動の範囲・対象の人・根拠・記録した者を記録に残す(7.9.6)', fire.ok && rec.event === 'restriction' && rec.restriction?.paths?.[0] === 'src/payments/**' && rec.restriction?.recordedBy === B.name && rec.restriction?.cause === '7.9.1-2' && rec.restriction?.person === C.name, `${fire.out}\n${JSON.stringify(rec)}`);
+  const stNow = restrictionState(w.cfgNow());
+  check('入口: 入口を通した cause 2 の発動は、causeless に数えない(cause を記録に残す)', stNow.causeless === 0 && stNow.active[0]?.cause === '7.9.1-2', JSON.stringify(stNow));
   const inRange = w.commitWithG6('src/payments/pay.js', C.name);
   const outRange = w.commitWithG6('src/ui/view.js', C.name);
   const agg = w.aggregate();
@@ -405,6 +407,20 @@ const NOTICE_DAY = localDay();
   const agg2 = w2.aggregate();
   w2.done();
   check('集約: cause の無い旧い発動の件数を開示に出す(対象の人は出さない)', /根拠の区分\(cause\)の無い旧い発動 1 件/.test(agg2.report) && !agg2.report.includes('対象 ' + C.name), rowText(agg2.report));
+}
+
+{
+  // 入口を通した cause 1(見逃しの反復)の発動: 記録に cause が残り、person の鍵を持たず、集約が causeless の行を出さない(IMPL-1011)
+  const w = workspace(cfg(ANS(), [A, B, C], BASE3));
+  const R1 = { id: 'miss-1', cause: '7.9.1-1', paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
+  const fire = w.change({ kind: 'notice', summary: '制限の発動(見逃しの反復)', event: 'restriction', restriction: R1, notice: { to: A.name, at: NOTICE_DAY } });
+  const rec = w.cfgNow().changeLog.at(-1);
+  check('入口: cause 1 の発動の記録に cause が残り、person の鍵を持たない', fire.ok && rec.restriction?.cause === '7.9.1-1' && !('person' in rec.restriction), `${fire.out}
+${JSON.stringify(rec)}`);
+  w.commitWithG6('src/payments/pay.js', A.name);
+  const agg = w.aggregate();
+  w.done();
+  check('集約: 入口を通した cause 1 の発動は、cause の無い旧い発動に数えない', /解除されていない制限 1 件\(miss-1/.test(agg.report) && !/根拠の区分\(cause\)の無い旧い発動/.test(agg.report), agg.out.slice(-400));
 }
 
 // IMPL-0117:ok 力量を確認した者が、その変更の作成を指示した者(コミットの作成者 = 開発者の席の責任者)である確認を、件数 1 で固定する

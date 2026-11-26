@@ -1328,15 +1328,16 @@ if (isMain) {
     return i >= 0 ? process.argv[i + 1] : fallback;
   }
 
-  function git(args) {
+  function git(args, { maxBuffer, strict = false } = {}) {
     // 期間の指定では、コミットの一覧を標準入力で渡す(--stdin)
     const input = args.includes('--stdin') ? periodInput : null;
     // 期間にコミットが無い場合。空の入力では git log が HEAD をたどるため、呼ばない
     if (input === '') return '';
     try {
-      return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', ...(input !== null ? { input } : { stdio: ['ignore', 'pipe', 'ignore'] }) }).trim();
+      return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', ...(maxBuffer ? { maxBuffer } : {}), ...(input !== null ? { input } : { stdio: ['ignore', 'pipe', 'ignore'] }) }).trim();
     } catch {
-      return '';
+      // strict: 読み出しの失敗を、空の出力(0 件)と区別して呼び出し側へ返す
+      return strict ? null : '';
     }
   }
 
@@ -1635,13 +1636,17 @@ if (isMain) {
   // 値の形まで厳しくすると、PR の検査を経ないコミットで G-4 の要否が消えて緩む)。末尾の段落の外の `Spec:` 行は数えず、持つコミットの件数を出す(表示だけ。欠落に数えない)
   const specOf = new Map();
   const specOutside = [];
-  for (const rec of git(['log', '--format=%x01%H%x00%B', ...logRange]).split('\x01').filter(Boolean)) {
+  // 本文の全体を読む。既定の maxBuffer(1 MiB)を超える履歴(最初の集約で全履歴を読むとき)で、読み出しの失敗が空の出力(= 仕様 0 件)に見えないよう、
+  // 上限を広げ、失敗は null で受けて確かめられない側へ入れる(止める側。黙らない)。AGGREGATE_BODY_MAXBUFFER は試験用
+  const bodyLog = git(['log', '--format=%x01%H%x00%B', ...logRange], { maxBuffer: Number(process.env.AGGREGATE_BODY_MAXBUFFER) || 64 * 1024 * 1024, strict: true });
+  const specBodyUnread = bodyLog === null;
+  for (const rec of (bodyLog ?? '').split('\x01').filter(Boolean)) {
     const i = rec.indexOf('\x00');
     const hash = rec.slice(0, i).trim();
     const body = rec.slice(i + 1);
     const inLast = specLinesOf(body);
     specOf.set(hash, { specs: [...new Set(inLast.flatMap((l) => l.match(/F-\d+/g) ?? []))] });
-    const all = body.split('\n').filter((l) => l.trim().startsWith('Spec:'));
+    const all = body.split('\n').filter((l) => l.trim().startsWith('Spec:') && /F-\d+/.test(l));
     if (all.length > inLast.length) specOutside.push(hash);
   }
   const trailerOf = new Map(
@@ -5865,7 +5870,7 @@ if (isMain) {
       label: '全ゲートの通過記録',
       machine: 'partial',
       result:
-        `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件${specOutside.length ? `(本文の末尾の段落の外に \`Spec:\` 行を持つコミット ${specOutside.length} 件は数えていない。表示だけで、欠落に数えない)` : ''}。` +
+        `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件${specBodyUnread ? '(コミットの本文を読めず、トレーラ Spec を数えていない。0 件ではない)' : ''}${specOutside.length ? `(本文の末尾の段落の外に \`Spec:\` 行を持つコミット ${specOutside.length} 件は数えていない。表示だけで、欠落に数えない)` : ''}。` +
         `判断記録の再検査(範囲で変わった判断記録。G-3 で判定した版との比較): 一致 ${decisionRecheckInfo.match} / 不一致 ${decisionRecheckInfo.mismatch} / 未確認 ${decisionRecheckInfo.unconfirmed}(文字列の一致までで、意味の変更かは確かめない。実証なし)。` +
         `確定した版の再確認(範囲で変わった機能仕様): 一致 ${specRecheckInfo.match} / 不一致 ${specRecheckInfo.mismatch} / 未確認 ${specRecheckInfo.unconfirmed}(未確認は欠落に数えない。出荷判定者が判定記録の版と突合する)。` +
         `当該${period ? '期間' : '出荷の範囲'}の判定記録の件数: ${gatesInRange.map((g) => `${g.label} ${g.records}`).join(' / ') || 'なし'}`,
@@ -5928,6 +5933,7 @@ if (isMain) {
   // 記録は範囲の終点のコミットの記録と構成で読む(autonomy.mjs と同じ。終点が無ければ作業ツリー)
   const recordDepartures = [];
   const recordUnverifiable = [];
+  if (specBodyUnread) recordUnverifiable.push('コミットの本文を読めず、トレーラ Spec を数えていません(G-4 の判定記録の無い仕様を確かめられません)');
   const recordAt = (file) => {
     if (claimEndRev) return gitText(['show', `${claimEndRev}:${file}`]) || null;
     return exists(file) ? fs.readFileSync(path.join(ROOT, file), 'utf8') : null;

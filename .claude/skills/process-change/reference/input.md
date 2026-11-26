@@ -42,7 +42,7 @@ node -e "const c=require('./process.config.json');console.log(JSON.stringify({an
 | `invalidatedChecks` | 無効になった確認と、やり直しの要否(`reference/direction.md`) |
 | `recheckDue` | 失効した適合性確認・例外の、再確認の期日 |
 | `d0Version` | D-0 の新しい版。省略すると末尾の数字を1つ進める(`1.2` → `1.3`)。人が先に frontmatter の版を上げていれば、その版を使う。**版を下げる指定は拒否**。版を上げるとき、frontmatter の `approver` と `approved_at` は、この変化点の決定者と日付から書かれる |
-| `outage` / `settings` / `noticeFor` / `event` | 種別 `outage` / `settings` / `notice` でだけ使う。`settings` の `observationWindow`(観測の窓の月数。下限 2。値を変えるときは向きを問わず `decidedBy` と `reason` を要し、長くするのは緩める向き)と `reworkBaseline`(手戻り率の基準値 `{ percent, method }`。percent は百分率の 0〜100 で外すときは null、method は値を置く記録で必須の決め方で `pre-measurement`(実測前の組織の値)か `measured`(実測から)。既定値なし。値または決め方を変えるときは向きを問わず `decidedBy` と `reason` を要し、上げる・外すのは緩める向き)は `kinds/settings.md` |
+| `outage` / `settings` / `noticeFor` / `event` | 種別 `outage` / `settings` / `notice` でだけ使う。`settings` の `observationWindow`(観測の窓の月数。下限 2。値を変えるときは向きを問わず `decidedBy` と `reason` を要し、長くするのは緩める向き)と `reworkBaseline`(手戻り率の基準値 `{ percent, method }`。percent は百分率の 0〜100 で外すときは null、method は値を置く記録で必須の決め方で `pre-measurement`(実測前の組織の値)か `measured`(実測から)。既定値なし。値または決め方を変えるときは向きを問わず `decidedBy` と `reason` を要し、上げる・新しく置くのは緩める向き、下げる・外すのは強める向き)は `kinds/settings.md` |
 
 ## 席の欄の値
 

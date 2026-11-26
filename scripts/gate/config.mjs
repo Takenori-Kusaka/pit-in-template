@@ -1869,7 +1869,7 @@ export function normalizeRestriction(config, change) {
   const nm = (x) => (x ? (resolveSigner(config, x)?.name ?? String(x).trim()) : null);
   return change.event === 'restriction-release'
     ? { id: r.id, basis: String(r.basis).trim(), recordedBy: nm(r.recordedBy) }
-    : { id: r.id, person: nm(r.person), paths: r.paths.map((p) => String(p).trim()), basis: String(r.basis).trim(), recordedBy: nm(r.recordedBy) };
+    : { id: r.id, cause: r.cause, ...(r.person != null ? { person: nm(r.person) } : {}), paths: r.paths.map((p) => String(p).trim()), basis: String(r.basis).trim(), recordedBy: nm(r.recordedBy) };
 }
 
 /**
