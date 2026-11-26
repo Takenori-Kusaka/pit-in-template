@@ -58,8 +58,11 @@ permissions:
   # gate-g5 のワークフローの実行の起動の事象を読む(写しの欄 checks.gate_g5.runs。読み取りだけ。IMPL-0987)
   actions: read
 
+# 並行のグループは PR ごと。PR を区別しない1つのグループでは、GitHub が「実行中1つ・待ち1つ」だけを持ち、新しい待ちが来ると古い待ちを取り消す。
+# 連続のマージ(13 秒間隔)で、取り消された PR の写しが置かれなかった(2026-11-26 の試行 D-2)。PR ごとに分けると取り消されない。
+# 同じ記録用ブランチへ並行して書くため、競合した push は先端を取り込んでやり直し、尽きたら実行を失敗にする(黙って成功にしない)
 concurrency:
-  group: record-copy
+  group: record-copy-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -199,6 +202,21 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # 競合した push(別の PR の写しが先に records の先端を進めた)は、先端を取り込んでやり直す。写しは PR ごとの新しいファイルで
+          # 追記だけのため、やり直しで衝突しない。尽きたら実行を失敗にする(成功と見えて写しが無い状態を作らない。#361 D-2)
+          push_records() {
+            local n=0
+            until git push origin "$RECORDS_BRANCH"; do
+              n=$((n + 1))
+              if [ "$n" -ge 5 ]; then
+                echo "::error::records ブランチへの push が $n 回続けて失敗しました。PR #$PR の写しは置けていません。実行を再実行してください"
+                return 1
+              fi
+              sleep $((n * 2))
+              git fetch origin "$RECORDS_BRANCH"
+              git rebase "origin/$RECORDS_BRANCH"
+            done
+          }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # 記録用ブランチが無ければ、履歴を持たない(orphan)ブランチとして初期化する
@@ -229,7 +247,7 @@ jobs:
             cp /tmp/record-copy/pr.json "$conflict"
             git add "$conflict"
             git commit -m "records: PR #$PR の写しの取り出しの衝突を記録する(既にある写しと比べる欄が食い違う)"
-            git push origin "$RECORDS_BRANCH"
+            push_records
             echo "::error::$dest は既にあり、今取り出した写しと比べる欄が食い違います。既にある写しは書き換えず、取り出した写しを $conflict に記録しました。出荷の集約はこの PR の写しを欠落に数えます"
             exit 1
           fi
@@ -237,7 +255,7 @@ jobs:
           cp /tmp/record-copy/pr.json "$dest"
           git add "$dest"
           git commit -m "records: PR #$PR の承認レビューの写しを置く"
-          git push origin "$RECORDS_BRANCH"
+          push_records
 
       # 署名を必須にする構成。GitHub が署名する createCommitOnBranch で 1 ファイルを追記する。
       # ブランチが無いときは、初期化の push(署名なし)が required_signatures で止まるため、理由を出して失敗する
@@ -283,11 +301,22 @@ jobs:
             dest="records/conflicts/pr-$PR-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}.json"
             headline="records: PR #$PR の写しの取り出しの衝突を記録する(既にある写しと比べる欄が食い違う)"
           fi
-          jq -n --arg repo "$REPO" --arg branch "$RECORDS_BRANCH" --arg head "$head" --arg path "$dest" \
-            --arg contents "$(base64 -w0 /tmp/record-copy/pr.json)" --arg headline "$headline" \
-            '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}",
-              variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:$branch},message:{headline:$headline},expectedHeadOid:$head,fileChanges:{additions:[{path:$path,contents:$contents}]}}}}' > /tmp/record-copy/body.json
-          oid=$(gh api graphql --input /tmp/record-copy/body.json --jq '.data.createCommitOnBranch.commit.oid')
+          # 別の PR の写しが先に先端を進めると expectedHeadOid が古くなり失敗する。先端を読み直してやり直し、尽きたら実行を失敗にする(#361 D-2)
+          n=0
+          while :; do
+            jq -n --arg repo "$REPO" --arg branch "$RECORDS_BRANCH" --arg head "$head" --arg path "$dest" \
+              --arg contents "$(base64 -w0 /tmp/record-copy/pr.json)" --arg headline "$headline" \
+              '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}",
+                variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:$branch},message:{headline:$headline},expectedHeadOid:$head,fileChanges:{additions:[{path:$path,contents:$contents}]}}}}' > /tmp/record-copy/body.json
+            if oid=$(gh api graphql --input /tmp/record-copy/body.json --jq '.data.createCommitOnBranch.commit.oid'); then break; fi
+            n=$((n + 1))
+            if [ "$n" -ge 5 ]; then
+              echo "::error::createCommitOnBranch が $n 回続けて失敗しました。PR #$PR の写しは置けていません。実行を再実行してください"
+              exit 1
+            fi
+            sleep $((n * 2))
+            head=$(gh api "repos/$REPO/git/ref/heads/$RECORDS_BRANCH" --jq '.object.sha')
+          done
           echo "::notice::署名つきのコミット $oid で $dest を置きました(createCommitOnBranch)"
           if [ "${conflict:-0}" = "1" ]; then
             echo "::error::records/reviews/pr-$PR.json は既にあり、今取り出した写しと比べる欄が食い違います。既にある写しは書き換えず、取り出した写しを $dest に記録しました。出荷の集約はこの PR の写しを欠落に数えます"

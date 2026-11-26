@@ -88,6 +88,14 @@ check('record-copy.yml: pull_request_target の closed で、既定ブランチ�
   check('record-copy.yml の変異(pull_request の closed で動く)を検出する', m1 !== rc && recordCopyWorkflowProblems(m1).some((x) => /pull_request_target で起動しない|契機 pull_request/.test(x)));
   const m2 = rc.replace('ref: ${{ github.event.repository.default_branch }}', 'ref: ${{ github.event.pull_request.head.sha }}');
   check('record-copy.yml の変異(PR の先頭を checkout する)を検出する', m2 !== rc && recordCopyWorkflowProblems(m2).length > 0);
+  // #361 D-2(違反と適合の対。連続のマージの取りこぼし)。静的な検査であり、やり直しの挙動は確かめない(実機の再現は未確認)
+  const m3 = rc.replace(/group: record-copy-\$\{\{ github\.event\.pull_request\.number \}\}/, 'group: record-copy');
+  check('record-copy.yml の変異(並行のグループが PR ごとでない)を検出する', m3 !== rc && recordCopyWorkflowProblems(m3).some((x) => /PR ごとでない/.test(x)));
+  const m4 = rc.replace(/^(\s+)push_records\n/m, '$1git push origin "$RECORDS_BRANCH"\n');
+  check('record-copy.yml の変異(やり直しを経ない git push)を検出する', m4 !== rc && recordCopyWorkflowProblems(m4).some((x) => /やり直しを経ない/.test(x)));
+  const m5 = rc.replace(/return 1\n/, 'return 0\n');
+  check('record-copy.yml の変異(やり直しが尽きても失敗にしない)を検出する', m5 !== rc && recordCopyWorkflowProblems(m5).some((x) => /尽きたとき/.test(x)));
+  check('record-copy.yml: 適合の定義は、グループが PR 番号を含み、やり直しが尽きたら失敗にする', recordCopyWorkflowProblems(rc).length === 0 && /group: record-copy-\$\{\{ github\.event\.pull_request\.number \}\}/.test(rc));
   check('record-copy.yml: 誤ったコメント(pull_request の closed はマージ後の基底ブランチの定義を読む)が残っていない', !/pull_request の closed は、マージ後の基底ブランチの定義を読む/.test(rc));
 }
 

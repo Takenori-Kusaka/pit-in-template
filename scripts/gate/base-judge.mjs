@@ -416,5 +416,11 @@ export function recordCopyWorkflowProblems(text) {
   for (const l of body.split('\n')) if (/^\s*ref:/.test(l) && /head|refs\/pull|merge_commit_sha/.test(l)) p.push(`ref に PR の先頭・マージのコミットを指定している(${l.trim()})`);
   if (!/if:\s*github\.event\.pull_request\.merged == true/.test(body)) p.push('マージした PR に限っていない');
   if (/uses:\s*\.\//.test(body)) p.push('手元の action(uses: ./)を使う');
+  // 連続のマージで写しを取りこぼさない(#361 D-2)。構文の存在だけを見る。やり直しが機能するかは、この検査では確かめない
+  const grp = /concurrency:\s*\n\s+group:\s*(.+)/.exec(body);
+  if (!grp || !/github\.event\.pull_request\.number/.test(grp[1])) p.push('並行のグループが PR ごとでない(連続のマージで古い待ちが取り消され、写しが置かれない)');
+  if (!/push_records\(\)\s*\{[\s\S]*?return 1[\s\S]*?git fetch origin[\s\S]*?git rebase/.test(body)) p.push('git push の競合のやり直しが無い、または尽きたときに失敗にしない');
+  if (/^\s*git push origin "\$RECORDS_BRANCH"\s*$/m.test(body.replace(/push_records\(\)\s*\{[\s\S]*?\n\s{10}\}\n/, ''))) p.push('やり直しを経ない git push が残っている(records への書き込みは push_records を使う)');
+  if (!/while :; do[\s\S]*?createCommitOnBranch[\s\S]*?expectedHeadOid[\s\S]*?git\/ref\/heads[\s\S]*?done/.test(body) || !/createCommitOnBranch が[\s\S]*?exit 1/.test(body)) p.push('createCommitOnBranch の先端の古さのやり直しが無い、または尽きたときに失敗にしない');
   return p;
 }
