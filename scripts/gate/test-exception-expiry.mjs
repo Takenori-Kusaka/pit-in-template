@@ -459,6 +459,13 @@ if (process.platform === 'win32') {
   check('集約 IMPL-0931:ng 対象の PR に宣言行のレビューが無い行は、帰属を確かめられない欠落になる', hasGap(u3, 'G-5 PR-321', /帰属を確かめられない/), exGaps(u3));
   const u4 = breach('G-5 PR-399', { pr: 331, inRange: false });
   check('集約 IMPL-0931:ng 対象の PR の写しが範囲に無い行は、帰属を確かめられない欠落になり、理由に写しが無いことを出す', hasGap(u4, 'G-5 PR-399', /写しが出荷の範囲に無い/), exGaps(u4));
+  // 裁定 5: 閾値割れの行は帰属を (A) に限る。承認した者(乙)は行を入れた PR の承認者で (B) では裏づく(対照: 印の無い行は (B) で数えられる)
+  const u6 = breach('G-5 PR-351', { pr: 351, declare: false, approver: '名簿 乙' });
+  check('集約 IMPL-0931:ng 写しが範囲にあり (A) を満たさない閾値割れの行は、(B) で裏づく承認者でも欠落になる', hasGap(u6, 'G-5 PR-351', /帰属を確かめられない.*閾値割れの行は/) && !shows(u6.ev, `${u6.id}(G-5 PR-351)`), exGaps(u6));
+  const u7 = breach('G-5 PR-361', { pr: 361 });
+  check('集約 IMPL-0931:ok 写しが範囲にあり (A) を満たす閾値割れの行は成立する', u7.ev !== null && exGaps(u7) === '[]' && shows(u7.ev, `${u7.id}(G-5 PR-361)`), u7.out.slice(-600) + exGaps(u7));
+  const u8 = breach('G-5 PR-399', { pr: 371, inRange: false, approver: '名簿 乙' });
+  check('集約 IMPL-0931:ng 写しが範囲に無い閾値割れの行は、(B) で裏づく承認者でも欠落になる', hasGap(u8, 'G-5 PR-399', /写しが出荷の範囲に無い/) && !shows(u8.ev, `${u8.id}(G-5 PR-399)`), exGaps(u8));
   const u5 = breach('G-5 P-001', { pr: 341, approver: '名簿 乙' });
   check('集約 IMPL-0996:ng 印があっても G-5 P-001 の行は欠落のまま', hasGap(u5, 'G-5 P-001', /gate-g5/) && !shows(u5.ev, `${u5.id}(G-5 P-001)`), exGaps(u5));
   w.done();

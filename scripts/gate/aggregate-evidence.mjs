@@ -2697,7 +2697,7 @@ if (isMain) {
   const noteShared = (file, judge, b) => {
     if (b?.sharedAccount && !materialShared.some((x) => x.file === file)) materialShared.push({ file, judge, selfAttested: Boolean(b.selfAttested), note: b.note ?? null });
   };
-  function ledgerRowUnbacked(r, signer, { material = null, instructorIds = [] } = {}) {
+  function ledgerRowUnbacked(r, signer, { material = null, instructorIds = [], aOnly = false } = {}) {
     if (material) {
       // PR の作成者は数値の識別子つきで渡す(ログイン名だけの比較で、改名した作成者を除外し損ねない。#430 突合 L-1)
       const a = exceptionReviewBacking(config, r, signer, { reviews: material.reviews, author: material.author ? { login: material.author, id: material.authorId ?? null } : null, head: material.head, instructorIds });
@@ -2706,6 +2706,8 @@ if (isMain) {
         if (a.selfAttested && !materialSelfAttested.some((x) => x.file === `${debtFile} ${r.id}`)) materialSelfAttested.push({ file: `${debtFile} ${r.id}`, judge: signer?.name ?? r.approver, how: 'self-attested', note: a.note, pr: null, sharedAccount: true });
         return null;
       }
+      // 閾値割れの行(ADR-0243 決定5)は帰属を (A) に限る。(A) を満たさなければ (B) へ落とさず欠落にする
+      if (aOnly) return `帰属を確かめられない(閾値割れの行は、対象の PR の上で承認した者本人の宣言行「例外承認: ${r.id}」のレビューだけで数える。作成者・承認者(B)では数えない): ${a.why ?? '(A) を満たさない'}`;
     }
     const sha = lastCommitOfRow(gitText, 'HEAD', debtFile, r.id);
     const b = introducedBacking(config, signer, sha ? materialHosting.prOfCommit(sha) : null, { what: '台帳の行' });
@@ -2978,7 +2980,7 @@ if (isMain) {
     if (!filled(r.due) || !dueDayOf(r.due)) why.push(`期限(返却の目安)が未記入、または日付として解釈できない(${r.due || '未記入'})`);
     if (!why.length) {
       // 段 mutation が閾値割れを受ける行(G-5 PR-<番号> で印あり。ADR-0243)は、段と同じ関数の読み(mutationBreachPrOf・mutationBreachMarkOf)で
-      // 見分け、対象の PR の写しの上のレビュー・作成者・マージ時の先頭で (A) を数える。PR が範囲に無い・写しが無いときは、いまの (B) だけで読む
+      // 見分け、対象の PR の写しの上のレビュー・作成者・マージ時の先頭で (A) を数える。(A) を満たさない・写しが無いときは (B) へ落とさず欠落にする
       let material = null;
       let instructorIds = [];
       const breachPr = mutationBreachMarkOf(r.content) ? mutationBreachPrOf(t) : null;
@@ -2989,8 +2991,12 @@ if (isMain) {
         if (bp.g6.independent.unresolvedInstructors?.length) why.push(`作成を指示した者を名簿と対応づけられない(${bp.g6.independent.unresolvedInstructors.join(' / ')})`);
       }
       if (!why.length) {
-        const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver), { material, instructorIds });
-        if (u) why.push(breachPr !== null && !bp ? `${u}(対象の PR(PR-${breachPr})の写しが出荷の範囲に無い)` : u);
+        // 閾値割れの行は (A) だけ。写しが無ければ (B) へ落とさず欠落にする(止める側。束 B33 裁定 5)
+        if (breachPr !== null && !material) why.push(`帰属を確かめられない: 閾値割れの行は対象の PR(PR-${breachPr})の写しの上の (A) だけで数えるが、写しが出荷の範囲に無い`);
+        else {
+          const u = ledgerRowUnbacked(r, resolveSigner(config, r.approver), { material, instructorIds, aOnly: breachPr !== null });
+          if (u) why.push(u);
+        }
       }
     }
     const label = `${r.id}(${t.gate} ${t.subject})`;
