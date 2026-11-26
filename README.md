@@ -603,6 +603,7 @@ G-6 の判定基準5項目のうち、4項目は開発者(検証)として自分
 - 新しく生成する構成は、アダプタが行単位の被覆を持てば「変更で加えた・変えたコード」(`changed`)を書きます
 - 範囲を記録するには、`/process-change`(種別 `settings`)で `ci.coverageScope` を書きます。`changed` から `whole` へ移す変更(値の無い構成は `whole` として比べる)は緩める向きとして記名を要します
 - `changed` にする node の案件は、`package.json` の `coverage` の c8 に `--reporter=json` を足します(行単位の被覆 `coverage/coverage-final.json` を出すため)。無ければ G-5 の test ジョブが失敗します
+- **node のカバレッジの例**: 道具は問いません。istanbul 形式の `coverage/coverage-summary.json` と `coverage/coverage-final.json` を出せば、アダプタが読みます。c8 は `c8 --reporter=json-summary --reporter=json node --test` の形です。jest の例は `jest --coverage --coverageReporters=json-summary --coverageReporters=json` です(jest の例は、この手順で実行して確かめていません)。既にある `package.json` に `scripts.coverage` が無いと、初期化は何も変えず、「作るもの」に挙げます
 - 企画書(`docs/project-brief.md`)に「カバレッジの測る範囲(G-5 基準3)」の行を写し、構成と同じ範囲を書きます。G-1 を通過済みの企画書に行が無い場合は、G-1 の検査を遡って失敗させず、`/pit` と出荷の証跡の集約に記載の欠落として出します。G-1 を通過する前の企画書では必須です
 - 人の名簿の `nameConfirmed` は、本人以外が変化点に記名した記録がある場合に限り効きます。体制の内の人が1名の名簿では、本人の記名を受け付け、自己申告の氏名として保証の開示と `/pit` に出します。記録の無い確認(#296 より前に書いた確認を含む)は、2名以上の名簿では契約検査が落とします。1名の名簿では効かせたまま、未記録の確認として `/pit` と契約検査の注記に出します。いずれも `/process-change`(種別 `accountable`)で記名して記録します
 - 自己修正の記録は、タスクごとのファイル(`docs/self-heal/<機能>-<タスク>.tsv`)へ移りました。以前の `docs/self-heal-log.tsv` は残し、記録の置き場として扱い続けます
