@@ -4790,20 +4790,6 @@ export function scaffoldStack(stack, root = ROOT) {
       devDependencies: NODE_DEV_DEPS,
     };
     put('package.json', JSON.stringify(pkg, null, 2) + '\n');
-    // 既にある package.json は変更しない。coverage の script が無ければ、G-5 基準3 が未実施として失敗するため、作るものとして挙げる(#361 D-9)
-    if (out.kept.includes('package.json')) {
-      let existing = null;
-      try {
-        existing = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-      } catch {
-        existing = null;
-      }
-      if (!existing?.scripts?.coverage) {
-        out.todo.push(
-          'package.json の scripts.coverage: 既にある package.json は変更していない。coverage の script が無いと G-5 基準3 が未実施として失敗する。カバレッジの道具は問わない。istanbul 形式の coverage/coverage-summary.json と coverage/coverage-final.json を出すこと(README「node のカバレッジの例」に c8 と jest の例)'
-        );
-      }
-    }
     put('.secretlintrc.json', SECRETLINT_RC);
     put('tests/README.md', testsReadme('ファイル名は `*.test.js` / `*.test.mjs`。`node --test` で実行します', '`src/` の下'));
     if (!fs.existsSync(path.join(root, 'package-lock.json'))) {
@@ -4828,24 +4814,8 @@ export function scaffoldStack(stack, root = ROOT) {
         'tests/: 受入基準ごとのテスト。pytest は、テストが0件だと終了コード 5 で失敗する(初回の G-5 を通すには、最初のテストが要る)'
       );
     } else {
-      // 既にある go.mod は「作るもの」に挙げない。go 行とアダプタの runtimeVersion の食い違いは告げる(#361 D-7)
-      const goMod = path.join(root, 'go.mod');
-      if (!fs.existsSync(goMod)) {
-        out.todo.push('go.mod: `go mod init <モジュール名>` で作る');
-      } else {
-        const declared = /^go\s+(\d+\.\d+)/m.exec(fs.readFileSync(goMod, 'utf8'))?.[1] ?? null;
-        let adapterVersion = null;
-        try {
-          adapterVersion = JSON.parse(fs.readFileSync(path.join(root, 'adapters', 'go.json'), 'utf8')).runtimeVersion ?? null;
-        } catch {
-          adapterVersion = null;
-        }
-        if (declared && adapterVersion && declared !== String(adapterVersion).split('.').slice(0, 2).join('.')) {
-          out.next.push(
-            `go.mod の go 行(${declared})と adapters/go.json の runtimeVersion(${adapterVersion})が違う。CI の setup-go は runtimeVersion で入る。どちらかを合わせる(合わせる版は採用者が決める)`
-          );
-        }
-      }
+      // 既にある go.mod は「作るもの」に挙げない(存在の検査だけ。版の比較は足さない。process-compass #361 D-7・R-6)
+      if (!fs.existsSync(path.join(root, 'go.mod'))) out.todo.push('go.mod: `go mod init <モジュール名>` で作る');
       out.todo.push(
         'govulncheck・go-licenses: CI の実行環境へ入れる手順(アダプタの audit・licenses のコマンドが使う)。置き場は .github/actions/setup-stack/action.yml(setup-go の後ろに run の手順を足す)。例: `go install golang.org/x/vuln/cmd/govulncheck@<固定する版>` と `go install github.com/google/go-licenses@<固定する版>`(版の固定と更新は採用者が決める。入れないと audit・licenses が exit 127 で落ちる)',
         'カバレッジ: go test -coverprofile=coverage.out の記録から全体と変更の範囲を測る。coverage.out が出ない構成は基準3 の未実施として G-5 が失敗する。変更の範囲を測るには CI に go が要る(process-compass ADR-0124)'

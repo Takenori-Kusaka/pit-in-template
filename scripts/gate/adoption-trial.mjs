@@ -1382,10 +1382,10 @@ function recordsFindings({ repo, branch, latestPr }) {
  * http は gh の出力の「(HTTP NNN)」から読む(404 の意味は API ごとに違うため、呼ぶ側で解く)
  */
 /**
- * プランの制約による 403 の応答の文(Free の private で、ルールセット・旧来の保護の API に GitHub が返す。2026-11-26 に実機で観測)。
+ * プランの制約による 403 の応答の文(Free の private で、ルールセット・旧来の保護の API に GitHub が返す。2026-11-26 に実機で観測した文は Pro だけ。Team の文言は観測していない)。
  * 文言は GitHub が変えうるため、HTTP 403 と組で判定し、この1か所の定数に置く。一致しなければ権限不足(permission)のまま
  */
-export const PLAN_LIMIT_MESSAGE = /Upgrade to GitHub (?:Pro|Team)[^.]*or make this repository public/i;
+export const PLAN_LIMIT_MESSAGE = /Upgrade to GitHub Pro[^.]*or make this repository public/i;
 
 function ghJson(args) {
   let raw;

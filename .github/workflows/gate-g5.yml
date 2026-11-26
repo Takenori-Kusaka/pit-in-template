@@ -173,7 +173,7 @@ jobs:
       - run: node scripts/gate/test-edition-end.mjs
       # 自己試験の複製の補助(採用者の製品のコードと構成を複製へ持ち込まない。process-compass #361 D-1)
       - run: node scripts/gate/test-template-copy.mjs
-      # 初期化の開発の基盤の「作るもの」の出し方(go.mod の有無・go の版の食い違い・既存の package.json の coverage。process-compass #361 D-7・D-9)
+      # 初期化の開発の基盤の「作るもの」の出し方(go.mod の有無と検査の道具の置き場。process-compass #361 D-7)
       - run: node scripts/gate/test-scaffold-todo.mjs
       # 判断記録の状態と置き換えの両側の参照、状態に応じた置き場(標準 第6章 テンプレ2「置き換えと廃止」、第4章 G-3「記載の検査」。process-compass #289)
       - run: node scripts/gate/check-decisions.mjs

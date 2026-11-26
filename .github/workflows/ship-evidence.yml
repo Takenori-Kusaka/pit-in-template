@@ -377,7 +377,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f .github/gate-node-version ]; then
-            echo "::error::基底ブランチに準拠テンプレートの道具(.github/gate-node-version)がありません。持ち込みの最初の PR(テンプレートの道具を基底に持たない PR)は、基底の道具で検査するこの検査の対象にできないため、検査できません。採用者の既存の保護の必須チェックに従って取り込みます。取り込みの後の PR からは検査できます"
+            echo "::error::基底ブランチに準拠テンプレートの道具(.github/gate-node-version)がありません。持ち込みの最初の PR(テンプレートの道具を基底に持たない PR)は、基底の道具で検査するこの検査の対象にできないため、検査できません。基底に道具がある PR では、この理由は出ません"
             exit 1
           fi
       # 検査の道具(scripts/gate/)を動かす Node の版を固定する(.github/gate-node-version。process-compass #377)。
