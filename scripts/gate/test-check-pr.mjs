@@ -13,6 +13,7 @@ import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { specSections, changedSpecSections } from './spec-sections.mjs';
 import { isProseDocument } from './check-pr.mjs';
+import { weakeningFindings } from './check-pr.mjs';
 import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf, changeListBetween } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
@@ -434,6 +435,74 @@ const rW0 = scenario('弱める変更の無い PR でも、検出の限界の定
   const ok = mdW.startsWith('<!-- pit-in:g6-test-changes -->') && /列挙した語.*以外の弱め方は拾わない/.test(mdW) && /追加行の skip・only・todo: 0 件/.test(mdW);
   if (!ok) failures++;
   console.log(`${ok ? 'ok  ' : 'NG  '} 機械の検出の一覧の Markdown は、0 件でも検出の限界を出す(印は既存のコメントと同じ)`);
+}
+
+// #454: 検証の語を1つも持たない追加のテストのファイルと、製品のコードの追加行の未完了の語(G-6 の材料。合否に使わない)
+// 題の文字列・宣言の名前を検証の語に数えない(R-2)。既存の IMPL-0204(削除行のアサーション)の場面を壊さないことは、上の場面が確かめる
+const NOASSERT = (r) => W(r).noAssertionTests ?? [];
+const INCOMPLETE = (r) => W(r).incompleteMarks ?? [];
+// IMPL-1043:ng(違反と適合の対。標準の実装マーク。process-compass #454。仮番号)
+scenario('検証の語の無い追加のテスト: 題の文字列の should だけのファイルを出す', {}, () => {
+  write('test/e.test.js', "it('should do x', () => {});\n");
+  write('src/c.js', lines(5, 'c'));
+}, passes(expect_((r) => NOASSERT(r).length === 1 && NOASSERT(r)[0].file === 'test/e.test.js', (r) => JSON.stringify(NOASSERT(r)))));
+// IMPL-1043:ok(違反と適合の対)
+scenario('検証の語の無い追加のテスト: 検証の語があるファイルは出さない(ファイル単位の近似)', {}, () => {
+  write('test/e.test.js', "it('x', () => {});\nit('y', () => {\n  expect(1).toBe(1);\n});\n");
+  write('src/c.js', lines(5, 'c'));
+}, passes(expect_((r) => NOASSERT(r).length === 0, (r) => JSON.stringify(NOASSERT(r)))));
+scenario('検証の語の無い追加のテスト: 宣言の名前の assert は検証に数えない', {}, () => {
+  write('test/e.test.js', "function assertOk() {}\nit('x', () => {});\n");
+  write('src/c.js', lines(5, 'c'));
+}, passes(expect_((r) => NOASSERT(r).length === 1, (r) => JSON.stringify(NOASSERT(r)))));
+scenario('題の文字列の should は、削除したアサーションの対に数えない(IMPL-0204 の直し)', {}, () => {
+  write('test/a.test.js', read('test/a.test.js').replace('  expect(2).toBe(2);\n', "  it('should x', () => {});\n"));
+  write('src/a.js', lines(21));
+}, passes(expect_((r) => W(r).removedAssertions.length === 1 && W(r).pairs.length === 0, (r) => `${JSON.stringify(W(r).removedAssertions)} / ${JSON.stringify(W(r).pairs)}`)));
+// IMPL-1042:ng(違反と適合の対。標準の実装マーク。process-compass #454。仮番号)
+scenario('未完了の語: 製品のコードの行注釈の TODO と未実装の例外を出す。文字列の中の語・文書・テストは出さない', {}, () => {
+  write('src/c.js', "export const a = 1; // TODO: 後で\nexport function f() {\n  throw new Error('not implemented');\n}\nexport const s = 'TODO';\n");
+  write('docs/note.md', '// TODO: 文書\n');
+  write('test/e.test.js', "// TODO: テスト\nit('x', () => { expect(1).toBe(1); });\n");
+}, passes(expect_((r) => INCOMPLETE(r).length === 2 && INCOMPLETE(r).every((m) => m.file === 'src/c.js'), (r) => JSON.stringify(INCOMPLETE(r)))));
+// IMPL-1042:ok(違反と適合の対)
+scenario('未完了の語: 同じ PR で削除した行と同じ本文の追加行(移動)は出さない', {}, () => {
+  write('src/old.js', '// TODO: 移す\nexport const o = 1;\n');
+  advanceBase('incomplete-move');
+  write('src/old.js', 'export const o = 1;\n');
+  write('src/moved.js', '// TODO: 移す\nexport const m = 1;\n');
+}, passes(expect_((r) => INCOMPLETE(r).length === 0, (r) => JSON.stringify(INCOMPLETE(r)))));
+rewindBase();
+{
+  const r0 = scenario('未完了の語・検証の語の無いテスト: 0 件でも限界の定型の文を節ごとに出す', {}, () => {
+    write('src/c.js', lines(5, 'c'));
+  }, passes(expect_((r) => NOASSERT(r).length === 0 && INCOMPLETE(r).length === 0, '0 件でない')));
+  const md = renderG6Material(r0);
+  const ok = /### 検証を弱める変更の検出/.test(md) && /### 検証の語が1つも無い追加のテストのファイル/.test(md) && /### 製品のコードの追加行の未完了の語/.test(md) &&
+    /ファイル単位の近似である。同じファイルに1つでも検証の語があれば、他の空のテストは出ない。0件は中身があることを示さない/.test(md) && /0 件は未完了が無いことを示さない/.test(md) && !/未完了の印/.test(md);
+  if (!ok) failures++;
+  console.log(`${ok ? 'ok  ' : 'NG  '} 節を分け(検証を弱める変更・検証の語の無いテスト・未完了の語)、限界の文を節ごとに出す`);
+}
+// 言語ごとの検証の書式(R-6): 検証の語を持つ追加のテストは出ない。持たないものは出る
+{
+  const mk = (file, added) => weakeningFindings({ diffText: `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${added.length} @@\n${added.map((x) => `+${x}`).join('\n')}\n`, isTest: () => true, atHead: () => '', atBase: () => null });
+  const langs = [
+    ['jest', 'a.test.js', ["it('x', () => {", '  expect(f()).toBe(1);', '});'], ["it('x', () => {});"]],
+    ['pytest raises', 'test_a.py', ['def test_x():', '    with pytest.raises(ValueError):', '        f()'], ['def test_x():', '    f()']],
+    ['unittest assertRaises', 'test_a.py', ['def test_x(self):', '    self.assertRaises(ValueError, f)'], ['def test_x(self):', '    pass']],
+    ['Go t.Errorf', 'a_test.go', ['func TestX(t *testing.T) {', '  if f() != 1 { t.Errorf("bad") }', '}'], ['func TestX(t *testing.T) {', '}']],
+    ['Rust assert!', 'a_test.rs', ['#[test]', 'fn x() { assert!(f()); }'], ['#[test]', 'fn x() {}']],
+    ['Rust should_panic', 'a_test.rs', ['#[test]', '#[should_panic]', 'fn x() { f(); }'], ['#[test]', 'fn x() {}']],
+    ['JUnit assertEquals', 'ATest.java', ['@Test', 'void x() { assertEquals(1, f()); }'], ['@Test', 'void x() {}']],
+    ['Mockito verify', 'ATest.java', ['@Test', 'void x() { verify(m).call(); }'], ['@Test', 'void x() {}']],
+    ['shouldBe', 'a.test.kt', ["test('x') { f() shouldBe 1 }"], ["test('x') { f() }"]],
+  ];
+  for (const [name, file, withCheck, without] of langs) {
+    n++;
+    const ok = mk(file, withCheck).noAssertionTests.length === 0 && mk(file, without).noAssertionTests.length === 1;
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} 検証の書式: ${name}`);
+  }
 }
 
 // 期待値の改めの根拠(PR 本文の `## 期待値の改め`。合否に使わない)

@@ -300,7 +300,9 @@ const GENERATED_MARK = /@generated\b|Code generated .*DO NOT EDIT/;
 const SPEC_LINE = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/;
 const TRAILER_LINE = /^[A-Za-z][\w-]*:\s*\S/;
 const DEPENDENCY_BOTS = ['dependabot[bot]', 'renovate[bot]'];
-const ASSERTION = /\b(expect|assert\w*|should|toBe|toEqual|toMatch\w*|toStrictEqual|toHaveBeenCalled\w*|Equal|Equals|require\.\w+|t\.(Error|Fatal)\w*)\b/;
+// 検証の語。アダプタ7種の主な書式を含む(#454 R-6): verify(・raises・should_panic・shouldBe・Go の t.Error*/t.Fatal*・Rust の assert!・JUnit の assert*)。
+// 文字列の中身と宣言の名前は数えない(isAssertionLine が先に除く。#454 R-2)
+const ASSERTION = /\b(expect|assert\w*|should|should_panic|shouldBe\w*|toBe|toEqual|toMatch\w*|toStrictEqual|toThrow\w*|toHaveBeenCalled\w*|Equal|Equals|raises|verify|require\.\w+|t\.(Error|Fatal)\w*)\b/;
 
 function gitIn(root) {
   return (args) => {
@@ -2421,7 +2423,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     if (!e.removed) continue;
     const diff = git(['diff', '-U0', '-M', mergeBase, HEADREF, '--', from, e.path]) ?? '';
     const removedLines = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
-    const assertions = removedLines.filter((l) => ASSERTION.test(l)).map((l) => l.slice(1).trim().slice(0, 120));
+    const assertions = removedLines.filter((l) => isAssertionLine(l.slice(1))).map((l) => l.slice(1).trim().slice(0, 120));
     result.testChanges.push({ file: e.path, kind: e.from ? `名前の変更と行の削除(${from} →)` : '行の削除・書き換え', removed: e.removed, assertions });
   }
 
@@ -2460,6 +2462,9 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       specText: (feature) => atHead(`specs/${feature}/spec.md`),
     });
     w.today = checkDay;
+    // 製品のコードの追加行の未完了の語(#454。検証を弱める変更とは別の節。合否に使わない。リスク区分に依らず出す)
+    w.incompleteMarks = incompleteMarkFindings({ diffText: git(['-c', 'core.quotePath=false', 'diff', '-U0', '-M', mergeBase, HEADREF]) ?? '', isTest, atHead });
+    w.incompleteLimit = INCOMPLETE_LIMIT;
     result.weakening = w;
     // IMPL-0489: strict の無い pytest の xfail の付与は試験の失敗の扱い(本文「予期せず通った場合は試験の失敗」)の強制であり、検出の表示と分ける
     for (const e of w.strictErrors) {
@@ -2594,6 +2599,66 @@ export const WEAKENING_LIMIT =
   '早期の return、試験の注釈化、別名を経た xfail・skip の一部(同じファイルの import pytest as・from pytest import mark・行頭の xfail = pytest.mark.xfail の代入は読む。from pytest import xfail・関数の中の import・ファイルを越えた別名・skip の別名は読まない)、自前の検証・印、設定による除外(-k・--deselect・testPathIgnorePatterns など)、テストのパスの外のテスト、製品のコードの側で検証を無効にする変更は、一覧に出ない';
 /** 「製品のコードを変えずに既存のテストを変えた変更」の検出の限界の定型の文(IMPL-0486)。0 件でも出す */
 export const TEST_ONLY_LIMIT = '検出の限界: 同じ PR で製品とテストを変えた場合、ローカルで解消した失敗は拾わない(PR の全体の差分だけを見る静的な近似。失敗が解消したことは確かめない)';
+/**
+ * 製品のコードの追加行の未完了の語の検出の限界の定型の文(#454。0 件でも出す)。
+ * 「印」は skip・xfail の意味で使われているので、ここでは「未完了の語」と呼ぶ(R-5)
+ */
+export const INCOMPLETE_LIMIT =
+  '検出の限界: 列挙した語(行注釈の中の TODO・FIXME・XXX と、NotImplementedError・NotImplementedException・todo!・unimplemented!・panic("not implemented")・throw new Error("not implemented") 相当)だけを、' +
+  '製品のコードの拡張子の追加行から拾う。文書・生成物・vendor・ロックファイルは読まない。列挙の外の語、空の本体・pass だけの本体・固定値を返すだけの本体、既存の行にある語、' +
+  '同じ PR で削除した行と同じ本文の追加行(移動・整形)は出ない。抽象の基底の未実装の例外や、負債台帳に記録済みの語も出る(偽陽性)。0 件は未完了が無いことを示さない';
+/** 検証の語を1つも持たない追加のテストのファイルの検出の限界の定型の文(#454。0 件でも出す)。第1文は R-3 で定めた文 */
+export const NO_ASSERTION_LIMIT =
+  '検出の限界: ファイル単位の近似である。同じファイルに1つでも検証の語があれば、他の空のテストは出ない。0件は中身があることを示さない。' +
+  'テストのパス(.claude/guard.json の testPatterns)の外のファイルは対象外である。検証の語は列挙した語の照合で、題の文字列と宣言の名前は数えない。' +
+  '追加行だけを読むので、既存の部分にある検証や、検証を外へ委ねるヘルパの呼び出し・枠組み固有の検証は、一覧の判断を誤らせる(偽陽性・見逃し)。弱いアサーション・決め打ちは見ない';
+
+/** 製品のコードから外すパス(文書・生成物・vendor・ロックファイル) */
+const INCOMPLETE_EXCLUDE = /(?:^|\/)(?:node_modules|vendor|dist|build|generated|__generated__|third_party)\/|\.(?:lock|min\.js|map)$|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.(?:generated|pb)\.\w+$/i;
+const INCOMPLETE_WORD = /\b(?:TODO|FIXME|XXX)\b/;
+const INCOMPLETE_THROW = [
+  /\bNotImplemented(?:Error|Exception)\b/,
+  /\b(?:todo|unimplemented)!\s*\(/,
+  /\bpanic\(\s*["'`]not implemented/i,
+  /\bthrow\s+new\s+\w*Error\(\s*["'`]not implemented/i,
+  /\bUnsupportedOperationException\(\s*["'`][^"'`]*not (?:yet )?implemented/i,
+];
+const TEST_DEFINITION = [/\b(?:it|test)(?:\.\w+)*\s*\(/, /^\s*(?:async\s+)?def\s+test_\w*\s*\(/, /^\s*func\s+Test\w*\s*\(/, /@Test\b/, /#\[(?:\w+::)?test\b/];
+const normLine = (t) => String(t).replace(/\s+/g, ' ').trim();
+
+/** 行注釈の部分を返す(無ければ null)。文字列の中身は先に除く */
+function commentTail(text) {
+  const t = maskLiterals(text);
+  const m = /(?:\/\/|\/\*|#)(.*)$/.exec(t);
+  if (m) return m[1];
+  return /^\s*\*/.test(t) ? t : null;
+}
+
+/**
+ * 製品のコードの追加行の未完了の語(#454 R-1・R-4)。合否に使わない。
+ * diffText: `git diff -U0 -M` の全体。isTest: テストのパスの判定。atHead: 生成物の印を見るために本文を読む(任意)
+ * 返り値: [{ file, line, word, text }]
+ */
+export function incompleteMarkFindings({ diffText, isTest, atHead = () => null }) {
+  const files = parseUnifiedDiff(diffText).filter((d) => d.file && CODE_EXTENSIONS.test(d.file) && !INCOMPLETE_EXCLUDE.test(d.file) && !isTest(d.file) && !(d.from && isTest(d.from)));
+  const removed = new Set();
+  for (const d of files) for (const h of d.hunks) for (const l of h.lines) if (l.type === '-') removed.add(normLine(l.text));
+  const out = [];
+  for (const d of files) {
+    if (GENERATED_MARK.test(String(atHead(d.file) ?? '').slice(0, 2000))) continue;
+    for (const h of d.hunks) {
+      for (const l of h.lines) {
+        if (l.type !== '+' || removed.has(normLine(l.text))) continue;
+        const tail = commentTail(l.text);
+        let word = tail === null ? null : (INCOMPLETE_WORD.exec(tail)?.[0] ?? null);
+        if (word === null && !COMMENT_LINE.test(l.text)) word = INCOMPLETE_THROW.find((re) => re.test(l.text))?.exec(l.text)[0] ?? null;
+        if (word) out.push({ file: d.file, line: l.line, word: word.trim(), text: l.text.trim().slice(0, 160) });
+      }
+    }
+  }
+  return out;
+}
+
 /** 担保水準 L2 で規模の基準なし(null)が効いた PR に毎回出す定型の文(IMPL-0494) */
 export const ASSURANCE_CONTENT_UNCHECKED =
   '担保水準の根拠の中身は機械で確かめていない: 機械が確かめたのは L2 の宣言の根拠のパスの実在と見直し日だけである。根拠が L2 の条件(記録で示す)を満たすかは、' +
@@ -2604,7 +2669,14 @@ export const PLAN_TRACE_LIMIT = '計画は既定ブランチの先端から読�
 const COMMENT_LINE = /^\s*(?:\/\/|#|\/\*|\*|--|<!--)/;
 const ASSERTION_IN_COMMENT = /\b(expect|assert\w*|toBe|toEqual|toMatch\w*|toStrictEqual|toHaveBeenCalled\w*|Equals|require\.\w+|t\.(Error|Fatal)\w*)\b/;
 /** 行がアサーションか。注釈の行では誤検出の多い should・Equal を数えない */
-const isAssertionLine = (text) => (COMMENT_LINE.test(text) ? ASSERTION_IN_COMMENT.test(text) : ASSERTION.test(text));
+/** 文字列・テンプレートリテラルの中身を空にする(題の文字列 `it('should x')` の should を検証と数えないため。#454 R-2) */
+export const maskLiterals = (text) => String(text ?? '').replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, "''");
+/** 宣言の名前(function assertX・def assert_x・func x・fn x・void x)を除く。定義は検証の呼び出しではない(#454 R-2) */
+const stripDeclNames = (text) => text.replace(/\b(function|def|func|fn|void)\s+(?:\([^)]*\)\s*)?\w+/g, '$1 ');
+const isAssertionLine = (text) => {
+  const t = stripDeclNames(maskLiterals(text));
+  return COMMENT_LINE.test(text) && !/^\s*#\[/.test(text) ? ASSERTION_IN_COMMENT.test(t) : ASSERTION.test(t);
+};
 
 /**
  * `git diff -U0` の出力を、ファイルと塊(hunk)に分ける。
@@ -2830,7 +2902,7 @@ export function pytestAliasMark(text, alias) {
  * 返り値: { files, skips, xfails, removedAssertions, pairs, newTestFiles, strictErrors, expectation, limit }
  */
 export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '', today = null, pytestStrict = null, adrExists = () => false, specText = () => null }) {
-  const out = { newTestFiles: [], skips: [], xfails: [], removedAssertions: [], pairs: [], strictErrors: [], notes: [], expectation: null, limit: WEAKENING_LIMIT };
+  const out = { newTestFiles: [], noAssertionTests: [], noAssertionLimit: NO_ASSERTION_LIMIT, skips: [], xfails: [], removedAssertions: [], pairs: [], strictErrors: [], notes: [], expectation: null, limit: WEAKENING_LIMIT };
   const headCache = new Map();
   const headLinesOf = (f) => {
     if (!headCache.has(f)) headCache.set(f, String(atHead(f) ?? '').replace(/\r\n/g, '\n').split('\n'));
@@ -2846,6 +2918,13 @@ export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '',
     if (!d.file) continue; // 削除したテストのファイルは、既存のテストの変更の一覧(IMPL-0203)が出す
     if (!isTest(d.file) && !(d.from && isTest(d.from))) continue;
     if (!d.from || atBase(d.from) === null) out.newTestFiles.push(d.file);
+    // 追加のテストのファイル単位の近似(#454 R-3): 追加行にテストの定義の語があり、検証の語が1つも無いファイル
+    {
+      const added = d.hunks.flatMap((h) => h.lines.filter((l) => l.type === '+'));
+      const defs = added.filter((l) => (!COMMENT_LINE.test(l.text) || /^\s*#\[/.test(l.text)) && TEST_DEFINITION.some((re) => re.test(maskLiterals(l.text)))).length;
+      const checks = added.filter((l) => isAssertionLine(l.text)).length;
+      if (defs > 0 && checks === 0) out.noAssertionTests.push({ file: d.file, tests: defs, isNew: !d.from || atBase(d.from) === null });
+    }
     for (const h of d.hunks) {
       const removed = h.lines.filter((l) => l.type === '-' && isAssertionLine(l.text));
       const added = h.lines.filter((l) => l.type === '+' && isAssertionLine(l.text));
@@ -2968,6 +3047,16 @@ export function renderG6Material(r) {
     for (const row of e.rows) L.push(`- \`${esc(row.file)}\`: 根拠 ${row.ids.length ? row.ids.join(', ') : '—'}${row.problems.length ? ` — **${row.problems.join('、')}**` : ''}${row.clausesUnresolved ? '(条項の番号は書式だけを見て、実在は確かめない)' : ''}`);
     if (e.unlisted.length) L.push(`- 表に無い改め: ${e.unlisted.map((f) => `\`${esc(f)}\``).join(', ')}`);
     L.push('- 機械が確かめるのは識別子の実在までで、引いた決定がその挙動を定めているかは確かめない', '', `> ${w.limit}`, '');
+  }
+  if (w) {
+    L.push('### 検証の語が1つも無い追加のテストのファイル(G-6 の必須の確認事項。合否には使わない)', '');
+    L.push(`- 該当: ${w.noAssertionTests.length ? w.noAssertionTests.map((t) => `\`${esc(t.file)}\`(追加のテスト ${t.tests} 件)`).join(', ') : 'なし'}`);
+    L.push('', `> ${w.noAssertionLimit ?? NO_ASSERTION_LIMIT}`, '');
+    L.push('### 製品のコードの追加行の未完了の語(G-6 の必須の確認事項。合否には使わない。リスク区分に依らず出す)', '');
+    const im = w.incompleteMarks ?? [];
+    L.push(`- 追加行の未完了の語: ${im.length} 件`);
+    for (const m of im.slice(0, 20)) L.push(`  - \`${esc(m.file)}:${m.line}\` ${esc(m.word)}: \`${esc(m.text)}\``);
+    L.push('', `> ${w.incompleteLimit ?? INCOMPLETE_LIMIT}`, '');
   }
   if (r.testOnly) {
     L.push('### 製品のコードを変えずに既存のテストを変えた変更(合否には使わない)', '');
@@ -3104,6 +3193,9 @@ if (isMain) {
     if (r.testChanges.length) warn(`既存のテストの変更が ${r.testChanges.length} 件あります(G-6 の材料。合否には使わない)`);
     if (r.specChanges.length) warn(`基底にある機能仕様の受入基準・前提・スコープ外の変更が ${r.specChanges.length} 件あります(G-4 の材料。合否には使わない)`);
     const w = r.weakening;
+    if (w && (w.noAssertionTests.length || (w.incompleteMarks ?? []).length)) {
+      warn(`検証の語が1つも無い追加のテストのファイル ${w.noAssertionTests.length} 件 / 製品のコードの追加行の未完了の語 ${(w.incompleteMarks ?? []).length} 件(G-6 の必須の確認事項。合否には使わない)`);
+    }
     if (w && w.skips.length + w.xfails.length + w.removedAssertions.length + w.pairs.length) {
       warn(`検証を弱める変更の検出: skip ${w.skips.length} / 落ちることを期待する印 ${w.xfails.length} / 削除行のアサーション ${w.removedAssertions.length} / 期待値の改め ${w.pairs.length}(G-6 の必須の確認事項。合否には使わない)`);
     }
