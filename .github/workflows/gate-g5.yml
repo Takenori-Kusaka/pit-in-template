@@ -195,6 +195,10 @@ jobs:
       # 「対象なし」にしないこと、製品のコードの所在(projectDir)、python の依存の取得の入れ方(標準 第4章 G-5「検査対象が
       # 存在しない場合の扱い」。process-compass #363)
       - run: node scripts/gate/test-adapter.mjs
+      # 依存の一覧(基準8)の解析・照会・印・表示。ネットワークを使わない(照会は差し替えた応答。process-compass #455 / IMPL-1037)
+      - run: node scripts/gate/test-dependency-diff.mjs
+      # 未登録の名前が依存の取得で失敗し G-5 が落ちる結線(標準 ADR-0044 決定5 の前提。process-compass #455 / IMPL-1040)
+      - run: node scripts/gate/test-unregistered-name.mjs
       # ライセンス検査の実施記録と項目4 の表示: 空のコマンド・対象なしの通過を実施と記録・表示しない(標準 第4章 G-5。process-compass #330 T-8 / IMPL-0995)
       - run: node scripts/gate/test-license-scan.mjs
       # python の依存ライセンス検査: pip-licenses の自由文の名前(許可済みの MPL-2.0・PSF)を許可し、許可に無い式は違反にする(process-compass #361 N-5)
@@ -510,12 +514,21 @@ jobs:
         with:
           node-version-file: .github/gate-node-version
       - run: git fetch origin "${{ github.base_ref }}" --depth=50 || true
+      # 依存の来歴の照会と検証(一覧の欄の値。process-compass #455 / ADR-0261)。ネットワークを使うのはこの段だけ。
+      # 合否は判定しない: 依存の取得・照会・検証の失敗は、どれもこのジョブを落とさず、一覧の「未実施・照会せず(理由)」に出る。
+      # 依存の取得の失敗そのものは、基準1・2・5 のジョブ(setup-stack)が G-5 を落とす
+      - uses: ./.github/actions/setup-stack
+        continue-on-error: true
+      - run: node scripts/gate/dependency-provenance.mjs --base "origin/${{ github.base_ref }}" --verify
+        continue-on-error: true
       - run: node scripts/gate/dependency-diff.mjs --base "origin/${{ github.base_ref }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: dependency-diff
-          path: evidence/dependency-diff.json
+          path: |
+            evidence/dependency-diff.json
+            evidence/dependency-provenance.json
           if-no-files-found: ignore
 
   # PR 単位の検査(#286): トレーラ Spec、変更規模の上限、閾値・除外設定と製品のコードの同時変更(禁止事項6)。
