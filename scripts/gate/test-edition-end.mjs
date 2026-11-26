@@ -428,9 +428,9 @@ ${factsLineOf(c1.__full.report)}`);
       w.git('add', '-A');
       w.git('commit', '-q', '-m', m);
     });
-    w.node('scripts/gate/aggregate-evidence.mjs');
+    const run = w.node('scripts/gate/aggregate-evidence.mjs');
     const ev = w.readJson('evidence/evidence.json');
-    const out = { ev, gaps: ev.gaps, report: fs.readFileSync(path.join(w.dir, 'evidence/quality-report.md'), 'utf8'), get disclosure() { return this.report; }, external: fs.readFileSync(path.join(w.dir, 'evidence/assurance-disclosure.external.md'), 'utf8') };
+    const out = { run, ev, gaps: ev.gaps, report: fs.readFileSync(path.join(w.dir, 'evidence/quality-report.md'), 'utf8'), get disclosure() { return this.report; }, external: fs.readFileSync(path.join(w.dir, 'evidence/assurance-disclosure.external.md'), 'utf8') };
     w.done();
     return out;
   };
@@ -463,6 +463,9 @@ ${factsLineOf(c1.__full.report)}`);
   // Spec: setup のように F-NNN を含まない行は、末尾の段落の外にあっても「数えていない」の件数に入れない(次の一手と同じ述語)
   const midSetup = aggWith({}, ['chore: d\n\nSpec: setup\n\nCo-Authored-By: Claude <c@example.com>']);
   check('集約(Spec): F-NNN を含まない Spec 行(Spec: setup)は、段落の外の件数に入れない', !/段落の外/.test(g4Line(midSetup)), g4Line(midSetup));
+  // 中の段落に F-001、末尾の段落に Spec: setup: 末尾の段落の側にも同じ述語(F-NNN を含む行)を掛けるので、段落の外の行を持つコミットに数える
+  const midAndSetup = aggWith({}, ['feat: f\n\nSpec: F-001 / Task-1\n\nSpec: setup']);
+  check('集約(Spec): 中の段落の F-001 と末尾の段落の Spec: setup は、段落の外の件数に数える(両側に同じ述語)', /末尾の段落の外に .Spec:. 行を持つコミット 1 件/.test(g4Line(midAndSetup)), g4Line(midAndSetup));
   // 本文の読み出しが失敗したとき(ここでは maxBuffer を極小にして再現)、0 件と出さず「読めず」と出し、確かめられない側へ入れる
   process.env.AGGREGATE_BODY_MAXBUFFER = '64';
   let unread;
@@ -471,7 +474,8 @@ ${factsLineOf(c1.__full.report)}`);
   } finally {
     delete process.env.AGGREGATE_BODY_MAXBUFFER;
   }
-  check('集約(Spec): 本文を読めなければ、G-4 の行に「本文を読めず、トレーラ Spec を数えていない」を出し、確かめられない側へ入れる', /本文を読めず、トレーラ Spec を数えていない/.test(unread.disclosure) && /本文を読めず、トレーラ Spec を数えていません/.test(JSON.stringify(unread.ev)), unread.disclosure.split('\n').filter((l) => /G-4/.test(l)).join('\n').slice(0, 400));
+  check('集約(Spec): 本文を読めなければ、G-4 の行に「本文を読めず、トレーラ Spec を数えていない」を出し、確かめられない側へ入れる', /本文を読めず、トレーラ Spec を数えていない/.test(unread.disclosure) && /本文を読めず、トレーラ Spec を数えていません/.test(JSON.stringify(unread.gaps)), unread.disclosure.split('\n').filter((l) => /G-4/.test(l)).join('\n').slice(0, 400));
+  check('集約(Spec): 本文を読めなければ記載の欠落に入れ、終了コードは 0 でなく、「記録は完備しています」と出ない(G-7 を止める)', !unread.run.ok && !/記録は完備しています/.test(unread.run.out) && /本文を読めず/.test(unread.run.out), unread.run.out.slice(0, 300));
 
 
   // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める

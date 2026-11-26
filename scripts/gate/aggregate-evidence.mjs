@@ -1637,7 +1637,7 @@ if (isMain) {
   const specOf = new Map();
   const specOutside = [];
   // 本文の全体を読む。既定の maxBuffer(1 MiB)を超える履歴(最初の集約で全履歴を読むとき)で、読み出しの失敗が空の出力(= 仕様 0 件)に見えないよう、
-  // 上限を広げ、失敗は null で受けて確かめられない側へ入れる(止める側。黙らない)。AGGREGATE_BODY_MAXBUFFER は試験用
+  // 上限を広げ、失敗は null で受けて記載の欠落(gaps)へ入れる(G-7 を止める。記録用ブランチを読めない場合と同じ向き。黙らない)。AGGREGATE_BODY_MAXBUFFER は試験用
   const bodyLog = git(['log', '--format=%x01%H%x00%B', ...logRange], { maxBuffer: Number(process.env.AGGREGATE_BODY_MAXBUFFER) || 64 * 1024 * 1024, strict: true });
   const specBodyUnread = bodyLog === null;
   for (const rec of (bodyLog ?? '').split('\x01').filter(Boolean)) {
@@ -1647,7 +1647,7 @@ if (isMain) {
     const inLast = specLinesOf(body);
     specOf.set(hash, { specs: [...new Set(inLast.flatMap((l) => l.match(/F-\d+/g) ?? []))] });
     const all = body.split('\n').filter((l) => l.trim().startsWith('Spec:') && /F-\d+/.test(l));
-    if (all.length > inLast.length) specOutside.push(hash);
+    if (all.length > inLast.filter((l) => /F-\d+/.test(l)).length) specOutside.push(hash);
   }
   const trailerOf = new Map(
     git(['log', `--format=${trailerFormat}`, ...logRange])
@@ -3549,6 +3549,7 @@ if (isMain) {
     gateExceptions.matched = gateExceptions.matched.filter((x) => x !== label);
     gaps.push(text);
   }
+  if (specBodyUnread) gaps.push('コミットの本文を読めず、トレーラ Spec を数えていません。G-4 の判定記録の無い仕様を確かめられないため、記載の欠落に数えます(履歴の大きさか git の不調で読めない。直して集約をやり直す)');
   const specsWithoutG4 = isActive('g4') ? [...new Set(specChanges.flatMap((c) => c.specs))].filter((s) => !g4Approved(s)) : [];
   for (const s of specsWithoutG4) {
     gaps.push(
@@ -5933,7 +5934,6 @@ if (isMain) {
   // 記録は範囲の終点のコミットの記録と構成で読む(autonomy.mjs と同じ。終点が無ければ作業ツリー)
   const recordDepartures = [];
   const recordUnverifiable = [];
-  if (specBodyUnread) recordUnverifiable.push('コミットの本文を読めず、トレーラ Spec を数えていません(G-4 の判定記録の無い仕様を確かめられません)');
   const recordAt = (file) => {
     if (claimEndRev) return gitText(['show', `${claimEndRev}:${file}`]) || null;
     return exists(file) ? fs.readFileSync(path.join(ROOT, file), 'utf8') : null;
