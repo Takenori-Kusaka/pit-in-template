@@ -93,6 +93,8 @@ export async function queryEntry(entry, fetchJson) {
   };
   const missing = ['publishedAt', 'firstPublishedAt', 'publisher', 'attestation'].filter((k) => q[k] === null);
   if (missing.length === Object.keys({ publishedAt: 1, firstPublishedAt: 1, publisher: 1, attestation: 1 }).length) return { status: 'unavailable', reason: '応答に欄の値が無い' };
+  // 来歴の証明があるのに出どころを読めなかった版(取得の失敗・本文が読めない・旧い形の証明)は、出どころを比べられない。比べて一致した行と区別して出す
+  if ((q.attestation === true && q.attestedRepo === null) || (entry.from && entry.from !== entry.to && q.prevAttestation === true && q.prevAttestedRepo === null)) missing.push('証明の出どころ');
   if (missing.length) q.missing = missing;
   return q;
 }

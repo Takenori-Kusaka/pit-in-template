@@ -168,6 +168,8 @@ export function marksOf(entry, q, failedNames = new Set()) {
     const repoChanged = q.attestedRepo && q.prevAttestedRepo && q.attestedRepo !== q.prevAttestedRepo;
     if (nameChanged || repoChanged) m.push(MARK.PUBLISHER_CHANGED);
     if (q.prevAttestation === true && q.attestation === false) m.push(MARK.ATTESTATION_LOST);
+    // 値を取得できなかった欄(証明の出どころを比べられなかった行を含む)は、取得できずの印にする
+    if (q.missing?.length) m.push(MARK.UNAVAILABLE + '(' + q.missing.join('・') + ')');
   }
   if (failedNames instanceof Map) {
     const kinds = failedNames.get(entry.name);

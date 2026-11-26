@@ -5,7 +5,7 @@
 // 確かめること(process-compass #455 / ADR-0261):
 //   - 解析: package-lock.json の追加・更新、初出の名前、直接と推移、解決元の分類(公開・私設・git・workspace)、ロックファイルの無い構成
 //   - 照会: 公開日時・初回公開日時・公開者・証明の有無。不達は「照会せず」、404 は「取得できず」、私設は「対象外」。合否を返さない
-//   - 印: 初出の名前・公開者の変更・証明の退行・検証の失敗・照会せず・取得できず・対象外
+//   - 印: 初出の名前・解決元の変更・公開者の変更・証明の退行・検証の失敗・照会せず・取得できず・対象外
 //   - 表示: 状態行(依存の解決・照会・検証)、省略の件数を必ず出す、印の付いた行は切らない、解析と照会の入力は切らない
 
 import {
@@ -169,6 +169,7 @@ check('印: 検証の失敗(名前の一致)', marksOf(E, { status: 'queried', p
   check('印: 公開者の名前が同じでも、出どころが変われば公開者の変更。同じなら付かない', marksOf(E, qDiff).includes(MARK.PUBLISHER_CHANGED) && !marksOf(E, qSame).includes(MARK.PUBLISHER_CHANGED), marksOf(E, qDiff).join());
   const qFail = await queryEntry(E, async (url) => (url.includes('/attestations/') ? { ok: false, status: 503, json: null } : { ok: true, status: 200, json: tdoc }));
   check('照会: 証明の本文を取得できなくても行は取得のまま(出どころは比べない)', qFail.status === 'queried' && qFail.attestedRepo === null && !marksOf(E, qFail).includes(MARK.PUBLISHER_CHANGED));
+  check('照会: 証明の出どころを比べられなかった行は「取得(欠け: 証明の出どころ)」で、印「取得できず」が付く。比べて一致した行は付かない', qFail.missing?.includes('証明の出どころ') && marksOf(E, qFail).some((x) => x.startsWith(MARK.UNAVAILABLE)) && !qSame.missing && !marksOf(E, qSame).some((x) => x.startsWith(MARK.UNAVAILABLE)), JSON.stringify([qFail.missing, marksOf(E, qFail)]));
 }
 
 // ---------------------------------------------------------------- 3. 表示
