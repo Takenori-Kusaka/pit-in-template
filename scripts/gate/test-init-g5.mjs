@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildManifest, loadManifest, missingResident } from './claude-md-resident.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const own = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
 if (own.configured !== false) {
@@ -42,10 +43,7 @@ function check(name, ok, detail = '') {
 }
 
 function copyTemplate(dst) {
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dst, e.name), { recursive: true });
-  }
+  copyTemplateTree(dst, { skip: SKIP });
 }
 
 function workspace(label) {

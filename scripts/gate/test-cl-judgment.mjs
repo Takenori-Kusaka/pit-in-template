@@ -19,6 +19,7 @@ import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 import { parseClRecord, componentClasses, readF2Q1Text, clJudgmentState, clJudgmentText, clStopText, reductionProblems, requiredStep, sraApprovalProblems, sraResidualProblems, CL_RECORD_REQUIRED_SINCE } from './cl-judgment.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -271,10 +272,7 @@ const G1_PASSED_NODATE = [{ gate: 'G-1 企画承認', result: '通過', judgedAt
 // --- 一時の置き場: D-0 の検査・区分を下げる変化点・出荷の証跡の集約 ---
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-cl-judgment-'));
 try {
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');

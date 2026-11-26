@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 
@@ -46,10 +47,7 @@ export function buildCfg(answers = {}, { people = PEOPLE, seats = seatsOf(), sta
  */
 export function makeRepo({ config = null, answers = {}, people = PEOPLE, seats = seatsOf(), stack, d0Q1 = Q1_NO, d0 = true, userName = 'tester' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-wire-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const abs = (rel) => path.join(dir, rel);
   const co = abs('.github/CODEOWNERS');
   if (fs.existsSync(co)) fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));

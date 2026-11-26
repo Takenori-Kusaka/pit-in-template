@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { failingTestIds, failureSignatures, signatureKey, nextIteration, releaseProblem, logRelFor } from './self-heal.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failures = 0;
 let n = 0;
@@ -79,10 +80,7 @@ check('解除: 名簿が空なら確かめられないとして拒否する', /�
 // ---------------------------------------------------------------- 一時の置き場での実行
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft', 'docs']);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-selfheal-'));
-for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-  if (SKIP.has(e.name)) continue;
-  fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-}
+copyTemplateTree(dir, { skip: SKIP });
 fs.rmSync(path.join(dir, '.claude/.self-heal'), { force: true });
 // 構成: 名簿と、テストのコマンド(TESTS のファイルが指す結果で失敗・通過する)
 const config = JSON.parse(fs.readFileSync(path.join(dir, 'process.config.json'), 'utf8'));

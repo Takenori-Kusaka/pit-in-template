@@ -21,6 +21,7 @@ import path from 'node:path';
 import { ROOT, sealChangeLog } from './config.mjs';
 import { readEnvCheck, ENV_CHECK_FILE } from './org-assurance.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -107,10 +108,7 @@ function ghMap(over = {}) {
 
 function workspace(config) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-envcheck-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const co = path.join(dir, '.github/CODEOWNERS');
   fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(sealed(config), null, 2) + '\n');

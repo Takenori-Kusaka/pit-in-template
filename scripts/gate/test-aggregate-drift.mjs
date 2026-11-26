@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { declarationDrift, agentRunModelIdGaps } from './aggregate-evidence.mjs';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failed = 0;
 let total = 0;
@@ -77,10 +78,7 @@ t('2組が同時に出ても、それぞれ1件', kinds({ sizeAnswer: 'size-1-2'
   const runWith = (coAuthor, extra = []) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-drift-agg-'));
     try {
-      for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-        if (SKIP.has(e.name)) continue;
-        fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-      }
+      copyTemplateTree(dir, { skip: SKIP });
       const log = console.log;
       console.log = () => {};
       let config;

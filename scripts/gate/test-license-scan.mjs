@@ -18,6 +18,7 @@ import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 import { buildLicenseScanRecord, REASON_NO_COMMAND, REASON_NO_TARGET } from './license-scan-record.mjs';
 import { licenseScanStatus } from './aggregate-evidence.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -85,10 +86,7 @@ const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-veri
 /** 一時のリポジトリ。stack と、アダプタの licenses のコマンドの上書き、製品のコードの目印、既存の記録を指定する */
 function workspace({ stack = 'node', licenses = undefined, product = true, prior = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-license-scan-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config);
   config.adapters = { ...(config.adapters ?? {}), stack };
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');

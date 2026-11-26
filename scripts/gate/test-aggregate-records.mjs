@@ -58,6 +58,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { ROOT, sealChangeLog, unmetShipGaps, derivedUnmet, delegationSamplingProblems } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures', 'records');
@@ -528,10 +529,7 @@ const config = {
   // 入力を欠いた出力でも、7 つの見出しと成立判定が本文つきで出る(IMPL-0687)。D-0 を取り除いた一時の置き場で集約を動かす
   const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-agg-rec-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const co = path.join(dir, '.github/CODEOWNERS');
   fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -580,10 +578,7 @@ const config = {
 {
   const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-agg-run-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const co = path.join(dir, '.github/CODEOWNERS');
   fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });

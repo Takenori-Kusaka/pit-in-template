@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -56,10 +57,7 @@ const PATTERN = /非推奨の兼務です.*記載の欠落です/;
 
 function workspace(seats, recordRow, changeLog = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-discouraged-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people: PEOPLE, seats }).config);
   if (changeLog) config.changeLog = changeLog;
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');

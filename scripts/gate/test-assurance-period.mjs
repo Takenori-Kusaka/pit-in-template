@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -57,10 +58,7 @@ const AFTER = '2026-11-10T12:00:00Z';
 
 function workspace({ delegated }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-period-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const base = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-09-01T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config);
   const withMode = (on) => ({ ...base, seats: (base.seats ?? []).map((s, i) => (i === 0 && on ? { ...s, mode: 'delegated' } : { ...s, mode: s.mode === 'delegated' ? 'direct' : s.mode })) });
   const write = (rel, text) => {

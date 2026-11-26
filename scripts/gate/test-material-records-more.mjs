@@ -32,6 +32,7 @@ import {
   withPolicyAttribution,
 } from './material-attribution.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -331,10 +332,7 @@ function migration(people, after, entry, pr) {
 {
   const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-material-agg-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const quiet = (fn) => {
     const log = console.log;
     console.log = () => {};
@@ -414,10 +412,7 @@ if (process.platform === 'win32') {
   /** 一時の複製。commits は [{ files, message, pr: { number, author, approvers } | null }]。PR の記録は模擬の gh が返す */
   const aggregateOf = ({ people, seats, answers, commits }) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-material-agg-gh-'));
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-    }
+    copyTemplateTree(dir, { skip: SKIP });
     const config = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null, people, seats }).config);
     const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     const put = (rel, text) => {

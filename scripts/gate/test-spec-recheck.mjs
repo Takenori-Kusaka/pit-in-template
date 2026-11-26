@@ -14,6 +14,7 @@ import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 import { specSections, compareSpecSections, changedSpecSections } from './spec-sections.mjs';
 import { specRecheck, specRecheckGapText, specRecheckSummary, targetVersionOfForm } from './spec-recheck.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failed = 0;
 let total = 0;
@@ -272,10 +273,7 @@ t('不一致(厳しい側): 節の途中の空行の追加', run(base, SPEC({ pr
 
   function workspace() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-recheck-agg-'));
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-    }
+    copyTemplateTree(dir, { skip: SKIP });
     const config = quiet(() => buildConfig({ ...ANSWERS, 'q-biz-phase': 'growth' }, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config);
     const write = (rel, text) => {
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });

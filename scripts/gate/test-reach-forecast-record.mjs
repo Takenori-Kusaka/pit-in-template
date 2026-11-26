@@ -18,6 +18,7 @@ import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
 import { completionThroughput, reachForecast } from './next.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -62,10 +63,7 @@ const reach = (rows) => '## 到達の見込み(適用: ステージの途中)\n\
 
 function run(records) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-reach-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-08-01T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config);
   const write = (rel, text) => {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });

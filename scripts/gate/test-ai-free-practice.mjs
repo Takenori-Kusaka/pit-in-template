@@ -19,6 +19,7 @@ import { ROOT } from './config.mjs';
 import { l3ScopeIds } from './autonomy.mjs';
 import { aiFreePracticeState, aiFreePracticeTexts, parsePracticeInterval, practiceDue, intervalEnd, readPolicy } from './org-assurance.mjs';
 import { buildConfig, renderAutonomyTable } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -189,10 +190,7 @@ const R = row('2026-02-01', 'docs-typo', '名簿 甲');
   const seats = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
   const e2e = (rows, freq = '四半期に1回') => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-aifree-e2e-'));
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-    }
+    copyTemplateTree(dir, { skip: SKIP });
     const config = quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-10-13T09:00:00+09:00', d0Version: null, people, seats }).config);
     config.autonomy = { ...(config.autonomy ?? {}), maxLevel: 'L3' };
     config.delegation = { ...(config.delegation ?? {}), allowed: true, changeTypes: [{ id: 'docs-typo', basis: BASIS }] };

@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, configIntegrityProblems } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -82,10 +83,7 @@ const DELEGATE = { mode: 'delegated', performer: P, fallback: 'human', qualifica
 const blank = quiet(() => buildConfig(answers, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-375-'));
 try {
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');

@@ -22,6 +22,7 @@ import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { planInstall } from './python-install.mjs';
 import { machineCheckStatus } from './g5-aggregate.mjs';
+import { DEFAULT_CONFIG_FILE } from './template-copy.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -50,7 +51,7 @@ function workspace(stack, files = {}, adapterPatch = null, { noRc = false } = {}
   dirs.push(dir);
   fs.cpSync(path.join(ROOT, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
   fs.cpSync(path.join(ROOT, 'adapters'), path.join(dir, 'adapters'), { recursive: true });
-  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
+  const cfg = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_FILE, 'utf8'));
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify({ ...cfg, adapters: { ...(cfg.adapters ?? {}), stack } }, null, 2));
   if (adapterPatch) {
     const p = path.join(dir, 'adapters', `${stack}.json`);

@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, claimStatus, statementFactsLine, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
 import { buildConfig, renderProcessRules, renderProfileMd } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -100,10 +101,7 @@ check('changeLog が無ければ問題を返す', /init/.test(initRecordProblem(
 // ---------------------------------------------------------------- 一時の置き場で通しに確かめる
 function workspace() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-edition-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   // 雛形の所有者(@OWNER)は採用者が置き換える(残すと契約検査が失敗にする。process-compass #315 R-2)
   const co = path.join(dir, '.github/CODEOWNERS');
   fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));

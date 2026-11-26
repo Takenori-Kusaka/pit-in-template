@@ -19,6 +19,7 @@ import {
   checkSafetyRecord,
   safetyRecordResultText,
 } from './check-safety-record.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 let failed = 0;
 let total = 0;
@@ -230,10 +231,7 @@ for (const v of ['一致', '不一致(時間窓なし。早い応答を通す)',
   const runAggregate = (g7Value) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-safety-agg-'));
     try {
-      for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-        if (SKIP.has(e.name)) continue;
-        fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-      }
+      copyTemplateTree(dir, { skip: SKIP });
       // 区分 CL1・F.2 の回答いいえ・記録なし。構成の g7 の値だけを変える
       const cfgPath = path.join(dir, 'process.config.json');
       const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));

@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, sealChangeLog, directionLabel, rowKindsProblems, localDay, observationWindowAt, reworkBaselineInfo } from './config.mjs';
 import { buildConfig, authoritySourceForm } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -59,10 +60,7 @@ const config = quiet(
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-loosen-'));
 try {
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@example.com');
@@ -319,10 +317,7 @@ ${JSON.stringify(cbp.reworkBaseline)}`
   dev.performerAccount = { kind: 'dedicated', account: { login: 'pit-agent-acct', id: 7001 } };
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-performer-account-'));
   try {
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(dir2, e.name), { recursive: true });
-    }
+    copyTemplateTree(dir2, { skip: SKIP });
     const git = (...a) => execFileSync('git', a, { cwd: dir2, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '-q', '-b', 'main');
     git('config', 'user.email', 't@example.com');
@@ -400,10 +395,7 @@ ${JSON.stringify(cbp.reworkBaseline)}`
   const workspace = (prefix, ans = answers) => {
     const blank = quiet(() => buildConfig(ans, { generatedAt: '2026-10-01T09:00:00+09:00', d0Version: null }).config);
     const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(d, e.name), { recursive: true });
-    }
+    copyTemplateTree(d, { skip: SKIP });
     const git = (...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '-q', '-b', 'main');
     git('config', 'user.email', 't@example.com');

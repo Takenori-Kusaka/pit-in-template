@@ -24,6 +24,7 @@ import { ROOT, findInitCommit, sealChangeLog, FORMAT_VERSION, hookRegistrationPr
 import { RULES_BEGIN as PF_BEGIN, RULES_END as PF_END, TEMPLATE_WORKFLOWS, TEMPLATE_TOP, TEMPLATE_INSTRUCTION_FILES, TEMPLATE_CODEOWNERS_PATTERNS, preflight } from './preflight.mjs';
 import { buildConfig, RULES_BEGIN, RULES_END } from '../init/generate-profile.mjs';
 import { correctionGaps, correctionGapNote, needsPlatformNumbers, readMissedTypes } from './adoption-trial.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const own = JSON.parse(fs.readFileSync(path.join(ROOT, 'process.config.json'), 'utf8'));
 if (own.configured !== false) {
@@ -60,10 +61,7 @@ const contractErrors = (out) => out.split('\n').filter((l) => /::error::/.test(l
 
 function workspace({ keepOwner = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-adoption-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   if (!keepOwner) {
     const co = path.join(dir, '.github/CODEOWNERS');
     fs.writeFileSync(co, fs.readFileSync(co, 'utf8').replace(/@OWNER\b/g, '@tester'));

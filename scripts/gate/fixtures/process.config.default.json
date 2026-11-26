@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 0,
+  "configured": false,
+  "note": "未設定です。Claude Code で /process-init を実行すると、このファイルと PROCESS-PROFILE.md が生成されます。",
+  "projectId": "P-000",
+  "adapters": { "stack": "none" },
+  "platform": {
+    "host": "local-markdown",
+    "hostUrl": null
+  },
+  "gates": {
+    "g1": { "label": "G-1 企画承認", "state": "required", "params": {}, "why": [] },
+    "g2": { "label": "G-2 要件合意", "state": "required", "params": {}, "why": [] },
+    "g3": { "label": "G-3 技術設計判断", "state": "required", "params": {}, "why": [] },
+    "g4": { "label": "G-4 機能仕様承認", "state": "required", "params": {}, "why": [] },
+    "g5": { "label": "G-5 自動検証(CI)", "state": "required", "params": {}, "why": [] },
+    "g6": { "label": "G-6 独立レビュー", "state": "required", "params": {}, "why": [] },
+    "g7": { "label": "G-7 出荷判定", "state": "required", "params": {}, "why": [] },
+    "g8": { "label": "G-8 リリース決裁", "state": "required", "params": {}, "why": [] }
+  },
+  "unmet": [],
+  "ci": {
+    "coverageThreshold": 80,
+    "failOnSeverity": ["critical", "high"],
+    "allowedLicenses": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Python-2.0", "MPL-2.0", "CC0-1.0", "Unlicense", "0BSD", "BlueOak-1.0.0"],
+    "strengthened": false
+  },
+  "review": { "requiredApprovals": 1, "reviewerCount": 1, "mode": null, "recordFormat": "standard" },
+  "aiReview": { "enabled": true, "canApprove": false, "requiredCheck": false },
+  "task": { "maxChangedLines": 400, "maxChangedFiles": 15, "selfHealMaxIterations": 3, "selfHealNoProgressLimit": 2 }
+}

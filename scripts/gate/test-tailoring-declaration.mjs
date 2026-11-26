@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { buildConfig } from '../init/generate-profile.mjs';
+import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
 let failures = 0;
@@ -44,10 +45,7 @@ const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-veri
 /** 構成を書き換えて集約を実行し、品質レポートと集約の出力を返す */
 function run(edit = (c) => c, prep = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-tailoring-declaration-'));
-  for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (SKIP.has(e.name)) continue;
-    fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-  }
+  copyTemplateTree(dir, { skip: SKIP });
   const config = edit(quiet(() => buildConfig(ANSWERS, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config));
   fs.writeFileSync(path.join(dir, 'process.config.json'), JSON.stringify(config, null, 2) + '\n');
   if (prep) prep(dir);
@@ -190,10 +188,7 @@ if (process.platform === 'win32') {
    */
   const history = (first, steps) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-g6-scope-'));
-    for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
-      if (SKIP.has(e.name)) continue;
-      fs.cpSync(path.join(ROOT, e.name), path.join(dir, e.name), { recursive: true });
-    }
+    copyTemplateTree(dir, { skip: SKIP });
     const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     const put = (rel, text) => {
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
