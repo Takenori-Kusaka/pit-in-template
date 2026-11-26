@@ -1,4 +1,4 @@
-// 未登録の名前が依存の解決で失敗し、G-5 が落ちることを試験する(標準 ADR-0044 決定5 の前提。process-compass #455 / ADR-0261 IMPL-E)。
+// 未登録の名前が依存の解決で失敗し、G-5 が落ちることを試験する(標準 ADR-0044 決定5 の前提。process-compass #455 / ADR-0261 IMPL-1041)。
 //
 //   node scripts/gate/test-unregistered-name.mjs
 //

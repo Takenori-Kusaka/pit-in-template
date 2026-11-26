@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, loadAdapter } from './config.mjs';
+import { ROOT, loadConfig, loadAdapter, adapterProjectDir } from './config.mjs';
 import { collectEntries } from './dependency-collect.mjs';
 import { parseAuditSignatures } from './dependency-parse.mjs';
 
@@ -27,6 +27,33 @@ function attestationOf(doc, version) {
   const d = doc?.versions?.[version]?.dist;
   if (!d) return null;
   return Boolean(d.attestations);
+}
+
+/** 来歴の証明の出どころ(SLSA provenance のソースのリポジトリ)。証明の本文を読むだけで、署名の検証はしない(検証は npm audit signatures) */
+function provenanceRepo(attDoc) {
+  for (const a of attDoc?.attestations ?? []) {
+    if (!String(a?.predicateType ?? '').startsWith('https://slsa.dev/provenance')) continue;
+    try {
+      const st = JSON.parse(Buffer.from(a.bundle.dsseEnvelope.payload, 'base64').toString('utf8'));
+      const repo = st?.predicate?.buildDefinition?.externalParameters?.workflow?.repository;
+      if (typeof repo === 'string' && repo) return repo;
+    } catch {
+      /* 読めなければ出どころ不明 */
+    }
+  }
+  return null;
+}
+
+/** 版の来歴の証明の出どころ。証明が無い・取得できない・読めないときは null(比べない) */
+async function attestedRepoOf(doc, version, fetchJson) {
+  const url = doc?.versions?.[version]?.dist?.attestations?.url;
+  if (!url) return null;
+  try {
+    const r = await fetchJson(url);
+    return r?.ok ? provenanceRepo(r.json) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -60,6 +87,8 @@ export async function queryEntry(entry, fetchJson) {
     prevPublisher: entry.from ? publisherOf(doc, entry.from) : null,
     attestation: attestationOf(doc, entry.to),
     prevAttestation: entry.from ? attestationOf(doc, entry.from) : null,
+    attestedRepo: await attestedRepoOf(doc, entry.to, fetchJson),
+    prevAttestedRepo: entry.from && entry.from !== entry.to ? await attestedRepoOf(doc, entry.from, fetchJson) : null,
     signaturePresent: Array.isArray(doc?.versions?.[entry.to]?.dist?.signatures) ? doc.versions[entry.to].dist.signatures.length > 0 : null,
   };
   const missing = ['publishedAt', 'firstPublishedAt', 'publisher', 'attestation'].filter((k) => q[k] === null);
@@ -97,11 +126,17 @@ function verifySignatures() {
     /* 構成が読めなければ未実施 */
   }
   if (adapterId !== 'node') return { status: 'not-run', reason: `node 以外(${adapterId})の検証は降ろしていない`, kinds: [] };
-  if (!fs.existsSync(path.join(ROOT, 'node_modules'))) return { status: 'not-run', reason: '依存を導入していない(node_modules が無い)', kinds: [] };
-  const r = spawnSync('npm', ['audit', 'signatures'], { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', timeout: 120000 });
+  let dir = ROOT;
+  try {
+    dir = path.join(ROOT, adapterProjectDir(loadAdapter(loadConfig())));
+  } catch {
+    /* projectDir が読めなければ直下 */
+  }
+  if (!fs.existsSync(path.join(dir, 'node_modules'))) return { status: 'not-run', reason: `依存を導入していない(${path.relative(ROOT, dir) || '直下'} に node_modules が無い)`, kinds: [] };
+  const r = spawnSync('npm', ['audit', 'signatures'], { cwd: dir, encoding: 'utf8', shell: process.platform === 'win32', timeout: 120000 });
   const code = r.error ? 1 : (r.status ?? 1);
   if (r.error) return { status: 'not-run', reason: `実行できず(${r.error.message})`, kinds: [] };
-  // 署名の検証と来歴の証明の検証を分けて書く。完全性(go mod verify)は来歴と数えない(go は降ろしていない)
+  // 種類ごとの結果は parseAuditSignatures の results。完全性(go mod verify)は来歴と数えず、node では検証しない
   return { ...parseAuditSignatures(`${r.stdout ?? ''}\n${r.stderr ?? ''}`, code), kinds: ['署名(レジストリの署名)', '来歴の証明(attestation)'] };
 }
 

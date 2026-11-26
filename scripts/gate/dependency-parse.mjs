@@ -61,12 +61,16 @@ export function diffNpmLock(baseText, headText) {
   const base = baseText ? readNpmLock(baseText) : { ok: true, packages: new Map(), roots: new Set() };
   const head = readNpmLock(headText);
   if (!head.ok || !base.ok) return { ok: false, entries: [] };
+  // 名前 → 版 → 基底での「解決元|integrity」の集合(版を据え置いた解決元の変更を拾うため)
   const baseVersions = new Map();
   for (const [k, p] of base.packages) {
     if (!k) continue;
     const n = nameOfLockKey(k);
-    if (!baseVersions.has(n)) baseVersions.set(n, new Set());
-    baseVersions.get(n).add(p.version ?? '');
+    if (!baseVersions.has(n)) baseVersions.set(n, new Map());
+    const byVer = baseVersions.get(n);
+    const v = p.version ?? '';
+    if (!byVer.has(v)) byVer.set(v, new Set());
+    byVer.get(v).add(String(p.resolved ?? '') + '|' + String(p.integrity ?? ''));
   }
   const seen = new Set();
   const entries = [];
@@ -75,7 +79,10 @@ export function diffNpmLock(baseText, headText) {
     const name = nameOfLockKey(k);
     const version = p.version ?? '';
     const had = baseVersions.get(name);
-    if (had?.has(version)) continue;
+    const sameVer = had?.get(version);
+    // 版が同じでも、解決元か integrity が基底のどれとも違えば行にする(解決元の変更)
+    const sourceChanged = Boolean(sameVer) && !sameVer.has(String(p.resolved ?? '') + '|' + String(p.integrity ?? ''));
+    if (sameVer && !sourceChanged) continue;
     const id = `${name}@${version}@${p.resolved ?? ''}`;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -84,12 +91,13 @@ export function diffNpmLock(baseText, headText) {
     entries.push({
       ecosystem: 'npm',
       name,
-      from: had ? [...had][0] || null : null,
+      from: had ? (sourceChanged ? version : [...had.keys()][0] || null) : null,
       to: version,
       direct: head.roots.has(name) && !nested,
       source: src.kind,
       host: src.host,
       firstSeen: !had,
+      sourceChanged,
       lockless: false,
     });
   }
@@ -120,6 +128,7 @@ export function diffPackageJson(baseText, headText) {
         source: /^(git|github:|file:|https?:)/.test(String(range)) ? 'url' : 'public',
         host: '',
         firstSeen: !baseNames.has(name),
+        sourceChanged: false,
         lockless: true,
       });
     }
@@ -131,6 +140,7 @@ export function diffPackageJson(baseText, headText) {
 
 export const MARK = {
   FIRST_SEEN: '初出の名前',
+  SOURCE_CHANGED: '解決元の変更',
   PUBLISHER_CHANGED: '公開者の変更',
   ATTESTATION_LOST: '証明の退行',
   VERIFY_FAILED: '検証の失敗',
@@ -147,14 +157,22 @@ export const MARK = {
 export function marksOf(entry, q, failedNames = new Set()) {
   const m = [];
   if (entry.firstSeen) m.push(MARK.FIRST_SEEN);
+  if (entry.sourceChanged) m.push(MARK.SOURCE_CHANGED);
   if (!q || q.status === 'skipped') m.push(MARK.NOT_QUERIED);
   else if (q.status === 'out-of-scope') m.push(MARK.OUT_OF_SCOPE);
   else if (q.status === 'unavailable') m.push(MARK.UNAVAILABLE);
   else {
-    if (q.publisher && q.prevPublisher && q.publisher !== q.prevPublisher) m.push(MARK.PUBLISHER_CHANGED);
+    // 公開者は _npmUser の名前で比べる。両方の版に来歴の証明があり出どころ(ソースのリポジトリ)が読めたときは、出どころも比べる
+    // (trusted publishing の版は公開者の名前が全て GitHub Actions になるため)
+    const nameChanged = q.publisher && q.prevPublisher && q.publisher !== q.prevPublisher;
+    const repoChanged = q.attestedRepo && q.prevAttestedRepo && q.attestedRepo !== q.prevAttestedRepo;
+    if (nameChanged || repoChanged) m.push(MARK.PUBLISHER_CHANGED);
     if (q.prevAttestation === true && q.attestation === false) m.push(MARK.ATTESTATION_LOST);
   }
-  if (failedNames.has(entry.name)) m.push(MARK.VERIFY_FAILED);
+  if (failedNames instanceof Map) {
+    const kinds = failedNames.get(entry.name);
+    if (kinds?.length) m.push(MARK.VERIFY_FAILED + '(' + [...new Set(kinds)].join('・') + ')');
+  } else if (failedNames.has(entry.name)) m.push(MARK.VERIFY_FAILED);
   return m;
 }
 
@@ -169,16 +187,60 @@ export function skipReasons(queries) {
   return [...by].map(([r, n]) => `${r} ${n} 件`);
 }
 
-/** npm audit signatures の出力 → { status, failedNames, detail }。終了コード 0 なら passed、それ以外は failed */
+/** 検証の種類(IMPL-1038。署名・来歴の証明・完全性は別。完全性(go mod verify)は来歴と数えない) */
+export const VERIFY_KIND = { SIGNATURE_INVALID: '署名の不正', SIGNATURE_MISSING: '署名の欠落', ATTESTATION_INVALID: '来歴の証明の不正' };
+
+const SECTION_HEAD = [
+  [/invalid registry signature/i, VERIFY_KIND.SIGNATURE_INVALID],
+  [/missing registry signature/i, VERIFY_KIND.SIGNATURE_MISSING],
+  [/invalid attestation/i, VERIFY_KIND.ATTESTATION_INVALID],
+];
+
+/**
+ * npm audit signatures の出力 → { status, failedNames, failures, results, detail }。
+ *   passed: 終了コード 0
+ *   failed: 失敗の節(署名の不正・署名の欠落・来歴の証明の不正)が出力にある。failures は { name, kind } の並び
+ *   not-run: 終了コードが 0 以外で失敗の節が1つも無い(依存 0 件・鍵の取得の不達・レジストリが鍵を出さない等)。検証は行われていないので「実施」と表示しない
+ * results は種類ごとの結果(署名・来歴の証明・完全性)。完全性は npm では検証しない(not-run)
+ */
 export function parseAuditSignatures(text, code) {
-  const t = String(text ?? '');
-  const failed = new Set();
-  if (code !== 0) {
-    // 失敗の節の行は「<名前>@<版>」で始まる(例: "sigstore@2.0.0 (https://registry.npmjs.org/)")
-    for (const line of t.split('\n')) {
-      const mm = line.match(/^\s*((?:@[^/\s]+\/)?[^@\s]+)@\S+/);
-      if (mm) failed.add(mm[1]);
-    }
+  const t = String(text ?? '').replace(/\r/g, '');
+  const detail = t.split('\n').filter(Boolean).slice(-6).join(' / ');
+  if (code === 0) {
+    return { status: 'passed', failedNames: [], failures: [], results: { signature: 'passed', attestation: 'passed', integrity: 'not-run' }, detail };
   }
-  return { status: code === 0 ? 'passed' : 'failed', failedNames: [...failed], detail: t.split('\n').filter(Boolean).slice(-6).join(' / ') };
+  const failures = [];
+  let kind = null;
+  for (const line of t.split('\n')) {
+    // 節の見出し(例: "1 package has an invalid registry signature:")。名前の行ではない
+    if (/^\s*\d+ packages? (has|have)\b/i.test(line)) {
+      kind = SECTION_HEAD.find(([re]) => re.test(line))?.[1] ?? null;
+      continue;
+    }
+    if (!kind) continue;
+    // 失敗の節の行は「<名前>@<版>」で始まる(例: "sigstore@2.0.0 (https://registry.npmjs.org/)")
+    const mm = line.match(/^\s*((?:@[^/\s]+\/)?[^@\s]+)@\d\S*/);
+    if (mm && !failures.some((x) => x.name === mm[1] && x.kind === kind)) failures.push({ name: mm[1], kind });
+  }
+  if (!failures.length) {
+    return {
+      status: 'not-run',
+      reason: `検証を実行できなかった(終了コード ${code}。失敗の節が出力に無い: ${detail})`,
+      failedNames: [],
+      failures: [],
+      results: { signature: 'not-run', attestation: 'not-run', integrity: 'not-run' },
+      detail,
+    };
+  }
+  const has = (k) => failures.some((f) => f.kind === k);
+  const sig = has(VERIFY_KIND.SIGNATURE_INVALID) || has(VERIFY_KIND.SIGNATURE_MISSING);
+  const att = has(VERIFY_KIND.ATTESTATION_INVALID);
+  return {
+    status: 'failed',
+    failedNames: [...new Set(failures.map((f) => f.name))],
+    failures,
+    // 失敗の節の無い種類は「失敗の報告なし」(出力に成功の件数が無い限り、成功とは書かない)
+    results: { signature: sig ? 'failed' : 'no-failure-reported', attestation: att ? 'failed' : 'no-failure-reported', integrity: 'not-run' },
+    detail,
+  };
 }

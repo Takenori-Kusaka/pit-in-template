@@ -16,7 +16,7 @@ import { ROOT, notice, loadConfig, loadAdapter } from './config.mjs';
 import { git, changedManifests, collectEntries } from './dependency-collect.mjs';
 import { MARK, marksOf, skipReasons } from './dependency-parse.mjs';
 
-/** 表示で切る上限。印の付いた行は切らない(読ませない行を作らない)。生の差分の行は、省略の件数を出す */
+/** 表示で切る上限。印の付いた行と直接の依存は切らない(読ませない行を作らない)。切るのは印の無い推移的な依存と生の差分の行で、省略の件数を出す */
 export const UNMARKED_ROW_LIMIT = 40;
 export const RAW_LINE_LIMIT = 40;
 
@@ -27,6 +27,18 @@ function arg(name, fallback) {
 
 const SRC_LABEL = { public: '公開レジストリ', private: '私設・ミラー', git: 'git', url: 'URL', file: 'file', workspace: 'workspace', unknown: '不明' };
 const day = (s) => (s ? String(s).slice(0, 10) : '—');
+
+const KIND_STATE = { passed: '合格', failed: '失敗', 'no-failure-reported': '失敗の報告なし', 'not-run': '未実施' };
+
+/** 検証の種類ごとの結果の文(署名・来歴の証明・完全性は別。完全性は node では検証しない) */
+export function verificationKinds(v) {
+  const r = v.results ?? {};
+  const st = (k, fallback) => KIND_STATE[r[k]] ?? fallback;
+  const base = v.status === 'passed' ? '合格' : v.status === 'failed' ? '失敗の報告なし' : '未実施';
+  const sig = st('signature', base);
+  const att = st('attestation', base) + (r.attestation === 'passed' || (!r.attestation && v.status === 'passed') ? '(証明のある版だけ)' : '');
+  return `署名=${sig}・来歴の証明=${att}・完全性=未実施(node では検証しない。go mod verify は来歴と数えない)`;
+}
 
 /** 依存の解決(install の段)を行う構成か。未実施なら理由を返す */
 export function resolutionState(adapter) {
@@ -42,13 +54,19 @@ export function resolutionState(adapter) {
  */
 export function buildReport(input) {
   const { base, details = [], entries = [], unparsed = [], queries = [], verification = { status: 'not-run', reason: '未指定', kinds: [] }, resolution } = input;
-  const failed = new Set(verification.status === 'failed' ? verification.failedNames ?? [] : []);
+  // 名前 → 失敗の種類。種類が無い入力(failedNames だけ)は種類なしの印にする
+  const failed = new Map();
+  if (verification.status === 'failed') {
+    for (const f of verification.failures ?? []) failed.set(f.name, [...(failed.get(f.name) ?? []), f.kind]);
+    for (const n of verification.failedNames ?? []) if (!failed.has(n)) failed.set(n, []);
+  }
   const rows = entries.map((e, i) => ({ e, q: queries[i], marks: marksOf(e, queries[i], failed) }));
   const marked = rows.filter((r) => r.marks.length);
-  const unmarked = rows.filter((r) => !r.marks.length);
+  // 直接の依存は印の有無に関わらず切らない。切るのは印の無い推移的な依存だけ
+  const unmarked = rows.filter((r) => !r.marks.length && !r.e.direct);
   const shownUnmarked = unmarked.slice(0, UNMARKED_ROW_LIMIT);
   const omittedRows = unmarked.length - shownUnmarked.length;
-  const shownRows = rows.filter((r) => r.marks.length || shownUnmarked.includes(r));
+  const shownRows = rows.filter((r) => r.marks.length || r.e.direct || shownUnmarked.includes(r));
   const rawOmitted = details.reduce((n, d) => n + Math.max(0, d.removed.length - RAW_LINE_LIMIT) + Math.max(0, d.added.length - RAW_LINE_LIMIT), 0);
   const notQueried = queries.filter((q) => q?.status === 'skipped' || q?.status === 'out-of-scope').length + Math.max(0, entries.length - queries.length);
   const reasons = skipReasons(queries);
@@ -62,25 +80,28 @@ export function buildReport(input) {
   md.push('');
   md.push(`- 依存の解決: ${resolution?.done ? `実施(${resolution.reason})` : `未実施(${resolution?.reason ?? '不明'})`}`);
   md.push(`- 照会: ${entries.length} 件中 ${notQueried} 件を照会せず${reasons.length ? `(${reasons.join('、')})` : ''}`);
+  // 検証を実行できなかった場合(依存 0 件・鍵の取得の不達など)は「実施」と出さない。種類ごとの結果を同じ行に持つ
   md.push(
-    `- 検証: ${verification.status === 'passed' ? '実施(失敗なし)' : verification.status === 'failed' ? `実施(失敗あり。${(verification.failedNames ?? []).length} 件の名前に「${MARK.VERIFY_FAILED}」)` : `未実施(${verification.reason ?? '理由なし'})`}` +
-      (verification.kinds?.length ? `。種類: ${verification.kinds.join('・')}` : '。種類: 署名・来歴の証明・完全性は別。完全性(go mod verify)を来歴と数えない')
+    `- 検証: ${verification.status === 'passed' ? '実施(失敗なし)' : verification.status === 'failed' ? `実施(失敗あり。${failed.size} 件の名前に「${MARK.VERIFY_FAILED}」)` : `未実施(${verification.reason ?? '理由なし'})`}。種類別: ${verificationKinds(verification)}`
   );
   if (lockless) md.push(`- 推移的な依存は見えない: ロックファイルの無い構成の ${lockless} 件は、直接の依存の宣言だけを出している`);
   for (const u of unparsed) md.push(`- 解析せず: \`${u.file}\`(${u.reason})`);
   md.push(`- 印の付いた行: ${marked.length} 件(印: ${[...new Set(marked.flatMap((r) => r.marks))].join('・') || 'なし'})`);
   const omitTotal = omittedRows + rawOmitted;
-  md.push(`- ${MARK.OMITTED}: ${omitTotal ? `印の無い行 ${omittedRows} 件、差分の行 ${rawOmitted} 件を表示から省いた(解析と照会は省く前の全件に行った)` : '0 件'}`);
+  md.push(`- ${MARK.OMITTED}: ${omitTotal ? `印の無い推移的な依存の行 ${omittedRows} 件、差分の行 ${rawOmitted} 件を表示から省いた(解析と照会は省く前の全件に行った)` : '0 件'}`);
   md.push('');
   if (shownRows.length) {
-    md.push('| 印 | 名前 | 版 | 直接 | 解決元 | 版の公開日 | 名前の初回公開日 | 公開者 | 署名・来歴の証明 | 照会 |');
-    md.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    md.push('| 印 | 名前 | 版 | 直接 | 解決元 | 版の公開日 | 名前の初回公開日 | 公開者(来歴の証明の出どころ) | 署名・来歴の証明 | 検証の結果 | 照会 |');
+    md.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const { e, q, marks } of shownRows) {
       const ok = q?.status === 'queried';
       const att = ok ? (q.attestation === null ? '—' : q.attestation ? '来歴の証明あり' : '来歴の証明なし') + (q.signaturePresent ? '・署名あり' : q.signaturePresent === false ? '・署名なし' : '') : '—';
+      const kindsOfRow = failed.get(e.name);
+      const vres = q?.status === 'out-of-scope' ? '対象外' : kindsOfRow ? `失敗${kindsOfRow.length ? `(${[...new Set(kindsOfRow)].join('・')})` : ''}` : verification.status === 'passed' ? '合格' : verification.status === 'failed' ? '失敗の報告なし' : '未実施';
+      const pub = ok ? (q.publisher ?? '—') + (q.attestedRepo ? `(${q.attestedRepo.replace(/^https?:\/\//, '')})` : '') : '—';
       const state = q ? (q.status === 'queried' ? (q.missing ? `取得(欠け: ${q.missing.join('・')})` : '取得') : q.status === 'skipped' ? `照会せず(${q.reason})` : q.status === 'out-of-scope' ? `対象外(${q.reason})` : `取得できず(${q.reason})`) : '照会せず(結果なし)';
       md.push(
-        `| ${marks.join('・') || '—'} | \`${e.name}\` | ${e.from ?? '—'} → ${e.to} | ${e.direct ? '直接' : '推移'} | ${SRC_LABEL[e.source] ?? e.source} | ${ok ? day(q.publishedAt) : '—'} | ${ok ? day(q.firstPublishedAt) : '—'} | ${ok ? q.publisher ?? '—' : '—'} | ${att} | ${state} |`
+        `| ${marks.join('・') || '—'} | \`${e.name}\` | ${e.from ?? '—'} → ${e.to} | ${e.direct ? '直接' : '推移'} | ${SRC_LABEL[e.source] ?? e.source} | ${ok ? day(q.publishedAt) : '—'} | ${ok ? day(q.firstPublishedAt) : '—'} | ${pub} | ${att} | ${vres} | ${state} |`
       );
     }
     md.push('');
@@ -102,7 +123,7 @@ export function buildReport(input) {
     details,
     entries: rows.map((r) => ({ ...r.e, marks: r.marks, query: r.q ?? null })),
     unparsed,
-    summary: { entries: entries.length, notQueried, marked: marked.length, omittedRows, rawOmitted, resolution: resolution ?? null, verification: verification.status },
+    summary: { entries: entries.length, notQueried, marked: marked.length, omittedRows, rawOmitted, resolution: resolution ?? null, verification: verification.status, verificationResults: verification.results ?? null },
   };
   return { md: md.join('\n'), json };
 }
