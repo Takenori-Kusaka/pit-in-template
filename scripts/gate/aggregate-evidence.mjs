@@ -141,7 +141,7 @@ import {
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy, specLinesOf, defectUnregisteredDisclosure } from './autonomy.mjs';
 
 // 承認の数の定義は autonomy.mjs が持つ(一発承認率と共有。IMPL-0268)。既存の呼び出しと試験のため、同じ名で書き出し直す
 export { approvalCountOfCopy };
@@ -151,6 +151,8 @@ import {
   readPolicy,
   readBriefScope,
   continuityState,
+  coreRemediationState,
+  coreRemediationLines,
   parseStopRelease,
   withinTolerance,
   checkAuthority,
@@ -1627,13 +1629,27 @@ if (isMain) {
   // --- コミットのトレーラ ------------------------------------------------------
 
   const trailerFormat =
-    '%H%x09%an%x09%ae%x09%(trailers:key=Delegated,valueonly,separator=%x2C)%x09%(trailers:key=Co-Authored-By,valueonly,separator=%x2C)%x09%(trailers:key=Risk,valueonly,separator=%x2C)%x09%(trailers:key=Verification,valueonly,separator=%x2C)%x09%(trailers:key=Spec,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Run,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Assets,valueonly,separator=%x2C)%x09%cs';
+    '%H%x09%an%x09%ae%x09%(trailers:key=Delegated,valueonly,separator=%x2C)%x09%(trailers:key=Co-Authored-By,valueonly,separator=%x2C)%x09%(trailers:key=Risk,valueonly,separator=%x2C)%x09%(trailers:key=Verification,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Run,valueonly,separator=%x2C)%x09%(trailers:key=Agent-Assets,valueonly,separator=%x2C)%x09%cs';
+  // トレーラ Spec は git の `%(trailers)` でなく、本文(%B)の末尾の段落を autonomy.mjs の specLinesOf で読む(手戻り率・次の一手と同じ読み方。
+  // process-compass #348 項5 / ADR-0172 決定3)。値の形は緩く保つ(`Spec: F-001` のようにタスクを欠く行も仕様を指すものとして G-4 の要否に数える。
+  // 値の形まで厳しくすると、PR の検査を経ないコミットで G-4 の要否が消えて緩む)。末尾の段落の外の `Spec:` 行は数えず、持つコミットの件数を出す(表示だけ。欠落に数えない)
+  const specOf = new Map();
+  const specOutside = [];
+  for (const rec of git(['log', '--format=%x01%H%x00%B', ...logRange]).split('\x01').filter(Boolean)) {
+    const i = rec.indexOf('\x00');
+    const hash = rec.slice(0, i).trim();
+    const body = rec.slice(i + 1);
+    const inLast = specLinesOf(body);
+    specOf.set(hash, { specs: [...new Set(inLast.flatMap((l) => l.match(/F-\d+/g) ?? []))] });
+    const all = body.split('\n').filter((l) => l.trim().startsWith('Spec:'));
+    if (all.length > inLast.length) specOutside.push(hash);
+  }
   const trailerOf = new Map(
     git(['log', `--format=${trailerFormat}`, ...logRange])
       .split('\n')
       .filter(Boolean)
       .map((l) => {
-        const [hash, authorName, authorEmail, delegated, coAuthors, risk, verification, spec, agentRun, agentAssets, commitDay] = l.split('\t');
+        const [hash, authorName, authorEmail, delegated, coAuthors, risk, verification, agentRun, agentAssets, commitDay] = l.split('\t');
         return [
           hash,
           {
@@ -1644,7 +1660,8 @@ if (isMain) {
             risk: (risk ?? '').split(',')[0].trim() || null,
             verification: (verification ?? '').trim() || null,
             // 仕様の識別子(F-NNN)。様式の例(F-xxx)は数えない
-            specs: [...new Set(((spec ?? '').match(/F-\d+/g) ?? []))],
+            // 読む段落は本文の末尾の段落だけ(下の specOf。ADR-0172 決定3)
+            specs: specOf.get(hash)?.specs ?? [],
             // 実行の記録のトレーラ(agent-run-record.mjs。IMPL-0207・IMPL-1019)と、コミットの日(切り替えの期間との突合に使う)
             agentRun: (agentRun ?? '').split(',')[0].trim() || null,
             agentAssets: (agentAssets ?? '').split(',')[0].trim() || null,
@@ -5848,7 +5865,7 @@ if (isMain) {
       label: '全ゲートの通過記録',
       machine: 'partial',
       result:
-        `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件。` +
+        `G-5: ${g5Summary}。G-6: ${g6Summary}。G-4: トレーラ Spec が指す仕様 ${specTotal} 件のうち、機能仕様承認の判定記録が無い ${specsWithoutG4.length} 件${specOutside.length ? `(本文の末尾の段落の外に \`Spec:\` 行を持つコミット ${specOutside.length} 件は数えていない。表示だけで、欠落に数えない)` : ''}。` +
         `判断記録の再検査(範囲で変わった判断記録。G-3 で判定した版との比較): 一致 ${decisionRecheckInfo.match} / 不一致 ${decisionRecheckInfo.mismatch} / 未確認 ${decisionRecheckInfo.unconfirmed}(文字列の一致までで、意味の変更かは確かめない。実証なし)。` +
         `確定した版の再確認(範囲で変わった機能仕様): 一致 ${specRecheckInfo.match} / 不一致 ${specRecheckInfo.mismatch} / 未確認 ${specRecheckInfo.unconfirmed}(未確認は欠落に数えない。出荷判定者が判定記録の版と突合する)。` +
         `当該${period ? '期間' : '出荷の範囲'}の判定記録の件数: ${gatesInRange.map((g) => `${g.label} ${g.records}`).join(' / ') || 'なし'}`,
@@ -5944,6 +5961,8 @@ if (isMain) {
   }
   // 開示の表(assurance.continuity.core)も、名と同じ終点の記録で読む(同じ出力の中で、表と名が別の時点を示さない。ADR-0147)
   assurance.continuity.core = recCore.map((c) => ({ name: c.name, holders: c.holders.length, uncounted: c.uncounted.length, uncountedDetail: c.uncounted }));
+  // 保持者が1名以下のコア機能の是正の行(IMPL-0645)。名と同じ終点の引き継ぎ文書と、同じ終点の技術負債台帳を渡す(2つの記録の版を揃える)。表示だけ。記載の欠落・G-7・委任の判定に数えない(3.4.3 要求事項7)
+  assurance.continuity.coreRemediation = coreRemediationState({ core: recCore, ledgerText: recordAt(debtFile) });
   if (!recPolicy.present) recordUnverifiable.push(`${POLICY_FILE} が無く(層1 なし)、層1 の記名者と事業決裁者の同一性を確かめられません`);
   else if (recPolicy.signerIsBizApprover) recordDepartures.push({ label: '層1 の記名者が事業決裁者の席の責任者と同一(テンプレ11 の要求事項5)', derived: 'policy-signer-biz-approver' });
   const claimForRange = {
@@ -6003,6 +6022,8 @@ if (isMain) {
     criteria,
     gatesInRange,
     specsWithoutG4,
+    // 末尾の段落の外に `Spec:` 行を持つコミットの件数(数えていない。表示だけ。process-compass #348 項5)
+    specOutsideParagraph: specOutside.length,
     // 確定した版の再確認(IMPL-0241)。機能ごとの3値と未確認の理由
     specRecheck: specRecheckInfo,
     decisionRecheck: decisionRecheckInfo,
@@ -6254,6 +6275,10 @@ if (isMain) {
       R.push(`- 席の責任者本人の AI を使わない力量の確認(3.4.3 要求事項1。任命時と層1 の周期): ${text}`);
     }
     R.push(`- コア機能の理解保持者(本人以外の者が日付を付けて確認した人): ${ct.core.length ? ct.core.map((c) => `${c.name} ${c.holders} 名${c.holders <= 1 ? '(1名以下)' : ''}${c.uncounted ? `。数えなかった ${c.uncounted} 名` : ''}`).join(' / ') : '記載なし'}`);
+    if (ct.coreRemediation?.checked?.length) {
+      const lines = coreRemediationLines(ct.coreRemediation);
+      R.push(`- コア機能の是正の行(技術負債台帳。標準 3.4.3 要求事項6。表示だけ。出荷・記載の欠落・委任の判定に数えない): ${lines.length ? lines.join(' / ') : `保持者が1名以下のコア機能 ${ct.coreRemediation.checked.map((n) => `「${n}」`).join('・')} に是正の行がある(返却の目安の期限と責任者の中身は機械で確かめない)`}`);
+    }
     if (ct.emergencyBlank !== null) R.push(`- 有事の決定者(D-0 節7): ${ct.emergencyBlank ? `**空欄 ${ct.emergencyBlank} 欄(記載の欠落)**` : '12欄すべて記入'}`);
     for (const h of A.stopHolds ?? []) R.push(`- **停止の申し立ての保留**: ${h.target}(未解除。出荷の証跡の集約を失敗させた。判定記録は作らない)`);
     if ((A.stopHistoryUnread ?? []).length) R.push(`- 停止の申し立ての付け外しの履歴を読めなかった PR: ${A.stopHistoryUnread.map((n) => `#${n}`).join(', ')}(いま付いているラベルだけで判定した)`);
@@ -6696,6 +6721,8 @@ if (isMain) {
       }
       for (const t of au.types) R.push(`  - ${t.id}: ${reworkText(t)}`);
       for (const n of au.notes ?? []) R.push(`  - 評価の時点: ${n}`);
+      // 欠陥の台帳の登録外の ID(process-compass #348 §1.6)。外へ渡す形は件数だけ
+      for (const t of defectUnregisteredDisclosure(au, { external })) R.push(`  - ${t}`);
       if (au.cap?.reason) R.push(`  - 上限の理由: ${au.cap.reason}`);
     }
     R.push('');

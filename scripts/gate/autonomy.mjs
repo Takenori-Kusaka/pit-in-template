@@ -1097,6 +1097,21 @@ export function readHandoverVersions({ root = ROOT, until = null } = {}) {
   }
 }
 
+/** 欠陥の台帳の登録外の ID を含む行の注記の文(次の一手と保証の開示が同じ文を使う。process-compass #348 §1.6) */
+export function defectUnregisteredText(u) {
+  return `欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。AI 起因が「あり」で発生日のある行で取り下げた種別なら、残りの種別は事象の日より後の登録の判定で戻る(発生日の無い行は、発生日を記入するまで、原因を特定できない行は、原因を特定するまで止まる)。行の記録は書き換えない`;
+}
+
+/**
+ * 保証の開示の項目3 の、欠陥の台帳の登録外の ID の行(process-compass #348 §1.6)。空欄と同じ扱いで止めている行を、止める理由とは別に1行ずつ出す。
+ * 組織の外へ渡す形(external)は件数だけで、行の ID と種別の名を出さない
+ */
+export function defectUnregisteredDisclosure(state, { external = false } = {}) {
+  const rows = state?.defectUnregistered ?? [];
+  if (external) return rows.length ? [`欠陥の台帳に、登録の一覧に無い変更種別の ID を書いた行 ${rows.length} 件(空欄と同じ扱い)`] : [];
+  return rows.map((u) => defectUnregisteredText(u));
+}
+
 /**
  * 登録した変更種別ごとの注記の文(次の一手と保証の開示の内側で使う)。判定不能を「異常なし」と書かない。
  * external を真にすると、停止の原因を区分だけで示す
@@ -1122,9 +1137,7 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   for (const u of state.coreUnregistered ?? []) {
     out.push(`AI自律レベル: ${HANDOVER_FILE} の節2 のコア機能「${u.name}」の「関わる登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い)。この機能は空欄と同じ扱いで、理解保持者数が1名以下のあいだ、すべての登録した変更種別を止める`);
   }
-  for (const u of state.defectUnregistered ?? []) {
-    out.push(`AI自律レベル: 欠陥の台帳(${DEFECT_FILE})の ${u.id || '(ID なし)'} の「登録した変更種別」に、登録の一覧に無い ID「${u.ids.join('・')}」がある(書き誤りの疑い、または取り下げた種別)。この行は空欄と同じ扱いで、AI 起因の運用の事象なら、すべての登録した変更種別を止める。書き誤りなら直す。AI 起因が「あり」で発生日のある行で取り下げた種別なら、残りの種別は事象の日より後の登録の判定で戻る(発生日の無い行は、発生日を記入するまで、原因を特定できない行は、原因を特定するまで止まる)。行の記録は書き換えない`);
-  }
+  for (const u of state.defectUnregistered ?? []) out.push(`AI自律レベル: ${defectUnregisteredText(u)}`);
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
   return out;
 }

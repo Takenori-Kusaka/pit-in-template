@@ -703,6 +703,17 @@ export function coreRemediationState({ core, ledgerText }) {
   return out;
 }
 
+/**
+ * coreRemediationState の結果を、表示の文にする(次の一手と保証の開示の項目7 が同じ文を使う。IMPL-0645)。
+ * 台帳が無ければ「確かめられない」を1つ、行が無ければ機能ごとに1つ。保持者が1名以下のコア機能が無ければ空。表示だけで、止める条件にも記載の欠落にも数えない
+ */
+export function coreRemediationLines(st) {
+  if (!st?.checked?.length) return [];
+  const mark = '印(対象の先頭 `コア理解:`)の無い行は是正の行として見分けない';
+  if (st.ledger === 'absent') return [`技術負債台帳(docs/debt-ledger.md)が無く、コア機能 ${st.checked.map((n) => `「${n}」`).join('・')} の是正の行の登録を確かめられない(標準 3.4.3 要求事項6)。${mark}`];
+  return st.missing.map((n) => `技術負債台帳に、コア機能「${n}」の是正の行(区分「負債」、対象 \`コア理解: ${n}\`、返却の目安に期限と責任者)が無い(標準 3.4.3 要求事項6)。${mark}。表示だけで、止める条件にも記載の欠落にも数えない`);
+}
+
 /** 非推奨の兼務の注記の文(/pit・構成の生成の出力・証跡の集約で同じ文を使う) */
 export function discouragedText(p, { recorded = null } = {}) {
   return (

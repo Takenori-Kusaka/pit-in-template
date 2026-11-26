@@ -409,6 +409,59 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   check('外へ渡す形: 列挙に無い離脱は件数だけで、内容(保持者の名)を出さない。内部の品質レポートは内容を出す', factsLineOf(c1.__full.external).includes(`${c1.unlistedDepartures.length} 件(内容は外へ出さない)`) && !/名簿 [甲乙]/.test(factsLineOf(c1.__full.external)) && /保持者が1名以下/.test(factsLineOf(c1.__full.report)), `${factsLineOf(c1.__full.external)}
 ${factsLineOf(c1.__full.report)}`);
 
+  // ---- 集約の側(process-compass #348 の単位 Z4): IMPL-0645 の1行・トレーラ Spec の読み方・欠陥の台帳の登録外の ID の表示
+  const aggWith = (files, msgs = []) => {
+    const w = workspace();
+    w.commit('chore: template');
+    w.writeJson('process.config.json', sealed(issued));
+    w.commit('chore: init');
+    fs.mkdirSync(path.join(w.dir, 'docs'), { recursive: true });
+    for (const f of ['docs/handover.md', 'docs/quality-assurance-policy.md']) fs.rmSync(path.join(w.dir, f), { force: true });
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(w.dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(w.dir, rel), text);
+    }
+    w.git('add', '-A');
+    w.git('commit', '-q', '--allow-empty', '-m', 'chore: records');
+    msgs.forEach((m, i) => {
+      fs.writeFileSync(path.join(w.dir, `f${i}.txt`), String(i));
+      w.git('add', '-A');
+      w.git('commit', '-q', '-m', m);
+    });
+    w.node('scripts/gate/aggregate-evidence.mjs');
+    const ev = w.readJson('evidence/evidence.json');
+    const out = { ev, gaps: ev.gaps, report: fs.readFileSync(path.join(w.dir, 'evidence/quality-report.md'), 'utf8'), get disclosure() { return this.report; }, external: fs.readFileSync(path.join(w.dir, 'evidence/assurance-disclosure.external.md'), 'utf8') };
+    w.done();
+    return out;
+  };
+  const LEDGER_HEAD = ['| ID | 区分 | 対象 | 内容 | 受容した理由 | 顕在化の兆候 | 返却の目安 | 状態 | 記録者 | 承認した者 |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'];
+  const ledgerOf = (...rows) => ['# 技術負債台帳', '', ...LEDGER_HEAD, ...rows].join('\n') + '\n';
+  const REM = '| D-001 | 負債 | コア理解: 決済 | 決済の理解を2名にする | 人員 | 離脱 | S2 移行時。責任者 佐藤 花子 | 未返却 | 山田 太郎 | — |';
+  const lineOf = (text) => (text.match(/^- コア機能の是正の行.*$/m) || [''])[0];
+  const aNone = aggWith(ONE);
+  const aMiss = aggWith({ ...ONE, 'docs/debt-ledger.md': ledgerOf() });
+  const aOk = aggWith({ ...ONE, 'docs/debt-ledger.md': ledgerOf(REM) });
+  // IMPL-0645:ng(違反の入力: 保持者1名で是正の行が無い / 台帳が無い)
+  check('集約(IMPL-0645): 台帳に是正の行が無ければ、保証の開示に機能の名と「が無い」を出す', /「決済」の是正の行/.test(lineOf(aMiss.disclosure)) && /が無い/.test(lineOf(aMiss.disclosure)), lineOf(aMiss.disclosure));
+  check('集約(IMPL-0645): 台帳が無ければ「確かめられない」と出し、0 件と出さない', /確かめられない/.test(lineOf(aNone.disclosure)), lineOf(aNone.disclosure));
+  // IMPL-0645:ok(適合の入力: 是正の行がある。表示は残る)
+  check('集約(IMPL-0645): 是正の行があれば「是正の行がある」と出し、中身は機械で確かめない旨を添える', /に是正の行がある/.test(lineOf(aOk.disclosure)) && /機械で確かめない/.test(lineOf(aOk.disclosure)), lineOf(aOk.disclosure));
+  check('集約(IMPL-0645): 台帳の行の有無で表示が変わる(範囲の終点の版の台帳を読む)', lineOf(aOk.disclosure) !== lineOf(aMiss.disclosure));
+  // 表示だけ: 記載の欠落・未確認の一覧に数えない(要求事項7)
+  check('集約(IMPL-0645): 是正の行が無くても、台帳の行の有無で欠落の一覧の件数は変わらず、是正の行を欠落に数えない', aMiss.gaps.length === aOk.gaps.length && ![aMiss, aOk, aNone].some((x) => x.gaps.some((g) => /是正の行|要求事項6/.test(g))), String(aMiss.gaps.length));
+
+  // トレーラ Spec は本文の末尾の段落だけを読む(ADR-0172 決定3)。値の形は緩く保つ
+  const g4Line = (a) => (a.disclosure.match(/G-4: トレーラ Spec が指す仕様 [0-9]+ 件.*?無い [0-9]+ 件(?:\(.*?\))?。/) || [''])[0];
+  const mid = aggWith({}, ['feat: a\n\nSpec: F-001 / Task-1\n\nCo-Authored-By: Claude <c@example.com>']);
+  // ng(違反の入力: 中の段落の Spec は仕様に数えず、件数を出す)
+  check('集約(Spec): 中の段落の Spec は仕様に数えず、持つコミットの件数を出す', /仕様 0 件/.test(g4Line(mid)) && /末尾の段落の外に .Spec:. 行を持つコミット 1 件/.test(g4Line(mid)), g4Line(mid));
+  const last = aggWith({}, ['feat: b\n\nSpec: F-002']);
+  // ok(適合の入力: 末尾の段落で、タスクを欠く行も仕様を指すものとして数える。G-4 の要否が消えない)
+  check('集約(Spec): 末尾の段落の Spec: F-002(タスクなし)は仕様に数え、段落の外の件数は出さない', /仕様 1 件/.test(g4Line(last)) && !/段落の外/.test(g4Line(last)), g4Line(last));
+  const lastFull = aggWith({}, ['feat: c\n\nSpec: F-003 / Task-2\nCo-Authored-By: Claude <c@example.com>']);
+  check('集約(Spec): 末尾の段落の Spec: F-003 / Task-2 は仕様に数える(手戻り率の読み方と同じ段落)', /仕様 1 件/.test(g4Line(lastFull)), g4Line(lastFull));
+
+
   // 保持者の数え方(ADR-0147 決定2。独立の突合 1巡目 高-1・中-1)。層1 は様式を写し、記名者(事業決裁者でない人)と力量の確認の周期だけを埋める
   const tpl11 = fs.readFileSync(path.join(ROOT, 'templates/11-quality-assurance-policy.md'), 'utf8').replace(/\r\n/g, '\n');
   const signed = tpl11.replace(/^\| 記名\(記名者\) \|.*$/m, '| 記名(記名者) | 名簿 丁 |').replace(/^\| 記名日 \|.*$/m, '| 記名日 | 2026-10-01 |');

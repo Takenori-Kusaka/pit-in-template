@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ROOT, changeTypeProblems, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
-import { l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
+import { defectUnregisteredDisclosure, l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
@@ -1202,6 +1202,13 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('欠陥の台帳 G: 登録外の ID だけの行は、両方が止まる(空欄と同じ扱い)', g.a === true && g.b === true);
   check('欠陥の台帳 G: 理由に行の ID・登録外の ID・「空欄と同じ扱い」・戻し方を出す', /BUG-9/.test(g.reasons) && /存在しない種別/.test(g.reasons) && /空欄と同じ扱い/.test(g.reasons) && /取り下げた種別の行なら/.test(g.reasons) && /行の記録は書き換えない/.test(g.reasons));
   check('欠陥の台帳 G: defectUnregistered に行と ID を出し、次の一手の注記に出る', g.st.defectUnregistered.length === 1 && g.st.defectUnregistered[0].id === 'BUG-9' && g.st.defectUnregistered[0].ids.join() === '存在しない種別' && /BUG-9/.test(autonomyNoteLines(g.st).join('\n')) && /存在しない種別/.test(autonomyNoteLines(g.st).join('\n')));
+  // 保証の開示(集約の項目3)の行。内部は行の ID と登録外の ID と戻し方、外へ渡す形は件数だけ(process-compass #348 の単位 Z4)
+  const gd = defectUnregisteredDisclosure(g.st);
+  check('欠陥の台帳 G: 保証の開示の行に行の ID・登録外の ID・「空欄と同じ扱い」・「書き換えない」を出す', gd.length === 1 && /BUG-9/.test(gd[0]) && /存在しない種別/.test(gd[0]) && /空欄と同じ扱い/.test(gd[0]) && /書き換えない/.test(gd[0]), gd.join('|'));
+  const gx = defectUnregisteredDisclosure(g.st, { external: true });
+  check('欠陥の台帳 G: 組織の外へ渡す形は件数だけで、行の ID と登録外の ID を出さない', gx.length === 1 && /1 件/.test(gx[0]) && !/BUG-9|存在しない種別/.test(gx[0]), gx.join('|'));
+  check('欠陥の台帳 E: 登録外の ID が無ければ、保証の開示に行を出さない(内部も外へ渡す形も)', defectUnregisteredDisclosure(e.st).length === 0 && defectUnregisteredDisclosure(e.st, { external: true }).length === 0);
+  check('欠陥の台帳: 次の一手の注記と保証の開示は同じ文を使う', autonomyNoteLines(g.st).some((l) => l.endsWith(gd[0])));
   // H
   const h = run([first, '存在しない種別']);
   check('欠陥の台帳 H: 登録の ID と登録外の ID が混ざる行は、両方が止まる', h.a === true && h.b === true);

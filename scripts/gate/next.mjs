@@ -57,7 +57,7 @@ import { autonomyState, readAutonomyRecords, autonomyNoteLines, specTrailersOf, 
 import { lastParagraph } from './check-pr.mjs';
 import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
-import { readPolicy, continuityState, coreRemediationState, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
+import { readPolicy, continuityState, coreRemediationState, coreRemediationLines, readSeededRecord, aiIdentityMismatch, humanFinderState, competenceState, appointmentConfirmationState, readEnvCheck, checkAuthority, coreReviewText, qaAffiliationText } from './org-assurance.mjs';
 import { clJudgmentState, clJudgmentText, clStopText, gateRecordsForCl } from './cl-judgment.mjs';
 
 /**
@@ -1469,11 +1469,7 @@ function localLedgerText() {
 
 /** コア機能の是正の行の案内(IMPL-0645)。台帳が無ければ「確かめられない」、行が無ければ機能ごとに1行。印の無い行は見分けない旨を添える */
 export function coreRemediationNotes(core, ledgerText) {
-  const st = coreRemediationState({ core, ledgerText });
-  if (!st.checked.length) return [];
-  const mark = '印(対象の先頭 `コア理解:`)の無い行は是正の行として見分けない';
-  if (st.ledger === 'absent') return [`技術負債台帳(docs/debt-ledger.md)が無く、コア機能 ${st.checked.map((n) => `「${n}」`).join('・')} の是正の行の登録を確かめられない(標準 3.4.3 要求事項6)。${mark}`];
-  return st.missing.map((n) => `技術負債台帳に、コア機能「${n}」の是正の行(区分「負債」、対象 \`コア理解: ${n}\`、返却の目安に期限と責任者)が無い(標準 3.4.3 要求事項6)。${mark}。表示だけで、止める条件にも記載の欠落にも数えない`);
+  return coreRemediationLines(coreRemediationState({ core, ledgerText }));
 }
 
 /**
