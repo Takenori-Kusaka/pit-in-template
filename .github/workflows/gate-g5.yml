@@ -197,6 +197,8 @@ jobs:
       - run: node scripts/gate/test-adapter.mjs
       # ライセンス検査の実施記録と項目4 の表示: 空のコマンド・対象なしの通過を実施と記録・表示しない(標準 第4章 G-5。process-compass #330 T-8 / IMPL-0995)
       - run: node scripts/gate/test-license-scan.mjs
+      # python の依存ライセンス検査: pip-licenses の自由文の名前(許可済みの MPL-2.0・PSF)を許可し、許可に無い式は違反にする(process-compass #361 N-5)
+      - run: node scripts/gate/test-ip-clearance-python.mjs
       # 項目4 の未実施・未測定の継続期間(検査ごとの起点と回数。表示だけで合否に使わない。標準 第4章 G-5。process-compass #330 T-1・T-2 / IMPL-0993)
       - run: node scripts/gate/test-unrun-streak.mjs
       # 製品のすべてのスタック: 製品のコードのスタック(目印と拡張子の集計)と、宣言したスタック + 除外の突き合わせ。除外の記名・区分・

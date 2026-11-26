@@ -109,8 +109,16 @@ function tokenize(str) {
   return tokens;
 }
 
+// pip-licenses は SPDX 式でなく、パッケージの自由文(例: "Mozilla Public License 2.0 (MPL 2.0)"・"Python Software Foundation License")を返すことがある。
+// 自由文を語に分割すると対応表に届く前に不許可になる(process-compass #361 N-5)。演算子(AND・OR・WITH)・複数の列挙(; ,)を含まない
+// 1つの名前は、先に全体を対応表へ当てる。許可に合わなければ従来どおり式として評価する(許可の側へ広げるのは、全体が許可の名に当たるときだけ)
+function isSingleName(str) {
+  return !/[;,]/.test(str) && !/(^|\s)(AND|OR|WITH)(\s|$)/.test(str);
+}
+
 // Evaluate SPDX license expression with exact logic (AND requires both, OR requires at least one)
 function evaluateSPDX(str, checkFn) {
+  if (str && isSingleName(str) && checkFn(str)) return true;
   const tokens = tokenize(str);
   if (tokens.length === 0) return false;
 
