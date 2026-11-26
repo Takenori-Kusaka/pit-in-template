@@ -19,6 +19,10 @@ import {
 import { queryEntry, queryAll } from './dependency-provenance.mjs';
 import { buildReport, resolutionState, UNMARKED_ROW_LIMIT } from './dependency-diff.mjs';
 
+// IMPL-1037:ng(違反と適合の対。標準の実装マーク。process-compass #455): 照会せず・取得できず・対象外・公開者の変更・証明の退行の行に印が付く
+// IMPL-1037:ok(違反と適合の対): 印の付かない行(照会できて変化の無い行)は印なしで出る
+// IMPL-1038:ng(違反と適合の対): 検証が失敗した名前の行に「検証の失敗」の印が付く
+// IMPL-1038:ok(違反と適合の対): 検証が成功した出力は失敗の名前を持たない
 let failures = 0;
 let checks = 0;
 function check(name, ok, detail = '') {

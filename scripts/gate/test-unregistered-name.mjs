@@ -56,10 +56,10 @@ function workspace(stack) {
   const adapter = JSON.parse(fs.readFileSync(path.join(ROOT, 'adapters/node.json'), 'utf8'));
   check('アダプタ node の install は空でなく、npm ci である(解決が走る構成)', adapter.commands.install === 'npm ci', adapter.commands.install);
   const run = workspace('node');
-  // IMPL-E:ng(違反と適合の対。未登録の名前を足した構成で、依存の取得の段が失敗する)
+  // IMPL-1041:ng(違反と適合の対。標準の実装マーク。process-compass #455): 未登録の名前を足した構成で、依存の取得の段が失敗する
   const ng = run();
   check('未登録の名前(レジストリが 404)で、install の段は 0 以外の終了コードで終わる', ng.code !== 0 && /404/.test(ng.out), ng.out);
-  // IMPL-E:ok
+  // IMPL-1041:ok(違反と適合の対): 名前が解決できる構成では依存の取得の段が通る
   const ok = run({ FAKE_NPM: 'ok' });
   check('名前が解決できる構成では、install の段は通る(対の確認)', ok.code === 0, ok.out);
 }

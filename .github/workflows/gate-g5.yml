@@ -197,7 +197,7 @@ jobs:
       - run: node scripts/gate/test-adapter.mjs
       # 依存の一覧(基準8)の解析・照会・印・表示。ネットワークを使わない(照会は差し替えた応答。process-compass #455 / IMPL-1037)
       - run: node scripts/gate/test-dependency-diff.mjs
-      # 未登録の名前が依存の取得で失敗し G-5 が落ちる結線(標準 ADR-0044 決定5 の前提。process-compass #455 / IMPL-1040)
+      # 未登録の名前が依存の取得で失敗し G-5 が落ちる結線(標準 ADR-0044 決定5 の前提。process-compass #455 / IMPL-1041)
       - run: node scripts/gate/test-unregistered-name.mjs
       # ライセンス検査の実施記録と項目4 の表示: 空のコマンド・対象なしの通過を実施と記録・表示しない(標準 第4章 G-5。process-compass #330 T-8 / IMPL-0995)
       - run: node scripts/gate/test-license-scan.mjs
