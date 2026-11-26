@@ -111,14 +111,32 @@ function tokenize(str) {
 
 // pip-licenses は SPDX 式でなく、パッケージの自由文(例: "Mozilla Public License 2.0 (MPL 2.0)"・"Python Software Foundation License")を返すことがある。
 // 自由文を語に分割すると対応表に届く前に不許可になる(process-compass #361 N-5)。演算子(AND・OR・WITH)・複数の列挙(; ,)を含まない
-// 1つの名前は、先に全体を対応表へ当てる。許可に合わなければ従来どおり式として評価する(許可の側へ広げるのは、全体が許可の名に当たるときだけ)
+// 1つの名前は、先に全体を対応表へ当てる。許可に合わなければ従来どおり式として評価する(許可の側へ広げるのは、全体が許可の名に当たるときだけ)。
+// 当てるのは部分一致(mapClassifier)でなく、下の対応表との全体の完全一致(大文字小文字を区別しない)。and・or・with は大文字小文字を区別せず区切りとして扱う
+const FREE_TEXT_NAMES = new Map([
+  ['mit license', 'mit'],
+  ['apache software license', 'apache-2.0'],
+  ['apache license 2.0', 'apache-2.0'],
+  ['apache license, version 2.0', 'apache-2.0'],
+  ['bsd license', 'bsd-3-clause'],
+  ['isc license', 'isc'],
+  ['isc license (iscl)', 'isc'],
+  ['python software foundation license', 'python-2.0'],
+  ['psf license', 'python-2.0'],
+  ['mozilla public license 2.0 (mpl 2.0)', 'mpl-2.0'],
+  ['mozilla public license 2.0', 'mpl-2.0'],
+]);
 function isSingleName(str) {
-  return !/[;,]/.test(str) && !/(^|\s)(AND|OR|WITH)(\s|$)/.test(str);
+  return !/[;,]/.test(str) && !/(^|\s)(and|or|with)(\s|$)/i.test(str);
+}
+function matchesWholeName(str) {
+  const mapped = FREE_TEXT_NAMES.get(str.toLowerCase().trim().replace(/\s+/g, ' '));
+  return mapped !== undefined && allowedLicenses.includes(mapped);
 }
 
 // Evaluate SPDX license expression with exact logic (AND requires both, OR requires at least one)
 function evaluateSPDX(str, checkFn) {
-  if (str && isSingleName(str) && checkFn(str)) return true;
+  if (str && isSingleName(str) && matchesWholeName(str)) return true;
   const tokens = tokenize(str);
   if (tokens.length === 0) return false;
 

@@ -38,7 +38,8 @@ for (const lic of ['Mozilla Public License 2.0 (MPL 2.0)', 'Python Software Foun
   check(`許可済みの「${lic}」は違反にしない`, r.status === 0, r.out);
 }
 // 違反: 許可に無い名前・式
-for (const lic of ['GNU General Public License v3 (GPLv3)', 'GPL-3.0', 'MIT AND GPL-3.0', 'Proprietary License', '']) {
+for (const lic of ['GNU General Public License v3 (GPLv3)', 'GPL-3.0', 'MIT AND GPL-3.0', 'Proprietary License', '',
+  'GPLv3 and MIT License', 'GPL-3.0 and Apache Software License', 'Proprietary (based on Apache License)', 'CC-BY-NC-4.0 with PSF parts']) {
   const r = run(lic);
   check(`許可に無い「${lic}」は違反にする`, r.status === 1 && /ライセンス違反/.test(r.out), r.out);
 }
