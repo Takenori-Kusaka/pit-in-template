@@ -300,7 +300,7 @@ const GENERATED_MARK = /@generated\b|Code generated .*DO NOT EDIT/;
 const SPEC_LINE = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/;
 const TRAILER_LINE = /^[A-Za-z][\w-]*:\s*\S/;
 const DEPENDENCY_BOTS = ['dependabot[bot]', 'renovate[bot]'];
-// 検証の語。アダプタ7種の主な書式を含む(#454 R-6): verify(・raises・should_panic・shouldBe・Go の t.Error*/t.Fatal*・Rust の assert!・JUnit の assert*)。
+// 検証の語。アダプタ(go・node・python 系)の書式と Rust・JUnit の主な書式を含む(#454 R-6): verify(・raises・should_panic・shouldBe・Go の t.Error*/t.Fatal*・Rust の assert!・JUnit の assert*)。
 // 文字列の中身と宣言の名前は数えない(isAssertionLine が先に除く。#454 R-2)
 const ASSERTION = /\b(expect|assert\w*|should|should_panic|shouldBe\w*|toBe|toEqual|toMatch\w*|toStrictEqual|toThrow\w*|toHaveBeenCalled\w*|Equal|Equals|raises|verify|require\.\w+|t\.(Error|Fatal)\w*)\b/;
 
@@ -2605,12 +2605,13 @@ export const TEST_ONLY_LIMIT = '検出の限界: 同じ PR で製品とテスト
  */
 export const INCOMPLETE_LIMIT =
   '検出の限界: 列挙した語(行注釈の中の TODO・FIXME・XXX と、NotImplementedError・NotImplementedException・todo!・unimplemented!・panic("not implemented")・throw new Error("not implemented") 相当)だけを、' +
-  '製品のコードの拡張子の追加行から拾う。文書・生成物・vendor・ロックファイルは読まない。列挙の外の語、空の本体・pass だけの本体・固定値を返すだけの本体、既存の行にある語、' +
+  '製品のコードの拡張子の追加行から拾う。行注釈の書式は拡張子で決める(// と /* と行頭の * は js・ts・go・rs・java・kt・php・cs・c 系など、# は py・rb・sh・ps1・ex・php、-- は sql・lua、<!-- は vue・svelte。' +
+  '複数行のブロック注釈の * の無い中間行と、文字列の中は読まない)。文書・生成物・vendor・ロックファイルは読まない。列挙の外の語、空の本体・pass だけの本体・固定値を返すだけの本体、既存の行にある語、' +
   '同じ PR で削除した行と同じ本文の追加行(移動・整形)は出ない。抽象の基底の未実装の例外や、負債台帳に記録済みの語も出る(偽陽性)。0 件は未完了が無いことを示さない';
 /** 検証の語を1つも持たない追加のテストのファイルの検出の限界の定型の文(#454。0 件でも出す)。第1文は R-3 で定めた文 */
 export const NO_ASSERTION_LIMIT =
   '検出の限界: ファイル単位の近似である。同じファイルに1つでも検証の語があれば、他の空のテストは出ない。0件は中身があることを示さない。' +
-  'テストのパス(.claude/guard.json の testPatterns)の外のファイルは対象外である。検証の語は列挙した語の照合で、題の文字列と宣言の名前は数えない。' +
+  'テストのパス(.claude/guard.json の testPatterns)の外のファイルは対象外である。検証の語は列挙した語の照合で、題の文字列・宣言の名前・行注釈の中の語は数えない(注釈の書式は拡張子で決める。複数行のブロック注釈の * の無い中間行は読めず、検証に数える)。' +
   '追加行だけを読むので、既存の部分にある検証や、検証を外へ委ねるヘルパの呼び出し・枠組み固有の検証は、一覧の判断を誤らせる(偽陽性・見逃し)。弱いアサーション・決め打ちは見ない';
 
 /** 製品のコードから外すパス(文書・生成物・vendor・ロックファイル) */
@@ -2627,11 +2628,37 @@ const TEST_DEFINITION = [/\b(?:it|test)(?:\.\w+)*\s*\(/, /^\s*(?:async\s+)?def\s
 const normLine = (t) => String(t).replace(/\s+/g, ' ').trim();
 
 /** 行注釈の部分を返す(無ければ null)。文字列の中身は先に除く */
-function commentTail(text) {
-  const t = maskLiterals(text);
-  const m = /(?:\/\/|\/\*|#)(.*)$/.exec(t);
-  if (m) return m[1];
-  return /^\s*\*/.test(t) ? t : null;
+/**
+ * 1行を コード部分と行注釈の部分に分ける(#454)。注釈の書式は拡張子で決める:
+ * `//`・`/*` = js/ts 系・go・rs・java・kt・php・cs・swift・scala・c/c++・dart・vue・svelte、`#` = py・rb・sh・ps1・ex・exs・php、
+ * `--` = sql・lua、`<!--` = vue・svelte。拡張子が分からないときは // と /* と #。C の #define・JS の this.#x・Rust の #[ は注釈に数えない。
+ * 文字列(引用符の中)は読み飛ばす。閉じない引用符は文字として進む(注釈の中の don't が語を隠さない)
+ */
+export function splitComment(text, file) {
+  const ext = (/\.(\w+)$/.exec(String(file ?? ''))?.[1] ?? '').toLowerCase();
+  const starts = [];
+  const slash = /^(?:m?[jt]sx?|cjs|go|rs|java|kt|kts|php|cs|swift|scala|c|cc|cpp|h|hpp|dart|vue|svelte)$/.test(ext);
+  const known = slash || /^(?:py|rb|sh|ps1|ex|exs|sql|lua)$/.test(ext);
+  if (slash || !known) starts.push('//', '/*');
+  if (/^(?:py|rb|sh|ps1|ex|exs|php)$/.test(ext) || !known) starts.push('#');
+  if (/^(?:sql|lua)$/.test(ext)) starts.push('--', '/*');
+  if (/^(?:vue|svelte)$/.test(ext)) starts.push('<!--');
+  const t = String(text ?? '');
+  let i = 0;
+  while (i < t.length) {
+    const c = t[i];
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < t.length && t[j] !== c) j += t[j] === '\\' ? 2 : 1;
+      if (j < t.length) { i = j + 1; continue; }
+      i++;
+      continue;
+    }
+    const st = starts.find((x) => t.startsWith(x, i));
+    if (st) return { code: t.slice(0, i), comment: t.slice(i + st.length) };
+    i++;
+  }
+  return { code: t, comment: (slash || !known) && /^\s*\*/.test(t) ? t : null };
 }
 
 /**
@@ -2649,9 +2676,9 @@ export function incompleteMarkFindings({ diffText, isTest, atHead = () => null }
     for (const h of d.hunks) {
       for (const l of h.lines) {
         if (l.type !== '+' || removed.has(normLine(l.text))) continue;
-        const tail = commentTail(l.text);
+        const { code, comment: tail } = splitComment(l.text, d.file);
         let word = tail === null ? null : (INCOMPLETE_WORD.exec(tail)?.[0] ?? null);
-        if (word === null && !COMMENT_LINE.test(l.text)) word = INCOMPLETE_THROW.find((re) => re.test(l.text))?.exec(l.text)[0] ?? null;
+        if (word === null) word = INCOMPLETE_THROW.find((re) => re.test(code))?.exec(code)[0] ?? null;
         if (word) out.push({ file: d.file, line: l.line, word: word.trim(), text: l.text.trim().slice(0, 160) });
       }
     }
@@ -2921,8 +2948,10 @@ export function weakeningFindings({ diffText, isTest, atHead, atBase, body = '',
     // 追加のテストのファイル単位の近似(#454 R-3): 追加行にテストの定義の語があり、検証の語が1つも無いファイル
     {
       const added = d.hunks.flatMap((h) => h.lines.filter((l) => l.type === '+'));
-      const defs = added.filter((l) => (!COMMENT_LINE.test(l.text) || /^\s*#\[/.test(l.text)) && TEST_DEFINITION.some((re) => re.test(maskLiterals(l.text)))).length;
-      const checks = added.filter((l) => isAssertionLine(l.text)).length;
+      // 注釈の中の語は、定義にも検証にも数えない(注釈にしただけの検証で、空のテストを隠さない。#454 X-2)
+      const codeOf = (l) => splitComment(l.text, d.file).code;
+      const defs = added.filter((l) => TEST_DEFINITION.some((re) => re.test(maskLiterals(codeOf(l))))).length;
+      const checks = added.filter((l) => ASSERTION.test(stripDeclNames(maskLiterals(codeOf(l))))).length;
       if (defs > 0 && checks === 0) out.noAssertionTests.push({ file: d.file, tests: defs, isNew: !d.from || atBase(d.from) === null });
     }
     for (const h of d.hunks) {
@@ -3055,7 +3084,7 @@ export function renderG6Material(r) {
     L.push('### 製品のコードの追加行の未完了の語(G-6 の必須の確認事項。合否には使わない。リスク区分に依らず出す)', '');
     const im = w.incompleteMarks ?? [];
     L.push(`- 追加行の未完了の語: ${im.length} 件`);
-    for (const m of im.slice(0, 20)) L.push(`  - \`${esc(m.file)}:${m.line}\` ${esc(m.word)}: \`${esc(m.text)}\``);
+    for (const m of im) L.push(`  - \`${esc(m.file)}:${m.line}\` ${esc(m.word)}: \`${esc(m.text)}\``);
     L.push('', `> ${w.incompleteLimit ?? INCOMPLETE_LIMIT}`, '');
   }
   if (r.testOnly) {

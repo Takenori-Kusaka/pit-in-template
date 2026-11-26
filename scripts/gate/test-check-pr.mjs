@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ROOT } from './config.mjs';
 import { specSections, changedSpecSections } from './spec-sections.mjs';
 import { isProseDocument } from './check-pr.mjs';
-import { weakeningFindings } from './check-pr.mjs';
+import { weakeningFindings, incompleteMarkFindings } from './check-pr.mjs';
 import { analyzePr, renderTestChanges, renderG6Material, measureCommitSize, negativeCheckOf, removalProblems, approverFindings, tableSection, splitThresholdGlobs, controlTouchedBetween, controlTouchedOf, changeListBetween } from './check-pr.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-check-pr-'));
@@ -503,6 +503,47 @@ rewindBase();
     if (!ok) failures++;
     console.log(`${ok ? 'ok  ' : 'NG  '} 検証の書式: ${name}`);
   }
+}
+
+// 突合 1巡目の直し(#454 X-1〜X-5)
+{
+  const diffOf = (file, added) => `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${added.length} @@\n${added.map((x) => `+${x}`).join('\n')}\n`;
+  const mkNo = (file, added) => weakeningFindings({ diffText: diffOf(file, added), isTest: () => true, atHead: () => '', atBase: () => null }).noAssertionTests.length;
+  const mkInc = (file, added) => incompleteMarkFindings({ diffText: diffOf(file, added), isTest: () => false }).length;
+  const cases = [
+    // X-2: 注釈にしただけの検証は数えない
+    ['空のテスト: // expect だけは出す', mkNo('a.test.js', ["it('a', () => {", '  // expect(f()).toBe(1);', '});']) === 1],
+    ['空のテスト: pytest の # assert だけは出す', mkNo('test_a.py', ['def test_a():', '    # assert f() == 1', '    pass']) === 1],
+    ['空のテスト: 行末の注釈の expect だけは出す', mkNo('a.test.js', ["it('a', () => { f(); // expect(1)", '});']) === 1],
+    ['空のテスト: Rust の #[test] は定義に数える', mkNo('a_test.rs', ['#[test]', 'fn x() {}']) === 1],
+    ['空のテスト: コードの expect は検証に数える(注釈の語と区別)', mkNo('a.test.js', ["it('a', () => {", '  expect(f()).toBe(1); // ok', '});']) === 0],
+    // X-3: 拡張子ごとの注釈の書式
+    ['未完了の語: sql の -- TODO', mkInc('db/a.sql', ['-- TODO: index']) === 1],
+    ['未完了の語: lua の -- TODO', mkInc('src/a.lua', ['-- TODO: x']) === 1],
+    ['未完了の語: vue の <!-- TODO -->', mkInc('src/A.vue', ['<!-- TODO: layout -->']) === 1],
+    ['未完了の語: py の # TODO', mkInc('src/a.py', ['x = 1  # TODO: y']) === 1],
+    ['未完了の語: js の -- は注釈ではない', mkInc('src/a.js', ['i--; // 減算', 'const t = a --b; TODO']) === 0],
+    // X-4: # を注釈に数えない拡張子
+    ['未完了の語: C の #define XXX は出さない', mkInc('src/a.c', ['#define XXX 1']) === 0],
+    ['未完了の語: JS の this.#XXX は出さない', mkInc('src/a.js', ['this.#XXX = 1;']) === 0],
+    ['未完了の語: py の文字列の中の # は注釈ではない', mkInc('src/a.py', ['s = "# TODO"']) === 0],
+    // X-5: 注釈の中のアポストロフィが語を隠さない
+    ['未完了の語: アポストロフィの後ろの TODO', mkInc('src/a.js', ["// don't TODO isn't"]) === 1],
+  ];
+  for (const [name, ok] of cases) {
+    n++;
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'NG  '} ${name}`);
+  }
+  // X-1: 未完了の語の一覧は 20 行で切らない(裁定 2)
+  n++;
+  const many = Array.from({ length: 25 }, (_, i) => `// TODO: item${i}`);
+  const found = incompleteMarkFindings({ diffText: diffOf('src/big.js', many), isTest: () => false });
+  const md = renderG6Material({ weakening: { newTestFiles: [], strictErrors: [], notes: [], expectation: { section: null, rows: [], unlisted: [] }, skips: [], xfails: [], removedAssertions: [], pairs: [], noAssertionTests: [], incompleteMarks: found, limit: '' }, testOnly: null });
+  const shown = md.split('\n').filter((l) => /src\/big\.js:\d+/.test(l)).length;
+  const okMany = found.length === 25 && shown === 25;
+  if (!okMany) failures++;
+  console.log(`${okMany ? 'ok  ' : 'NG  '} 未完了の語: 25 件を全件出す(${shown} 行)`);
 }
 
 // 期待値の改めの根拠(PR 本文の `## 期待値の改め`。合否に使わない)
