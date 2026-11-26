@@ -1651,7 +1651,9 @@ function envCheck() {
       items.ruleset = { status: 'mismatch', detail: `既定ブランチ ${branch} に効いているルールセットが無い(読めた一覧が空。.github/rulesets/${ruleset ?? 'checks-only'}.json を人が適用する)。pull_request の規則が無い: 既定ブランチへの直接の push を禁じていない。標識を含むコミットの取り込み前の拒否(第5章 5.6.2 第2層)は PR の経路だけで働き、直接の push の経路では欠ける。出荷の時点は走査が止める(IMPL-0047)`, evidence: { rulesetIds: [], api, fetchedAt } };
       rsRead = { pr: null, checks: [], rulesetIds: [], api, fetchedAt };
     } else {
-      const pr = r.value.find((x) => x?.type === 'pull_request')?.parameters ?? null;
+      // pull_request の規則が複数のルールセットから重なって返るとき、実効は厳しい方(承認の数は最大、各設定はどれかが有効なら有効)。
+      // 最初の1つだけを読むと、実効が有効でも不一致と出す(process-compass #361 N-6)
+      const pr = mergePullRequestRules(r.value);
       const checks = r.value.filter((x) => x?.type === 'required_status_checks').flatMap((x) => x?.parameters?.required_status_checks ?? []).map((c) => c?.context).filter(Boolean);
       // 直接の push の欠けは、状態を変えずに詳細へ出す(G-6 の有効・無効に依らない。process-compass #356 / IMPL-0191)
       const prGap = !pr ? '既定ブランチへの直接の push を禁じていない。標識を含むコミットの取り込み前の拒否(第5章 5.6.2 第2層)は PR の経路だけで働き、直接の push の経路では欠ける。出荷の時点は走査が止める(IMPL-0047)' : null;
@@ -2123,4 +2125,20 @@ if (isMain) {
     fail(e.message);
     process.exit(1);
   }
+}
+
+// 既定ブランチに効く pull_request の規則を、重なりを集約した1つの値にする。応答の値だけで決まる(複数の規則は GitHub が厳しい方を採る)。
+// 規則が無ければ null。承認の数は最大。dismiss_stale_reviews_on_push・require_last_push_approval・require_code_owner_review は、どれかが true なら true
+export function mergePullRequestRules(rules) {
+  const params = (Array.isArray(rules) ? rules : []).filter((x) => x?.type === 'pull_request').map((x) => x?.parameters ?? {});
+  if (!params.length) return null;
+  const counts = params.map((q) => Number(q.required_approving_review_count)).filter((n) => Number.isFinite(n));
+  const anyTrue = (key) => params.some((q) => q[key] === true);
+  return {
+    ...params[0],
+    required_approving_review_count: counts.length ? Math.max(...counts) : params[0].required_approving_review_count,
+    dismiss_stale_reviews_on_push: anyTrue('dismiss_stale_reviews_on_push'),
+    require_last_push_approval: anyTrue('require_last_push_approval'),
+    require_code_owner_review: anyTrue('require_code_owner_review'),
+  };
 }

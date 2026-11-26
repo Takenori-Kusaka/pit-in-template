@@ -176,6 +176,17 @@ if (process.platform === 'win32') {
     check('基底から読む判定: 項目の無い旧い記録は「確かめていない」として読む', rd.baseJudge?.status === 'unconfirmed' && /#371 より前/.test(rd.baseJudge?.detail ?? ''), JSON.stringify(rd.baseJudge));
   }
 
+  // #361 N-6: pull_request の規則が複数のルールセットから重なって返るとき、実効は厳しい方。最初の規則だけを読んで偽の不一致にしない
+  {
+    const loose = { type: 'pull_request', ruleset_id: 10, parameters: { required_approving_review_count: 1, dismiss_stale_reviews_on_push: false, require_last_push_approval: false, require_code_owner_review: false } };
+    // IMPL-0316:ok(適合: 先の規則が緩く、後の規則が厳しい重なり。実効は有効なので確認済み)
+    const overlap = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [loose, ...RULES_TEAM] } }));
+    check('重なった pull_request の規則は、厳しい方で判定する(先の規則が緩くても確認済み)', overlap.items.ruleset?.status === 'confirmed', JSON.stringify(overlap.items.ruleset));
+    // IMPL-0316:ng(違反: どの規則も緩い重なりは、不一致のまま)
+    const allLoose = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [loose, { ...loose, ruleset_id: 13 }, RULES_TEAM[0]] } }));
+    check('重なったどの pull_request の規則も緩ければ、不一致', allLoose.items.ruleset?.status === 'mismatch' && /dismiss_stale_reviews_on_push/.test(allLoose.items.ruleset?.detail ?? ''), JSON.stringify(allLoose.items.ruleset));
+  }
+
   // IMPL-0316:ng(違反の入力: 読めた空の一覧。読めなかった場合と区別して不一致にする)
   const empty = w.run(ghMap({ [`api repos/${R}/rules/branches/main`]: { stdout: [] } }));
   check('読めた空のルールセットの一覧は「不一致」(未確認でない)', empty.items.ruleset?.status === 'mismatch' && empty.code === 1 && /直接の push/.test(empty.items.ruleset?.detail ?? ''), JSON.stringify(empty.items.ruleset));
