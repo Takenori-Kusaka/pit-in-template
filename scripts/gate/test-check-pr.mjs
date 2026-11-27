@@ -441,7 +441,7 @@ const rW0 = scenario('弱める変更の無い PR でも、検出の限界の定
 // 題の文字列・宣言の名前を検証の語に数えない(R-2)。既存の IMPL-0204(削除行のアサーション)の場面を壊さないことは、上の場面が確かめる
 const NOASSERT = (r) => W(r).noAssertionTests ?? [];
 const INCOMPLETE = (r) => W(r).incompleteMarks ?? [];
-// IMPL-1043:ng(違反と適合の対。標準の実装マーク。process-compass #454。仮番号)
+// IMPL-1043:ng(違反と適合の対。標準の実装マーク。process-compass #454)
 scenario('検証の語の無い追加のテスト: 題の文字列の should だけのファイルを出す', {}, () => {
   write('test/e.test.js', "it('should do x', () => {});\n");
   write('src/c.js', lines(5, 'c'));
@@ -459,7 +459,7 @@ scenario('題の文字列の should は、削除したアサーションの対�
   write('test/a.test.js', read('test/a.test.js').replace('  expect(2).toBe(2);\n', "  it('should x', () => {});\n"));
   write('src/a.js', lines(21));
 }, passes(expect_((r) => W(r).removedAssertions.length === 1 && W(r).pairs.length === 0, (r) => `${JSON.stringify(W(r).removedAssertions)} / ${JSON.stringify(W(r).pairs)}`)));
-// IMPL-1042:ng(違反と適合の対。標準の実装マーク。process-compass #454。仮番号)
+// IMPL-1042:ng(違反と適合の対。標準の実装マーク。process-compass #454)
 scenario('未完了の語: 製品のコードの行注釈の TODO と未実装の例外を出す。文字列の中の語・文書・テストは出さない', {}, () => {
   write('src/c.js', "export const a = 1; // TODO: 後で\nexport function f() {\n  throw new Error('not implemented');\n}\nexport const s = 'TODO';\n");
   write('docs/note.md', '// TODO: 文書\n');
