@@ -4920,6 +4920,38 @@ if (isMain) {
       reject(`変化点の入力 ${changeFile} を読めません: ${e.message}`);
     }
     if (!isObject(change)) reject('変化点の入力は、JSON のオブジェクトで書きます');
+    // 人ごとに担う席の列挙(seatsByPerson)を、検証の前に席ごとの入力(seats.<席>.accountable)へ展開する。
+    // 以降の検証・兼務の開示・D-0 の席の表の生成は、席ごとの入力だけを読む。席ごとの入力と食い違うときは拒否する
+    if (change.seatsByPerson !== undefined) {
+      if (change.kind !== 'accountable') reject('seatsByPerson(人ごとに担う席の列挙)は、種別 accountable でだけ書けます');
+      const sbp = change.seatsByPerson;
+      if (!isObject(sbp)) reject('seatsByPerson は、人(名簿の氏名または id)をキーに、席(ロール ID)の配列を値にしたオブジェクトで書きます');
+      const expanded = {};
+      const conflicts = [];
+      for (const [person, roles] of Object.entries(sbp)) {
+        if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string')) {
+          conflicts.push(`seatsByPerson.${person} は、席(ロール ID)の文字列の配列で書きます`);
+          continue;
+        }
+        for (const r of roles) {
+          if (expanded[r] !== undefined && expanded[r] !== person) conflicts.push(`席 ${r} が seatsByPerson の複数の人(${expanded[r]} / ${person})に書かれています`);
+          else expanded[r] = person;
+        }
+      }
+      const seatInputs = isObject(change.seats) ? change.seats : {};
+      for (const [r, person] of Object.entries(expanded)) {
+        const direct = isObject(seatInputs[r]) ? seatInputs[r].accountable : undefined;
+        if (direct !== undefined && direct !== person) {
+          conflicts.push(`席 ${r} の責任者が、seatsByPerson(${person})と seats.${r}.accountable(${direct})で食い違います`);
+        }
+      }
+      if (conflicts.length) reject('seatsByPerson を受け付けられません', conflicts);
+      change.seats = { ...seatInputs };
+      for (const [r, person] of Object.entries(expanded)) {
+        change.seats[r] = { ...(isObject(change.seats[r]) ? change.seats[r] : {}), accountable: person };
+      }
+      delete change.seatsByPerson;
+    }
   }
 
   // --- 変化点を経ない書き換えの検出(要約値の連鎖) ---

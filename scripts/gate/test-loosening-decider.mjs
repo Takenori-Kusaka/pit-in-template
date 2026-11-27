@@ -95,6 +95,28 @@ try {
   );
   check('拒否した変化点は、構成を書き換えない', fs.readFileSync(cfgPath, 'utf8') === before);
 
+  // 人ごとに担う席の列挙(seatsByPerson)。検証の前に席ごとの入力へ展開する。食い違いは拒否する
+  const byPerson = (extra, args = []) => {
+    fs.writeFileSync(path.join(dir, 'change.json'), JSON.stringify({ summary: '席の責任者を人ごとに書く', decidedBy: A.name, reason: '試験', ...extra }));
+    const r = spawnSync(process.execPath, ['scripts/init/generate-profile.mjs', '--change', 'change.json', ...args], { cwd: dir, encoding: 'utf8', env });
+    return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  const strip = (s) => s.replace(/変化点の入力 [^\n]*\n?/g, '').trim();
+  const perPerson = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver', 'dev-verifier'], [X.name]: ['independent-reviewer'] } }, ['--dry-run']);
+  const perSeat = byPerson({ kind: 'accountable', seats: { 'biz-approver': { accountable: A.name }, 'dev-verifier': { accountable: A.name }, 'independent-reviewer': { accountable: X.name } } }, ['--dry-run']);
+  check(
+    '人ごとの席の列挙: 席ごとの入力と同じ構成・差分になる(兼務の開示と席の表は展開後から生成される)',
+    perPerson.ok && perSeat.ok && /accountable|責任者|席/.test(perPerson.out) && strip(perPerson.out) === strip(perSeat.out),
+    `${perPerson.out}\n----\n${perSeat.out}`
+  );
+  const clash = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver'] }, seats: { 'biz-approver': { accountable: X.name } } }, ['--dry-run']);
+  check('人ごとの席の列挙: 席ごとの入力と食い違うときは拒否する', !clash.ok && /食い違います/.test(clash.out), clash.out);
+  const dup = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver'], [X.name]: ['biz-approver'] } }, ['--dry-run']);
+  check('人ごとの席の列挙: 同じ席を複数の人に書くと拒否する', !dup.ok && /複数の人/.test(dup.out), dup.out);
+  const wrongKind = byPerson({ kind: 'mode', seatsByPerson: { [A.name]: ['biz-approver'] } }, ['--dry-run']);
+  check('人ごとの席の列挙: 種別 accountable 以外では拒否する', !wrongKind.ok && /種別 accountable でだけ/.test(wrongKind.out), wrongKind.out);
+  check('人ごとの席の列挙の試験は、構成を書き換えない', fs.readFileSync(cfgPath, 'utf8') === before);
+
   // IMPL-0115:ok D-0 表1 の決定者(事業決裁者の席の責任者)の記名なら受け付ける
   const ok = change(A.name);
   const after = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
