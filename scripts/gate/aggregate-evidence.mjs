@@ -2641,11 +2641,29 @@ if (isMain) {
     // 承認は、取り込んだ PR の先頭の版に対するものだけを数える(#296)。PR の記録に先頭が無ければ、版を確かめられない。
     // PR の記録(gh)が無く写しで対応づけた PR は、写しの head(record-copy.yml の head_sha)を先頭とする(#321 との統合)
     const headOid = api ? (api.headRefOid ?? null) : (headOfCopy(copyEntry?.copy) ?? null);
-    let independent = independentConfirmation(ins, reviews, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid, prLabel: `PR #${n} の承認` });
+    // 出荷の前の確認の形(変更の親の版の構成が approvalByPreRead)の変更は、取り込んだ後(取り込みの時刻より後)に付けた承認レビューを、
+    // 独立した確認の候補に入れない(出荷の前の確認は判定記録の様式で残し、出荷判定の記録より前に足す。取り込んだ後の承認レビューは、その前後の条件を当てられない)。
+    // 取り込みの時刻を読めなければ除かない。この形でない構成の数え方は変えない
+    const formAtParent = (() => {
+      const c = configAt(`${hash}^1`);
+      return Boolean(c) && approvalByPreRead(c);
+    })();
+    const formMergedMs = formAtParent ? Date.parse(String(rest?.mergedAt ?? copyEntry?.copy?.merged_at ?? (git(['log', '-1', '--format=%cI', hash]) || ''))) : NaN;
+    let lateApprovalsExcluded = 0;
+    const reviewsForConfirmation = Number.isFinite(formMergedMs)
+      ? reviews.filter((r) => {
+          const t = Date.parse(String(r?.submittedAt ?? r?.submitted_at ?? ''));
+          const late = String(r?.state ?? '').toUpperCase() === 'APPROVED' && Number.isFinite(t) && t > formMergedMs;
+          if (late) lateApprovalsExcluded++;
+          return !late;
+        })
+      : reviews;
+    let independent = independentConfirmation(ins, reviewsForConfirmation, (text) => refersToPr(text, n), { files: prFiles, at: `${hash}^`, headOid, prLabel: `PR #${n} の承認` });
+    if (lateApprovalsExcluded) independent = { ...independent, lateApprovalsExcluded };
     // 層の合わさり(IMPL-0498): 承認の無い下の層が先頭の祖先なら、確認ありに数えない
     const stackedVerdict = stackedLayers.verdicts.get(n);
     if (independent.counted && stackedVerdict) independent = { ...independent, counted: false, reason: stackedVerdict.reason, reasonText: `${UNCONFIRMED[stackedVerdict.reason]}(${stackedVerdict.detail})`, by: [], byLogins: [] };
-    const { last } = lastReviewStates(reviews, headOid);
+    const { last } = lastReviewStates(reviewsForConfirmation, headOid);
     const humanApproverAccounts = [...last.values()].filter((v) => v.state === 'APPROVED' && !isAiLogin(v.login, v.bot)).map((v) => ({ login: v.login, id: v.id ?? null }));
     // 効力を持つ記録・様式の帰属に使う承認者は、ホスティングの記録(REST)から読む。読めなければ G-6 に数えた承認者
     // (写しを数えなかった PR は空。帰属を確かめられない側へ倒れる。process-compass #379)

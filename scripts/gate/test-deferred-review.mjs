@@ -361,7 +361,7 @@ if (process.platform === 'win32') {
     'q-team-size': 'size-3-9', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes',
   };
   // acc3 だけ数値の識別子を持つ(承認のレビューを独立した確認として数える場面に使う)
-  const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [i === 3 ? { login: 'acc3', id: 903 } : `acc${i}`] }));
+  const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [i === 3 ? { login: 'acc3', id: 903 } : i === 1 ? { login: 'acc1', id: 901 } : `acc${i}`] }));
   const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
   const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-fake-gh-deferred-'));
   fs.writeFileSync(
@@ -410,10 +410,10 @@ if (process.platform === 'win32') {
       const sha = g('rev-parse', 'HEAD');
       if (s.pr) {
         shas[s.pr] = sha;
-        map[`repos/${R}/commits/${sha}/pulls`] = [{ number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${s.pr}` }, user: { login: 'acc1', id: null } }];
+        map[`repos/${R}/commits/${sha}/pulls`] = [{ number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${s.pr}` }, user: { login: 'acc1', id: 901 } }];
         map[`repos/${R}/pulls/${s.pr}/reviews`] = (s.reviews ?? []).map((r, i) => ({ id: 9000 + s.pr * 10 + i, state: 'APPROVED', commit_id: `head-${s.pr}`, author_association: 'MEMBER', user: { login: r.login, id: r.id, type: 'User' }, body: r.body ?? '挙動要約: 差分を読み、分岐を自分で確かめた', submitted_at: r.at }));
-        map[`repos/${R}/pulls/${s.pr}`] = { number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', user: { login: 'acc1', id: null } };
-        map[`repos/${R}/pulls/${s.pr}/commits`] = [{ author: { login: 'acc1', id: null } }];
+        map[`repos/${R}/pulls/${s.pr}`] = { number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', user: { login: 'acc1', id: 901 } };
+        map[`repos/${R}/pulls/${s.pr}/commits`] = [{ author: { login: 'acc1', id: 901 } }];
         map[`pr/${s.pr}`] = {
           number: s.pr, title: `feat: ${s.file} を変える`, author: { login: 'acc1' }, reviews: [], statusCheckRollup: [], labels: [], createdAt: '2026-11-05T00:00:00Z',
           body: body(s.risk ?? 'R2', s.confirm), mergeCommit: { oid: sha }, commits: [{ oid: `head-${s.pr}`, messageHeadline: `feat: ${s.file} を変える`, authors: [{ login: 'acc1' }] }],
