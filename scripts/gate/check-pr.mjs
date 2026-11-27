@@ -1405,7 +1405,15 @@ export function deployOnPushFindings(workflows) {
   const out = [];
   const list = (workflows ?? []).map((w) => ({ path: w?.path, text: String(w?.text ?? '').replace(/\r\n/g, '\n') }));
   const byPath = new Map(list.map((w) => [w.path, w]));
-  const hasEnvironment = (text) => /^[ \t]*environment[ \t]*:/m.test(text);
+  // 配備の環境を指定したジョブがあるか。テンプレート自身の委任のマージのジョブが使う環境(delegated-merge。マージのトークンを置く環境で、本番への反映ではない)だけは数えない。
+  // 値を読めない書き方(オブジェクト・式)は、配備の環境として数える
+  const hasEnvironment = (text) =>
+    text.split('\n').some((l) => {
+      const m = /^[ \t]*environment[ \t]*:(.*)$/.exec(l);
+      if (!m) return false;
+      const value = m[1].replace(/#.*$/, '').trim().replace(/^['"]|['"]$/g, '');
+      return value !== 'delegated-merge';
+    });
   for (const w of list) {
     if (!workflowFires(w.text)) continue;
     if (hasEnvironment(w.text)) {
