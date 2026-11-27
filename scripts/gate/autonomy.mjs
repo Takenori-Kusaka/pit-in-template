@@ -45,6 +45,8 @@ import { detectionFilled, CHANGE_TYPE_DETECTION, CHANGE_TYPE_ENFORCEMENT, enforc
 import { evaluate } from '../vendor/tailoring-engine.mjs';
 import { continuityState, readPolicy } from './org-assurance.mjs';
 import { readRecordsBranch, parseCopy, judgementsFromCopy, parseDeclaration, judgeOfForm, REVIEWS_DIR as BRANCH_REVIEWS_DIR } from './records.mjs';
+import { requiredCount, readPostHocRecords } from './post-hoc-confirmation.mjs';
+import { minSampleOf, observationWindowDefined, safetyOrRegulated, samplingPerMonthOf, undefinedValues } from './detection-values.mjs';
 import { ghHosting, introducedBacking, lastCommitOfFile, signerSharing } from './material-attribution.mjs';
 
 /** 準拠テンプレートが支えるレベル。L2 は上限の値としてだけ現れる */
@@ -52,8 +54,7 @@ export const LEVELS = ['L1', 'L2', 'L3'];
 export const levelRank = (l) => LEVELS.indexOf(l);
 /** 観測の窓(月)の既定。第5章 5.4.6 の「2か月継続」(EV-0146)。組織の値は構成の observationWindow(config.mjs の observationWindowAt)が持つ */
 export const WINDOW_MONTHS = OBSERVATION_WINDOW_DEFAULT;
-/** 窓の中の最小標本数(変更の件数)。第4章「閾値の設定と較正」の要求事項3 の既定値 */
-export const MIN_SAMPLE = 30;
+// 窓の中の最小標本数(変更の件数)は、採用者が構成の detection.minSample に定める(detection-values.mjs の minSampleOf)。一律の既定値は置かない
 /**
  * 手戻り率の算出が数えていない残り。常に表示する(標準の実装マーク IMPL-0517 が降ろしたのは算出と停止。計画表に書かれない
  * 不採用の後の再作成は、機械で閉じない。IMPL-0518 は採用者の手段)。表示と実態を食い違わせないため、省かない
@@ -88,7 +89,9 @@ export const STOP_KIND = {
   cap: '適用の条件の欠落(上限)',
   'safety-part': '適用の条件の欠落(安全関連部)',
   enforcement: '適用の条件の欠落(登録の根拠の4点目)',
+  'post-hoc': '適用の条件の欠落(事後の確認の記録の件数が翌月末までに定めに満たない)',
 };
+
 
 /**
  * 安全関連部の判定の唯一の所在(IMPL-0919。ADR-0220)。D-0 表10 の F.2 の Q1(読めた値: 真=はい、偽=いいえ、読めなければ null)を受け、
@@ -259,14 +262,22 @@ export function autonomyState(config, records) {
   const out = {
     asOf,
     cap,
-    window: { ...(asOf ? observationWindowInfo(config, monthStart(asOf)) : { months: WINDOW_MONTHS, longer: false }), pending: asOf ? observationWindowPending(config, monthStart(asOf)) : null, minSample: MIN_SAMPLE },
+    window: { ...(asOf ? observationWindowInfo(config, monthStart(asOf)) : { months: WINDOW_MONTHS, longer: false }), pending: asOf ? observationWindowPending(config, monthStart(asOf)) : null, minSample: minSampleOf(config) },
     reworkUncounted: REWORK_UNCOUNTED,
     otherLevel: 'L1',
     types: [],
     unattributedRejections: [],
     // 評価の時点の注記(出荷の終点で評価し直す場合に、現在の版を読んだ記録を示す)
     notes: [...(records?.notes ?? [])],
+    // 事故の警告(第5章 5.4.6。一般の案件で、止める側から外したもの)。種別ごとの警告は types[].warnings にも出す
+    warnings: [],
   };
+  const MIN = minSampleOf(config);
+  // 最小標本数と観測の窓の両方を採用者が定めているときだけ、窓を使う検知(差し戻し率 0% の継続・手戻り率)が働く
+  const detectionOff = MIN === null || !observationWindowDefined(config);
+  // 安全重要度 CL1 以上、または規制業の案件では、事故の後の停止・引き下げを現行のまま行う(5.5.4 の委任の適用の条件1 と同じ読み)
+  const strictIncident = safetyOrRegulated(config);
+  const unmetMin = (n) => MIN !== null && n < MIN;
   // 判定の日より後の記録は数えない(出荷の終点で評価し直す場合。突合 X-10)
   const notAfter = (d) => !asOf || d <= asOf;
   const changes = records?.history?.available ? (records.history.changes ?? []).filter((c) => isRealDay(c.date) && notAfter(c.date)) : [];
@@ -303,7 +314,10 @@ export function autonomyState(config, records) {
     if (!id) continue;
     const registeredAt = isRealDay(t.registeredAt) ? t.registeredAt : null;
     const stops = [];
+    const warnings = [];
     const stop = (category, kind, reason) => stops.push({ category, kind, reason });
+    // 事故の後の定め: 安全重要度 CL1 以上・規制業では止める(現行)。それ以外の案件では止めずに警告を出す
+    const incident = (kind, reason, warning) => (strictIncident ? stop('第1区分', kind, reason) : warnings.push({ kind, text: warning ?? reason }));
     // 安全関連部(IMPL-0919)。D-0 表10 の Q1 を判定のたびに読んだ値(records.f2q1)で止める。記録が無い・値が無いときは null として止める
     const sp = safetyPartStop(records?.f2q1 ?? null);
     if (sp) stop('安全関連部', sp.kind, sp.reason);
@@ -315,14 +329,14 @@ export function autonomyState(config, records) {
     if (!registeredAt) stop('記録', 'unmeasurable', '登録日(registeredAt)が無く、登録の判定と事象・窓の前後を確かめられない。登録が完了していないものとして止める');
     if (!records || !asOf) {
       stop('記録', 'unmeasurable', '検知の記録を読んでいない(判定の日が無い)。判定できないものとして止める');
-      out.types.push({ id, registeredAt, level: 'L1', stops, rejection: null, rework: null, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
+      out.types.push({ id, registeredAt, level: 'L1', stops, warnings, rejection: null, rework: null, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
       continue;
     }
     const applies = (list) => list === null || list === undefined || list.includes(id);
 
     // 第1区分: Sev1・Sev2
     if (!records.defects?.present) {
-      stop('第1区分', 'unmeasurable', `${DEFECT_FILE} が無く、Sev1・Sev2 の AI 起因を確かめられない`);
+      incident('unmeasurable', `${DEFECT_FILE} が無く、Sev1・Sev2 の AI 起因を確かめられない`, `${DEFECT_FILE} が無く、重大な事故(Sev1・Sev2)が AI の起因かを確かめられない。事故の警告は働いていない。事故が起きたら台帳へ記録する(止めない)`);
     } else {
       for (const d of records.defects.rows ?? []) {
         if (!['Sev1', 'Sev2'].includes(d.severity)) continue;
@@ -340,11 +354,11 @@ export function autonomyState(config, records) {
         const unregDText = unregD.length ? `。この行の変更種別の列に登録の一覧に無い ID「${unregD.join('・')}」があり、空欄と同じ扱い(すべての種別を止める)にしている。書き誤りなら直す。${ai && isRealDay(d.date) ? '取り下げた種別の行なら、残りの種別は事象の日より後の登録の判定で戻る' : ai ? '取り下げた種別の行でも、発生日を記入するまで止まる(記入した後は、残りの種別は事象の日より後の登録の判定で戻る)' : '取り下げた種別の行でも、原因を特定するまで止まる(特定した後は、残りの種別は事象の日より後の登録の判定で戻る)'}。行の記録は書き換えない` : '';
         if (!ai) {
           // 原因を特定できない事象は、原因を特定する(AI 起因を「あり」か「なし」にする)まで止める。登録し直しでは解かない(N-6 の5。突合 X-3)
-          stop('第1区分', 'cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`);
+          incident('cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`, `重大な事故 ${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因をまだ特定できていない。止めていない。原因の特定を進め、同じ所の変更を取り込む前に人が読む形へ戻すかを決める${unregDText}`);
         } else if (!isRealDay(d.date)) {
-          stop('第1区分', 'downgrade', `${label}。発生日が無く、登録の判定との前後を確かめられない${unregDText}`);
+          incident('downgrade', `${label}。発生日が無く、登録の判定との前後を確かめられない${unregDText}`, `AI が原因の重大な事故 ${label}の発生日が台帳に無く、事故の後に入った変更を数えられない。止めていない。発生日を台帳へ記入する${unregDText}`);
         } else if (!(registeredAt && registeredAt > d.date)) {
-          stop('第1区分', 'downgrade', `${label}が ${d.date} に発生した。事象の日より後の登録の判定まで止める${unregDText}`);
+          incident('downgrade', `${label}が ${d.date} に発生した。事象の日より後の登録の判定まで止める${unregDText}`, `AI が原因の重大な事故 ${label}が ${d.date} に発生した。止めていない。この事故の後に、${incidentCountText(changes, d, id, config, approvedPrs)}。同じ所の変更を取り込む前に人が読む形へ戻すかを決める(委任の範囲を狭める・協働へ下げる・保護するパスへ足す)${unregDText}`);
         }
       }
     }
@@ -372,6 +386,16 @@ export function autonomyState(config, records) {
       }
     }
 
+    // 判定の材料が足りない間(判定不能)の扱い。事後の確認の記録(records.postHoc)を読めたときは、止めずに、判定不能の月に事後へ移した変更の全件を事後に確かめる。
+    // 記録を渡されない・読めないときは従来どおり止める(記録が無いのに止めない側へ倒さない)
+    const postHocGiven = records.postHoc !== undefined && records.postHoc !== null;
+    const postHocOn = Boolean(records.postHoc?.available);
+    if (postHocGiven && !postHocOn) stop('第2区分', 'unmeasurable', `事後の確認の記録を読めない(${records.postHoc.reason ?? '理由の記録なし'})。事後の確認の記録の件数を確かめられないため、判定できないものとして止める`);
+    const sampleGaps = [];
+    let rejAt = null;
+    let rwAt = null;
+    const gap = (reason) => (postHocOn ? sampleGaps.push(reason) : stop('第2区分', 'unmeasurable', reason));
+    const sampledPrs = new Set((records.postHoc?.sampledPrs ?? []).map(String));
     // 第2区分: 差し戻し率
     let rejection = null;
     if (!records.history?.available) {
@@ -396,26 +420,35 @@ export function autonomyState(config, records) {
         // 一発承認率(IMPL-0268。ADR-0172 決定2)。分母は窓の中で取り込んだ変更のうち承認された変更(PR 番号を持たない変更は入らない)、分子はそのうち差し戻しを受けなかった変更
         const approved = approvedPrs === null ? null : inWin.filter((c) => c.pr !== null && c.pr !== undefined && approvedPrs.has(String(c.pr)));
         const approval = approved === null ? null : { approved: approved.length, firstPass: approved.filter((c) => !rejectedRefs.has(c.ref)).length };
-        return { ...w, n: inWin.length, rejected: ownRejections.filter((r) => inW(r.date)).length, undeclared: ownUndeclared === null ? null : ownUndeclared.filter((r) => inW(r.date)).length, approval };
+        // G-6 を判定した変更(事前の承認・差し戻し・事後の確認の記録のいずれかがある変更)。0% の検知の母数。承認の記録を読めないときは数えられない(null)
+        const judged = approvedPrs === null ? null : inWin.filter((c) => rejectedRefs.has(c.ref) || (c.pr !== null && c.pr !== undefined && (approvedPrs.has(String(c.pr)) || sampledPrs.has(String(c.pr))))).length;
+        return { ...w, n: inWin.length, judged, rejected: ownRejections.filter((r) => inW(r.date)).length, undeclared: ownUndeclared === null ? null : ownUndeclared.filter((r) => inW(r.date)).length, approval };
       };
       // 現在の状態は、直近の評価の日(monthStart(asOf))に効く窓で数える。窓を長くした日から次の評価の日までは前の値で数え、
       // 判定不能の停止も残る(記録した日より後の評価の日から当てる。窓の効く日を差し戻し率と手戻り率で揃える)
+      rejAt = (m) => count(m, observationWindowAt(config, m));
       const latest = count(monthStart(asOf), observationWindowAt(config, monthStart(asOf)));
       latest.windowText = windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf)));
-      latest.state = latest.n < MIN_SAMPLE ? '判定不能' : latest.rejected === 0 ? '0%' : '判定可能';
+      // 判定不能(窓の全変更が最小標本数に満たない)は、委任を続けてよいかの判定で、全件の事後確認へ倒す。
+      // 0% の検知は、G-6 を判定した変更の件数で数える。判定した変更が最小標本数に満たない窓では「検知は働いていない」と出し、止めず、全件の確認へも倒さない
+      const detectionIdle = (w) => w.judged !== null && w.judged !== undefined && unmetMin(w.judged);
+      // 最小標本数か観測の窓を定めていないときは、検知は働かない(止めず、当月の全件を事後に確かめる)
+      latest.minSample = MIN;
+      latest.state = detectionOff ? '未定義' : latest.n < MIN ? '判定不能' : latest.rejected === 0 ? (detectionIdle(latest) ? '検知は働いていない' : '0%') : '判定可能';
+      latest.postHocFull = postHocOn && (detectionOff || latest.n < MIN);
       rejection = latest;
       // 登録より後の評価の日ごとに、0% の窓を探す
-      if (registeredAt) {
+      if (registeredAt && !detectionOff) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
           const w = count(m, observationWindowAt(config, m));
-          if (w.n >= MIN_SAMPLE && w.rejected === 0) {
+          if (w.n >= MIN && w.rejected === 0 && !detectionIdle(w)) {
             stop('第2区分', 'downgrade', `${m} の評価(窓 ${w.from}〜${w.to}、変更 ${w.n} 件)で、判定基準の番号を引いた差し戻しが0件だった(差し戻し率0%の${w.months}か月継続。観測の窓 ${w.months}か月。${undeclaredText(w.undeclared)})`);
             break;
           }
         }
       }
-      if (latest.n < MIN_SAMPLE) {
-        stop('第2区分', 'unmeasurable', `差し戻し率の窓(${latest.from}〜${latest.to})の変更が ${latest.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。0% の継続は判定しない。適用の条件の欠落として止める)`);
+      if (!detectionOff && latest.n < MIN) {
+        gap(`差し戻し率の窓(${latest.from}〜${latest.to})の変更が ${latest.n} 件で、最小標本数 ${MIN} 件に満たない(判定不能。0% の継続は判定しない。適用の条件の欠落として止める)`);
       }
     }
     // 第2区分: 手戻り率(差し戻し率と同じ評価の日・同じ窓。記録は評価の日の前日以前だけで数える)
@@ -433,20 +466,20 @@ export function autonomyState(config, records) {
       const reworkAt = (m) => {
         const c = reworkCount(config, id, rr, m, observationWindowAt(config, m));
         const b = reworkBaselineInfo(config, m);
-        const state = c.n < MIN_SAMPLE ? '判定不能' : b.percent === null ? '基準値未設定' : c.numerator * 100 > b.percent * c.n ? '基準値超過' : '基準値以内';
+        const state = detectionOff ? '未定義' : c.n < MIN ? '判定不能' : b.percent === null ? '基準値未設定' : c.numerator * 100 > b.percent * c.n ? '基準値超過' : '基準値以内';
         return { ...c, baseline: b.percent, baselineBy: b.decidedBy, baselineAt: b.recordedAt, baselineMethod: b.method, state };
       };
+      rwAt = reworkAt;
       rework = reworkAt(monthStart(asOf));
+      rework.minSample = MIN;
+      rework.postHocFull = postHocOn && ['判定不能', '未定義', '基準値未設定'].includes(rework.state);
       // 決め方が measured の値は、記録した日以前に、この構成の窓に先立つ判定可能な窓があったかを確かめる(IMPL-1006。表示の偽り防止。L・停止には効かせない)
       rework.noPriorWindow = rework.baselineMethod === 'measured' && isRealDay(rework.baselineAt) ? !priorWindowExists(config, rr, String(rework.baselineAt)) : false;
       rework.pendingBaseline = pendingBaselineOf(config, monthStart(asOf));
       if (rework.state === '判定不能') {
-        stop('第2区分', 'unmeasurable', `手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN_SAMPLE} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。緩める向きの決定者の記名と理由)`);
-      } else if (rework.state === '基準値未設定') {
-        const pb = rework.pendingBaseline;
-        const pbText = pb ? `。記録済みの基準値 ${pb.percent}%(記録した日 ${pb.recordedAt})は、次の評価の日 ${pb.effectiveFrom} から効く(記録し直さなくてよい)` : '';
-        stop('第2区分', 'unmeasurable', `評価の日 ${monthStart(asOf)} に効く手戻り率の基準値が無い(適用の条件の欠落として止める)${pbText}。${pb ? '' : '種別 settings で基準値と決め方を記録すると、'}${pb ? 'その評価の日' : `記録した日より後の評価の日(次は ${addMonths(monthStart(asOf), 1)})`}から戻る`);
+        gap(`手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。緩める向きの決定者の記名と理由)`);
       }
+      // 基準値が未設定のときは止めない。手戻り率の検知は働かず、当月の全件を事後に確かめる(基準値は採用者が定める)
       if (registeredAt) {
         for (let m = addMonths(monthStart(registeredAt), 1); m <= monthStart(asOf); m = addMonths(m, 1)) {
           const w = reworkAt(m);
@@ -457,11 +490,53 @@ export function autonomyState(config, records) {
         }
       }
     }
-    // 窓の長さは、履歴を読めないときも出す(rejection が null でも)
+    // 事後の確認の記録の件数(委任の条件6)。月ごとに、事後へ移した変更の件数 n と、確認の記録のある変更の件数 k を、種類ごとに数える。
+    // 定めは、判定不能の月(評価の日に、窓の全変更または手戻り率の母数が最小標本数に満たなかった月)は全件、それ以外は構成の抜き取りの件数(月の件数まで)。
+    // k が定めに満たない月が、翌月の末までに埋まらなかったとき、その種類を止める。記録が揃えば判定を待たずに戻る(状態は持たず、記録から導く)
+    let postHoc = null;
+    if (postHocOn && registeredAt) {
+      const rows = records.postHoc.byType?.[id] ?? [];
+      const months = [];
+      for (let m = monthStart(registeredAt); m <= monthStart(asOf); m = addMonths(m, 1)) {
+        const full = Boolean(detectionOff || (rejAt && rejAt(m).n < MIN) || (rwAt && ['判定不能', '未定義', '基準値未設定'].includes(rwAt(m).state)));
+        const row = rows.find((x) => x.month === m.slice(0, 7));
+        const n = row?.n ?? 0;
+        const k = row?.k ?? 0;
+        const required = requiredCount(n, { perMonth: samplingPerMonthOf(config), full });
+        // 翌月の末まで = 月 m の2か月後の月初の前日まで
+        months.push({ month: m.slice(0, 7), n, k, required, full, short: k < required, overdue: asOf >= addMonths(m, 2) });
+      }
+      postHoc = { months, fullMonths: months.filter((x) => x.full).map((x) => x.month) };
+      const over = months.filter((x) => x.short && x.overdue);
+      if (over.length) {
+        stop('第2区分', 'post-hoc', `事後の確認の記録の件数が、翌月の末までに定めに満たなかった: ${over.map((x) => `${x.month}(事後へ移した変更 ${x.n} 件・記録 ${x.k} 件・定め ${x.required} 件${x.full ? '。判定の材料が揃っていない月のため全件' : ''})`).join(' / ')}。記録の件数が揃うと、判定を待たずに戻る(確認の中身は機械で確かめていない)`);
+      }
+    }
     const windowText = asOf ? windowLengthText(observationWindowInfo(config, monthStart(asOf)), observationWindowPending(config, monthStart(asOf))) : windowLengthText({ months: WINDOW_MONTHS, longer: false });
-    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, rejection, rework, windowText, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
+    out.types.push({ id, registeredAt, level: stops.length ? 'L1' : 'L3', stops, warnings, rejection, rework, postHoc, windowText, detectionFilled: detectionFilled(t?.basis), enforcementFilled: enforcementFilled(t?.basis) });
   }
+  // 事故の警告を、文ごとにまとめる(どの種類に出ているかを併記)。定めていない値と、そのために働いていない検知
+  const byText = new Map();
+  for (const t of out.types) for (const w of t.warnings ?? []) {
+    const e = byText.get(w.text) ?? { kind: w.kind, text: w.text, types: [] };
+    e.types.push(t.id);
+    byText.set(w.text, e);
+  }
+  out.warnings = [...byText.values()];
+  out.strictIncident = strictIncident;
+  out.undefinedValues = undefinedValues(config);
   return out;
+}
+
+/**
+ * 事故の後に取り込まれた、取り込む前に独立の人の承認を経ていない変更の件数の文。種別の範囲に入る変更を、発生日より後で数える。
+ * 台帳の「原因の変更」の列のパスは読まない(所を特定せず、事故の行が指す種別の範囲全体で数える)。承認の記録を読めないときは件数を出さない
+ */
+export function incidentCountText(changes, d, typeId, config, approvedPrs) {
+  const scope = (changes ?? []).filter((c) => isRealDay(c.date) && c.date > d.date && changeInType(config, typeId, c.files));
+  if (approvedPrs === null || approvedPrs === undefined) return `原因の変更が触れた所に入った変更の件数は、承認の記録を読めないため数えていない`;
+  const unread = scope.filter((c) => !(c.pr !== null && c.pr !== undefined && approvedPrs.has(String(c.pr))));
+  return `この種類の範囲に入った変更 ${scope.length} 件のうち、取り込む前に独立の人の承認を経ていない変更が ${unread.length} 件ある(台帳の原因の変更が触れた所は特定せず、種類の範囲全体で数えている)`;
 }
 
 /** 種別の停止を1行の文にする(表示に使う) */
@@ -475,11 +550,12 @@ export function stopsText(type) {
  * 母数(承認された変更)が最小標本数に満たなければ値を出さず「判断に用いない」。承認の記録を読めないときは「読めない」(0% とも 100% とも出さない)。
  * 合否・欠落・停止・L には効かせない
  */
-function approvalRateText(r) {
+function approvalRateText(r, min) {
   if (!r.approval) return '一発承認率: 読めない(記録用ブランチを読めない。承認の有無を確かめられない)';
   const { approved, firstPass } = r.approval;
   const head = `一発承認率: 取り込んだ変更 ${r.n} 件のうち承認された変更 ${approved} 件`;
-  if (approved < MIN_SAMPLE) return `${head}。判断に用いない(最小標本数 ${MIN_SAMPLE} 件に満たない)`;
+  if (min === null || min === undefined) return `${head}。判断に用いない(最小標本数を定めていない)`;
+  if (approved < min) return `${head}。判断に用いない(最小標本数 ${min} 件に満たない)`;
   return `${head}、差し戻しを受けずに承認された変更 ${firstPass} 件 = ${((firstPass * 100) / approved).toFixed(1)}%(差し戻し率と並べて読む。単独で判断に用いない。承認の質を表すとは主張しない)`;
 }
 
@@ -488,8 +564,11 @@ export function rejectionText(type) {
   const r = type.rejection;
   if (!r) return `判定できない(履歴を読めない)(${type.windowText})`;
   const head = `窓 ${r.from}〜${r.to}: 変更 ${r.n} 件、差し戻し ${r.rejected} 件(${r.windowText ?? `観測の窓 ${r.months ?? WINDOW_MONTHS}か月`})`;
-  const und = `。${undeclaredText(r.undeclared)}。${approvalRateText(r)}`;
-  return r.state === '判定不能' ? `${head}。判定不能(0% の継続は判定しない。適用の条件の欠落として止める。最小標本数 ${MIN_SAMPLE} 件に満たない)${und}` : `${head}(${r.state})${und}`;
+  const und = `。${undeclaredText(r.undeclared)}。${approvalRateText(r, r.minSample)}`;
+  if (r.state === '未定義') return `${head}。0% の継続の検知は働いていない(最小標本数か観測の窓を定めていない。止めない。委任した種類は当月の全件を事後に確かめる。値は自社の過去のトラブルとプロダクトの特性に合わせて決める)${und}`;
+  if (r.state === '検知は働いていない') return `${head}。0% の継続の検知は働いていない(G-6 を判定した変更が ${r.judged} 件で、最小標本数 ${r.minSample} 件に満たない。止めず、全件の確認へも倒さない。働かせるには観測の窓を長くする)${und}`;
+  if (r.state === '判定不能' && r.postHocFull) return `${head}。判定不能(0% の継続は判定しない。最小標本数 ${r.minSample} 件に満たない間は、止めずに、当月の G-6 を事後へ移した変更の全件を事後に確かめる)${und}`;
+  return r.state === '判定不能' ? `${head}。判定不能(0% の継続は判定しない。適用の条件の欠落として止める。最小標本数 ${r.minSample} 件に満たない)${und}` : `${head}(${r.state})${und}`;
 }
 
 // ---------------------------------------------------------------- 手戻り率(第5章 5.4.6。process-compass #348)
@@ -498,6 +577,17 @@ export function rejectionText(type) {
 export function specTaskOfLine(line) {
   const m = /^Spec:\s*(F-\d+)\s*\/\s*(Task-\d+)\s*$/.exec(String(line ?? '').trim());
   return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/**
+ * 本文が指す、取り消しの対象の変更(コミット)。取り消し = git revert の本文行 `This reverts commit <ref>`(7桁以上の16進)。
+ * タスクの記録を持たない変更の手戻りを、変更を単位に数える唯一の印である。再修正の印は定めない(作成側の自己申告で、
+ * 付けないほうが手戻り率が低く出るため)。印の無い手戻り(同じ箇所を黙って直す)は数えない。数えていない旨は REWORK_UNCOUNTED が常に表示する
+ */
+export function reworkTargetsOf(body) {
+  const out = new Set();
+  for (const m of String(body ?? '').matchAll(/^\s*This reverts commit ([0-9a-f]{7,40})\b/gim)) out.add(m[1].toLowerCase());
+  return [...out];
 }
 
 /** 本文の末尾の段落(check-pr.mjs の lastParagraph と同じ読み方)のうち、`Spec:` で始まる行(trim した後)。値の形は問わない */
@@ -544,11 +634,12 @@ function ratioText(c) {
  * 探す範囲は、手戻り率の記録の最も古い日の月から R の月まで。種別の範囲の規則(changeInType)は現在のものを読む(後から変えると判定が変わりうる)
  */
 export function priorWindowExists(config, rr, recordedAt) {
-  const days = [...(rr?.trailers ?? []).map((c) => c.date), ...(rr?.plan ?? []).map((p) => p.date)].filter(isRealDay).map(String).sort();
+  const MIN = minSampleOf(config);
+  const days = [...(rr?.trailers ?? []).map((c) => c.date), ...(rr?.plan ?? []).map((p) => p.date), ...(rr?.plain ?? []).map((c) => c.date)].filter(isRealDay).map(String).sort();
   if (!days.length) return false;
   const ids = (config.delegation?.changeTypes ?? []).map((t) => String(t?.id ?? '')).filter(Boolean);
   for (let m = monthStart(days[0]); m <= recordedAt; m = addMonths(m, 1)) {
-    for (const id of ids) if (reworkCount(config, id, rr, m, observationWindowAt(config, m)).n >= MIN_SAMPLE) return true;
+    for (const id of ids) if (MIN !== null && reworkCount(config, id, rr, m, observationWindowAt(config, m)).n >= MIN) return true;
   }
   return false;
 }
@@ -588,7 +679,15 @@ function reworkCount(config, typeId, rr, m, months) {
     else if (t) trailer += 1;
     else if (p) plan += 1;
   }
-  return { ...w, n, numerator: trailer + plan + both, trailer, plan, both };
+  // タスクの記録を持たない変更(変更を単位に数える)。母数: 窓の中の、種別の範囲に入る変更のうち、取り消しの印を持たないもの。
+  // 分子: そのうち、評価の日の前日以前に、同じ種別の範囲の変更が取り消しの印で指しているもの
+  const plainAll = (rr.plain ?? []).filter((c) => upto(c.date) && changeInType(config, typeId, c.files));
+  const pointedAt = new Set(plainAll.flatMap((c) => c.reworks ?? []));
+  const isPointed = (ref) => [...pointedAt].some((t) => String(ref).toLowerCase().startsWith(t));
+  const plainUnits = plainAll.filter((c) => inW(c.date) && !(c.reworks ?? []).length);
+  const plainN = plainUnits.length;
+  const plainReworked = plainUnits.filter((c) => isPointed(c.ref)).length;
+  return { ...w, n: n + plainN, numerator: trailer + plan + both + plainReworked, trailer, plan, both, taskN: n, plainN, plainReworked };
 }
 
 /**
@@ -625,12 +724,16 @@ function reworkTextBody(type) {
   const r = type.rework;
   if (!r) return `手戻り率: 判定できない(検知の記録を読んでいない)。${REWORK_UNCOUNTED}`;
   if (r.state === '読めない') return `手戻り率: 読めない(${r.reason})。${REWORK_UNCOUNTED}`;
-  const head = `手戻り率: 窓 ${r.from}〜${r.to}: 母数 ${r.n} 件(タスク)のうち手戻り ${r.numerator} 件 = ${ratioText(r)}(内訳: トレーラの取り込みが2回以上のみ ${r.trailer} 件 / 計画表の「やり直し」のみ ${r.plan} 件 / 両方 ${r.both} 件)`;
+  const head = `手戻り率: 窓 ${r.from}〜${r.to}: 母数 ${r.n} 件(タスク ${r.taskN ?? r.n} 件 + タスクの記録の無い変更 ${r.plainN ?? 0} 件)のうち手戻り ${r.numerator} 件 = ${ratioText(r)}(内訳: トレーラの取り込みが2回以上のみ ${r.trailer} 件 / 計画表の「やり直し」のみ ${r.plan} 件 / 両方 ${r.both} 件 / タスクの記録の無い変更で取り消しを受けたもの ${r.plainReworked ?? 0} 件)`;
   const pend = r.pendingBaseline ? `。記録済みの基準値 ${r.pendingBaseline.percent}%(記録した日 ${r.pendingBaseline.recordedAt})は、次の評価の日 ${r.pendingBaseline.effectiveFrom} から効く` : '';
-  const baseline = r.baseline === null ? `基準値が未設定(適用の条件の欠落として止めている)${pend}` : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'}、${methodText(r)})`;
+  const baseline = r.baseline === null ? `基準値が未設定(止めない。手戻り率の検知は働いていない。委任した種類は当月の全件を事後に確かめる。基準値は採用者が定める)${pend}` : `基準値 ${r.baseline}%(決定: ${r.baselineBy ?? '記録なし'}、記録した日 ${r.baselineAt ?? '記録なし'}、${methodText(r)})`;
   const state =
     r.state === '判定不能'
-      ? `判定不能(適用の条件の欠落として止めている。最小標本数 ${MIN_SAMPLE} 件に満たない)。${baseline}`
+      ? r.postHocFull
+        ? `判定不能(最小標本数 ${r.minSample} 件に満たない間は、止めずに、当月の G-6 を事後へ移した変更の全件を事後に確かめる)。${baseline}`
+        : `判定不能(適用の条件の欠落として止めている。最小標本数 ${r.minSample} 件に満たない)。${baseline}`
+      : r.state === '未定義'
+        ? `手戻り率の検知は働いていない(最小標本数か観測の窓を定めていない。止めない。委任した種類は当月の全件を事後に確かめる)。${baseline}`
       : r.state === '基準値未設定'
         ? baseline
         : r.state === '基準値超過'
@@ -909,7 +1012,9 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null,
   // 承認された PR の集合(一発承認率の分母。IMPL-0268)。承認レビューの写しで、承認者ごとの最後の状態が承認である人が1名以上の PR。
   // 記録用ブランチを読めないときは available を false にする(承認の有無を読めないものとして「読めない」と出す。undeclared と同じ扱い)
   const approvals = { available: Boolean(rb?.available), prs: [...copies].filter(([, v]) => approvalCountOfCopy(v.copy) >= 1).map(([n]) => String(n)) };
-  if (!config) return { rejections: found.map((x) => x.rej), unattributed, undeclared, approvals, notes };
+  // G-6 の判定記録の様式の本文(事後の確認の記録の件数を数える入力。様式の置き場の4つのうち、様式を持つ2つ)
+  const g6Forms = [...forms.values()].map((x) => ({ file: x.file, text: x.text }));
+  if (!config) return { rejections: found.map((x) => x.rej), unattributed, undeclared, approvals, g6Forms, notes };
   const host = hosting === undefined ? (() => { const repo = repoOf(root); return repo ? ghHosting(repo) : null; })() : hosting;
   const gitRun = (args) => {
     try {
@@ -929,7 +1034,7 @@ export function readRejectionRecords({ root = ROOT, fetch = true, branch = null,
         '数えないことは差し戻し率を下げ、引き下げの側へ倒れる(第4章「判定記録を基底ブランチへ入れる操作」の効力を持つ記録)'
     );
   }
-  return { rejections, unattributed, undeclared, approvals, notes };
+  return { rejections, unattributed, undeclared, approvals, g6Forms, notes };
 }
 
 function git(args, root) {
@@ -1028,16 +1133,19 @@ export function readAutonomyRecords({ config, root = ROOT, today = null, fetch =
   let rejections = [];
   let undeclared = { available: false, items: [] };
   let approvals = { available: false, prs: [] };
+  // 事後の確認の記録の件数(委任の条件6)。登録した種別が無ければ数えない。読めないときは available=false で渡し、判定が止める
+  let postHoc = { available: true, byType: {}, sampledPrs: [], unattributed: 0 };
   if (types.length) {
     const rr = readRejectionRecords({ root, fetch, config });
     rejections = rr.rejections;
     undeclared = rr.undeclared;
     approvals = rr.approvals;
     notes.push(...rr.notes);
+    postHoc = readPostHocRecords({ config, root, forms: rr.g6Forms, approvedPrs: approvals.available ? new Set(approvals.prs.map(String)) : null });
   }
   const rework = types.length ? readReworkRecords({ root, until: asOf }) : { available: true, trailers: [], plan: [] };
   // D-0 表10 の F.2 の Q1(IMPL-0919)。判定のたびに読む。構成へ写さない(写すと D-0 と食い違う。ADR-0171 決定4)
-  return { asOf, f2q1: readF2Q1({ root }), defects, core, history, rejections, undeclared, approvals, rework, notes };
+  return { asOf, f2q1: readF2Q1({ root }), defects, core, history, rejections, undeclared, approvals, postHoc, rework, notes };
 }
 
 /**
@@ -1053,12 +1161,16 @@ export function readReworkRecords({ root = ROOT, until = null } = {}) {
     const untilArgs = until ? [`--until=${until}T23:59:59`] : [];
     const out = git(['log', '--first-parent', '--no-renames', '--format=%x1e%H%x09%cs%n%B%x1f', '--name-only', ...untilArgs, 'HEAD'], root);
     const trailers = [];
+    const plain = [];
     for (const block of out.split('\x1e').filter((b) => b.trim())) {
       const nl = block.indexOf('\n');
       const [ref, date] = block.slice(0, nl).split('\t');
       const [body, files = ''] = block.slice(nl + 1).split('\x1f');
       const tasks = specTrailersOf(body);
-      if (tasks.length) trailers.push({ ref, date, tasks, files: files.split('\n').map((x) => x.trim()).filter(Boolean) });
+      const fileList = files.split('\n').map((x) => x.trim()).filter(Boolean);
+      if (tasks.length) trailers.push({ ref, date, tasks, files: fileList });
+      // タスクの記録(トレーラ)を持たない変更は、変更を単位に数える。取り消しの印だけを読む
+      else plain.push({ ref, date, files: fileList, reworks: reworkTargetsOf(body) });
     }
     const patches = git(['log', '--first-parent', '-m', '--no-renames', '--unified=0', '--format=%x1e%H%x09%cs', '-p', ...untilArgs, 'HEAD', '--', 'specs/*/plan.md'], root);
     const plan = [];
@@ -1067,9 +1179,9 @@ export function readReworkRecords({ root = ROOT, until = null } = {}) {
       const [, date] = block.slice(0, nl).split('\t');
       for (const task of planReworkTasks(block.slice(nl + 1))) plan.push({ date, task });
     }
-    return { available: true, trailers, plan };
+    return { available: true, trailers, plan, plain };
   } catch (e) {
-    return { available: false, reason: `git の履歴を読めない(${String(e.message).split('\n')[0]})`, trailers: [], plan: [] };
+    return { available: false, reason: `git の履歴を読めない(${String(e.message).split('\n')[0]})`, trailers: [], plan: [], plain: [] };
   }
 }
 
@@ -1113,6 +1225,27 @@ export function defectUnregisteredDisclosure(state, { external = false } = {}) {
 }
 
 /**
+ * 事故の警告と、定めていない値の文(次の一手・保証の開示・出荷の証跡の集約が同じ文を使う)。止める規則ではない。
+ * external を真にすると、組織の外へ渡す形(事故の ID と種類の名を出さず、件数だけ)にする
+ */
+export function warningLines(state, { external = false } = {}) {
+  const out = [];
+  const ws = state?.warnings ?? [];
+  if (external) {
+    if (ws.length) out.push(`重大な事故(Sev1・Sev2)の警告が ${ws.length} 件ある(止めていない。事故の後も、取り込む前に人が読んでいない変更が入りうる)`);
+  } else {
+    for (const w of ws) out.push(`警告: ${w.text}(対象の種類: ${w.types.join('・')})`);
+  }
+  const u = state?.undefinedValues ?? [];
+  if (u.length) {
+    out.push(external
+      ? `定めていない値が ${u.length} 件ある。働いていない検知: ${u.map((x) => x.label).join('・')}`
+      : `定めていない値が ${u.length} 件ある。働いていない検知: ${u.map((x) => `${x.label}(${x.idle})`).join(' / ')}。値は自社の過去のトラブルとプロダクトの特性に合わせて決め、種別 settings で記録する(定めるまで検知は働かず、止めない)`);
+  }
+  return out;
+}
+
+/**
  * 登録した変更種別ごとの注記の文(次の一手と保証の開示の内側で使う)。判定不能を「異常なし」と書かない。
  * external を真にすると、停止の原因を区分だけで示す
  */
@@ -1139,5 +1272,6 @@ export function autonomyNoteLines(state, { external = false } = {}) {
   }
   for (const u of state.defectUnregistered ?? []) out.push(`AI自律レベル: ${defectUnregisteredText(u)}`);
   for (const n of state.notes ?? []) out.push(`AI自律レベル(評価の時点): ${n}`);
+  for (const l of warningLines(state, { external })) out.push(`AI自律レベル: ${l}`);
   return out;
 }

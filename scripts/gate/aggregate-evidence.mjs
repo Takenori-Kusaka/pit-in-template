@@ -141,7 +141,8 @@ import {
 import { validDay, exceptionStanding, lapsedExceptions, lapsedGapText, countRangeExceptions, unjudgedGateExceptions, mutationBreachPrOf, mutationBreachMarkOf, extendedDueRows, extendedDueGapText, lapsedSimilarRows, lapsedSimilarGapText, extensionVerdict, fastTrackMetrics, fastTrackMetricsText, stageQuotaUse, latestStageGatePass, exceptionQuotaText } from './exception-expiry.mjs';
 import { reachRecordOf, reachCounts, reachCountsText, inventoryNotice, provisionalGaps, provisionalUnmetText, cosignShipEntries } from './judgement-records.mjs';
 import { riskClassOf, classifyByRule, classifyForSeat, REVIEWER_SEAT, DEVELOPER_SEAT } from './delegation.mjs';
-import { autonomyState, readAutonomyRecords, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy, specLinesOf, defectUnregisteredDisclosure } from './autonomy.mjs';
+import { samplingMonthly, samplingMonthlyText, typeOfRule } from './post-hoc-confirmation.mjs';
+import { autonomyState, readAutonomyRecords, warningLines, stopsText, rejectionText, reworkText, l3ScopeIds, approvalCountOfCopy, specLinesOf, defectUnregisteredDisclosure } from './autonomy.mjs';
 
 // 承認の数の定義は autonomy.mjs が持つ(一発承認率と共有。IMPL-0268)。既存の呼び出しと試験のため、同じ名で書き出し直す
 export { approvalCountOfCopy };
@@ -222,46 +223,9 @@ import { readClJudgment, clJudgmentText, clStopText, gateRecordsForCl, readF2Q1 
 /** 基底ブランチに複製された写しの置き場(ship-evidence.yml が records/reviews/ から複製する) */
 export const BASE_COPIES_DIR = 'docs/records/reviews';
 
-/**
- * 委任の条件6 の事後の抜き取りの件数(IMPL-0597。標準 第5章 5.5.4 条件6・第8章「事後監査の手続」)。
- * items = G-6 を事後へ移した変更ごとの { month(マージした月 YYYY-MM。読めなければ null), sampled(独立レビュアの席の責任者の名義の抜き取りの記録があるか) }。
- * 月ごとに、G-6 を事後へ移した変更の件数 n と、抜き取った変更の件数 k を数え、k が組織の定め(perMonth。無ければ n と 5 のうち小さいほう。
- * perMonth が n を上回る月は n を上限とする)に満たない月を short に出す。合否・欠落には数えない(本文は不足を差し戻しの条件にしていない)。
- * 機械が確かめないもの: 抜き取りの選び方(当事者に選ばせない)・確認の中身・条件4 の実績の中身(確かめる者: プロセス内部監査)
- */
-export function samplingMonthly(items, { perMonth = null, defaultCap = 5, reviewerResolved = true } = {}) {
-  // 独立レビュアの席の責任者を名簿から引けないとき、記録があっても k=0 になり全ての月が不足に見える(誤報)。件数を数えず、その旨を返す
-  if (!reviewerResolved) return { months: [], short: [], undated: 0, source: Number.isInteger(perMonth) && perMonth >= 1 ? 'config' : 'default', unresolved: true };
-  const by = new Map();
-  let undated = 0;
-  for (const it of items ?? []) {
-    if (!it.month) {
-      undated += 1;
-      continue;
-    }
-    const e = by.get(it.month) ?? { month: it.month, n: 0, k: 0 };
-    e.n += 1;
-    if (it.sampled) e.k += 1;
-    by.set(it.month, e);
-  }
-  const months = [...by.values()]
-    .sort((a, b) => a.month.localeCompare(b.month))
-    .map((e) => {
-      const required = Number.isInteger(perMonth) && perMonth >= 1 ? Math.min(e.n, perMonth) : Math.min(e.n, defaultCap);
-      return { ...e, required, short: e.k < required };
-    });
-  return { months, short: months.filter((m) => m.short), undated, source: Number.isInteger(perMonth) && perMonth >= 1 ? 'config' : 'default' };
-}
-
-/** 事後の抜き取りの不足の月の表示(表の下に添える文)。判定ではない */
-export function samplingMonthlyText(m) {
-  if (m.unresolved) return '独立レビュアの席の責任者を名簿から引けず、事後の抜き取りの件数を数えていません。抜き取りが行われていないことを意味しません。席の責任者を記録すると、月ごとの不足を表示します(この表示は合否にも記載の欠落にも数えません)';
-  const basis = m.source === 'config' ? '構成 delegation.sampling.perMonth' : `既定(月の件数と ${5} のうち小さいほう)`;
-  const head = m.short.length
-    ? `抜き取りが定めに満たない月: ${m.short.map((x) => `${x.month}(事後へ移した変更 ${x.n} 件・抜き取り ${x.k} 件・定め ${x.required} 件)`).join(' / ')}`
-    : '抜き取りが定めに満たない月はありません';
-  return `${head}。定めの出所: ${basis}。この表示は合否にも記載の欠落にも数えません。抜き取りの選び方(当事者に選ばせない)・確認の中身・取り消しの実績の中身は機械で確かめていません(確かめる者: プロセス内部監査)${m.undated ? `。マージの時刻を読めない変更 ${m.undated} 件は月ごとの表示に含めていません` : ''}`;
-}
+// 委任の条件6 の事後の確認の記録の件数(IMPL-0597。標準 第5章 5.5.4 条件6・第8章「事後監査の手続」)の月ごとの数え方は、委任の判定と共有する
+// 共通のモジュール(post-hoc-confirmation.mjs)が持つ。既存の呼び出しと試験のため、同じ名で書き出し直す
+export { samplingMonthly, samplingMonthlyText };
 
 /** 基底ブランチの写しの複製(docs/records/reviews/)を読む(写しの検査は records.mjs の parseCopy)。置き場が無ければ present=false で空 */
 export function readBaseCopies(root) {
@@ -1872,6 +1836,8 @@ if (isMain) {
   // (人のアカウントの場合)と、開発者の席の責任者を指示者とみなす(既定値)。PR を経ていないコミットでは、
   // コミットの Author と、開発者の席の責任者を指示者とみなす。
   // 名簿のアカウントの記載が正しいかは、機械で確かめない(架空の2人目を書ける)。監査観点6 で確かめる。
+  // 取り込んだ後に足した G-6 の判定記録は、出荷判定(G-7)の記録より前に足され、足したコミットのアカウントが判定者と対応づくものだけを数える(下の recordNotCounted)。
+  // 判定記録の2人目の承認者の記名は、足し手と照らさない(1つの記録の1つのコミットが、2人の記名を運ぶため)。
 
   const UNCONFIRMED = {
     recordNotFound: '承認記録を取得できない',
@@ -1885,6 +1851,8 @@ if (isMain) {
     instructorUnresolved: '作成を指示した者を名簿と対応づけられない',
     noReviewerSummary: 'レビュアの挙動要約が無い(承認した者自身の挙動要約を伴わない承認は数えない)',
     directCommit: 'PR を経ていない(独立した人の G-6 の判定記録が対応づかない)',
+    recordAfterShipment: '当該の変更を含む出荷判定(G-7)の記録より後に足された G-6 の判定記録は、独立した人の確認に数えない(前後を読めない場合も数えない)',
+    recordAdderMismatch: 'G-6 の判定記録を足したコミットのアカウントが、判定者の欄の人と対応づかない(署名を要する構成は署名者、署名の無い構成は作成者の名義で照らす)',
     // 文言は変更ごとに件数を埋める(下の insufficientText)
     insufficientApprovers: 'G-6 の承認者の数が、構成の要求(review.reviewerCount)に満たない',
   };
@@ -1907,6 +1875,8 @@ if (isMain) {
     instructorUnresolved: 'instructor-not-in-roster',
     noReviewerSummary: 'no-reviewer-summary',
     directCommit: 'direct-commit',
+    recordAfterShipment: 'record-after-shipment',
+    recordAdderMismatch: 'record-adder-mismatch',
     insufficientApprovers: 'insufficient-approvers',
   };
 
@@ -2147,6 +2117,83 @@ if (isMain) {
   const isAiLogin = (login, bot) => Boolean(aiAccountCheck(config, login ?? '', bot).reason);
   const accountOverridden = (login, bot) => aiAccountCheck(config, login ?? '', bot).overridden;
 
+  // --- 取り込んだ後に作った G-6 の判定記録の独立性(第4章 G-6「記録」、G-7 基準5) ---
+  // 数えない記録の条件は2つ。どちらも履歴から決められる事実だけで照らす(コミットの日付は書き手が設定できるので、前後には使わない)。
+  //   (1) 当該の変更を含む出荷の G-7 の判定記録より後に足された記録。前後は、記録の置き場の履歴の祖先の関係で照らす
+  //       (両方が記録用ブランチにあれば記録用ブランチの履歴、そうでなければ基底ブランチの履歴)。読めなければ数えない側へ倒す
+  //   (2) 記録を足したコミットのアカウントが、判定者の欄の人と対応づかない記録。署名を要する構成ではホスティングが署名を検証した
+  //       コミットの author・committer、署名の無い構成ではコミットの author の名義で照らす。作成者の名義は書き手が設定できるので、
+  //       署名の無い構成での一致は他人の名義を使った書き込みを防がない(保証の開示の項目1 に出す)
+  const branchGateByBase = new Map(recordSources.gates.filter((x) => x.baseFile).map((x) => [x.baseFile, x]));
+  const recordSignRequired = recordsSignatureRequired(config);
+  /** 判定記録を足したコミット。記録用ブランチの様式があればそのコミット、無ければ基底ブランチで足したコミット */
+  const recordPlaceOf = (file) => {
+    const twin = branchGateByBase.get(file);
+    if (twin?.added?.hash) return { where: 'records', hash: twin.added.hash, authorName: twin.added.authorName ?? '', authorEmail: twin.added.authorEmail ?? '', committedAt: twin.added.committedAt ?? null };
+    const hash = recordCommitOf(file);
+    if (!hash) return null;
+    try {
+      const [authorName, authorEmail, committedAt] = execFileSync('git', ['show', '-s', '--format=%an%x00%ae%x00%cI', hash], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\0');
+      return { where: 'base', hash, authorName, authorEmail, committedAt };
+    } catch {
+      return { where: 'base', hash, authorName: '', authorEmail: '', committedAt: null };
+    }
+  };
+  /** g6 の記録が、g7 の記録より前(同じコミットを含む)に足されたか。true / false / null(読めない) */
+  const addedBefore = (g6, g7) => {
+    const p6 = recordPlaceOf(g6.file);
+    const p7 = recordPlaceOf(g7.file);
+    if (!p6 || !p7) return null;
+    return p6.where === 'records' && p7.where === 'records' ? isAncestorCommit(ROOT, p6.hash, p7.hash) : isAncestorCommit(ROOT, recordCommitOf(g6.file), recordCommitOf(g7.file));
+  };
+  /** 記録の足し手が、判定者の欄の人と対応づくか。{ ok, basis, why } */
+  const recordAdderMatches = (g) => {
+    const judge = g.judge ? personByNameAt(g.judge, recordCommitOf(g.file)) : null;
+    const place = recordPlaceOf(g.file);
+    if (!judge) return { ok: false, basis: null, why: '判定者の欄の人を名簿と対応づけられない' };
+    if (!place) return { ok: false, basis: null, why: '記録を足したコミットを読めない' };
+    if (recordSignRequired) {
+      let info = null;
+      try {
+        info = repo ? ghHosting(repo).commitOf(place.hash) : null;
+      } catch {
+        info = null;
+      }
+      if (!info || info.verified !== true) return { ok: false, basis: 'signature', why: `記録を足したコミット ${place.hash.slice(0, 8)} の署名を、ホスティングの検証で確かめられない` };
+      const is = (login, id) => identifyAccount(config, { login, id }).person?.id === judge.id;
+      const ok = is(info.committerLogin, info.committerId) && is(info.authorLogin, info.authorId);
+      return { ok, basis: 'signature', why: ok ? null : `記録を足したコミット ${place.hash.slice(0, 8)} の署名者が、判定者 ${g.judge} のアカウントでない` };
+    }
+    const account = String(place.authorEmail ?? '').split('@')[0].replace(/^\d+\+/, '');
+    const who = resolveSigner(config, place.authorName) ?? findPersonByAccount(config, account);
+    const ok = Boolean(who) && who.id === judge.id;
+    return { ok, basis: 'author', why: ok ? null : `記録を足したコミット ${place.hash.slice(0, 8)} の作成者(${place.authorName || '不明'})が、判定者 ${g.judge} と対応づかない` };
+  };
+  /**
+   * 数えない記録の理由(数えるなら null)。changeRev は当該の変更のコミット(読めなければ null)。
+   * 返り値: { reason: 'recordAfterShipment' | 'recordAdderMismatch', why }
+   */
+  const recordNotCounted = (g, changeRev) => {
+    const g7s = gateDetails.filter((x) => /G-7/.test(x.gate ?? '') && passed(x));
+    for (const g7 of g7s) {
+      const c7 = recordCommitOf(g7.file);
+      if (!c7) continue;
+      if (!changeRev) continue; // 当該の変更のコミットを持たない層の判定は、前後を照らさない
+      const covers = isAncestorCommit(ROOT, changeRev, c7);
+      if (covers === false) continue;
+      const before = covers === true ? addedBefore(g, g7) : null;
+      if (before !== true) {
+        return {
+          reason: 'recordAfterShipment',
+          why: before === false ? `記録 ${g.file} は、当該の変更を含む出荷判定(G-7)の記録 ${g7.file} より後に足されている` : `記録 ${g.file} と出荷判定(G-7)の記録 ${g7.file} の前後、または変更との関係を、履歴から読めない`,
+        };
+      }
+    }
+    const adder = recordAdderMatches(g);
+    if (!adder.ok) return { reason: 'recordAdderMismatch', why: adder.why };
+    return null;
+  };
+
   /**
    * 独立した人の確認に数えるかを判定する。
    * reviews: PR のレビュー(PR を経ていないコミットでは空)。refers: G-6 の判定記録の「対象」が当該の変更を指すか
@@ -2167,7 +2214,15 @@ if (isMain) {
       }
     })();
     // 範囲に触れたかは G-6 の適用に依らず照らす(決定可能な条件)。数えない扱い(2名を要する)にするのは G-6 を適用する体制だけ
-    const touched = restrictionHit(config, files ?? [], takenAt);
+    // 取り込んだ後に判定記録を足した場合は、記録を足した時点の制限でも照らし、厳しいほう(どちらかの時点で範囲に触れる)を採る。
+    // 足した時点は、記録を足したコミットの日付(書き手が設定できる値であり、前後の判定には使わない。制限の照合だけに使う)
+    const recordAddedAt = g6RecordsFor(refers).map((g) => recordPlaceOf(g.file)?.committedAt ?? null).filter(Boolean).sort().at(-1) ?? null;
+    const touchedAtTaking = restrictionHit(config, files ?? [], takenAt);
+    const touchedAtRecord = recordAddedAt ? restrictionHit(config, files ?? [], recordAddedAt) : { hit: false, restrictions: [] };
+    const touched = {
+      hit: touchedAtTaking.hit || touchedAtRecord.hit,
+      restrictions: [...new Map([...touchedAtTaking.restrictions, ...touchedAtRecord.restrictions].map((r) => [r.id, r])).values()],
+    };
     const restricted = g6AppliedStructure ? touched : { hit: false, restrictions: [] };
     const required = Math.max(core?.hit ? coreReviewersRequired : reviewersRequired, restricted.hit ? 2 : 0);
     const about = {
@@ -2185,7 +2240,19 @@ if (isMain) {
     // 承認の後の更新で数えなかった承認と、承認した版を確かめられず数えなかった承認(#296)
     about.staleApprovals = stale;
     about.unboundApprovals = unbound;
-    const records = g6RecordsFor(refers);
+    // 取り込んだ後に作った記録の独立性。数えない記録は候補に入れず、理由を残す
+    const changeRev = typeof at === 'string' ? at.replace(/\^$/, '') : null;
+    about.excludedRecords = [];
+    about.recordAdderChecked = [];
+    const records = g6RecordsFor(refers).filter((g) => {
+      const verdict = recordNotCounted(g, changeRev);
+      if (verdict) {
+        about.excludedRecords.push({ file: g.file, reason: verdict.reason, why: verdict.why });
+        return false;
+      }
+      about.recordAdderChecked.push({ file: g.file, basis: recordSignRequired ? 'signature' : 'author' });
+      return true;
+    });
     const candidates = [];
     let ai = 0;
     for (const v of last.values()) {
@@ -2235,7 +2302,11 @@ if (isMain) {
     }
     // 同じ人が PR の承認と判定記録の両方に現れても1人として出す(当時の名簿の所在は最初に引いたもの)
     about.formerApprovers = [...new Map(candidates.filter((c) => c.person?.former).map((c) => [c.person.name, `${c.person.name}(当時の名簿 ${c.person.formerAt})`])).values()];
-    if (!candidates.length) return none(direct && !ai ? 'directCommit' : ai ? 'aiOrBot' : 'noApproval');
+    if (!candidates.length) {
+      const ex = about.excludedRecords[0];
+      if (ex && !ai) return none(ex.reason, { reasonText: `${UNCONFIRMED[ex.reason]}: ${about.excludedRecords.map((e) => e.why).join(' / ')}` });
+      return none(direct && !ai ? 'directCommit' : ai ? 'aiOrBot' : 'noApproval');
+    }
     about.unmappedApprovers = candidates.filter((c) => !c.person).map((c) => c.label);
     const known = candidates.filter((c) => c.person);
     if (!known.length) return none('approverUnmapped');
@@ -3395,7 +3466,9 @@ if (isMain) {
     d.exceptionRejected = ex.rejected;
     if (needs && ex.matched.length) exceptionShipments++;
     if (!needs || ex.matched.length) continue;
-    const rejected = ex.rejected.length ? `対応づけなかった例外の行: ${ex.rejected.join(' / ')}。` : '';
+    const excludedRecordsText = (d.independent.excludedRecords ?? []).length ? `数えなかった G-6 の判定記録: ${d.independent.excludedRecords.map((e) => e.why).join(' / ')}。` : '';
+    const restrictedText = d.independent.reason === 'insufficientApprovers' ? `${d.independent.reasonText}。` : '';
+    const rejected = `${excludedRecordsText}${restrictedText}${ex.rejected.length ? `対応づけなかった例外の行: ${ex.rejected.join(' / ')}。` : ''}`;
     gaps.push(
       g6Applied
         ? `コミット ${d.commit}: ${claimed}PR を経ておらず、独立した人の確認を経ていません。G-6 を適用する体制では記録の欠落です。${rejected}` +
@@ -4099,6 +4172,9 @@ if (isMain) {
     aiOrBot: unconfirmedBy('aiOrBot'),
     approverUnmapped: unconfirmedBy('approverUnmapped'),
     approverIsInstructor: unconfirmedBy('approverIsInstructor'),
+    // 取り込んだ後に作った G-6 の判定記録を数えなかった変更(出荷判定の後に足された記録 / 足し手が判定者と対応づかない記録)
+    recordAfterShipment: count(changeUnits, (c) => c.independent.reason === 'recordAfterShipment'),
+    recordAdderMismatch: count(changeUnits, (c) => c.independent.reason === 'recordAdderMismatch'),
     structure: unconfirmedBy('structure'),
     instructorUnresolved: unconfirmedBy('instructorUnresolved'),
     noReviewerSummary: unconfirmedBy('noReviewerSummary'),
@@ -4338,6 +4414,9 @@ if (isMain) {
       byReviewerSeat: count(confirmedUnits, (c) => c.independent.byReviewerSeat),
       // アカウント名の確認済みの上書きで数えた承認の件数(承認者の数で数える。#296)
       overriddenApprovals: confirmedUnits.reduce((n, c) => n + (c.independent.overriddenLogins?.length ?? 0), 0),
+      // 数えた変更のうち、G-6 の判定記録の足し手を作成者の名義で照らしたもの(署名の無い構成)と、署名者で照らしたもの
+      recordAdderByAuthor: count(confirmedUnits, (c) => (c.independent.recordAdderChecked ?? []).some((x) => x.basis === 'author')),
+      recordAdderBySignature: count(confirmedUnits, (c) => (c.independent.recordAdderChecked ?? []).some((x) => x.basis === 'signature')),
       // 確認者の力量(第3章 3.4.1。#357 / ADR-0127 決定4)。承認者の数で数える
       noCompetenceConfirmations: confirmedUnits.reduce((n, c) => n + (c.independent.noCompetenceApprovers?.length ?? 0), 0),
       requesterConfirmations: confirmedUnits.reduce((n, c) => n + (c.independent.requesterConfirmedApprovers?.length ?? 0), 0),
@@ -5422,6 +5501,10 @@ if (isMain) {
   } catch (e) {
     autonomy = { error: String(e.message).split('\n')[0], types: [] };
   }
+  // 事故の警告と定めていない値は、出荷の証跡の宣言の表へ毎回出す。欠落には数えない(出荷判定を落とさない)
+  for (const t of warningLines(autonomy)) {
+    tailoring.push({ label: t.startsWith('警告') ? '重大な事故の警告' : '定めていない値と、働いていない検知', state: '開示(止めていない)', why: [t, '欠落には数えない。値・事故への対処は採用者が決める'] });
+  }
 
   // 判定のコードの読み元と統制の設定の変更の承認(標準 第4章 G-5、G-7「保証の開示」項目1。process-compass #371 / ADR-0115 / EV-0233)。
   // 層ごとの充足と未達を値で出す(評価を足さない)。必須チェックの構成は env-check の3値(満たす・満たさない・確かめていない)
@@ -5584,10 +5667,13 @@ if (isMain) {
       const reviewerKey = whoKey('independent-reviewer');
       const bySeat = Boolean(reviewerKey) && recs.some((g) => g.judge && personKey(config, g.judge) === reviewerKey);
       const month = p.mergedAt && !Number.isNaN(Date.parse(p.mergedAt)) ? localDay(new Date(p.mergedAt)).slice(0, 7) : null;
-      return { pr: p.number, sampled: recs.length > 0, bySeat, month, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
+      const ruleOf = delegatedChanges.find((d) => d.pr === p.number && d.inScope)?.rule ?? null;
+      return { pr: p.number, type: ruleOf ? typeOfRule(config, ruleOf) : null, sampled: recs.length > 0, bySeat, month, records: recs.map((g) => ({ file: g.file, result: g.result ?? null, judge: g.judge ?? null })) };
     });
   // 月ごとの件数(IMPL-0597。条件6)。合否・欠落には数えない
-  const samplingByMonth = samplingMonthly(sampling.map((x) => ({ month: x.month, sampled: x.bySeat })), { perMonth: config.delegation?.sampling?.perMonth ?? null, reviewerResolved: Boolean(whoKey('independent-reviewer')) });
+  // 判定の材料が揃っていない月(委任の判定が全件を定めにした月)は、種類ごとに委任の判定の導出(autonomy)から受ける。導出できなかったときは全件の月を持たない
+  const fullMonthsByType = Object.fromEntries((autonomy.types ?? []).map((t) => [t.id, t.postHoc?.fullMonths ?? []]));
+  const samplingByMonth = samplingMonthly(sampling.map((x) => ({ month: x.month, type: x.type, sampled: x.bySeat })), { perMonth: config.delegation?.sampling?.perMonth ?? null, reviewerResolved: Boolean(whoKey('independent-reviewer')), fullMonths: fullMonthsByType });
 
   // --- 保証の主張の成立判定(標準 第4章 G-7「保証の主張の成立判定」/ 附属書H H.1・H.6。#288) -----------------
   //
@@ -6446,6 +6532,8 @@ if (isMain) {
     R.push(`| 　内訳: 人のアカウントによる承認がない | ${un.noApproval} | ${prevUn('noApproval')} |`);
     R.push(`| 　内訳: AI・bot のアカウントによる承認だけである | ${un.aiOrBot} | ${prevUn('aiOrBot')} |`);
     R.push(`| 　内訳: 承認者が、作成を指示した者である | ${un.approverIsInstructor} | ${prevUn('approverIsInstructor')} |`);
+    R.push(`| 　内訳: 出荷判定(G-7)の記録より後に足された G-6 の判定記録だけである(数えない) | ${un.recordAfterShipment ?? 0} | ${prevUn('recordAfterShipment')} |`);
+    R.push(`| 　内訳: G-6 の判定記録を足したコミットのアカウントが、判定者と対応づかない(数えない) | ${un.recordAdderMismatch ?? 0} | ${prevUn('recordAdderMismatch')} |`);
     R.push(`| 　内訳: 構成上、G-6 が未達または成立しない(体制の内の人の承認を数えない) | ${un.structure} | ${prevUn('structure')} |`);
     R.push(`| 　内訳: 承認者を名簿と対応づけられない(承認者の同一性は未確認) | ${un.approverUnmapped} | ${prevUn('approverUnmapped')} |`);
     R.push(`| 　内訳: 作成を指示した者を名簿と対応づけられない | ${un.instructorUnresolved} | ${prevUn('instructorUnresolved')} |`);
@@ -6454,6 +6542,11 @@ if (isMain) {
       `| 　内訳: 独立した人の承認者の数が、構成の要求(review.reviewerCount ${A.independence.reviewers?.required ?? 1} 名。コア機能と承認権限の一時制限の範囲では上がる)に満たない | ${un.insufficientApprovers ?? 0}${(A.independence.reviewers?.insufficient ?? []).length ? `: ${A.independence.reviewers.insufficient.join(', ')}` : ''} | ${prevUn('insufficientApprovers')} |`
     );
     R.push(`| 　内訳: PR を経ていないコミット(独立した人の G-6 の判定記録が対応づかない) | ${un.directCommits} | ${prevUn('directCommits')} |`);
+    if (ch.recordAdderByAuthor || ch.recordAdderBySignature) {
+      R.push(
+        `| 独立した人の確認に数えた変更のうち、G-6 の判定記録を足したコミットのアカウントを判定者と照らしたもの(署名を要する構成は署名者、署名の無い構成は作成者の名義。作成者の名義は書き手が設定できるため、署名の無い構成の一致は他人の名義を使った書き込みを防がない。判定記録の2人目の承認者の記名は、足し手と照らしていない) | 署名者 ${ch.recordAdderBySignature ?? 0} 件 / 作成者の名義 ${ch.recordAdderByAuthor ?? 0} 件 | ${prev((p) => (p.independence.changes.recordAdderByAuthor === undefined ? '値なし' : `署名者 ${p.independence.changes.recordAdderBySignature ?? 0} 件 / 作成者の名義 ${p.independence.changes.recordAdderByAuthor} 件`))} |`
+      );
+    }
     if (ch.approvalRecordNotFound) {
       R.push(`| 　うち、件名は PR の番号を持つが、PR のマージコミットと一致しない・取得できないコミット | ${ch.approvalRecordNotFound} | ${prev((p) => p.independence.changes.approvalRecordNotFound)} |`);
     }
@@ -6748,6 +6841,8 @@ if (isMain) {
       for (const n of au.notes ?? []) R.push(`  - 評価の時点: ${n}`);
       // 欠陥の台帳の登録外の ID(process-compass #348 §1.6)。外へ渡す形は件数だけ
       for (const t of defectUnregisteredDisclosure(au, { external })) R.push(`  - ${t}`);
+      // 事故の警告と、定めていない値(止める規則ではない。期間で消さない)
+      for (const t of warningLines(au, { external })) R.push(`  - ${t}`);
       if (au.cap?.reason) R.push(`  - 上限の理由: ${au.cap.reason}`);
     }
     R.push('');

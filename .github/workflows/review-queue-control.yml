@@ -44,6 +44,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # 委任の判定のコミットステータス(delegation-eligibility)を読む
+      statuses: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +58,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          REVIEW_LOAD_LIMIT: ${{ vars.REVIEW_LOAD_LIMIT }}
+          # 委任した変更のマージの経路を有効にしているとき(delegation.yml と同じ変数)だけ、判定が「該当」の PR を同時保有数から除く(催促からは除かない)
+          DELEGATED_MERGE_ENABLED: ${{ vars.DELEGATED_MERGE_ENABLED }}
           # UTC からの差(分)。空なら日本時間の 540。固定の差で、夏時間には対応しない
           REVIEW_UTC_OFFSET_MINUTES: ${{ vars.REVIEW_UTC_OFFSET_MINUTES }}
           DRY_RUN: ${{ inputs.dry-run }}

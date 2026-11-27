@@ -3,10 +3,11 @@
 //
 //   node scripts/gate/test-review-queue.mjs
 
+import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { addBusinessDays, businessDaysBetween, dayOf, isBusinessDay, parseHolidays, loadHolidays, HOLIDAYS_UNCOUNTED_NOTE } from './business-days.mjs';
-import { queueActions, riskLabelAction, parseDeadlines, escalationTarget, seatLogin, fetchSnapshot, isApproved, DEFAULT_DEADLINES } from './review-queue.mjs';
+import { DELEGATION_STATUS_CONTEXT, DELEGATION_ELIGIBLE_PREFIX, queueActions, riskLabelAction, parseDeadlines, escalationTarget, seatLogin, fetchSnapshot, isApproved, DEFAULT_DEADLINES } from './review-queue.mjs';
 import { isProseDocument } from './check-pr.mjs';
 
 let failures = 0;
@@ -135,11 +136,12 @@ check('IMPL-0979:ng 起点は最初のレビュー依頼。作成が古くても
 
 // 0682(上限3)
 const heavy = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }] }));
-const h = queueActions({ ...base, prs: heavy });
+const h = queueActions({ ...base, loadLimit: 3, prs: heavy });
 check('IMPL-0682:ng 4件目の指名で知らせる(指名は外さない)', h.actions.filter((x) => x.key === 'load:busy').length === 1 && h.actions.find((x) => x.key === 'load:busy').pr === 4);
 const reHeavy = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }], reviews: [{ login: 'busy', state: 'COMMENTED', at: '2026-11-01T00:00:00Z' }] }));
-check('IMPL-0682:ng 付け直した依頼は、過去のレビューがあっても同時保有に数える', queueActions({ ...base, prs: reHeavy }).actions.some((x) => x.key === 'load:busy'));
-check('IMPL-0682:ok 3件目までは出ない', !queueActions({ ...base, prs: heavy.slice(0, 3) }).actions.some((x) => x.key === 'load:busy'));
+check('IMPL-0682:ng 付け直した依頼は、過去のレビューがあっても同時保有に数える', queueActions({ ...base, loadLimit: 3, prs: reHeavy }).actions.some((x) => x.key === 'load:busy'));
+check('IMPL-0682:ok 3件目までは出ない', !queueActions({ ...base, loadLimit: 3, prs: heavy.slice(0, 3) }).actions.some((x) => x.key === 'load:busy'));
+check('IMPL-0682:ok 同時保有の上限を採用者が定めていないとき(構成に欄が無い)は、上限の知らせを出さない', !queueActions({ ...base, prs: heavy }).actions.some((x) => x.key === 'load:busy'));
 check('IMPL-0682:ok 上限は引数で変えられる', queueActions({ ...base, loadLimit: 2, prs: heavy.slice(0, 3) }).actions.some((x) => x.key === 'load:busy'));
 
 // 0136
@@ -169,12 +171,29 @@ const canned = (args) => {
   if (/issues\/7\/events/.test(p)) return JSON.stringify([[{ event: 'review_requested', requested_reviewer: { login: 'rev1' }, created_at: '2026-11-16T00:00:00Z' }, { event: 'labeled', label: { name: 'risk/R2' }, actor: { login: 'github-actions[bot]' }, created_at: '2026-11-10T00:00:00Z' }], [{ event: 'ready_for_review', created_at: '2026-11-11T00:00:00Z' }]]);
   if (/pulls\/7\/files/.test(p)) return JSON.stringify([[{ filename: 'a.md', status: 'modified' }]]);
   if (/pulls\/7\/reviews/.test(p)) return '[[]]';
+  if (/commits\/h1\/statuses/.test(p)) return JSON.stringify([[{ context: 'delegation-eligibility', state: 'success', description: '該当(G-6 を事後へ移す委任): 規則 r1。マージの実行: 有効' }]]);
   if (/issues\/7\/comments/.test(p)) return JSON.stringify([[{ body: 'x[a][b]', user: { login: 'github-actions[bot]' } }]]);
   throw new Error(`想定外: ${p}`);
 };
 const snap = fetchSnapshot((a) => canned(a), 'o/r');
 check('読み取り: ページ連結の応答と事象を PR の記録へ整える', snap.length === 1 && snap[0].requests[0].login === 'rev1' && snap[0].readyAt === '2026-11-11T00:00:00Z' && snap[0].requestedTeams[0] === 'core' && snap[0].labels[0] === 'risk/R2' && snap[0].firstRequestAt === '2026-11-16T00:00:00Z' && snap[0].headSha === 'h1' && snap[0].machineRiskLabels[0] === 'risk/R2' && snap[0].requestedReviewers[0] === 'rev1' && snap[0].comments[0].body === 'x[a][b]' && snap[0].comments[0].login === 'github-actions[bot]', JSON.stringify(snap));
 check('読み取り: --paginate --slurp で呼び、本文の中の ][ を壊さない', slurped);
+check('読み取り: head のコミットの委任の判定のステータスが「該当」なら delegated を立てる', snap[0].delegated === true);
+
+// 委任した PR(判定が該当)は、マージの経路を有効にしているときに限り、同時保有数から除く。催促からは除かない
+const deleg = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, labels: ['risk/R3'], delegated: true, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }] }));
+check('同時保有: マージの経路が有効でない間は、委任の判定が該当でも同時保有に数える(人の承認を待つため。従来どおり)', queueActions({ ...base, loadLimit: 3, prs: deleg }).actions.some((x) => x.key === 'load:busy'));
+check('同時保有: マージの経路が有効なら、該当の PR 4 件で同時保有の通知が出ない', !queueActions({ ...base, loadLimit: 3, prs: deleg, excludeDelegated: true }).actions.some((x) => x.key === 'load:busy'));
+check('同時保有: 該当でない PR は、有効でも数える(3件の該当 + 該当でない 2 件ならば 2 件だけ)', (() => {
+  const mixed = [...deleg.slice(0, 3), ...[5, 6, 7, 8].map((n) => mk({ number: n, createdAt: NOW, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }] }))];
+  const a = queueActions({ ...base, loadLimit: 3, prs: mixed, excludeDelegated: true }).actions.filter((x) => x.key === 'load:busy');
+  return a.length === 1 && a[0].pr === 8;
+})());
+check('同時保有: 該当の PR は、有効でも応答の催促からは除かない', (() => {
+  const one = [mk({ number: 9, createdAt: NOW, labels: ['risk/R3'], delegated: true, requests: [{ login: 'late', at: '2026-10-01T00:00:00Z' }] })];
+  return queueActions({ ...base, loadLimit: 3, prs: one, excludeDelegated: true }).actions.some((x) => x.key.startsWith('nudge:late'));
+})());
+check('同時保有: 状態の文字列は check-delegation.mjs と同じ値', DELEGATION_STATUS_CONTEXT === 'delegation-eligibility' && fs.readFileSync(new URL('./check-delegation.mjs', import.meta.url), 'utf8').includes(DELEGATION_ELIGIBLE_PREFIX) && fs.readFileSync(new URL('./check-delegation.mjs', import.meta.url), 'utf8').includes(`'${DELEGATION_STATUS_CONTEXT}'`));
 
 console.log(failures ? `\nレビューの滞留の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\nレビューの滞留の試験: ${checks} 件が期待と一致しました`);
 process.exit(failures ? 1 : 0);

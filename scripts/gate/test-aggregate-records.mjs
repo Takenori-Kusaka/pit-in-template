@@ -894,7 +894,7 @@ const config = {
 {
   const rows = (month, nAll, k) => Array.from({ length: nAll }, (_, i) => ({ month, sampled: i < k }));
   // IMPL-0597:ng
-  const ng = samplingMonthly([...rows('2026-10', 8, 3), ...rows('2026-11', 3, 3)]);
+  const ng = samplingMonthly([...rows('2026-10', 8, 3), ...rows('2026-11', 3, 3)], { perMonth: 5 });
   check('IMPL-0597:ng n=8・k=3 の月が不足と出る(既定は n と 5 のうち小さいほう)', ng.short.length === 1 && ng.short[0].month === '2026-10' && ng.short[0].n === 8 && ng.short[0].k === 3 && ng.short[0].required === 5);
   // IMPL-0597:ok
   check('IMPL-0597:ok n=3・k=3 の月は不足と出ない', ng.months.find((m) => m.month === '2026-11').short === false);
@@ -902,11 +902,17 @@ const config = {
   const cfg = samplingMonthly(rows('2026-10', 8, 3), { perMonth: 2 });
   const cfg4 = samplingMonthly(rows('2026-10', 8, 3), { perMonth: 4 });
   check('IMPL-0597:ng 構成の perMonth を使う(2 なら k=3 は足り、4 なら足りない)', cfg.short.length === 0 && cfg4.short.length === 1 && cfg4.short[0].required === 4 && cfg4.source === 'config');
+  check('IMPL-0597:ok 抜き取りの件数を定めていない(perMonth が無い)月の定めは、当月の全件(一律の既定の件数は置かない)', samplingMonthly(rows('2026-10', 8, 3)).short[0].required === 8 && samplingMonthly(rows('2026-10', 8, 3)).source === 'undefined');
   check('IMPL-0597:ok perMonth が月の件数を上回る月は、月の件数を上限にする', samplingMonthly(rows('2026-10', 2, 2), { perMonth: 5 }).short.length === 0);
   check('IMPL-0597:ok マージの時刻を読めない変更は月ごとの表に含めず、件数を出す', samplingMonthly([{ month: null, sampled: false }, ...rows('2026-10', 1, 1)]).undated === 1);
   const text = samplingMonthlyText(ng);
   check('IMPL-0597:ok 表示は合否に数えない旨と、確かめない範囲(選び方・中身・実績の中身。内部監査)を出す', /2026-10/.test(text) && /合否にも記載の欠落にも数えません/.test(text) && /内部監査/.test(text));
   // IMPL-0597:ng(席の責任者を引けない構成。記録があっても k=0 となり全ての月が不足に見える誤報を出さない)
+  // 判定の材料が揃っていない月(fullMonths)は、定めが月の件数 n(全件)になる。ほかの月は従来どおり。種類ごとに当てられる
+  const fullM = samplingMonthly([...rows('2026-10', 8, 5), ...rows('2026-11', 8, 5)], { perMonth: 5, fullMonths: ['2026-10'] });
+  check('事後の確認の記録: 判定の材料が揃っていない月は全件(n)が定め。他の月は n と 5 の小さいほう', fullM.months[0].required === 8 && fullM.months[0].short === true && fullM.months[0].full === true && fullM.months[1].required === 5 && fullM.months[1].short === false && /全件/.test(samplingMonthlyText(fullM)));
+  const byT = samplingMonthly([...rows('2026-10', 8, 5).map((x) => ({ ...x, type: 'a' })), ...rows('2026-10', 8, 5).map((x) => ({ ...x, type: 'b' }))], { perMonth: 5, fullMonths: { a: ['2026-10'] } });
+  check('事後の確認の記録: 判定の材料が揃っていない月は、その種類にだけ全件を当てる', byT.months.find((x) => x.type === 'a').required === 8 && byT.months.find((x) => x.type === 'b').required === 5);
   const unres = samplingMonthly(rows('2026-10', 8, 0), { reviewerResolved: false });
   check('IMPL-0597:ng 独立レビュアの席の責任者を引けないときは、月ごとの不足を出さず、数えていない旨を出す', unres.short.length === 0 && unres.unresolved === true && /名簿から引けず/.test(samplingMonthlyText(unres)) && samplingMonthly(rows('2026-10', 8, 0)).short.length === 1);
   // IMPL-0597:ng

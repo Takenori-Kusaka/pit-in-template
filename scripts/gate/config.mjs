@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { detectionValueProblems } from './detection-values.mjs';
 import { recordFromForm } from './records.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -2093,6 +2094,7 @@ export function configIntegrityProblems(config) {
   out.push(...protectedPathsProblems(config));
   for (const p of delegationSamplingProblems(config)) out.push(p);
   for (const p of observationWindowProblems(config)) out.push(`観測の窓: ${p}`);
+  for (const p of detectionValueProblems(config)) out.push(p);
   for (const p of reworkBaselineProblems(config)) out.push(`手戻り率の基準値: ${p}`);
   (Array.isArray(config.changeLog) ? config.changeLog : []).forEach((e, i) => {
     if (SIGNED_DIRECTIONS.includes(e?.direction) && !(e.decidedBy && e.reason)) {

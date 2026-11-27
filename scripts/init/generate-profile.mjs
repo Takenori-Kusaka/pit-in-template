@@ -42,7 +42,9 @@ import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { enforcementComplete, CHANGE_TYPE_ENFORCEMENT, REWORK_BASELINE_METHODS } from '../gate/config.mjs';
-import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS, MIN_SAMPLE } from '../gate/autonomy.mjs';
+import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS } from '../gate/autonomy.mjs';
+import { minSampleOf, definedValue } from '../gate/detection-values.mjs';
+const minSampleText = (config) => (minSampleOf(config) === null ? '最小標本数は未定義(検知は働かない)' : `最小標本数 ${minSampleOf(config)} 件`);
 import { provisionalLicenseProblems } from '../gate/license-allowlist.mjs';
 import { recalibrationState, recalibrationNote } from '../gate/recalibration.mjs';
 import { preflight, printPreflight, preflightRecord } from '../gate/preflight.mjs';
@@ -3238,7 +3240,7 @@ export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
           ? 'L1(安全関連部の適用の条件のため登録を適用しない)'
           : 'L1(手戻り率が未計測)';
     const reworkBaselinePct = config.reworkBaseline?.percent ?? null;
-    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、最小標本数 ${MIN_SAMPLE} 件、${reworkBaselinePct === null ? '基準値が未設定のため、登録した変更種別を止める(適用の条件の欠落)' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
+    const reworkAlgo = `準拠テンプレートが算出する(トレーラの取り込みの2回以上と、実装計画の履歴の「やり直し」の和。毎月、${windowPhrase(config)}(差し戻し率と共通の観測の窓。同じ行の差し戻し率の欄を参照)、${minSampleText(config)}、${reworkBaselinePct === null ? '基準値が未設定のため、手戻り率の検知は働かない(止めない。当月の全件を事後に確かめる)' : `基準値 ${reworkBaselinePct}% を超えたら止める`})。計画表に書かれない不採用の後の再作成は数えていない`;
     const reworkCell = reworkMeasured
       ? `${reworkAlgo}。残りは採用者の手段で補う(登録の根拠: ${cell(rework)}。${detectionComplete(t.basis) ? DETECTION_UNVERIFIED : '登録は拒否される(他の検知条件が未記入)'})`
       : `未計測(登録の根拠の reworkRate が未記入)。${reworkAlgo}`;
@@ -3247,7 +3249,7 @@ export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
       ? ` 4点目(停止条件を強制する手段の所在): ${CHANGE_TYPE_ENFORCEMENT.map(([k, label]) => `${label} ${cell(t.basis.enforcement[k])}`).join(' / ')}(記入の有無は機械が確かめた。手段が停止を強制するかは確かめていない)`
       : ' 4点目(停止条件を強制する手段の所在)が未記入のため、この種別の委任は止まる(/process-change の種別 mode で記録する)';
     L.push(
-      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、最小標本数 ${MIN_SAMPLE} 件) | ${reworkCell}。${enfCell.trim()} | ${where} |`
+      `| 登録した変更種別 ${cell(t.id)} | ${level} | ${where} | 準拠テンプレートが集計する(G-6 の判定記録と既定ブランチの履歴。毎月、${windowPhrase(config)}${windowDeciderText(config)}、${minSampleText(config)}) | ${reworkCell}。${enfCell.trim()} | ${where} |`
     );
   }
   L.push(`| ${types.length ? 'それ以外' : 'すべての範囲'} | L1 | — | — | — | — |`);
@@ -5471,7 +5473,7 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow', 'reworkBaseline'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow', 'reworkBaseline', 'detection', 'reviewQueue'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
@@ -5529,15 +5531,31 @@ if (isMain) {
       if (!isObject(W)) bad.push('settings.observationWindow は { "months": <整数。2 以上> } で書きます');
       else {
         const extra = Object.keys(W).filter((k) => k !== 'months');
-        if (extra.length) bad.push(`settings.observationWindow に書けない欄があります(${extra.join(', ')})。書けるのは months だけです。最小標本数(30 件)は欄を持たず、下げられません`);
+        if (extra.length) bad.push(`settings.observationWindow に書けない欄があります(${extra.join(', ')})。書けるのは months だけです。最小標本数は settings.detection.minSample に書きます`);
         if (!Number.isInteger(W.months) || W.months < WINDOW_MONTHS) bad.push(`settings.observationWindow.months は ${WINDOW_MONTHS} 以上の整数で書きます(下限は第5章 5.4.6 の既定の ${WINDOW_MONTHS}か月。許されるのは長くすることだけです)`);
-        else if (W.months !== (prior?.observationWindow?.months ?? WINDOW_MONTHS)) {
+        else if (W.months !== (prior?.observationWindow?.months ?? null)) {
           if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) {
             bad.push('観測の窓の値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(長くする・短くする)を問わず要ります');
           } else if (aiNameReason(change.decidedBy, { account: true })) {
             bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。観測の窓の決定は人が記名します`);
           }
         }
+      }
+    }
+    // 検知・知らせを起動する値(最小標本数・同時保有の上限)。標準は一律の既定値を課さず、採用者が自社の過去のトラブルとプロダクトの特性に合わせて定める。
+    // { "detection": { "minSample": <1 以上の整数。外すときは null> } }、{ "reviewQueue": { "loadLimit": <1 以上の整数。外すときは null> } }。
+    // 値を変える(新しく置く・変える・外す)ときは、向きを問わず決定した者の記名(AI の名義でない)と理由を要する
+    for (const [group, field, label] of [['detection', 'minSample', '最小標本数'], ['reviewQueue', 'loadLimit', '同時保有の上限']]) {
+      if (S[group] === undefined) continue;
+      const G = S[group];
+      if (!isObject(G)) { bad.push(`settings.${group} は { "${field}": <1 以上の整数。外すときは null> } で書きます`); continue; }
+      const extra = Object.keys(G).filter((k) => k !== field);
+      if (extra.length) bad.push(`settings.${group} に書けない欄があります(${extra.join(', ')})。書けるのは ${field} だけです`);
+      const v = G[field];
+      if (!(v === null || (Number.isInteger(v) && v >= 1))) { bad.push(`settings.${group}.${field}(${label})は 1 以上の整数(外すときは null)で書きます。既定値はありません。自社の過去のトラブルとプロダクトの特性に合わせて決めます`); continue; }
+      if (v !== definedValue(prior?.[group]?.[field])) {
+        if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) bad.push(`${label}を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます`);
+        else if (aiNameReason(change.decidedBy, { account: true })) bad.push(`決定した者 "${change.decidedBy}" は ${aiNameReason(change.decidedBy, { account: true })}。${label}の決定は人が記名します`);
       }
     }
     // 手戻り率の基準値(標準 第5章 5.4.6。process-compass #348)。{ "percent": <0〜100 の数値>, "method": "pre-measurement" | "measured" }、外すときは { "percent": null }。既定値を置かない。
@@ -5939,7 +5957,7 @@ if (isMain) {
   // 観測の窓。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。記録した日は入口を実行した日(today)で、変化点の発効日(date)ではない(過去の評価の日へ遡って当てない)。再生成では保つ。既定のままなら欄を持たない
   {
     const priorW = prior?.observationWindow ?? null;
-    const cur = priorW?.months ?? WINDOW_MONTHS;
+    const cur = priorW?.months ?? null;
     if (S.observationWindow && S.observationWindow.months !== cur) {
       config.observationWindow = {
         months: S.observationWindow.months,
@@ -5947,6 +5965,17 @@ if (isMain) {
       };
     } else if (priorW) config.observationWindow = priorW;
     else delete config.observationWindow;
+  }
+  // 最小標本数・同時保有の上限。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。外すときは value: null を足す。再生成では保つ
+  for (const group of ['detection', 'reviewQueue']) {
+    const field = group === 'detection' ? 'minSample' : 'loadLimit';
+    const priorF = prior?.[group]?.[field];
+    const cur = definedValue(priorF);
+    if (S[group] && S[group][field] !== undefined && S[group][field] !== cur) {
+      const hist = [...(Array.isArray(priorF?.history) ? priorF.history : [])];
+      hist.push({ value: S[group][field], recordedAt: today, decidedBy: change.decidedBy, reason: change.reason });
+      config[group] = { ...(prior?.[group] ?? {}), [field]: { history: hist } };
+    } else if (prior?.[group]) config[group] = prior[group];
   }
   // 手戻り率の基準値。値を変える変化点だけ、履歴へ(値・記録した日・決定した者・理由)を足す。再生成では保つ。未設定のままなら欄を持たない
   {

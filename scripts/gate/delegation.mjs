@@ -372,6 +372,8 @@ export function judgeDelegatedMerge({ config, pr = {}, files = [], commits = [],
     riskClass: risk,
     // 変更が当たる規則の変更種別の、現在のレベルと停止(第5章 5.4.6)
     autonomy: autonomyType,
+    // 事故の警告(一般の案件では止めない)。該当の判定は変えず、注記として出す
+    warnings: autonomyType?.warnings ?? [],
     conditions,
     reasons: conditions.flatMap((c) => c.problems.map((p) => `${c.id}: ${p}`)),
     notJudged,

@@ -15,9 +15,10 @@
 // 日付・時刻は引数で渡し、時計を読まない。暦の日は business-days.mjs(UTC の暦、明示した差で直す)で求める。
 //
 // 使い方: node scripts/gate/review-queue.mjs [queue|risk] [--pr N] [--dry-run] [--now ISO] [--offset-minutes 540]
-//   環境変数: GITHUB_REPOSITORY, GH_TOKEN, REVIEW_LOAD_LIMIT(既定3), REVIEW_UTC_OFFSET_MINUTES(既定 540。固定の差で、夏時間には対応しない)
+//   環境変数: GITHUB_REPOSITORY, GH_TOKEN, REVIEW_UTC_OFFSET_MINUTES(既定 540。固定の差で、夏時間には対応しない)
 
 import fs from 'node:fs';
+import { loadLimitOf } from './detection-values.mjs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,12 @@ import { addBusinessDays, dayOf, loadHolidays, DEFAULT_OFFSET_MINUTES } from './
 
 const D0_FILE = 'docs/D-0-governance.md';
 export const MARKER = 'pit-in:review-queue';
+/**
+ * 委任の判定(check-delegation.mjs --status)が head のコミットへ出すステータスの文脈と、「該当」の書き出し。
+ * check-delegation.mjs の STATUS_CONTEXT と postStatus の文と同じ値(2か所で保つ。食い違いは test-review-queue.mjs が検出する)
+ */
+export const DELEGATION_STATUS_CONTEXT = 'delegation-eligibility';
+export const DELEGATION_ELIGIBLE_PREFIX = '該当(G-6 を事後へ移す委任)';
 
 /** 標準の既定(D-0 節5 の表が読めないときに使う。使ったことは出力に書く) */
 export const DEFAULT_DEADLINES = {
@@ -35,7 +42,6 @@ export const DEFAULT_DEADLINES = {
   'G-3': { hours: 48 },
   'G-4': { hours: 24 },
 };
-export const DEFAULT_LOAD_LIMIT = 3;
 
 const cellsOf = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 const norm = (s) => String(s ?? '').normalize('NFKC').replace(/[\s*`]/g, '');
@@ -147,7 +153,7 @@ const mention = (login) => (login ? `@${login}` : null);
  * pr: { number, draft, createdAt, readyAt, firstRequestAt, files[], requestedTeams[], requestedReviewers[], requests:[{login, at}], reviews:[{login, state, at, bot, assoc, commit}], headSha, comments:[{body, login}] }
  * 戻り値: { actions: [{ pr, key, body }], notes: [] }
  */
-export function queueActions({ prs, now, config, d0Text, holidays = new Set(), loadLimit = DEFAULT_LOAD_LIMIT, offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null }) {
+export function queueActions({ prs, now, config, d0Text, holidays = new Set(), loadLimit = loadLimitOf(config), offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null, excludeDelegated = false }) {
   const { deadlines, defaulted } = parseDeadlines(d0Text);
   const esc = escalationTarget(d0Text, config);
   const notes = [];
@@ -161,6 +167,10 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
     if (!hasMarker(pr, key) && !actions.some((a) => a.pr === pr.number && a.key === key)) actions.push({ pr: pr.number, key, body: stamp(key, text) });
   };
   const open = prs.filter((p) => !p.draft);
+  // 委任の判定が「該当(G-6 を事後へ移す)」の PR は、事前の確認を待たない。マージの経路を有効にしている(excludeDelegated)ときに限り、
+  // 同時保有数(0682)から除く。有効でない間は、該当の PR も人の承認を待つので数える。応答・判定の催促(0681・0979)からは除かない:
+  // 委任のマージが失敗した PR が別の所で見えることを、実際のホスティングでは確かめていないため(失敗した PR が催促からも外れると、誰の目にも留まらない)
+  const counted = excludeDelegated ? open.filter((p) => p.delegated !== true) : open;
   // 応答は、その指名(依頼)の時刻より後のレビューに限る。付け直した依頼では、過去のレビューを応答に数えない
   const respondedBy = (pr, login, since = null) => {
     const sinceMs = Date.parse(since);
@@ -172,7 +182,7 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
 
   // 未応答の指名の数(0682)
   const held = new Map();
-  for (const pr of open) {
+  for (const pr of counted) {
     for (const rq of pr.requests ?? []) {
       if (respondedBy(pr, rq.login, rq.at)) continue;
       const k = rq.login.toLowerCase();
@@ -180,7 +190,9 @@ export function queueActions({ prs, now, config, d0Text, holidays = new Set(), l
       held.get(k).push({ pr: pr.number, at: rq.at, login: rq.login });
     }
   }
+  // 同時保有の上限を採用者が定めていない(構成の reviewQueue.loadLimit が無い)ときは、上限の知らせを出さない(期限超過の催促は出る)
   for (const [, list] of held) {
+    if (!(Number.isInteger(loadLimit) && loadLimit >= 1)) break;
     list.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.pr - b.pr);
     list.slice(loadLimit).forEach((h) => {
       const pr = open.find((p) => p.number === h.pr);
@@ -293,6 +305,9 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
     const files = json(gh, [`repos/${repo}/pulls/${n}/files?per_page=100`]);
     const reviews = json(gh, [`repos/${repo}/pulls/${n}/reviews?per_page=100`]);
     const comments = json(gh, [`repos/${repo}/issues/${n}/comments?per_page=100`]);
+    // 委任の判定のステータス(新しいものが先頭)。head のコミットの最新が「該当」のときだけ delegated
+    const statuses = p.head?.sha ? json(gh, [`repos/${repo}/commits/${p.head.sha}/statuses?per_page=100`]) : [];
+    const delegationStatus = statuses.find((s) => s.context === DELEGATION_STATUS_CONTEXT);
     return {
       number: n,
       draft: Boolean(p.draft),
@@ -309,6 +324,7 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
       reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, at: r.submitted_at, bot: r.user?.type === 'Bot', assoc: r.author_association ?? null, commit: r.commit_id ?? null })),
       comments: comments.map((c) => ({ body: c.body, login: c.user?.login ?? '' })),
       labels: (p.labels ?? []).map((l) => l.name),
+      delegated: String(delegationStatus?.description ?? '').startsWith(DELEGATION_ELIGIBLE_PREFIX),
     };
   });
 }
@@ -354,8 +370,9 @@ function main(argv) {
   const d0 = path.join(ROOT, D0_FILE);
   const d0Text = fs.existsSync(d0) ? fs.readFileSync(d0, 'utf8') : '';
   const hol = loadHolidays(ROOT);
-  const limit = Number(process.env.REVIEW_LOAD_LIMIT) > 0 ? Number(process.env.REVIEW_LOAD_LIMIT) : DEFAULT_LOAD_LIMIT;
-  const r = queueActions({ prs, now, config, d0Text, holidays: hol.days, loadLimit: limit, offsetMinutes: offset, holidaysNote: hol.note });
+  const limit = loadLimitOf(config);
+  if (limit === null) console.log('注意: 同時保有の上限を定めていないため、上限を超えた知らせは出していません(期限超過の催促は出ます)。上限は構成の reviewQueue.loadLimit に、自社のレビューの重さに合わせて定めます');
+  const r = queueActions({ prs, now, config, d0Text, holidays: hol.days, loadLimit: limit, offsetMinutes: offset, holidaysNote: hol.note, excludeDelegated: process.env.DELEGATED_MERGE_ENABLED === 'true' });
   for (const n of r.notes) console.log(`注意: ${n}`);
   for (const a of r.actions) {
     console.log(`PR #${a.pr}: ${a.key}${dry ? '(dry-run)' : ''}`);

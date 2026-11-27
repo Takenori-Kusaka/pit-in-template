@@ -100,6 +100,10 @@ function render(result, { number = null, merge = null } = {}) {
   L.push('| --- | --- | --- |');
   for (const c of result.conditions) L.push(`| ${c.id} | ${c.label} | ${c.ok ? '満たす' : `**満たさない**: ${c.problems.join(' / ')}`} |`);
   for (const n of result.notJudged) L.push(`| ${n.id} | ${n.text} | 機械では判定していない |`);
+  for (const w of result.warnings ?? []) {
+    L.push('');
+    L.push(`**警告(判定は変えていません)**: ${w.text}`);
+  }
   L.push('');
   L.push('この判定は承認ではありません。機械は承認のレビューを付けません。リスク区分は PR の記載(自己記載)によります。');
   if (merge) {

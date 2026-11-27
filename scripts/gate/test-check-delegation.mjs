@@ -12,12 +12,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT, changeTypeProblems, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
+import { derivePostHoc, requiredCount } from './post-hoc-confirmation.mjs';
+import { minSampleOf, detectionValueProblems, undefinedValues } from './detection-values.mjs';
 import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
-import { defectUnregisteredDisclosure, l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
+import { defectUnregisteredDisclosure, warningLines, l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
 
 const FIXTURE = path.join(ROOT, 'scripts/gate/fixtures/delegation-eligible.json');
-const base = () => JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
+// 値(最小標本数・観測の窓)は採用者が定める。標準は一律の既定値を課さないため、試験の入力の構成で明示する
+const base = () => {
+  const d = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
+  d.config.detection = { minSample: 30 };
+  d.config.observationWindow = { months: 2, history: [{ months: 2, recordedAt: '2026-01-01', decidedBy: '鈴木 一郎', reason: '試験の入力' }] };
+  return d;
+};
 const seat = (input, role) => input.config.seats.find((s) => s.role === role);
 const rule = (input, id) => input.config.delegation.rules.find((r) => r.id === id);
 const setRisk = (input, value) => {
@@ -155,17 +163,17 @@ const cases = [
   ['プロセス構成が未設定', (i) => (i.config.configured = false), false, ['前提', '5.4.6']],
   // 第5章 5.4.6。登録した変更種別の停止(第1区分・第2区分・上限)。止まった種別の変更は協働で扱う
   // IMPL-0284:ng(違反と適合の対。標準の実装マーク。process-compass #314)
-  ['5.4.6: AI 起因の Sev1(登録の判定より後)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05')), false, ['5.4.6']],
-  ['5.4.6: 原因を特定できない Sev2', (i) => i.records.defects.rows.push(sev('Sev2', '特定できない', '2026-10-05')), false, ['5.4.6']],
-  ['5.4.6: AI 起因の欄が空欄の Sev1(特定できないと同じく扱う)', (i) => i.records.defects.rows.push(sev('Sev1', '', '2026-10-05')), false, ['5.4.6']],
-  ['5.4.6: 発生日の無い AI 起因の Sev1', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', null)), false, ['5.4.6']],
+  ['5.4.6: AI 起因の Sev1(登録の判定より後)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05')), true, []],
+  ['5.4.6: 原因を特定できない Sev2', (i) => i.records.defects.rows.push(sev('Sev2', '特定できない', '2026-10-05')), true, []],
+  ['5.4.6: AI 起因の欄が空欄の Sev1(特定できないと同じく扱う)', (i) => i.records.defects.rows.push(sev('Sev1', '', '2026-10-05')), true, []],
+  ['5.4.6: 発生日の無い AI 起因の Sev1', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', null)), true, []],
   // IMPL-0284:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   ['5.4.6: AI 起因でない Sev1 は止めない', (i) => i.records.defects.rows.push(sev('Sev1', 'なし', '2026-10-05')), true, []],
   ['5.4.6: AI 起因の Sev3 は止めない', (i) => i.records.defects.rows.push(sev('Sev3', 'あり', '2026-10-05')), true, []],
   ['5.4.6: 登録の判定より前の AI 起因の Sev1 は止めない(登録し直した)', (i) => i.records.defects.rows.push(sev('Sev1', 'あり', '2026-09-01')), true, []],
   // 登録した別の種別(決済)だけを指す行。登録外の ID の行は空欄と同じ扱いで止めるため、ここでは別の種別を登録しておく
   ['5.4.6: ほかの(登録した)変更種別だけの AI 起因の Sev1 は止めない', (i) => { i.config.delegation.changeTypes.push({ ...i.config.delegation.changeTypes[0], id: '決済' }); i.records.defects.rows.push(sev('Sev1', 'あり', '2026-10-05', ['決済'])); }, true, []],
-  ['5.4.6: 欠陥の台帳が無い(判定できない)', (i) => (i.records.defects = { present: false, rows: [] }), false, ['5.4.6']],
+  ['5.4.6: 欠陥の台帳が無い(判定できない)', (i) => (i.records.defects = { present: false, rows: [] }), true, []],
   ['5.4.6: コア機能の理解保持者数が1名', (i) => (i.records.core.rows[0].holders = 1), false, ['5.4.6']],
   ['5.4.6: コア機能の理解保持者数が0名(2名から一度に減った)', (i) => (i.records.core.rows[0].holders = 0), false, ['5.4.6']],
   ['5.4.6: 関わらない種別のコア機能の保持者1名は止めない', (i) => Object.assign(i.records.core.rows[0], { holders: 1, changeTypes: [] }), true, []],
@@ -334,6 +342,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('判定不能: 適用の条件の欠落として止め、「判定不能」と表示する', us.level === 'L1' && us.rejection.state === '判定不能' && us.stops.every((x) => x.kind === 'unmeasurable'));
   // 原因を特定できない事象は、「なし」へ改めれば戻る
   const c = base();
+  c.config.answers['q-quality'] = 'quality-regulated'; // 規制業(線の内側)では、事故の後の停止を現行のまま行う
   c.records.defects.rows.push({ id: 'BUG-1', severity: 'Sev1', aiCause: '特定できない', date: '2026-10-05', changeTypes: null });
   check('原因を特定できない: 止まる', autonomyState(c.config, c.records).types[0].stops.some((x) => x.kind === 'cause-unknown'));
   c.records.defects.rows[0].aiCause = 'なし';
@@ -605,7 +614,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   // 期待を改めた場面(単位 Y2): ADR-0158 決定2(未設定)で、ADR-0129 決定3 の「止めずに表示する」1項を置き換えたため、期待を L3 から L1 へ改めた。
   const rUnset = tOf(mk({ doubles: 12, pct: null }));
   // IMPL-0291:ng(違反の入力: 基準値が未設定。適用の条件の欠落として止める。戻る日は次の評価の日)
-  check('手戻り率: 基準値が未設定なら種別を止め、理由に「基準値」「種別 settings」と次の評価の日の日付を出す', rUnset.rework.state === '基準値未設定' && rUnset.level === 'L1' && rUnset.stops.some((x) => x.kind === 'unmeasurable' && /基準値/.test(x.reason) && /種別 settings/.test(x.reason) && /2026-11-01/.test(x.reason)), JSON.stringify(rUnset.stops));
+  check('手戻り率: 基準値が未設定でも止めず、手戻り率の検知は働いていないと出し、当月の全件を事後に確かめる側へ倒す', rUnset.rework.state === '基準値未設定' && rUnset.level === 'L3' && rUnset.stops.length === 0 && /働いていない/.test(reworkText(rUnset)) && /全件/.test(reworkText(rUnset)), JSON.stringify(rUnset.stops));
 
   // 基準値の効力日: 記録した日が評価の日より前の値を当てる。同じ日・後の記録は、その評価の日には効かない
   const cfgTwo = (secondAt) => ({ percent: 25, history: [{ percent: 20, recordedAt: '2026-09-01', decidedBy: '鈴木 一郎', reason: '置く' }, { percent: 25, recordedAt: secondAt, decidedBy: '鈴木 一郎', reason: '上げる' }] });
@@ -626,21 +635,21 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
 
   // 記録済みで、評価の日にまだ効かない基準値は、停止の理由と手戻り率の表示に「次の評価の日から効く」と出す(観測の窓の併記と同じ形)
   const rPend = tOf(mk({ doubles: 12, pct: 20, at: '2026-10-20' }));
-  check('手戻り率: 評価の日の後に記録した基準値は、判定を変えず(L1)、停止の理由と表示に記録済みの値・記録した日・効く日を出す', rPend.level === 'L1' && rPend.rework.state === '基準値未設定' && rPend.stops.some((x) => /記録済みの基準値 20%/.test(x.reason) && /2026-10-20/.test(x.reason) && /2026-11-01 から効く/.test(x.reason)) && /記録済みの基準値 20%/.test(reworkText(rPend)) && /2026-11-01 から効く/.test(reworkText(rPend)) && !/記録すると/.test(rPend.stops.map((x) => x.reason).join()), JSON.stringify(rPend.stops));
+  check('手戻り率: 評価の日の後に記録した基準値は、判定を変えず(止めない)、表示に記録済みの値・記録した日・効く日を出す', rPend.level === 'L3' && rPend.rework.state === '基準値未設定' && /記録済みの基準値 20%/.test(reworkText(rPend)) && /2026-10-20/.test(reworkText(rPend)) && /2026-11-01 から効く/.test(reworkText(rPend)), reworkText(rPend));
   // 記録済みの基準値の併記は、次の評価の日に効く値(外した記録を含む最後の記録)だけを出す
   const hEnt = (percent, recordedAt) => ({ percent, recordedAt, decidedBy: '鈴木 一郎', reason: '直近の実績から置く' });
   const withHist = (history) => { const i = mk({ doubles: 12, pct: null }); i.config.reworkBaseline = { percent: history[history.length - 1].percent, history }; return tOf(i); };
   const joinStops = (t) => t.stops.map((x) => x.reason).join();
   const rOff = withHist([hEnt(20, '2026-10-10'), hEnt(null, '2026-10-15')]);
-  check('手戻り率: 値を記録した後に同じ月に外したとき(null)は、併記を出さず「記録し直さなくてよい」と言わない', rOff.level === 'L1' && rOff.rework.state === '基準値未設定' && !/記録済みの基準値/.test(joinStops(rOff)) && !/記録し直さなくてよい/.test(joinStops(rOff)) && !/記録済みの基準値/.test(reworkText(rOff)), JSON.stringify(rOff.stops));
+  check('手戻り率: 値を記録した後に同じ月に外したとき(null)は、併記を出さない', rOff.level === 'L3' && rOff.rework.state === '基準値未設定' && !/記録済みの基準値/.test(reworkText(rOff)), reworkText(rOff));
   const rFuture = withHist([hEnt(20, '2026-11-01')]);
-  check('手戻り率: 記録した日が次の評価の日以後なら併記を出さず、日付を2つ言わない', rFuture.level === 'L1' && !/記録済みの基準値/.test(joinStops(rFuture)) && /記録した日より後の評価の日\(次は 2026-11-01\)から戻る/.test(joinStops(rFuture)), JSON.stringify(rFuture.stops));
+  check('手戻り率: 記録した日が次の評価の日以後なら併記を出さない', rFuture.level === 'L3' && !/記録済みの基準値/.test(reworkText(rFuture)), reworkText(rFuture));
   const rTwo = withHist([hEnt(20, '2026-10-10'), hEnt(30, '2026-11-15')]);
-  check('手戻り率: 次の評価の日に効く値(20%)を併記し、その後の値(30%)は出さない', rTwo.level === 'L1' && /記録済みの基準値 20%/.test(joinStops(rTwo)) && /2026-11-01 から効く/.test(joinStops(rTwo)) && !/30%/.test(joinStops(rTwo)) && !/30%/.test(reworkText(rTwo)), JSON.stringify(rTwo.stops));
-  check('手戻り率: 併記があるとき、後半は「その評価の日から戻る」へ縮め、日付を重ねない', rPend.stops.some((x) => /記録し直さなくてよい\)。その評価の日から戻る/.test(x.reason) && !/次は 2026-11-01/.test(x.reason)), JSON.stringify(rPend.stops));
+  check('手戻り率: 次の評価の日に効く値(20%)を併記し、その後の値(30%)は出さない', rTwo.level === 'L3' && /記録済みの基準値 20%/.test(reworkText(rTwo)) && /2026-11-01 から効く/.test(reworkText(rTwo)) && !/30%/.test(reworkText(rTwo)), reworkText(rTwo));
+  check('手戻り率: 併記があるとき、記録し直さなくてよい旨を出す', /記録済みの基準値 20%/.test(reworkText(rPend)), reworkText(rPend));
   check('手戻り率: 基準値を何も記録していなければ、記録済みの基準値は出さない', !/記録済みの基準値/.test(rUnset.stops.map((x) => x.reason).join()) && !/記録済みの基準値/.test(reworkText(rUnset)));
   // IMPL-1006:ok(適合の入力: 基準値未設定の停止の理由は、基準値と決め方の記録を案内する)
-  check('手戻り率: 基準値未設定の停止の理由は、「基準値と決め方」を種別 settings で記録すると戻ると案内する', /基準値と決め方を記録すると/.test(rUnset.stops.map((x) => x.reason).join()), rUnset.stops.map((x) => x.reason).join());
+  check('手戻り率: 基準値が未設定でも停止の理由を出さず、基準値は採用者が定める旨を表示に出す', rUnset.stops.length === 0 && /基準値は採用者が定める/.test(reworkText(rUnset)), reworkText(rUnset));
 
   // 基準値の決め方(IMPL-1006。第5章 5.4.6 の値の決め方 / ADR-0158)。表示と、先立つ判定可能な窓の有無
   {
@@ -686,14 +695,14 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   check('手戻り率: 既定ブランチの履歴を読めないとき、手戻り率の記録を読めない旨が停止の理由にある', rNoHist.stops.some((x) => /手戻り率の記録を読めない/.test(x.reason) && /浅い取得/.test(x.reason)) && rNoHist.rework.state === '読めない', JSON.stringify(rNoHist.stops));
 
   // IMPL-0291:ok(適合の入力: 基準値の記録日が評価の日の前日なら効く。同じ日なら、その評価の日には効かず止める(遡らない))
-  check('手戻り率: 基準値の記録日が評価の日の前日なら L3、同じ日なら L1(遡らない)', tOf(mk({ doubles: 6, at: '2026-09-30' })).level === 'L3' && tOf(mk({ doubles: 6, at: '2026-10-01' })).level === 'L1');
+  check('手戻り率: 基準値の記録日が評価の日の前日なら効き(基準値以内)、同じ日なら、その評価の日には効かない(未設定。遡らない)', tOf(mk({ doubles: 6, at: '2026-09-30' })).rework.state === '基準値以内' && tOf(mk({ doubles: 6, at: '2026-10-01' })).rework.state === '基準値未設定');
   // IMPL-0291:ok(適合の入力: 母数が 30 件へ届いた評価の日は、登録し直しを要せず戻る)
   check('手戻り率: 母数が 30 件へ届いた評価の日は L3(登録し直しを要しない)。29 件は L1', tOf(mk({ count: 30 })).level === 'L3' && tOf(mk({ count: 29 })).level === 'L1');
   // 表示: どの状態でも「発火しない」と書かず、判定不能・未設定を「異常なし」と書かない
   for (const [name, t] of [['超過', r7], ['以内', r6], ['判定不能', rSmall], ['基準値未設定', rUnset], ['読めない', rBad]]) {
     check(`手戻り率の表示(${name}): 「発火しない」と書かず、「異常なし」と書かない`, !/発火しない/.test(reworkText(t)) && !/異常なし/.test(reworkText(t)), reworkText(t));
   }
-  check('手戻り率の表示: 判定不能・未設定は「適用の条件の欠落として止めている」と出す', /適用の条件の欠落として止めている/.test(reworkText(rSmall)) && /適用の条件の欠落として止めている/.test(reworkText(rUnset)));
+  check('手戻り率の表示: 判定不能は「適用の条件の欠落として止めている」と、未設定は「止めない」と出す', /適用の条件の欠落として止めている/.test(reworkText(rSmall)) && /止めない/.test(reworkText(rUnset)));
   {
     const rji = base();
     rji.records.history.changes = rji.records.history.changes.slice(0, 29);
@@ -814,7 +823,25 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     i.config.reworkBaseline = { percent: 20, history: [{ percent: 20, recordedAt: '2026-09-01', decidedBy: '鈴木 一郎', reason: '置く' }] };
     i.records.rework = rr;
     const t = autonomyState(i.config, i.records).types[0];
-    check('手戻り率(実 git): 窓の中の2タスクのうち、トレーラの2回(Task-1)と計画表(Task-2)の2件を、内訳つきで数える', t.rework.n === 2 && t.rework.numerator === 2 && t.rework.trailer === 1 && t.rework.plan === 1 && t.rework.state === '判定不能', JSON.stringify(t.rework));
+    // 手戻り率の母数は、トレーラを持つタスクだけでなく、タスクの記録を持たない変更も変更を単位に足す(以前の期待は母数 2。末尾の段落でないトレーラの変更 Task-9 を数えていなかった)
+    check('手戻り率(実 git): 窓の中の2タスクのうち、トレーラの2回(Task-1)と計画表(Task-2)の2件を、内訳つきで数える。タスクの記録の無い変更は変更を単位に母数へ足す', t.rework.taskN === 2 && t.rework.plainN === 1 && t.rework.plainReworked === 0 && t.rework.n === 3 && t.rework.numerator === 2 && t.rework.trailer === 1 && t.rework.plan === 1 && t.rework.state === '判定不能', JSON.stringify(t.rework));
+    // トレーラの無い変更の取り消し(git revert)だけを、同じ種別の変更を単位に分子へ数える。再修正の印は定めず、印の無い直しは数えない
+    {
+      const sha = (n) => g(['rev-list', '--first-parent', 'HEAD']).trim().split('\n').slice(n, n + 1)[0];
+      commit('2026-09-05', 'src/i18n/ja.json', '5', 'chore(deps): bump x (#5)');
+      commit('2026-09-06', 'src/i18n/ja.json', '6', 'chore(deps): bump y (#6)');
+      const bumpX = sha(1);
+      commit('2026-09-10', 'src/i18n/ja.json', '7', 'Revert "chore(deps): bump x (#5)"', 'This reverts commit ' + bumpX + '.');
+      commit('2026-09-12', 'src/i18n/ja.json', '8', 'fix(deps): y の直し (#8)', 'Fixes: ' + sha(1).slice(0, 10));
+      commit('2026-09-13', 'src/i18n/ja.json', '10', 'chore(deps): bump w (#10)', 'This reverts commit ' + '0123456789ab' + '.');
+      commit('2026-09-14', 'src/i18n/ja.json', '9', 'chore(deps): bump z (#9)');
+      const rr2 = readReworkRecords({ root: dir, until: '2026-09-30' });
+      const i2 = base();
+      i2.records.rework = rr2;
+      const t2 = autonomyState(i2.config, i2.records).types[0];
+      // 母数: 末尾の段落でないトレーラ(Task-9)・x・y・y の直し・z の5件(取り消しの印を持つ変更 2 件は母数に入れない)。分子: 取り消された x だけ。Fixes: は印に数えない
+      check('手戻り率(実 git): トレーラの無い変更の取り消しを、同じ種別の変更を単位に分子へ数える。Fixes: は数えない', t2.rework.plainN === 5 && t2.rework.plainReworked === 1, JSON.stringify(t2.rework));
+    }
     const shallow = fs.mkdtempSync(path.join(os.tmpdir(), 'rework-shallow-'));
     try {
       execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dir}`, shallow], { stdio: 'ignore' });
@@ -1184,6 +1211,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const stopped = (type) => type.stops.some((s) => s.category === '第1区分' && /Sev1/.test(s.reason));
   const run = (changeTypes, { cause = 'あり', date = '2026-10-05', registeredAtTwo = null } = {}) => {
     const input = base();
+    input.config.answers['q-quality'] = 'quality-regulated'; // 規制業(線の内側)では、事故の後の停止を現行のまま行う
     const first = input.config.delegation.changeTypes[0];
     input.config.delegation.changeTypes.push({ ...first, id: '決済', ...(registeredAtTwo ? { registeredAt: registeredAtTwo } : {}) });
     input.records.defects.rows.push({ ...sev('Sev1', cause, date, changeTypes), phase: '運用' });
@@ -1250,6 +1278,157 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const okInput = base();
   const okJudged = judgeDelegatedMerge(okInput);
   check('IMPL-0594: リスク区分が R3 なら、同じ種別の変更が委任で進む', okJudged.autonomy?.level === 'L3' && okJudged.eligible);
+}
+
+// 判定の材料(窓の標本)が最小標本数に満たない間は、止めずに、判定不能の月に事後へ移した変更の全件を事後に確かめる。
+// 事後の確認の記録の件数が翌月の末までに定めに満たない種類だけを止める。時計は使わず、asOf を入力で与える
+{
+  const tid = () => base().config.delegation.changeTypes[0].id;
+  const mk = (asOf, postHoc, { nChanges = 20, registeredAt = '2026-10-05', start = 0 } = {}) => {
+    const f = base();
+    f.records.asOf = asOf;
+    f.config.delegation.changeTypes[0].registeredAt = registeredAt;
+    f.records.history.changes = [];
+    for (let i = 0; i < nChanges; i++) {
+      const d = new Date(Date.UTC(2026, 8, 1 + start + i)).toISOString().slice(0, 10);
+      f.records.history.changes.push({ ref: String(i + 1).padStart(40, '0'), date: d, pr: String(100 + i), files: ['src/i18n/ja.json'] });
+    }
+    f.records.rejections = [{ file: 'x', date: '2026-09-02', target: 'PR #101', cited: true }];
+    f.records.rework = { available: true, plan: [], trailers: f.records.history.changes.map((c, i) => ({ ref: c.ref, date: c.date, tasks: ['F-001/Task-' + (i + 1)], files: c.files })) };
+    if (postHoc) f.records.postHoc = typeof postHoc === 'function' ? postHoc(tid()) : postHoc;
+    return f;
+  };
+  const rows = (rs) => (id) => ({ available: true, byType: { [id]: rs }, sampledPrs: [] });
+  const st = (f) => autonomyState(f.config, f.records).types[0];
+  const kinds = (t) => t.stops.map((s) => s.kind).join(',');
+  const none = st(mk('2026-10-20', null));
+  check('判定不能: 事後の確認の記録を渡さないときは、従来どおり判定不能で止める', none.level === 'L1' && kinds(none).includes('unmeasurable'), kinds(none));
+  const unread = st(mk('2026-10-20', { available: false, reason: '浅い取得', byType: {}, sampledPrs: [] }));
+  check('判定不能: 事後の確認の記録を読めないときは止める(足りないのではなく読めない)', unread.level === 'L1' && unread.stops.some((s) => /事後の確認の記録を読めない/.test(s.reason)), JSON.stringify(unread.stops));
+  const p1 = st(mk('2026-10-20', rows([])));
+  check('判定不能: 標本が足りない間も止めない(登録の月は全件の確認の対象の月として出す)', p1.level === 'L3' && p1.stops.length === 0 && p1.postHoc.fullMonths.includes('2026-10') && p1.rejection.postHocFull === true && p1.rework.postHocFull === true, JSON.stringify(p1.stops));
+  const p2 = st(mk('2026-11-05', rows([{ month: '2026-10', n: 6, k: 2 }])));
+  const oct = (t) => t.postHoc.months.find((x) => x.month === '2026-10');
+  check('判定不能: 月が終わっても翌月の末までは、記録が足りなくても止めない(不足は出す)', p2.level === 'L3' && oct(p2).short === true && oct(p2).overdue === false && oct(p2).required === 6);
+  const p3 = st(mk('2026-12-05', rows([{ month: '2026-10', n: 6, k: 2 }])));
+  check('判定不能: 翌月の末までに全件へ届かなかった月がある間だけ止める', p3.level === 'L1' && kinds(p3) === 'post-hoc' && /2026-10\(事後へ移した変更 6 件・記録 2 件・定め 6 件/.test(p3.stops[0].reason), JSON.stringify(p3.stops));
+  const p4 = st(mk('2026-12-05', rows([{ month: '2026-10', n: 6, k: 6 }])));
+  check('判定不能: 記録の件数が足りると、判定を待たずに戻る', p4.level === 'L3' && p4.stops.length === 0);
+  const full = mk('2026-10-20', rows([]), { nChanges: 40 });
+  const p5 = st(full);
+  check('判定不能: 標本が足りている窓は、判定不能の月に数えない', p5.postHoc.fullMonths.length === 0 && p5.rejection.postHocFull === false);
+  check('判定不能: 表示は「止めずに事後に全件を確かめる」と出し、「止めている」と書かない', /止めずに/.test(rejectionText(p1)) && /止めずに/.test(reworkText(p1)) && !/適用の条件の欠落として止める/.test(rejectionText(p1)));
+  // 通常の月(判定の材料が揃っている月)にも、構成の定め(採用者が定めた月の件数。定めていなければ当月の全件)を当てる
+  const withCap = (f) => { f.config.delegation.sampling = { perMonth: 5 }; return f; };
+  const healthyShort = st(withCap(mk('2026-12-05', rows([{ month: '2026-10', n: 8, k: 2 }]), { nChanges: 80, registeredAt: '2026-08-20' })));
+  check('通常の月: 判定の材料が揃っていても、記録の件数が翌月の末までに定め(5 件)に満たなければ止める', healthyShort.stops.some((s) => s.kind === 'post-hoc' && /2026-10\(事後へ移した変更 8 件・記録 2 件・定め 5 件\)/.test(s.reason)), JSON.stringify(healthyShort.stops));
+  const healthyOk = st(withCap(mk('2026-12-05', rows([{ month: '2026-10', n: 8, k: 5 }, { month: '2026-11', n: 8, k: 5 }]), { nChanges: 80, registeredAt: '2026-08-20' })));
+  check('通常の月: 健全な種類は 3 か月続けて記録の件数が揃えば止まらない(post-hoc で止めない)', !healthyOk.stops.some((s) => s.kind === 'post-hoc') && healthyOk.postHoc.months.every((m) => !m.short || !m.overdue));
+  const fewMonthly = st(withCap(mk('2026-12-05', rows([{ month: '2026-10', n: 3, k: 3 }, { month: '2026-11', n: 2, k: 2 }]), { nChanges: 80, registeredAt: '2026-08-20' })));
+  check('通常の月: 変更の少ない種類は、月の件数まで(定めが 5 より小さい)で足りる', !fewMonthly.stops.some((s) => s.kind === 'post-hoc') && fewMonthly.postHoc.months.find((m) => m.month === '2026-10').required === 3);
+  // 0% の検知の母数は G-6 を判定した変更。判定した変更が最小標本数に満たない窓では、止めず、全件の確認へも倒さない(振動しない)
+  const idle = mk('2026-10-20', rows([]), { nChanges: 80, registeredAt: '2026-08-20', start: -31 });
+  idle.records.rejections = [];
+  idle.records.approvals = { available: true, prs: [] };
+  const pi = st(idle);
+  check('0% の検知: G-6 を判定した変更が最小標本数に満たない窓は「検知は働いていない」と出し、止めず、全件の確認へも倒さない', pi.rejection.state === '検知は働いていない' && !pi.stops.some((s) => s.kind === 'downgrade') && !pi.postHoc.fullMonths.includes('2026-10') && /検知は働いていない/.test(rejectionText(pi)), JSON.stringify({ s: pi.stops, r: pi.rejection }));
+  const idleOld = mk('2026-10-20', rows([]), { nChanges: 80, registeredAt: '2026-08-20', start: -31 });
+  idleOld.records.rejections = [];
+  const po = st(idleOld);
+  check('0% の検知: 承認の記録を読めないときは判定した変更を数えられず、全変更で数える(止める側)', po.stops.some((s) => s.kind === 'downgrade'), JSON.stringify(po.stops));
+  const judgedFull = mk('2026-10-20', rows([]), { nChanges: 80, registeredAt: '2026-08-20', start: -31 });
+  judgedFull.records.rejections = [];
+  judgedFull.records.approvals = { available: true, prs: judgedFull.records.history.changes.map((c) => c.pr) };
+  check('0% の検知: 判定した変更が最小標本数に届いた窓の 0% は、従来どおり止める', st(judgedFull).stops.some((s) => s.kind === 'downgrade'));
+  // 1〜2 名の体制: 席の責任者本人が判定者の確認の記録も数える
+  const cfg = { people: [{ id: 'p1', name: '山田 太郎' }], seats: [{ role: 'independent-reviewer', accountable: '山田 太郎' }], delegation: { rules: [{ id: 'r1', changeType: 't1' }] } };
+  const form = (target, judge) => ({ file: 'docs/gates/x.md', text: ['| 項目 | 値 |', '| --- | --- |', '| ゲート | G-6 独立レビュー |', '| 対象 | ' + target + ' |', '| 判定者 | ' + judge + ' |', '| 結果 | 通過 |', '| 確定の形態 | 委任 |'].join('\n') });
+  const moved = [{ ref: 'a', date: '2026-10-03', pr: '11', rule: 'r1' }, { ref: 'b', date: '2026-10-04', pr: '12', rule: 'r1' }, { ref: 'c', date: '2026-10-05', pr: '13', rule: 'zz' }];
+  const d = derivePostHoc({ config: cfg, moved, forms: [form('PR #11', '山田 太郎'), form('PR #12', '別の人')] });
+  check('事後の確認の記録: 席の責任者(1〜2 名の体制では作成者と同じ人)の記録を数え、別の人の記録と、規則から種類を引けない変更は数えない', d.available && d.byType.t1.length === 1 && d.byType.t1[0].n === 2 && d.byType.t1[0].k === 1 && d.unattributed === 1 && d.sampledPrs.join() === '11', JSON.stringify(d));
+  check('事後の確認の記録: 席の責任者を名簿から引けなければ読めない', derivePostHoc({ config: { ...cfg, seats: [] }, moved, forms: [] }).available === false);
+  const dAp = derivePostHoc({ config: cfg, moved, forms: [], approvedPrs: new Set(['11']) });
+  check('事後の確認の記録(数え方の揃え): 取り込む前に承認の記録がある変更は、事後へ移した変更に数えない(出荷の証跡の集約と同じ向き)。承認の記録を読めないとき(null)は除かない', (dAp.byType[Object.keys(dAp.byType)[0]] ?? []).reduce((n, r) => n + r.n, 0) === 1 && (Object.values(d.byType)[0] ?? []).reduce((n, r) => n + r.n, 0) === 2);
+}
+
+// 事故の後の警告(第5章 5.4.6)。一般の案件では止めずに警告だけを出し、安全重要度 CL1 以上・規制業では現行のまま止める。
+// 線は構成の安全重要度と規制業の値から読む(第5章 5.5.4 の委任の適用の条件1 と同じ読み)
+{
+  const withRow = (mutate, row) => {
+    const i = base();
+    mutate?.(i.config);
+    if (row) i.records.defects.rows.push({ ...row, phase: '運用' });
+    return i;
+  };
+  const st = (i) => autonomyState(i.config, i.records);
+  const kindsOf = (t) => t.stops.map((x) => x.kind);
+  const general = (row) => withRow(null, row);
+  const cl1 = (row) => withRow((c) => { c.answers['q-criticality'] = 'cl1'; }, row);
+  const regulated = (row) => withRow((c) => { c.answers['q-quality'] = 'quality-regulated'; }, row);
+  const aiRow = sev('Sev1', 'あり', '2026-10-05');
+  const unknownRow = sev('Sev2', '特定できない', '2026-10-05');
+  const g1 = st(general(aiRow));
+  check('事故の警告: 一般の案件では、AI が原因の重大な事故でも止めず、警告を出す(L3 を保つ)', g1.types[0].level === 'L3' && g1.types[0].stops.every((x) => x.kind !== 'downgrade') && g1.warnings.length === 1 && /BUG-9/.test(g1.warnings[0].text) && /止めていない/.test(g1.warnings[0].text), JSON.stringify(g1.warnings));
+  const gCount = general(aiRow);
+  gCount.records.approvals = { available: true, prs: [] };
+  const gc = st(gCount);
+  check('事故の警告: 警告の文は、事故の後に取り込む前の承認を経ていない変更の件数を出し、戻し方を示す', /承認を経ていない変更が \d+ 件/.test(gc.warnings[0].text) && /人が読む形へ戻すかを決める/.test(gc.warnings[0].text), gc.warnings[0]?.text);
+  check('事故の警告: 承認の記録を読めないときは、件数を出さず、読めない旨を出す', /承認の記録を読めないため数えていない/.test(g1.warnings[0].text));
+  const g2 = st(general(unknownRow));
+  check('事故の警告: 一般の案件では、原因を特定できない重大な事故でも止めず、「原因をまだ特定できていない」と警告する', g2.types[0].level === 'L3' && g2.warnings.length === 1 && /原因をまだ特定できていない/.test(g2.warnings[0].text) && !kindsOf(g2.types[0]).includes('cause-unknown'), JSON.stringify(g2.warnings));
+  const g3 = st(general({ ...sev('Sev1', '', '2026-10-05'), changeTypes: ['存在しない種別'] }));
+  check('事故の警告: 登録外の ID・空欄の行は、全種類に警告を当てる(現行の向きを保つ)', g3.warnings.length >= 1 && g3.types.every((t) => t.warnings.length >= 1) && g3.types.every((t) => t.stops.every((x) => x.kind !== 'cause-unknown')));
+  const gNone = general(null);
+  gNone.records.defects = { present: false, rows: [] };
+  const g4 = st(gNone);
+  check('事故の警告: 一般の案件では、欠陥の台帳が無くても止めず、「事故の警告は働いていない」と警告する', g4.types[0].level === 'L3' && g4.warnings.some((w) => /事故の警告は働いていない/.test(w.text)), JSON.stringify(g4.types[0].stops));
+  check('事故の警告: AI 起因でないと分かれば(解決)、警告は消える', st(general({ ...aiRow, aiCause: 'なし' })).warnings.length === 0);
+  check('事故の警告: Sev3 は警告しない', st(general(sev('Sev3', 'あり', '2026-10-05'))).warnings.length === 0);
+  check('事故の警告: 組織の外へ渡す形は事故の ID を出さず件数だけにする', warningLines(g1, { external: true }).every((t) => !/BUG-9/.test(t)) && /1 件/.test(warningLines(g1, { external: true })[0]) && warningLines(g1).some((t) => /BUG-9/.test(t)));
+  check('事故の警告: 次の一手の注記と保証の開示は同じ文を使う(警告の行がある)', autonomyNoteLines(g1).some((t) => /警告:/.test(t) && /BUG-9/.test(t)));
+  // 線の内側(CL1 以上・規制業): 現行のまま止める。期待も変えない
+  for (const [name, mk2] of [['CL1', cl1], ['規制業', regulated]]) {
+    const a = st(mk2(aiRow));
+    check(`事故の停止(${name}): AI が原因の重大な事故は、現行どおり止める(引き下げ)。警告には移さない`, a.types[0].level === 'L1' && kindsOf(a.types[0]).includes('downgrade') && a.warnings.length === 0, JSON.stringify(kindsOf(a.types[0])));
+    const b = st(mk2(unknownRow));
+    check(`事故の停止(${name}): 原因を特定できない重大な事故は、特定するまで止める`, kindsOf(b.types[0]).includes('cause-unknown') && b.warnings.length === 0);
+    const none = mk2(null);
+    none.records.defects = { present: false, rows: [] };
+    const c = st(none);
+    check(`事故の停止(${name}): 欠陥の台帳が無ければ、確かめられないものとして止める`, c.types[0].stops.some((x) => x.category === '第1区分' && x.kind === 'unmeasurable' && /Sev1・Sev2 の AI 起因を確かめられない/.test(x.reason)) && c.warnings.length === 0);
+  }
+  check('事故の停止: 安全重要度の欄が無い(未記入)構成は、CL0 とみなさず、線の内側として止める', (() => { const i = general(aiRow); delete i.config.answers['q-criticality']; return kindsOf(st(i).types[0]).includes('downgrade'); })());
+}
+
+// 値の扱い。標準は一律の既定値を課さない。定義が無い(欄が無い・外した)ときは、止めずに進め、働いていない検知の名を出す
+{
+  const st = (i) => autonomyState(i.config, i.records);
+  const noMin = base();
+  delete noMin.config.detection;
+  const a = st(noMin);
+  check('値(最小標本数): 定義が無くても止めず、差し戻し率 0% の継続の検知は働いていないと出す(判定不能・0% とは別の状態)', a.types[0].level === 'L3' && a.types[0].stops.length === 0 && a.types[0].rejection.state === '未定義' && /働いていない/.test(rejectionText(a.types[0])), JSON.stringify(a.types[0].stops));
+  check('値(最小標本数): 定義が無いと、手戻り率の検知も働かない(未定義と出す)', a.types[0].rework.state === '未定義' && /働いていない/.test(reworkText(a.types[0])));
+  check('値(最小標本数): 働いていない検知の名を、定めていない値の一覧に出す', a.undefinedValues.some((x) => x.key === 'detection.minSample') && warningLines(a).some((t) => /最小標本数/.test(t) && /働いていない検知/.test(t)));
+  const noWin = base();
+  delete noWin.config.observationWindow;
+  const b = st(noWin);
+  check('値(観測の窓): 定義が無くても止めず、検知は働いていないと出す', b.types[0].level === 'L3' && b.types[0].rejection.state === '未定義' && b.undefinedValues.some((x) => x.key === 'observationWindow'));
+  const off = base();
+  off.config.detection = { minSample: { history: [{ value: 30, recordedAt: '2026-01-01', decidedBy: '鈴木 一郎', reason: '試験' }, { value: null, recordedAt: '2026-09-01', decidedBy: '鈴木 一郎', reason: '外す' }] } };
+  check('値(外した記録): 履歴の最新の value が null なら未定義と同じ', minSampleOf(off.config) === null && st(off).types[0].rejection.state === '未定義');
+  const hist = base();
+  hist.config.detection = { minSample: { history: [{ value: 30, recordedAt: '2026-01-01', decidedBy: '鈴木 一郎', reason: '試験' }] } };
+  check('値(履歴つきの欄): 履歴の最新の整数を読み、構成の検査は問題なし', minSampleOf(hist.config) === 30 && detectionValueProblems(hist.config).length === 0 && st(hist).types[0].rejection.state !== '未定義');
+  check('値(欄の検査): 欄に直接 null・0・記名の無い履歴は拒む', detectionValueProblems({ detection: { minSample: null } }).length === 1 && detectionValueProblems({ detection: { minSample: 0 } }).length === 1 && detectionValueProblems({ detection: { minSample: { history: [{ value: 5, recordedAt: '2026-01-01' }] } } }).length === 2 && detectionValueProblems({ reviewQueue: { loadLimit: 3 } }).length === 0);
+  check('値(抜き取りの件数): 定義が無ければ、月の定めは当月の全件(一律の 5 件を置かない)', requiredCount(8, { perMonth: null }) === 8 && requiredCount(8, { perMonth: 5 }) === 5 && requiredCount(3, { perMonth: 5 }) === 3);
+  const noCap = base();
+  check('値(一覧): 抜き取りの件数・基準値・同時保有の上限の定義が無いと、一覧に出る', (() => { const c = { ...noCap.config, delegation: { ...noCap.config.delegation, allowed: true, sampling: undefined }, reworkBaseline: undefined, reviewQueue: undefined }; const keys = undefinedValues(c).map((x) => x.key); return ['delegation.sampling.perMonth', 'reworkBaseline', 'reviewQueue.loadLimit'].every((k) => keys.includes(k)); })());
+  check('値(一覧): 定義した値は一覧に出ない', (() => { const c = { ...noCap.config, reviewQueue: { loadLimit: 3 }, delegation: { ...noCap.config.delegation, allowed: true, sampling: { perMonth: 5 } } }; const keys = undefinedValues(c).map((x) => x.key); return !keys.includes('reviewQueue.loadLimit') && !keys.includes('delegation.sampling.perMonth') && !keys.includes('detection.minSample') && !keys.includes('observationWindow'); })());
+  const pp = base();
+  delete pp.config.detection;
+  pp.records.postHoc = { available: true, byType: {}, sampledPrs: [] };
+  const full = st(pp).types[0];
+  check('値(最小標本数): 定義が無いとき、事後の確認の記録を読めれば、当月の全件を事後に確かめる月として出す', full.stops.length === 0 && full.postHoc.fullMonths.length >= 1 && full.rejection.postHocFull === true, JSON.stringify(full.stops));
 }
 
 console.log('');

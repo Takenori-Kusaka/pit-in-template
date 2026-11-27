@@ -139,6 +139,8 @@ jobs:
       - run: node scripts/gate/test-ai-free-practice.mjs
       # PR を経ないコミットに区分の下限の規則と判断記録の要否の規則を当てることを、一時の置き場で通しで試験する(process-compass #423)
       - run: node scripts/gate/test-direct-commit-rules.mjs
+      # 取り込んだ後に作った G-6 の判定記録が、出荷判定(G-7)の後に足された場合と、判定者と違うアカウントが足した場合に数えられないことを、一時の置き場で通しで試験する
+      - run: node scripts/gate/test-record-independence.mjs
       # 委任の期間ごとの保証の開示(期間の G-8 の記録の対応づけ・period-needed・assurance-period.yml の結線)を、一時の置き場で通しで試験する(process-compass #355 束4 / IMPL-0048)
       - run: node scripts/gate/test-assurance-period.mjs
       # 確定した欠陥の検出工程を、出荷の証跡の集約が欠陥の台帳から数えることを、一時の置き場で通しで試験する(process-compass #413)
