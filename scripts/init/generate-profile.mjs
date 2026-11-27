@@ -54,6 +54,7 @@ import {
   isFilledValue,
   reviewersRequiredOf,
   approvalByCorePaths,
+  approvalByPreRead,
   corePathsOf,
   trackedFiles,
   unmatchedCoreText,
@@ -943,7 +944,11 @@ export function buildConfig(answers, opts = {}) {
   // 事業ステージ S1 で G-6 の範囲をコア機能に限る構成(安全重要度 CL0・標準以上の品質・承認者 1 名)は、ブランチ保護で承認の数を強制せず
   // (ルールセット team-core)、コア機能に触れる PR の承認を基底から読む判定(gate-g5-base)が必須にする(標準 第8章 軸B)
   const approvalByPaths = gates.g6.state === 'required' && gates.g6.params.scope === 'core-only' && !strict;
-  const ruleset = gates.g6.state === 'required' ? (strict ? (reviewerCount >= 2 ? 'regulated' : 'safety') : approvalByPaths ? 'team-core' : 'team') : null;
+  // 事業ステージ S2(G-6 は全変更)で、安全重要度 CL0・標準の品質・承認者 1 名・委任の規則を登録していない構成は、承認を「取り込む前に人が読む範囲」に掛ける
+  // (ルールセットは team-core と同じ。承認数 0 と必須の gate-g5-base)。範囲の外の変更は承認を待たずに取り込み、出荷判定までに読む(標準 第8章 軸B)。
+  // 取り込みが本番を直接起動する構成は構成から読めないため、PR の検査と集約が workflows を構文で調べ、取り込む前に読む側へ倒す
+  const approvalByRange = !strict && approvalByPreRead({ answers, gates, review: { requiredApprovals: 0, reviewerCount }, delegation: { rules: delegation.rules } });
+  const ruleset = gates.g6.state === 'required' ? (strict ? (reviewerCount >= 2 ? 'regulated' : 'safety') : approvalByPaths || approvalByRange ? 'team-core' : 'team') : null;
 
   const derivedCoverage = ciStrengthened ? 90 : 80;
   // 下限の由来(標準 第4章 G-5「カバレッジの測る範囲と規模」。process-compass #318 / ADR-0088 決定5)。
@@ -1106,7 +1111,7 @@ export function buildConfig(answers, opts = {}) {
       strengthened: ciStrengthened,
     },
     review: {
-      requiredApprovals: gates.g6.state === 'required' ? (approvalByPaths ? 0 : Math.max(1, reviewerCount)) : 0,
+      requiredApprovals: gates.g6.state === 'required' ? (approvalByPaths || approvalByRange ? 0 : Math.max(1, reviewerCount)) : 0,
       reviewerCount,
       mode: gates.g6.params.reviewMode ?? null,
       recordFormat: gates.g6.params.recordFormat ?? 'standard',
@@ -4282,7 +4287,7 @@ export function renderProfileMd(config, result) {
   );
   L.push(`| 失敗させる重大度 | ${config.ci.failOnSeverity.join(' / ')} |`);
   L.push(`| 許可するライセンス | ${config.ci.allowedLicenses.join(', ')} |`);
-  L.push(`| 必須の承認数 | ${config.review.requiredApprovals}${approvalByCorePaths(config) ? '(ブランチ保護の設定。コア機能に触れる PR の承認は gate-g5-base が必須にする)' : ''} |`);
+  L.push(`| 必須の承認数 | ${config.review.requiredApprovals}${approvalByCorePaths(config) ? '(ブランチ保護の設定。コア機能に触れる PR の承認は gate-g5-base が必須にする)' : approvalByPreRead(config) ? '(ブランチ保護の設定。取り込む前に人が読む範囲の変更の承認は gate-g5-base が必須にする)' : ''} |`);
   L.push(`| アダプタ | \`${config.adapters.stack}\` |`);
   L.push('');
   L.push(

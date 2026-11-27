@@ -2654,7 +2654,7 @@ export function approvalByCorePaths(config) {
  * 真のとき、範囲の外の中くらいの変更(R2)と、委任に登録していない R3 の変更は、承認を待たずに取り込める。
  * その変更は、出荷判定(G-7)までに独立レビュアが全件を読み、G-6 の判定記録を残す(取り込む前に読む場合より、読む時点が出荷の前へ移る)。
  * 構成の review.requiredApprovals が 0 で、事業ステージ S2・G-6 が適用(範囲は全変更)・安全重要度 CL0 と記入・
- * 品質が標準・承認者 1 名・委任を適用しないときだけ真。未記入の項目は緩めない側(偽)に倒す。
+ * 品質が標準・承認者 1 名・委任の規則を登録していないときだけ真。未記入の項目は緩めない側(偽)に倒す。
  * 取り込みが本番への反映を直接起動する構成は、構成から読めないため、変更ごとに workflows を構文で調べて取り込む前に読む側へ倒す(check-pr・集約)
  */
 export function approvalByPreRead(config) {
@@ -2664,7 +2664,8 @@ export function approvalByPreRead(config) {
   const phase = a['q-biz-phase'];
   if (!phase || phase === 'poc' || phase === 'mvp') return false;
   if (a['q-criticality'] !== 'cl0' || a['q-quality'] !== 'quality-standard') return false;
-  if (config?.delegation?.allowed === true) return false;
+  // 委任の規則を登録している構成は使わない(登録した種類の変更は事後の確認が既に働き、形骸化の検知で止めた種類の範囲を範囲に足す判定をまだ持たない。緩めない側)
+  if (Array.isArray(config?.delegation?.rules) && config.delegation.rules.length > 0) return false;
   return Math.max(1, Number(config?.review?.reviewerCount ?? 1) || 1) < 2;
 }
 /** ブランチ保護の必須の承認数を 0 とし、承認を基底から読む判定(gate-g5-base)がパスなどで掛ける構成か(コア機能のパス、または取り込む前に人が読む範囲) */

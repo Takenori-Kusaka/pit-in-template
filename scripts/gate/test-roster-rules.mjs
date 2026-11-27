@@ -191,9 +191,12 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('CL3: 承認者は2名、ルールセットは regulated(承認 2)', cl3.review.reviewerCount === 2 && cl3.ruleset === 'regulated', JSON.stringify([cl3.review.reviewerCount, cl3.ruleset]));
   const reg = build({ ...g, 'q-quality': 'quality-regulated' });
   check('規制業: 承認者は2名、ルールセットは regulated', reg.review.reviewerCount === 2 && reg.ruleset === 'regulated', JSON.stringify([reg.review.reviewerCount, reg.ruleset]));
-  const std = build(g);
+  // 事業ステージ S2・標準の品質・CL0 は、承認を取り込む前に人が読む範囲に掛ける形(ルールセット team-core)になる。品質「高」は使わず team のまま
+  const std = build({ ...g, 'q-quality': 'quality-high' });
   // IMPL-0110:ok(違反と適合の対。標準の実装マーク。process-compass #314)
-  check('標準品質・CL0: ルールセットは team', std.ruleset === 'team', String(std.ruleset));
+  check('品質「高」・CL0(事業ステージ S2): ルールセットは team', std.ruleset === 'team', String(std.ruleset));
+  const s2Std = build(g);
+  check('標準品質・CL0(事業ステージ S2): ルールセットは team-core、必須の承認数は 0(承認は取り込む前に人が読む範囲にだけ gate-g5-base が掛ける)', s2Std.ruleset === 'team-core' && s2Std.review.requiredApprovals === 0 && s2Std.gates.g6.params?.scope !== 'core-only', JSON.stringify([s2Std.ruleset, s2Std.review]));
   const read = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, '.github/rulesets', `${name}.json`), 'utf8'));
   const prOf = (r) => r.rules.find((x) => x.type === 'pull_request').parameters;
   check('safety.json: 承認 1。ほかの設定は regulated.json と同じ', read('safety').name === 'safety' && prOf(read('safety')).required_approving_review_count === 1 && JSON.stringify({ ...prOf(read('safety')), required_approving_review_count: 2 }) === JSON.stringify(prOf(read('regulated'))) && JSON.stringify(read('safety').rules.slice(1)) === JSON.stringify(read('regulated').rules.slice(1)));
@@ -218,7 +221,13 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('S1・品質「高」: 必須の承認数は 0、コア機能の承認者は 2 名(規則データの値)', s1High.ruleset === 'team-core' && s1High.review.requiredApprovals === 0 && s1High.gates.g6.params?.coreReviewerCount === 2, JSON.stringify([s1High.ruleset, s1High.review, s1High.gates.g6.params]));
   check('S1・規制業: 現行のまま(regulated・承認 2)', s1Reg.ruleset === 'regulated' && s1Reg.review.requiredApprovals === 2, JSON.stringify([s1Reg.ruleset, s1Reg.review]));
   check('S1・CL1: 現行のまま(範囲を限らず、承認 1)', s1Cl1.ruleset !== 'team-core' && s1Cl1.review.requiredApprovals >= 1, JSON.stringify([s1Cl1.ruleset, s1Cl1.review]));
-  check('S2: 現行のまま(team・承認 1)', s2.ruleset === 'team' && s2.review.requiredApprovals === 1, JSON.stringify([s2.ruleset, s2.review]));
+  check('S2(標準品質・CL0): ルールセットは team-core、承認数 0。範囲は全変更のまま(承認は取り込む前に人が読む範囲に掛ける)', s2.ruleset === 'team-core' && s2.review.requiredApprovals === 0 && s2.gates.g6.params?.scope !== 'core-only', JSON.stringify([s2.ruleset, s2.review, s2.gates.g6.params]));
+  const s2High = build({ ...t, 'q-biz-phase': 'growth', 'q-quality': 'quality-high' });
+  check('S2・品質「高」: 現行のまま(team・承認 1)。範囲の形は使わない', s2High.ruleset === 'team' && s2High.review.requiredApprovals === 1, JSON.stringify([s2High.ruleset, s2High.review]));
+  const s2Cl1 = build({ ...t, 'q-biz-phase': 'growth', 'q-criticality': 'cl1' });
+  check('S2・CL1: 現行のまま(承認 1 以上。team-core にならない)', s2Cl1.ruleset !== 'team-core' && s2Cl1.review.requiredApprovals >= 1, JSON.stringify([s2Cl1.ruleset, s2Cl1.review]));
+  const s2Del = build({ ...t, 'q-biz-phase': 'growth' }, { delegation: { rules: [{ id: 'r1' }] } });
+  check('S2: 委任の規則を登録した構成は、現行のまま(team・承認 1)', s2Del.ruleset === 'team' && s2Del.review.requiredApprovals === 1, JSON.stringify([s2Del.ruleset, s2Del.review]));
   check('S0: 現行のまま(G-6 を省略し、承認を強制せず、team-core にもならない)', s0.gates.g6.state !== 'required' && s0.ruleset === null && s0.review.requiredApprovals === 0, JSON.stringify([s0.ruleset, s0.review]));
   check('team-core.json: 承認 0。ほかの設定は team.json と同じ(必須チェックに gate-g5・gate-g5-base)', rd('team-core').name === 'team-core' && prp(rd('team-core')).required_approving_review_count === 0 && JSON.stringify({ ...prp(rd('team-core')), required_approving_review_count: 1 }) === JSON.stringify(prp(rd('team')))
     && JSON.stringify(rd('team-core').rules.filter((x) => x.type !== 'pull_request')) === JSON.stringify(rd('team').rules.filter((x) => x.type !== 'pull_request')));
@@ -226,8 +235,10 @@ for (const size of ['size-3-9', 'size-10plus']) {
   check('S1: 強制する承認の数 0 は、構成の要求(0)を満たす(下回らない)', f.problems.length === 0 && f.enforced === 0 && f.required === 0, JSON.stringify(f));
   const handCl1 = enforcedApprovalFindings({ ...s1, answers: { ...s1.answers, 'q-criticality': 'cl1' } }, rd('team-core'));
   check('CL1 以上の構成に team-core を当てると、承認の数が下回る', handCl1.problems.length === 1, JSON.stringify(handCl1));
-  const f2 = enforcedApprovalFindings(s2, rd('team'));
-  check('S2: team の承認 1 は現行どおり満たす', f2.problems.length === 0 && f2.required === 1);
+  const f2 = enforcedApprovalFindings(s2High, rd('team'));
+  check('S2・品質「高」: team の承認 1 は現行どおり満たす', f2.problems.length === 0 && f2.required === 1);
+  const f3 = enforcedApprovalFindings(s2, rd('team-core'));
+  check('S2: 強制する承認の数 0 は、構成の要求(0)を満たす(下回らない)', f3.problems.length === 0 && f3.enforced === 0 && f3.required === 0, JSON.stringify(f3));
 }
 
 // ---------------------------------------------------------------- 同一の文の挙動要約

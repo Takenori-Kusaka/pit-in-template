@@ -74,7 +74,7 @@ const s2Cfg = (over = {}) => ({
   check('使わない: 安全重要度が未記入(CL0 とみなさない)', approvalByPreRead(s2Cfg({ answers: { 'q-biz-phase': 'growth', 'q-quality': 'quality-standard' } })) === false);
   check('使わない: 品質「高」・規制業・品質が未記入', ['quality-high', 'quality-regulated', undefined].every((q) => approvalByPreRead(s2Cfg({ answers: { 'q-biz-phase': 'growth', 'q-criticality': 'cl0', 'q-quality': q } })) === false));
   check('使わない: 承認者 2 名', approvalByPreRead(s2Cfg({ review: { requiredApprovals: 0, reviewerCount: 2 } })) === false);
-  check('使わない: 委任を適用する構成', approvalByPreRead(s2Cfg({ delegation: { allowed: true, protectedPaths: ['src/core/**'] } })) === false);
+  check('使わない: 委任の規則を登録している構成(委任を使える上限だけでは使わない構成にしない)', approvalByPreRead(s2Cfg({ delegation: { allowed: true, rules: [{ id: 'r1' }], protectedPaths: ['src/core/**'] } })) === false && approvalByPreRead(s2Cfg({ delegation: { allowed: true, rules: [], protectedPaths: ['src/core/**'] } })) === true);
   check('使わない: G-6 が未達・簡略の構成', ['unmet', 'simplified', 'omitted'].every((s) => approvalByPreRead(s2Cfg({ gates: { g6: { state: s, params: { scope: 'all' } } } })) === false));
   check('S1 の形(コア機能のパス)と重ならない: S1 の構成は approvalByCorePaths だけが真', approvalByCorePaths(s2Cfg()) === false && approvalByPathsOrRange(s2Cfg()) === true);
   const f = enforcedApprovalFindings(s2Cfg(), { name: 'team-core', rules: [{ type: 'pull_request', parameters: { required_approving_review_count: 0 } }] });
@@ -249,7 +249,7 @@ const s2Cfg = (over = {}) => ({
     ['安全重要度が未記入', s2Cfg({ answers: { 'q-biz-phase': 'growth', 'q-quality': 'quality-standard' } })],
     ['規制業', s2Cfg({ answers: { 'q-biz-phase': 'growth', 'q-criticality': 'cl0', 'q-quality': 'quality-regulated' }, review: { requiredApprovals: 2, reviewerCount: 2 } })],
     ['品質「高」', s2Cfg({ answers: { 'q-biz-phase': 'growth', 'q-criticality': 'cl0', 'q-quality': 'quality-high' } })],
-    ['委任を適用', s2Cfg({ delegation: { allowed: true, protectedPaths: ['src/core/**'] } })],
+    ['委任の規則を登録', s2Cfg({ delegation: { allowed: true, rules: [{ id: 'r1' }], protectedPaths: ['src/core/**'] } })],
   ];
   for (const [label, c] of noUse) {
     const r = run(c, edits.ui, { confirm: null });
@@ -288,7 +288,7 @@ if (process.platform === 'win32') {
   fs.chmodSync(path.join(BIN, 'gh'), 0o755);
   const R = 'example/deferred';
   const cfgOf = (answers, edit = (c) => c) => edit(quiet(() => buildConfig({ ...ANSWERS, ...answers }, { generatedAt: '2026-11-04T09:00:00+09:00', d0Version: null, people: PEOPLE, seats: SEATS }).config));
-  const useForm = (c) => ({ ...c, review: { ...c.review, requiredApprovals: 0, reviewerCount: 1 }, delegation: { ...(c.delegation ?? {}), allowed: false, protectedPaths: ['src/core/**'] }, gates: { ...c.gates, g6: { ...c.gates.g6, params: { ...c.gates.g6.params, scope: 'all' } } } });
+  const useForm = (c) => ({ ...c, review: { ...c.review, requiredApprovals: 0, reviewerCount: 1 }, delegation: { ...(c.delegation ?? {}), rules: [], protectedPaths: ['src/core/**'] }, gates: { ...c.gates, g6: { ...c.gates.g6, params: { ...c.gates.g6.params, scope: 'all' } } } });
   const body = (risk, confirm = null) => `## リスク区分\n\n- [x] ${risk}\n\n${confirm ? `確定した者: ${confirm}\n\n` : ''}`;
   /** steps: [{ file, pr, risk, confirm, workflow } | { file } (PR を経ないコミット)]。PR の変更は承認の無い 1 コミット */
   const history = (config, steps) => {
