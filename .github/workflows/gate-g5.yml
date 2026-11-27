@@ -102,6 +102,9 @@ jobs:
       # 統制の設定の変更の承認(AI維持管理者本人の承認のレビューを名簿の数値の識別子で照らす)と、基底から読む判定の読み方(--head)、
       # 出荷の証跡の集約の照合(標準 第4章 G-5「統制の設定の変更の承認」。process-compass #371 / ADR-0115)
       - run: node scripts/gate/test-control-approval.mjs
+      # 取り込む前に人が読む範囲の外の変更を、承認を待たずに取り込み、出荷判定までに読む形(事業ステージ S2。標準 第8章 軸B・第4章 G-6)。
+      # 使う構成の判定、範囲の各行、配備の検出、PR の検査、出荷の証跡の集約の識別と投影
+      - run: node scripts/gate/test-deferred-review.mjs
       # 基底から読む判定のワークフロー(gate-g5-base.yml)と record-copy.yml の定義の静的な試験(PR のコードを checkout しない、
       # 権限が最小、check run で結果を出す、既定ブランチの定義で動く。process-compass #371 / ADR-0115)
       - run: node scripts/gate/test-base-judge-workflow.mjs

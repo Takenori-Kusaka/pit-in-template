@@ -136,6 +136,7 @@ import {
   deviationCategory,
   enforcedApprovalFindings,
   approvalByCorePaths,
+  approvalByPreRead,
   unmetShipGaps,
   derivedUnmet,
 } from './config.mjs';
@@ -174,7 +175,7 @@ import {
 } from './org-assurance.mjs';
 import { readBriefQuality, traceVerification, readDefectLedger, readDefectStages, DEFECT_FILE, stageOf } from './verification-trace.mjs';
 import { briefScopeRowState, BRIEF_SCOPE_GAP_TEXT } from './coverage-check.mjs';
-import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween, isProseDocument } from './check-pr.mjs';
+import { stopFindings, riskConfirmerOf, measureCommitSize, sizeAttestationOf, riskFloorOf, decisionRuleHits, resolveInstructorToken, ghUserLookup, controlTouchedBetween, isProseDocument, preReadRangeOf, deployWorkflowsOf, changeListBetween, PRE_READ_ROWS } from './check-pr.mjs';
 import { baseJudgeLayers } from './base-judge.mjs';
 import {
   exceptionReviewBacking,
@@ -1252,6 +1253,26 @@ export function licenseScanStatus({ licenseScan, phaseStatus, aggregate }) {
  */
 export function r2G6UnmetOf(changeUnits) {
   return (changeUnits ?? []).filter((c) => c.riskClass === 'R2' && !c.independent?.counted).map((c) => c.label);
+}
+
+/** 宣言の表の「出荷の前の確認」の状態の文 */
+export const DEFERRED_STATE_TEXT = '適用(事業ステージ S2。取り込む前に人が読む範囲の外の変更は承認を待たずに取り込み、出荷判定までに独立した人が全件を読む)';
+
+/**
+ * 出荷の前の確認の投影(出荷判定の材料・宣言の表・保証の開示の項目1・3 に毎回出す。値・閾値を置かず、止めない)。
+ * d は集約の changes.deferredReview。未確認の件数・最も古い経過日数・積み重なり・例外承認の件数・確認者ごとの件数・確定者の記名の欠落を出す
+ */
+export function deferredReviewLines(d) {
+  const list = (a) => (a.length ? `(${a.slice(0, 8).join(', ')}${a.length > 8 ? ' ほか' : ''})` : '');
+  const share = d.outside ? `範囲の外の変更 ${d.outside} 件のうち ${Math.round((d.excepted / d.outside) * 100)}%` : '範囲の外の変更なし';
+  return [
+    `- 出荷の前の確認(取り込む前に人が読む範囲の外で、承認を待たずに取り込んだ変更): ${d.outside} 件 / 取り込む前に人が読んだ範囲の変更 ${d.readBeforeMerge} 件(取り込みが本番を直接起動する構成を検出した PR ${d.deployDetected} 件を含む)`,
+    `- 出荷の前の確認が済んでいない変更(独立した人の確認も例外承認の記録も対応づかない。出荷判定までに全件を読む。止める値は置かない): ${d.pending} 件${list(d.pendingLabels)}。最も古い変更の取り込みからの経過 ${d.oldestDays === null ? '該当なし' : `${d.oldestDays} 日`}。未確認の変更の後に、同じファイルを触って取り込まれた変更 ${d.stacked} 件(積み重なり。未確認の変更が差し戻されたときの作り直しの量)`,
+    `- 出荷の前の確認を例外承認で出した変更: ${d.excepted} 件(${share}。常態になると、実質は読まずに出す形になる。機械は止めない)`,
+    `- 出荷の前の確認を済ませた確認者ごとの件数: ${d.byReviewer.length ? d.byReviewer.map((r) => `${r.name} ${r.n} 件`).join(' / ') : '該当なし'}(特定の確認者への偏りは、人が見る。比率の閾値は置かない)`,
+    `- 範囲の外の R2 のうち、区分の確定者の記名が無い変更: ${d.confirmerMissing.length} 件${list(d.confirmerMissing)}(出荷判定までに要る。記録の欠落に数える)`,
+    '- この集計の限界: テストの削除と依存するタスクの取り込みは取り込む前の検査(gate-g5-base)が照らし、集計は照らし直していない。取り込みが本番を直接起動する構成は workflows の構文だけを調べ、workflows の外の配備は検出しない。読んだ中身の質は機械で確かめない',
+  ];
 }
 
 /** 項目3 の「G-6 未達のまま入った R2 の変更」の行(IMPL-0739)。prevText は前回の値の文 */
@@ -2740,6 +2761,31 @@ if (isMain) {
   const prByNumber = new Map(prs.map((p) => [p.number, p]));
   const anyPrByNumber = new Map([...prs, ...recordPrs].map((p) => [p.number, p]));
 
+  // --- 出荷の前の確認(事業ステージ S2 で、承認を「取り込む前に人が読む範囲」に掛ける構成。標準 第8章 軸B・第4章 G-6) ---
+  //
+  // 変更の親の版の構成がこの形(approvalByPreRead)の PR を、範囲の外(承認を待たずに取り込めた変更)と範囲の内に分ける。判定は PR の検査と同じ関数
+  // (preReadRangeOf)で、集約が機械で求められる行(リスク区分・コア機能・判断記録の要否の規則・統制の設定・仕様・依存)だけを当てる。
+  // テストの削除と依存するタスクの取り込みは、取り込む前の検査(gate-g5-base)が照らしており、集約は照らし直さない(表示の分け方にだけ効き、欠落の数え方は変えない)。
+  // 取り込みが本番への反映を直接起動する構成(親の版の workflows を構文で調べる)は、範囲の外にしない。
+  // 範囲の外の変更も、独立した人の確認を経ていなければ記録の欠落に数える(欠落の数え方は変えない)。ここで足すのは識別と、出荷の前に要る区分の確定者の記名
+  function deferredReviewOf(p) {
+    const parentRev = `${p.mergeCommitFull}^1`;
+    const before = configAt(parentRev);
+    if (!before || !approvalByPreRead(before)) return { applies: false };
+    const parentTracked = trackedAt(parentRev) ?? [];
+    const deploy = deployWorkflowsOf(parentTracked, (f) => git(['show', `${parentRev}:${f}`], { strict: true }) ?? '');
+    const changes = changeListBetween((args) => git(args, { strict: true }), parentRev, p.mergeCommitFull) ?? [];
+    const files = [...new Set(changes.flatMap((c) => (c.from ? [c.path, c.from] : [c.path])))];
+    const floor = riskFloorOf(before.riskFloor?.rules, changes).floor;
+    // 範囲の求め方は、変更の親の版の構成と HEAD の版の構成の両方で行い、どちらかが当たれば範囲の内とする(後から狭めた宣言で範囲の外へ出さない)
+    const atParent = preReadRangeOf(before, { files, changes, tracked: parentTracked, risk: p.riskClass, floor, deploy });
+    const atHead = preReadRangeOf(config, { files, changes, tracked: TRACKED_FILES, risk: p.riskClass, floor, deploy });
+    const hits = [...atParent.hits];
+    for (const h of atHead.hits) if (!hits.some((x) => x.id === h.id)) hits.push(h);
+    return { applies: true, preRead: hits.length > 0 || deploy.length > 0, hits, deploy, files };
+  }
+  for (const p of prs) p.deferredReview = deferredReviewOf(p);
+
   // 効力を持つ記録(台帳の行・停止の解除の記録)を基底ブランチへ入れた変更の記録(作成者・承認者)。出荷の範囲の PR は
   // 集約が読んだ記録から、範囲の外のコミットはホスティング(gh)から引く(process-compass #380 / ADR-0106 / IMPL-0414)
   const remoteHosting = repo ? ghHosting(repo) : null;
@@ -3200,6 +3246,11 @@ if (isMain) {
     if (g6Applied && !outOfScope) {
       gaps.push(
         `PR #${p.number}: 独立した人の確認を経ていません(${p.g6.independent.reasonText}${copyNotCountedText(p)})。G-6 を適用する体制では記録の欠落です` +
+          (p.deferredReview?.applies
+            ? p.deferredReview.preRead
+              ? `(取り込む前に人が読む範囲の変更: ${p.deferredReview.deploy.length ? `取り込みが本番を直接起動する workflow がある(${p.deferredReview.deploy.slice(0, 2).join(', ')})` : p.deferredReview.hits.map((h) => h.label).join(' / ')}。取り込む前に承認を経る変更だった)`
+              : '(取り込む前に人が読む範囲の外の変更。取り込む前の承認は求めていないため、出荷判定までに独立した人が読んで G-6 の判定記録を残す。出荷の前の確認が済んでいない)'
+            : '') +
           (p.g6Scope?.why
             ? `(G-6 の範囲をコア機能に限る構成だが、${p.g6Scope.why})`
             : p.g6Scope?.core?.hit
@@ -3213,6 +3264,28 @@ if (isMain) {
       gaps.push(
         `PR #${p.number}: リスク区分 R1 の変更が、独立した人の確認を経ていません(${p.g6.independent.reasonText}${copyNotCountedText(p)})。` +
           `例外承認の記録(第7章 7.3)が対応づきません。${rejected}技術負債台帳の区分「例外」の行の「対象」へ「PR #${p.number}」を書き、状態(未返却)・承認した者・理由・期限を記入してください`
+      );
+    }
+  }
+
+  // --- 出荷の前の区分の確定(取り込む前に人が読む範囲の外の R2。第3章 3.8.1 の要求事項3) ---
+  // 取り込む前には確定者の記名を求めないため、出荷判定までに、作成を指示した者以外の名簿の人の記名(PR 本文の「確定した者」、または
+  // 当該の変更の G-6 の判定記録の「リスク区分を確定した者」)を要する。無ければ記録の欠落に数える。記名の正しさ(区分が妥当か)は機械で確かめない
+  const deferredConfirmerValid = (who, instructedBy) => {
+    if (!who || /自己記載/.test(who) || aiNameBlocked(config, who)) return false;
+    const person = resolveSigner(config, who.replace(/^@/, '')) ?? findPersonByAccount(config, who);
+    return Boolean(person) && !(instructedBy ?? []).some((n) => personKey(config, n) === person.id || samePerson(config, n, person.name));
+  };
+  for (const p of prs) {
+    p.deferredConfirmation = null;
+    if (!p.deferredReview?.applies || p.deferredReview.preRead || p.riskClass !== 'R2') continue;
+    const bodyOk = deferredConfirmerValid(p.riskConfirmer, p.instructedBy);
+    const recordOk = g6RecordsFor((text) => refersToPr(text, p.number)).some((g) => deferredConfirmerValid(g.riskConfirmedBy, p.instructedBy));
+    p.deferredConfirmation = { confirmed: bodyOk || recordOk, by: bodyOk ? 'PR 本文' : recordOk ? '判定記録' : null };
+    if (!p.deferredConfirmation.confirmed) {
+      gaps.push(
+        `PR #${p.number}: リスク区分 R2 の確定者の記名がありません。取り込む前に人が読む範囲の外の R2 は、確定者の記名を取り込む前には求めず、出荷判定までに求めます。` +
+          '作成を指示した者以外の名簿の人が、区分を確定して、当該の変更の G-6 の判定記録の「変更のリスク区分」の確定者へ記名する(PR 本文の「確定した者」でもよい。AI の名義と自己記載は数えない。第3章 3.8.1 の要求事項3)'
       );
     }
   }
@@ -4295,6 +4368,34 @@ if (isMain) {
   const r1Unconfirmed = changeUnits.filter((c) => c.riskClass === 'R1' && !c.independent.counted).map((c) => ({ label: c.label, exceptionRecords: c.exceptionRecords }));
   // R2 の変更のうち、G-6(独立した人の確認)が未達のまま入ったもの。止めずに件数を項目3 へ出す(IMPL-0739。リリースごとの件数)
   const r2Unconfirmed = r2G6UnmetOf(changeUnits);
+  // 出荷の前の確認の投影(取り込む前に人が読む範囲の外で取り込んだ変更。値・閾値を置かず、止めない。毎回出す)。
+  // 未確認 = 独立した人の確認も例外承認の記録も対応づいていない変更。経過日数は、取り込みの日から例外承認の判定の日(exceptionDay)まで。
+  // 積み重なり = 未確認の変更の後に取り込まれ、同じファイルを触った変更(この形の期間のもの)
+  const deferredReview = (() => {
+    const form = prs.filter((p) => p.deferredReview?.applies);
+    if (!form.length && !approvalByPreRead(config)) return null;
+    const outside = form.filter((p) => !p.deferredReview.preRead);
+    const pending = outside.filter((p) => !p.g6.independent.counted && !p.exceptionRecords?.length);
+    const dayMs = 86400000;
+    const ages = pending.map((p) => (p.mergedAt ? Math.floor((Date.parse(exceptionDay) - Date.parse(String(p.mergedAt).slice(0, 10))) / dayMs) : null)).filter((n) => n !== null && Number.isFinite(n));
+    const stacked = form.filter((q) => pending.some((u) => u.number !== q.number && u.mergedAt && q.mergedAt && q.mergedAt > u.mergedAt && q.deferredReview.files.some((f) => u.deferredReview.files.includes(f))));
+    const byReviewer = new Map();
+    for (const p of outside.filter((x) => x.g6.independent.counted)) for (const n of p.g6.independent.by ?? []) byReviewer.set(n, (byReviewer.get(n) ?? 0) + 1);
+    return {
+      inForm: form.length,
+      readBeforeMerge: form.length - outside.length,
+      outside: outside.length,
+      confirmed: outside.filter((p) => p.g6.independent.counted).length,
+      pending: pending.length,
+      pendingLabels: pending.map((p) => `#${p.number}`),
+      oldestDays: ages.length ? Math.max(...ages) : null,
+      stacked: stacked.length,
+      excepted: outside.filter((p) => p.exceptionRecords?.length).length,
+      confirmerMissing: outside.filter((p) => p.deferredConfirmation && !p.deferredConfirmation.confirmed).map((p) => `#${p.number}`),
+      deployDetected: form.filter((p) => p.deferredReview.deploy.length).length,
+      byReviewer: [...byReviewer].map(([name, n]) => ({ name, n })),
+    };
+  })();
   // 例外承認の記録が対応づいたことで、欠落として扱わなかった変更(区分を問わない)。項目5 へ未回収の例外として載せる
   const exceptedChanges = changeUnits.filter((c) => c.exceptionRecords.length).map((c) => ({ label: c.label, riskClass: c.riskClass, records: c.exceptionRecords }));
   // リスク区分が未記入で、独立した人の確認を経ていない変更。R1 かどうかを機械で判定できない
@@ -4559,6 +4660,9 @@ if (isMain) {
         ? { label: g.label, state: g6ScopeStateText(), why: [...paramNotes(config, 'g6', 'scope'), ...G6_SCOPE_COUNTING] }
         : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${key === 'g7' && g.state === 'simplified' ? g7Tail : ''}`, why: g.why ?? [] }
     );
+  if (deferredReview) {
+    tailoring.push({ label: '出荷の前の確認(取り込む前に人が読む範囲の外の変更)', state: DEFERRED_STATE_TEXT, why: deferredReviewLines(deferredReview).map((l) => l.replace(/^- /, '')) });
+  }
   if (config.guard?.enabled === false) {
     tailoring.push({
       label: '強制層の書き込み遮断',
@@ -4638,6 +4742,7 @@ if (isMain) {
     r2G6Unmet: r2Unconfirmed.length,
     r2G6UnmetLabels: r2Unconfirmed,
     riskConfirmation,
+    deferredReview,
     byMode: records.length
       ? {
           human: count(records, (r) => r.mode === MODE_LABEL.human),
@@ -5940,6 +6045,7 @@ if (isMain) {
         count(branchFormsInRange, (f) => gateLabelRe(k).test(gateOfRecord(f.text) ?? '')),
     }));
   const g6Summary = `独立した人の確認あり ${confirmedUnits.length} 件 / G-6 を事後へ移した ${g6PostHoc} 件 / 例外承認の記録が対応づいた ${exceptedChanges.length} 件 / 独立した人の確認を経ていない ${withoutIndependentHuman} 件` +
+    (deferredReview ? `(取り込む前に人が読む範囲の外で取り込んだ変更 ${deferredReview.outside} 件のうち、出荷の前の確認が済んでいない変更 ${deferredReview.pending} 件。取り込む前に人が読む範囲の変更 ${deferredReview.readBeforeMerge} 件は別。例外承認の記録が対応づいた変更 ${deferredReview.excepted} 件)` : '') +
     (reviewersRequired >= 2 ? `(承認者 ${reviewersRequired} 名を要する体制。満たない変更 ${insufficientApproverChanges.length} 件${insufficientApproverChanges.length ? `: ${insufficientApproverChanges.join(', ')}` : ''})` : '') +
     (auditFormat ? `(監査対応書式。判定記録の欠落・未記入 ${auditRecordGaps.length} 件)` : '') +
     (g6Applied
@@ -6829,6 +6935,7 @@ if (isMain) {
     R.push(`- リスク区分の出所: ${A.changes.riskClassSource}`);
     const rcf = A.changes.riskConfirmation;
     R.push(`- R1・R2 の区分の確定者(作成を指示した者以外の名簿の人の記名): R1・R2 ${rcf.high} 件のうち確定者あり ${rcf.confirmed} 件${rcf.unconfirmed.length ? `。**確定していない区分** ${rcf.unconfirmed.join(', ')}` : ''}(G-5 が確定者の無い R1・R2 を失敗させる。区分の下限の規則に当たらない R1 相当の変更が R3 と記載される経路は残る)`);
+    if (A.changes.deferredReview) R.push(...deferredReviewLines(A.changes.deferredReview));
     R.push(r2G6UnmetLine(A.changes.r2G6UnmetLabels, prev((p) => (typeof p.changes.r2G6Unmet === 'number' ? `${p.changes.r2G6Unmet} 件` : '値なし'))));
     R.push(`- 確定の形態(当該出荷の範囲の判定記録の記載): ${bmText(bm)}(${prev((p) => bmText(p.changes.byMode))})`);
     const dg = A.changes.delegated;

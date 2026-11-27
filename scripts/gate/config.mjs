@@ -1558,7 +1558,7 @@ export function enforcedApprovalFindings(config, ruleset) {
   // 下回るかは、承認の要求と承認者の数の大きいほうと比べる(手で書いた構成で requiredApprovals < reviewerCount の穴を塞ぐ。#318 突合 X-6)
   const counted = config?.review?.reviewerCount ?? Math.max(1, config?.review?.requiredApprovals ?? 1);
   // コア機能のパスで承認を掛ける構成は、ブランチ保護が承認の数を強制しない(承認は gate-g5-base が、コア機能に触れる PR にだけ必須にする)
-  const required = approvalByCorePaths(config) ? 0 : Math.max(1, config?.review?.requiredApprovals ?? 1, config?.review?.reviewerCount ?? 0);
+  const required = approvalByPathsOrRange(config) ? 0 : Math.max(1, config?.review?.requiredApprovals ?? 1, config?.review?.reviewerCount ?? 0);
   const problems = [];
   const notes = [];
   if (enforced === null) return { enforced, required, counted, problems, notes };
@@ -2648,6 +2648,28 @@ export function approvalByCorePaths(config) {
   // 緩めるのは、安全重要度が CL0 と記入されているときだけ。未記入は CL0 とみなさない(緩めない側)
   if (config?.answers?.['q-criticality'] !== 'cl0' || config?.answers?.['q-quality'] === 'quality-regulated') return false;
   return Math.max(1, Number(config?.review?.reviewerCount ?? 1) || 1) < 2;
+}
+/**
+ * 承認の強制を、ブランチ保護の人数ではなく「取り込む前に人が読む範囲」で掛ける構成か(事業ステージ S2。標準 第8章 軸B)。
+ * 真のとき、範囲の外の中くらいの変更(R2)と、委任に登録していない R3 の変更は、承認を待たずに取り込める。
+ * その変更は、出荷判定(G-7)までに独立レビュアが全件を読み、G-6 の判定記録を残す(取り込む前に読む場合より、読む時点が出荷の前へ移る)。
+ * 構成の review.requiredApprovals が 0 で、事業ステージ S2・G-6 が適用(範囲は全変更)・安全重要度 CL0 と記入・
+ * 品質が標準・承認者 1 名・委任を適用しないときだけ真。未記入の項目は緩めない側(偽)に倒す。
+ * 取り込みが本番への反映を直接起動する構成は、構成から読めないため、変更ごとに workflows を構文で調べて取り込む前に読む側へ倒す(check-pr・集約)
+ */
+export function approvalByPreRead(config) {
+  if (config?.gates?.g6?.state !== 'required' || config?.gates?.g6?.params?.scope === 'core-only') return false;
+  if (config?.review?.requiredApprovals !== 0) return false;
+  const a = config?.answers ?? {};
+  const phase = a['q-biz-phase'];
+  if (!phase || phase === 'poc' || phase === 'mvp') return false;
+  if (a['q-criticality'] !== 'cl0' || a['q-quality'] !== 'quality-standard') return false;
+  if (config?.delegation?.allowed === true) return false;
+  return Math.max(1, Number(config?.review?.reviewerCount ?? 1) || 1) < 2;
+}
+/** ブランチ保護の必須の承認数を 0 とし、承認を基底から読む判定(gate-g5-base)がパスなどで掛ける構成か(コア機能のパス、または取り込む前に人が読む範囲) */
+export function approvalByPathsOrRange(config) {
+  return approvalByCorePaths(config) || approvalByPreRead(config);
 }
 /** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
 export function touchesCore(config, files, { tracked = null } = {}) {

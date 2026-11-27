@@ -150,6 +150,8 @@ import {
   behaviorSummaryKey,
   reviewersRequiredOf,
   approvalByCorePaths,
+  approvalByPreRead,
+  DEPENDENCY_MANIFESTS,
   touchesCore,
   assuranceOf,
   sizeLimitsOf,
@@ -1370,13 +1372,128 @@ export function fixedUserLookup(ids, { at } = {}) {
   }, at ? { at } : {});
 }
 
+// ---------------------------------------------------------------- 取り込む前に人が読む範囲(事業ステージ S2。標準 第8章 軸B・第4章 G-6)
+//
+// 構成が approvalByPreRead のとき、次のどれにも当たらない中くらいの変更(R2)と、委任に登録していない R3 の変更は、独立レビュアの承認を
+// 待たずに取り込める。出荷判定(G-7)までに、独立レビュアが全件を読んで G-6 の判定記録を残す(出荷の前の確認)。
+// 新しい区分・欄は足さない。どれも既存の宣言・規則・検出から機械が決める。
+
+/** 取り込む前に人が読む範囲の行(表示の見出し)。当たった行の一覧が range.hits に入る */
+export const PRE_READ_ROWS = {
+  risk: 'リスク区分が R1(記載または区分の下限)',
+  'risk-unknown': 'リスク区分を読めない(R1 かを確かめられない)',
+  core: 'コア機能・確約範囲のパス',
+  'core-undeclared': 'コア機能のパスが未宣言(コア機能に触れるかを確かめられない)',
+  decision: '判断記録の要否の規則のパス',
+  control: '統制の設定・エージェントへの指示のファイル',
+  spec: '機能仕様(specs/**)',
+  dependency: '依存の宣言・ロックファイル・.gitmodules',
+  'test-weakened': '基底にあるテストの削除・名前の変更・行の削除',
+  'task-dependency': '依存するタスクが基底ブランチへ取り込まれていない',
+};
+
+/**
+ * 取り込みが本番への反映を直接起動する構成の検出(構文)。既定ブランチへの push を契機に動き、`environment:` を持つジョブがある
+ * workflow を見つける。条件を満たすかどうかは構文だけで決める(ブランチの絞り込み・条件式は読まず、起動する側へ倒す)。
+ * workflows の外の配備(別のリポジトリ・外部の仕組み)は見えない。workflows: [{ path, text }]。戻り値は該当する workflow のパス
+ */
+export function deployOnPushFindings(workflows) {
+  const out = [];
+  for (const w of workflows ?? []) {
+    const text = String(w?.text ?? '').replace(/\r\n/g, '\n');
+    if (!/^[ \t]*environment[ \t]*:/m.test(text)) continue;
+    if (triggersOnPush(text)) out.push(w.path);
+  }
+  return out;
+}
+function triggersOnPush(text) {
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => /^(on|"on"|'on')[ \t]*:/.test(l));
+  // 起動の契機を読めないときは、起動する側へ倒す
+  if (i < 0) return true;
+  const rest = lines[i].replace(/^(on|"on"|'on')[ \t]*:/, '').replace(/#.*$/, '').trim();
+  if (rest) return /\bpush\b/.test(rest);
+  for (let j = i + 1; j < lines.length; j++) {
+    const l = lines[j];
+    if (!l.trim() || /^[ \t]*#/.test(l)) continue;
+    if (!/^[ \t]/.test(l)) break;
+    if (/^[ \t]+push[ \t]*:/.test(l) || /^[ \t]+-[ \t]*push[ \t]*(#.*)?$/.test(l)) return true;
+  }
+  return false;
+}
+/** ある版の .github/workflows の一覧から、取り込みが本番を直接起動する workflow を探す。tracked は追跡中のファイル、read(path) は内容 */
+export function deployWorkflowsOf(tracked, read) {
+  const files = (tracked ?? []).filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f));
+  return deployOnPushFindings(files.map((f) => ({ path: f, text: read(f) })));
+}
+
+/**
+ * 実装計画(plan.md)の表で、タスクが依存するタスクのうち、基底ブランチへ取り込まれていないもの。
+ * specs: トレーラ Spec の { feature, task }、planOf(feature): plan.md の本文、done: 取り込み済みの `F-NNN/Task-N` の集合
+ */
+export function unmergedDependencies({ specs, planOf, done }) {
+  const out = [];
+  for (const s of specs ?? []) {
+    const text = planOf(s.feature);
+    if (!text) continue;
+    for (const l of String(text).split(/\r?\n/)) {
+      const m = l.match(/^\|\s*(Task-\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|/);
+      if (!m || m[1] !== s.task) continue;
+      for (const d of m[5].match(/Task-\d+/g) ?? []) if (!done.has(`${s.feature}/${d}`)) out.push(`${s.feature}/${d}`);
+    }
+  }
+  return [...new Set(out)];
+}
+/** 既定ブランチのコミット本文の配列から、取り込み済みのタスク `F-NNN/Task-N` の集合(末尾の段落のトレーラ Spec だけを読む) */
+export function doneTaskKeysOf(bodies) {
+  const done = new Set();
+  for (const body of bodies ?? []) {
+    for (const l of lastParagraph(body).split('\n')) {
+      const m = SPEC_LINE.exec(l.trim());
+      if (m) done.add(`${m[1]}/${m[2]}`);
+    }
+  }
+  return done;
+}
+
+/**
+ * 変更が、取り込む前に人が読む範囲に当たるか。facts:
+ *   files: 変更したファイル(名前の変更の元を含む)、changes: changeListBetween の戻り(判断記録の要否の規則に渡す)、tracked: 追跡中のファイル、
+ *   risk: PR の記載の区分、floor: 区分の下限、testWeakened: テストの削除・行の削除のファイル(あれば)、unmergedDeps: 取り込まれていない依存タスク(あれば)、
+ *   deploy: 取り込みが本番を直接起動する workflow のパス(あれば)、notEvaluated: 照らせなかった行の説明(表示用)
+ * 戻り値: preRead(範囲に当たる、または本番を直接起動する構成)、hits(当たった行 { id, label, files })、deploy
+ */
+export function preReadRangeOf(config, facts) {
+  const files = [...new Set(facts.files ?? [])];
+  const hits = [];
+  const add = (id, list = []) => hits.push({ id, label: PRE_READ_ROWS[id], files: [...new Set(list)].slice(0, 10) });
+  const risk = facts.risk ?? null;
+  if (!risk) add('risk-unknown');
+  else if (risk === 'R1' || facts.floor === 'R1') add('risk');
+  const core = touchesCore(config, files, { tracked: facts.tracked ?? null });
+  if (core === null) add('core-undeclared');
+  else if (core.hit) add('core', core.files);
+  const dr = decisionRuleHits(config?.decisionRules?.rules, facts.changes ?? files.map((f) => ({ path: f, kind: 'modify' })), facts.tracked ?? null);
+  if (dr.hits.length) add('decision', dr.hits.flatMap((h) => h.files));
+  const control = files.filter((f) => matchAny(CONTROL_FILES, f) || matchAnyCI(INSTRUCTION_ASSET_FILES, f));
+  if (control.length) add('control', control);
+  const specs = files.filter((f) => /^specs\//.test(f));
+  if (specs.length) add('spec', specs);
+  const deps = files.filter((f) => matchAny(DEPENDENCY_MANIFESTS, f) || isLock(f) || path.basename(f) === '.gitmodules');
+  if (deps.length) add('dependency', deps);
+  if (facts.testWeakened?.length) add('test-weakened', facts.testWeakened);
+  if (facts.unmergedDeps?.length) add('task-dependency', facts.unmergedDeps);
+  const deploy = facts.deploy ?? [];
+  return { preRead: hits.length > 0 || deploy.length > 0, hits, deploy, notEvaluated: facts.notEvaluated ?? [] };
+}
+
 /**
  * G-6 の承認者の数(検査8)。PR のレビュー(reviews: [{ author: { login, is_bot }, state, body }])から、出荷の証跡の集約と同じ条件で
  * 独立した人の承認者を数える。レビュアごとの最後の状態で数え、承認の後の変更要求は承認を取り下げたものとして扱う。
  * G-6 の判定記録(docs/gates/)は PR の時点では基底に無いことが多いため、ここでは読まない(集約が読む)。
  * reviews が無い(読めない)ときは readable: false を返し、呼び出し側がその旨を出す
  */
-export function approverFindings(config, pr, files = null, tracked = null) {
+export function approverFindings(config, pr, files = null, tracked = null, range = null) {
   const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
   const counts = reviewersRequiredOf(config);
   // コア機能の変更(構成のコア機能のパス = 確約範囲・コア指定 + 区分の下限の規則のパス)は coreReviewerCount と reviewerCount の大きいほう(#288 第8巡 Z7)。
@@ -1387,10 +1504,15 @@ export function approverFindings(config, pr, files = null, tracked = null) {
   // パスが未宣言(コア機能かを確かめられない)なら全 PR に求める。要求の数は、コア機能の数(品質「高」は 2 名)
   const byPaths = approvalByCorePaths(config) && Array.isArray(files) ? { touches: touchesCore(config, files, { tracked }) } : null;
   const byPathsRequired = byPaths ? (byPaths.touches === null || byPaths.touches.hit ? counts.core : 0) : null;
-  const required = byPaths ? byPathsRequired : core?.hit ? counts.core : counts.all;
+  // 承認を「取り込む前に人が読む範囲」で掛ける構成(事業ステージ S2。標準 第8章 軸B)は、範囲に当たる PR(取り込みが本番を直接起動する構成を含む)だけが
+  // 承認を要する。範囲を求められなかった(range が無い)ときは、緩めない側で全 PR に求める
+  const rangeMode = approvalByPreRead(config) && Array.isArray(files);
+  const rangeNeeds = rangeMode ? !range || range.preRead : null;
+  const byRangeInfo = rangeMode ? { evaluated: Boolean(range), preRead: rangeNeeds, hits: range?.hits ?? [], deploy: range?.deploy ?? [], notEvaluated: range?.notEvaluated ?? [] } : null;
+  const required = byPaths ? byPathsRequired : rangeMode ? (rangeNeeds ? (core?.hit ? counts.core : counts.all) : 0) : core?.hit ? counts.core : counts.all;
   const byPathsInfo = byPaths ? { declared: byPaths.touches !== null, hit: byPaths.touches?.hit ?? null, files: byPaths.touches?.files ?? [] } : null;
-  if (!g6Active) return { applies: false, required, core, byPaths: byPathsInfo };
-  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core, byPaths: byPathsInfo };
+  if (!g6Active) return { applies: false, required, core, byPaths: byPathsInfo, byRange: byRangeInfo };
+  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core, byPaths: byPathsInfo, byRange: byRangeInfo };
   const instructorInfo = instructorTokensOf(config, pr.body, prAuthorRef(pr), pr.accountLookup ?? null);
   const instructors = instructorInfo.resolved;
   // レビュアは数値の識別子で区別する(識別子が読めなければログイン名)。ホスティングの (login, id) と名簿の (login, id) の
@@ -1475,6 +1597,7 @@ export function approverFindings(config, pr, files = null, tracked = null) {
     required,
     core,
     byPaths: byPathsInfo,
+    byRange: byRangeInfo,
     counted: counted.length,
     approvers: counted.map((c) => c.name),
     sharedApprovals,
@@ -2160,6 +2283,53 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       `区分の下限: 記載された区分 ${risk} は、変更の対象から導いた下限 ${floorResult.floor} より低い。当たった規則: ${why.join(' / ')}。区分を ${floorResult.floor} 以上へ改める(下限より高い区分は妨げない。第3章 3.8.1 の要求事項2)。規則の網羅は主張しない`
     );
   }
+  // 事業ステージ S2 で承認を「取り込む前に人が読む範囲」に掛ける構成は、この変更が範囲に当たるかを、区分の確定者の扱い(7)と承認の数(8)の前に決める(範囲の外は承認を待たずに取り込み、出荷の前に読む)
+  let preReadRange = null;
+  {
+    const rangeConfig = policyConfigured ? policyConfig : headConfig;
+    if (approvalByPreRead(rangeConfig)) {
+      const changedFiles = all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path]));
+      const notEvaluated = [];
+      // 取り込みが本番を直接起動する構成: 既定ブランチの workflows を構文で調べる。見つければ取り込む前に読む側へ倒す
+      const deploy = deployWorkflowsOf(trackedFiles(root, policyPoint) ?? [], (f) => atPolicy(f));
+      // テストの削除・名前の変更・アサーションの行の削除(基底にあるテスト)
+      const guardPatterns = (json(atBase('.claude/guard.json')) ?? json(atHead('.claude/guard.json')) ?? {}).testPatterns;
+      const isTestFile = (f) => (Array.isArray(guardPatterns) ? guardPatterns : []).some((g) => matchGlob(g, f));
+      const testWeakened = [];
+      for (const e of all) {
+        const from = e.from ?? e.path;
+        if (!isTestFile(from) || atBase(from) === null) continue;
+        const st = status.get(e.path) ?? (e.from ? 'R' : 'M');
+        if (e.from || st === 'D' || status.get(from) === 'D') {
+          testWeakened.push(from);
+          continue;
+        }
+        if (!e.removed) continue;
+        const diff = git(['diff', '-U0', '-M', mergeBase, HEADREF, '--', from, e.path]) ?? '';
+        if (diff.split('\n').some((l) => l.startsWith('-') && !l.startsWith('---') && isAssertionLine(l.slice(1)))) testWeakened.push(e.path);
+      }
+      // 依存するタスクが基底ブランチへ取り込まれていない(トレーラ Spec の無い変更は照らさない)
+      let unmergedDeps = [];
+      const specsOfPr = result.spec?.specs ?? [];
+      if (specsOfPr.length) {
+        const log = git(['log', policyRef, '--format=%B%x00']);
+        if (log === null) notEvaluated.push('依存するタスクの取り込みを照らせなかった(既定ブランチのコミットを読めない)');
+        else unmergedDeps = unmergedDependencies({ specs: specsOfPr, planOf: (f) => atPolicy(`specs/${f}/plan.md`), done: doneTaskKeysOf(log.split('\0')) });
+      } else notEvaluated.push('依存するタスクの取り込みを照らしていない(トレーラ Spec の無い変更)');
+      preReadRange = preReadRangeOf(rangeConfig, {
+        files: changedFiles,
+        changes,
+        tracked: trackedFiles(root, HEADREF),
+        risk,
+        floor: floorResult.floor,
+        testWeakened,
+        unmergedDeps,
+        deploy,
+        notEvaluated,
+      });
+    }
+  }
+  result.preReadRange = preReadRange;
   if (risk === 'R1' || risk === 'R2') {
     const confirmer = riskConfirmerOf(pr.body);
     const instructorInfo = instructorTokensOf(rulesConfig, pr.body, prAuthorRef(pr), userLookup);
@@ -2175,7 +2345,15 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     else if (!(person = resolveSigner(rulesConfig, confirmer.replace(/^@/, '')) ?? findPersonByAccount(rulesConfig, confirmer))) why.push(`確定した者 "${confirmer}" が人の名簿(people[])の人へ対応づかない`);
     else if (instructors.some((i) => i.id === person.id)) why.push(`確定した者 "${confirmer}" は作成を指示した者である`);
     result.riskConfirmation = { confirmer, valid: !why.length, why, instructors: instructors.map((i) => i.name) };
-    if (why.length) {
+    // 取り込む前に人が読む範囲の外の R2 は、区分の確定者の記名を出荷判定までに求める(取り込む前には失敗させない。出荷の証跡の集約が欠落に数える)。
+    // R1 は範囲に入るため、取り込む前に確定者を求める
+    const confirmDeferred = risk === 'R2' && preReadRange !== null && !preReadRange.preRead;
+    if (why.length && confirmDeferred) {
+      result.notices.push(
+        `リスク区分の確定者: ${why.join('。')}。この変更は取り込む前に人が読む範囲の外の R2 のため、確定者の記名は取り込む前には求めない。` +
+          '出荷判定(G-7)までに、作成を指示した者以外の名簿の人が区分を確定して記名する(出荷の前の確認の判定記録の「リスク区分を確定した者」、または PR 本文の「確定した者」)。記名が無ければ出荷の証跡の集約が欠落に数える(第3章 3.8.1)'
+      );
+    } else if (why.length) {
       if (!others.length) {
         result.notices.push(
           `リスク区分の確定者: ${why.join('。')}。作成を指示した者以外の人が名簿にいないため失敗させない。${risk} の区分は確定していないものとして扱い、保証の開示の項目3 に出る(外部の確認者を名簿に置けば確定できる。第3章 3.8.1)`
@@ -2326,7 +2504,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
 
   // --- 8. G-6 の承認者の数(構成 review.reviewerCount。合否にしない。理由は冒頭) ---
   // コア機能の変更(構成のコア機能のパス)は coreReviewerCount(第8章 軸C 高)を要する。パスは変更したファイル(改名の元を含む)で判定する(#288 第8巡 Z7)
-  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, { ...pr, accountLookup: userLookup },all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, HEADREF));
+  result.approvers = approverFindings(policyConfigured ? policyConfig : headConfig, { ...pr, accountLookup: userLookup },all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path])), trackedFiles(root, HEADREF), preReadRange);
   if (result.approvers.applies) {
     const a = result.approvers;
     const coreText = a.core
@@ -2350,7 +2528,21 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       ? `。名義を共有するアカウントの承認 ${a.sharedApprovals.length} 件(${a.sharedApprovals.map((x) => `${x.name} @${x.login}: ${x.with}と名義を共有`).join('、')}。` +
         '担い手の操作でないことを機械で確かめられないため、印を付けて数える。出荷の証跡の集約が保証の開示の項目1 に件数を出す。適合の主張の根拠に数えない)'
       : '';
-    if (bp && a.required === 0) {
+    // 承認を「取り込む前に人が読む範囲」に掛ける構成(事業ステージ S2。標準 第8章 軸B)の、この PR の扱い
+    const br = a.byRange;
+    const rangeText = br
+      ? !br.evaluated
+        ? '。取り込む前に人が読む範囲を求められなかったため、全 PR に承認を求める'
+        : br.deploy.length
+          ? `。取り込みが本番への反映を直接起動する workflow がある(${br.deploy.slice(0, 3).join(', ')}${br.deploy.length > 3 ? ' ほか' : ''})ため、すべての変更を取り込む前に読む(承認を求める)`
+          : br.preRead
+            ? `。取り込む前に人が読む範囲に当たる変更(${br.hits.map((h) => `${h.label}${h.files.length ? `: ${h.files.slice(0, 3).join(', ')}${h.files.length > 3 ? ' ほか' : ''}` : ''}`).join(' / ')})のため、取り込む前の承認を求める`
+            : '。取り込む前に人が読む範囲の外の変更のため、取り込む前の承認は求めない(出荷判定までに、独立レビュアが読んで G-6 の判定記録を残す。出荷の証跡の集約が、読まれていない変更を欠落に数える)'
+      : '';
+    const rangeNotEvaluated = br?.notEvaluated?.length ? `。照らせなかった範囲: ${br.notEvaluated.join(' / ')}` : '';
+    if (br && a.required === 0) {
+      result.notices.push(`G-6 の承認者 ${a.readable ? `${a.counted} 名` : '(レビューを読めない)'} / 要求 0 名${rangeText}${rangeNotEvaluated}`);
+    } else if (bp && a.required === 0) {
       result.notices.push(`G-6 の承認者 ${a.readable ? `${a.counted} 名` : '(レビューを読めない)'} / 要求 0 名${pathText}`);
     } else if (!a.readable) {
       result.notices.push(
@@ -2358,7 +2550,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       );
     } else if (!a.enough) {
       result.warnings.push(
-        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}${pathText}${sharedText}。` +
+        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}${pathText}${rangeText}${rangeNotEvaluated}${sharedText}。` +
           `マージの前に、名簿の別人が自分の挙動要約を付けて承認する。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える(この検査は合否にしない)`
       );
     } else {
@@ -2367,6 +2559,17 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     // 基底から読む判定(gate-g5-base)でだけ、コア機能に触れる PR(パスが未宣言なら全 PR)の承認を必須にする。ブランチ保護の必須の承認数は
     // 0 のため、ここが承認を止める唯一の経路になる。pr-rules(PR の側で動く)では合否にしない(同じ PR で外せ、承認はレビューの前に走るため)。
     // 承認の後に、このワークフローの最後の実行を再実行する。承認の取り下げでは再実行されない(出荷の証跡の集約が最後の状態で照らす)
+    // 取り込む前に人が読む範囲に当たる PR(事業ステージ S2)も、承認が足りなければ同じく失敗させる。範囲の外の PR は承認を求めないので落とさない
+    if (requireControlApproval && policyConfigured && br && a.required > 0 && (!a.readable || !a.enough)) {
+      result.errors.push(
+        `取り込む前に人が読む範囲の変更の承認${rangeText}。` +
+          `この構成(事業ステージ S2)は、取り込む前に人が読む範囲の変更に、作成を指示した者と別の人の承認(${a.required} 名)を求め、ブランチ保護の必須の承認数は 0 です。` +
+          (a.readable
+            ? `独立した人の承認 ${a.counted} 名 / 要求 ${a.required} 名(承認に数えられる者: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})。名簿の別の人が自分の挙動要約を付けて、PR の先頭のコミットに承認する`
+            : 'PR のレビューを読めないため、承認を確かめられません') +
+          '。承認の後に、このワークフロー(gate-g5-base)の最後の実行を再実行する(標準 第4章 G-6、第8章 軸B)'
+      );
+    }
     if (requireControlApproval && policyConfigured && bp && a.required > 0 && (!a.readable || !a.enough)) {
       result.errors.push(
         `コア機能に触れる変更の承認: ${bp.declared ? 'コア機能のパスに触れる PR です' : 'コア機能のパスが未宣言のため、全 PR に承認を求めます'}。` +
