@@ -189,7 +189,7 @@ export function skipReasons(queries) {
   return [...by].map(([r, n]) => `${r} ${n} 件`);
 }
 
-/** 検証の種類(IMPL-1038。署名・来歴の証明・完全性は別。完全性(go mod verify)は来歴と数えない) */
+/** 検証の種類(IMPL-1054。署名・来歴の証明・完全性は別。完全性(go mod verify)は来歴と数えない) */
 export const VERIFY_KIND = { SIGNATURE_INVALID: '署名の不正', SIGNATURE_MISSING: '署名の欠落', ATTESTATION_INVALID: '来歴の証明の不正' };
 
 const SECTION_HEAD = [
