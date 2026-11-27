@@ -286,8 +286,11 @@ export function ghCli(args, { input = null } = {}) {
 /** --paginate --slurp はページごとの配列を配列に包んで出す。平らにして返す(本文の中の文字列は触らない) */
 export const json = (gh, args) => JSON.parse(gh(['api', '--paginate', '--slurp', ...args]).trim() || '[]').flatMap((x) => (Array.isArray(x) ? x : [x]));
 
-/** 開いた PR を読み、queueActions の入力へ整える。gh は差し替えられる */
-export function fetchSnapshot(gh, repo, { only = null } = {}) {
+/**
+ * 開いた PR を読み、queueActions の入力へ整える。gh は差し替えられる。
+ * statuses が false のときは、委任の判定のステータスを読まない(一次判定のラベルは使わない。読む権限を持たないジョブから呼べる形にする)
+ */
+export function fetchSnapshot(gh, repo, { only = null, statuses: readStatuses = true } = {}) {
   const list = only ? [json(gh, [`repos/${repo}/pulls/${only}`])[0]] : json(gh, [`repos/${repo}/pulls?state=open&per_page=100`]);
   return list.map((p) => {
     const n = p.number;
@@ -306,7 +309,7 @@ export function fetchSnapshot(gh, repo, { only = null } = {}) {
     const reviews = json(gh, [`repos/${repo}/pulls/${n}/reviews?per_page=100`]);
     const comments = json(gh, [`repos/${repo}/issues/${n}/comments?per_page=100`]);
     // 委任の判定のステータス(新しいものが先頭)。head のコミットの最新が「該当」のときだけ delegated
-    const statuses = p.head?.sha ? json(gh, [`repos/${repo}/commits/${p.head.sha}/statuses?per_page=100`]) : [];
+    const statuses = readStatuses && p.head?.sha ? json(gh, [`repos/${repo}/commits/${p.head.sha}/statuses?per_page=100`]) : [];
     const delegationStatus = statuses.find((s) => s.context === DELEGATION_STATUS_CONTEXT);
     return {
       number: n,
@@ -354,7 +357,7 @@ function main(argv) {
   const offset = opt('--offset-minutes') !== null ? Number(opt('--offset-minutes')) : envOffset !== '' && Number.isFinite(Number(envOffset)) ? Number(envOffset) : DEFAULT_OFFSET_MINUTES;
   const config = loadConfig();
   const only = opt('--pr');
-  const prs = fetchSnapshot(ghCli, repo, { only });
+  const prs = fetchSnapshot(ghCli, repo, { only, statuses: mode !== 'risk' });
   if (mode === 'risk') {
     for (const pr of prs) {
       const a = riskLabelAction({ pr, rules: config.riskFloor?.rules });

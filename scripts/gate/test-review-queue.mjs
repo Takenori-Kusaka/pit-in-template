@@ -179,6 +179,10 @@ const snap = fetchSnapshot((a) => canned(a), 'o/r');
 check('読み取り: ページ連結の応答と事象を PR の記録へ整える', snap.length === 1 && snap[0].requests[0].login === 'rev1' && snap[0].readyAt === '2026-11-11T00:00:00Z' && snap[0].requestedTeams[0] === 'core' && snap[0].labels[0] === 'risk/R2' && snap[0].firstRequestAt === '2026-11-16T00:00:00Z' && snap[0].headSha === 'h1' && snap[0].machineRiskLabels[0] === 'risk/R2' && snap[0].requestedReviewers[0] === 'rev1' && snap[0].comments[0].body === 'x[a][b]' && snap[0].comments[0].login === 'github-actions[bot]', JSON.stringify(snap));
 check('読み取り: --paginate --slurp で呼び、本文の中の ][ を壊さない', slurped);
 check('読み取り: head のコミットの委任の判定のステータスが「該当」なら delegated を立てる', snap[0].delegated === true);
+// 一次判定のラベルのジョブは、コミットのステータスを読む権限を持たない。その経路ではステータスを読まずに整える
+const snapNoStatus = fetchSnapshot((a) => { if (a[a.length - 1].includes('/statuses')) throw new Error('ステータスを読んだ'); return canned(a); }, 'o/r', { statuses: false });
+check('読み取り: ステータスを読まない指定では、コミットのステータスを呼ばずに PR の記録へ整える(delegated は立てない)', snapNoStatus.length === 1 && snapNoStatus[0].delegated === false && snapNoStatus[0].files[0] === 'a.md');
+check('読み取り: 一次判定のラベルの経路(risk)は、ステータスを読まない指定で呼ぶ', fs.readFileSync(new URL('./review-queue.mjs', import.meta.url), 'utf8').includes("statuses: mode !== 'risk'"));
 
 // 委任した PR(判定が該当)は、マージの経路を有効にしているときに限り、同時保有数から除く。催促からは除かない
 const deleg = [1, 2, 3, 4].map((n) => mk({ number: n, createdAt: NOW, labels: ['risk/R3'], delegated: true, requests: [{ login: 'busy', at: `2026-11-18T0${n}:00:00Z` }] }));
