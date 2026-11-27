@@ -174,6 +174,32 @@ const g6File = (x) => `docs/gates/g6-${x.slice(0, 7)}.md`;
   b.w.done();
 }
 
+{
+  // 出荷判定(G-7)の記録のコミットを引けない(統合のコミットだけが足した記録。どの親にも無いので足したコミットを引けない)。前後を読めないので、足した記録は数えない側へ倒す
+  const w = workspace();
+  const x = change(w);
+  w.commit('docs: g6', '', { [g6File(x)]: g6(x.slice(0, 8), '名簿 丙') }, '丙');
+  w.git('checkout', '-q', '-b', 'side');
+  w.commit('docs: side', '', { 'docs/side.md': '# side\n' }, '丁');
+  w.git('checkout', '-q', 'main');
+  w.commit('docs: main', '', { 'docs/main.md': '# main\n' }, '丁');
+  w.git('merge', '-q', '--no-commit', '--no-ff', 'side');
+  w.commit('merge: side', '', { 'docs/gates/g7-v1.0.0.md': g7 }, '丁');
+  const r = w.run();
+  check('G-7 の記録のコミットを引けないときは、足した G-6 の記録を数えない(履歴から読めない)', gapOf(r.out, x).length === 1 && /履歴から読めない/.test(r.out), gapOf(r.out, x).join('\n') || r.out.slice(-600));
+  w.done();
+}
+{
+  // まだコミットしていない G-7 の記録(作業ツリーにだけある)は、前後を照らす相手が無いものとして従来どおり扱う(G-6 の記録の数え方を変えない)
+  const w = workspace();
+  const x = change(w);
+  w.commit('docs: g6', '', { [g6File(x)]: g6(x.slice(0, 8), '名簿 丙') }, '丙');
+  w.write('docs/gates/g7-v1.0.0.md', g7);
+  const r = w.run();
+  check('コミットしていない G-7 の記録があっても、足した G-6 の記録の数え方は従来どおり(数える)', gapOf(r.out, x).length === 0, gapOf(r.out, x).join('\n') || r.out.slice(-600));
+  w.done();
+}
+
 // --- PR の経路(偽の gh。Windows では PATH の先頭に置いた gh を実行できないため読み飛ばし、Linux で確かめる) ---
 const CAN_E2E = process.platform !== 'win32';
 function prWorkspace(order) {

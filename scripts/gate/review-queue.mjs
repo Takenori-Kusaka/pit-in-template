@@ -153,7 +153,7 @@ const mention = (login) => (login ? `@${login}` : null);
  * pr: { number, draft, createdAt, readyAt, firstRequestAt, files[], requestedTeams[], requestedReviewers[], requests:[{login, at}], reviews:[{login, state, at, bot, assoc, commit}], headSha, comments:[{body, login}] }
  * 戻り値: { actions: [{ pr, key, body }], notes: [] }
  */
-export function queueActions({ prs, now, config, d0Text, holidays = new Set(), loadLimit = loadLimitOf(config), offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null, excludeDelegated = false }) {
+export function queueActions({ prs, now, config, d0Text, holidays = new Set(), loadLimit = loadLimitOf(config, String(now).slice(0, 10)), offsetMinutes = DEFAULT_OFFSET_MINUTES, holidaysNote = null, excludeDelegated = false }) {
   const { deadlines, defaulted } = parseDeadlines(d0Text);
   const esc = escalationTarget(d0Text, config);
   const notes = [];
@@ -373,7 +373,7 @@ function main(argv) {
   const d0 = path.join(ROOT, D0_FILE);
   const d0Text = fs.existsSync(d0) ? fs.readFileSync(d0, 'utf8') : '';
   const hol = loadHolidays(ROOT);
-  const limit = loadLimitOf(config);
+  const limit = loadLimitOf(config, String(now).slice(0, 10)); // 評価の日(当日)より後の記録を当てない
   if (limit === null) console.log('注意: 同時保有の上限を定めていないため、上限を超えた知らせは出していません(期限超過の催促は出ます)。上限は構成の reviewQueue.loadLimit に、自社のレビューの重さに合わせて定めます');
   const r = queueActions({ prs, now, config, d0Text, holidays: hol.days, loadLimit: limit, offsetMinutes: offset, holidaysNote: hol.note, excludeDelegated: process.env.DELEGATED_MERGE_ENABLED === 'true' });
   for (const n of r.notes) console.log(`注意: ${n}`);

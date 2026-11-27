@@ -1992,6 +1992,15 @@ if (isMain) {
     recordCommits.set(file, h);
     return h;
   }
+  /** ファイルが HEAD のコミットに入っているか(作業ツリーだけにあるファイルは false) */
+  function committedInHead(file) {
+    try {
+      execFileSync('git', ['cat-file', '-e', `HEAD:${file}`], { cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   /** 当時の名簿から引いた人。現在の名簿に無いことの印(former)を付ける */
   function personThen(lookup, rev) {
     const c = configAt(rev);
@@ -2178,7 +2187,12 @@ if (isMain) {
     const g7s = gateDetails.filter((x) => /G-7/.test(x.gate ?? '') && passed(x));
     for (const g7 of g7s) {
       const c7 = recordCommitOf(g7.file);
-      if (!c7) continue;
+      if (!c7) {
+        // コミットを引けない出荷判定の記録。履歴(HEAD)にある記録を引けないなら、前後を読めないので数えない側へ倒す。
+        // まだコミットしていない記録(作業ツリーにだけある)は、前後を照らす相手が無いものとして従来どおり飛ばす
+        if (committedInHead(g7.file)) return { reason: 'recordAfterShipment', why: `記録 ${g.file} と出荷判定(G-7)の記録 ${g7.file} の前後、または変更との関係を、履歴から読めない` };
+        continue;
+      }
       if (!changeRev) continue; // 当該の変更のコミットを持たない層の判定は、前後を照らさない
       const covers = isAncestorCommit(ROOT, changeRev, c7);
       if (covers === false) continue;

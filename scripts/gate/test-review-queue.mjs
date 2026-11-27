@@ -199,5 +199,12 @@ check('同時保有: 該当の PR は、有効でも応答の催促からは除�
 })());
 check('同時保有: 状態の文字列は check-delegation.mjs と同じ値', DELEGATION_STATUS_CONTEXT === 'delegation-eligibility' && fs.readFileSync(new URL('./check-delegation.mjs', import.meta.url), 'utf8').includes(DELEGATION_ELIGIBLE_PREFIX) && fs.readFileSync(new URL('./check-delegation.mjs', import.meta.url), 'utf8').includes(`'${DELEGATION_STATUS_CONTEXT}'`));
 
+// 同時保有の上限の既定の読みは評価の日(now)に効く記録だけ当てる。未来の日付の記録は効かない
+{
+  const lim = (recordedAt) => ({ ...config, reviewQueue: { loadLimit: { history: [{ value: 3, recordedAt, decidedBy: '山田 太郎', reason: '試験' }] } } });
+  const busy = (c) => queueActions({ ...base, config: c, prs: heavy }).actions.some((x) => x.key === 'load:busy');
+  check('同時保有の上限: 評価の日より前の記録は効く', busy(lim('2026-11-01')));
+  check('同時保有の上限: 評価の日より後(未来)の日付の記録は効かない', !busy(lim('2099-01-01')));
+}
 console.log(failures ? `\nレビューの滞留の試験: ${checks} 件のうち ${failures} 件が期待と一致しません` : `\nレビューの滞留の試験: ${checks} 件が期待と一致しました`);
 process.exit(failures ? 1 : 0);

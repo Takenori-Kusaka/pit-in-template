@@ -60,12 +60,13 @@ export function safetyOrRegulated(config) {
 /**
  * 定義されていない値と、そのために働いていない検知の名を返す。
  * 各要素: { key: 構成の欄, label: 値の名, idle: 働いていない検知・代わりの行為の文 }
+ * day(評価の日)を渡したときは、記録した日が day より前の記録だけを当てる(委任の判定と同じ読み)
  */
-export function undefinedValues(config) {
+export function undefinedValues(config, day = null) {
   const out = [];
-  if (!observationWindowDefined(config)) out.push({ key: 'observationWindow', label: '観測の窓', idle: '差し戻し率 0% の継続の検知と手戻り率の検知は働いていない。委任した種類は、当月の全件を事後に確かめる' });
-  if (minSampleOf(config) === null) out.push({ key: 'detection.minSample', label: '最小標本数', idle: '差し戻し率 0% の継続の検知と手戻り率の検知は働いていない(件数が足りるかを判断できない)。委任した種類は、当月の全件を事後に確かめる' });
-  if (loadLimitOf(config) === null) out.push({ key: 'reviewQueue.loadLimit', label: '同時保有の上限', idle: '同時保有の上限を超えた知らせは出ていない(期限超過の催促は出る)' });
+  if (!observationWindowDefined(config, day)) out.push({ key: 'observationWindow', label: '観測の窓', idle: '差し戻し率 0% の継続の検知と手戻り率の検知は働いていない。委任した種類は、当月の全件を事後に確かめる' });
+  if (minSampleOf(config, day) === null) out.push({ key: 'detection.minSample', label: '最小標本数', idle: '差し戻し率 0% の継続の検知と手戻り率の検知は働いていない(件数が足りるかを判断できない)。委任した種類は、当月の全件を事後に確かめる' });
+  if (loadLimitOf(config, day) === null) out.push({ key: 'reviewQueue.loadLimit', label: '同時保有の上限', idle: '同時保有の上限を超えた知らせは出ていない(期限超過の催促は出る)' });
   if (config?.delegation?.allowed === true && samplingPerMonthOf(config) === null) out.push({ key: 'delegation.sampling.perMonth', label: '事後の抜き取りの件数', idle: '抜き取りの定めが無いため、委任した種類は当月の全件を事後に確かめる' });
   if (config?.delegation?.allowed === true && !reworkBaselineDefined(config)) out.push({ key: 'reworkBaseline', label: '手戻り率の基準値', idle: '手戻り率の検知は働いていない。委任した種類は、当月の全件を事後に確かめる' });
   return out;

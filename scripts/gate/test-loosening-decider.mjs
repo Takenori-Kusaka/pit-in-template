@@ -183,7 +183,9 @@ try {
     `${w4.out}
 ${JSON.stringify(c4.observationWindow)}`
   );
-  check('観測の窓: 長くする変更は緩める向きとして変化点に残る', JSON.stringify(c4.changeLog.at(-1)).includes('"loosen"') || /緩め/.test(JSON.stringify(c4.changeLog.at(-1))), JSON.stringify(c4.changeLog.at(-1)));
+  // 向きを付けない(長くする・短くするのどちらも、緩める向きの決定者の絞り込みに掛けない)。前の値が無ければ「定めていない」と出す
+  const w4log = JSON.stringify(c4.changeLog.at(-1));
+  check('観測の窓: 変化点に残り、向きを付けず、定めていない前の値は「定めていない」と出す', w4log.includes('観測の窓') && w4log.includes('定めていない') && !w4log.includes('"loosen"') && !/緩め/.test(w4log), w4log);
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: window 4');
   const wKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 290 } } });

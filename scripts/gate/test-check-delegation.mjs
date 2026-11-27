@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ROOT, changeTypeProblems, observationWindowAt, observationWindowInfo, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { derivePostHoc, requiredCount } from './post-hoc-confirmation.mjs';
-import { minSampleOf, detectionValueProblems, undefinedValues } from './detection-values.mjs';
+import { minSampleOf, loadLimitOf, detectionValueProblems, undefinedValues } from './detection-values.mjs';
 import { readF2Q1, readF2Q1Text } from './cl-judgment.mjs';
 import { defectUnregisteredDisclosure, warningLines, l3ScopeIds, autonomyCap, autonomyState, autonomyNoteLines, rejectionText, undeclaredChangeRequests, undeclaredText, stopsText, parseDefectRows, parseRejection, capRefusal, readHistory, readHandoverVersions, rejectionsFromReviewCopies, readRejectionRecords, reworkText, planReworkTasks, specTrailersOf, specLinesOf, specTaskOfLine, readReworkRecords, REWORK_UNCOUNTED, DETECTION_UNVERIFIED, detectionBasisText } from './autonomy.mjs';
 import { buildDelegation, renderAutonomyTable } from '../init/generate-profile.mjs';
@@ -1441,6 +1441,12 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const noCap = base();
   check('値(一覧): 抜き取りの件数・基準値・同時保有の上限の定義が無いと、一覧に出る', (() => { const c = { ...noCap.config, delegation: { ...noCap.config.delegation, allowed: true, sampling: undefined }, reworkBaseline: undefined, reviewQueue: undefined }; const keys = undefinedValues(c).map((x) => x.key); return ['delegation.sampling.perMonth', 'reworkBaseline', 'reviewQueue.loadLimit'].every((k) => keys.includes(k)); })());
   check('値(一覧): 定義した値は一覧に出ない', (() => { const c = { ...noCap.config, reviewQueue: { loadLimit: 3 }, delegation: { ...noCap.config.delegation, allowed: true, sampling: { perMonth: 5 } } }; const keys = undefinedValues(c).map((x) => x.key); return !keys.includes('reviewQueue.loadLimit') && !keys.includes('delegation.sampling.perMonth') && !keys.includes('detection.minSample') && !keys.includes('observationWindow'); })());
+  check('値(一覧): 評価の日より後の日付の記録は当てず、一覧に「定めていない」と出る(上限は効かない)', (() => {
+    const h = (v) => ({ history: [{ value: v, months: v, recordedAt: '2099-01-01', decidedBy: '山田 太郎', reason: '試験' }] });
+    const c = { ...noCap.config, observationWindow: h(2), detection: { minSample: h(10) }, reviewQueue: { loadLimit: h(3) } };
+    const keys = undefinedValues(c, '2026-11-01').map((x) => x.key);
+    return ['observationWindow', 'detection.minSample', 'reviewQueue.loadLimit'].every((k) => keys.includes(k)) && loadLimitOf(c, '2026-11-01') === null && loadLimitOf(c, '2100-01-01') === 3 && !undefinedValues(c, '2100-01-01').some((x) => x.key === 'reviewQueue.loadLimit');
+  })());
   const pp = base();
   delete pp.config.detection;
   pp.records.postHoc = { available: true, byType: {}, sampledPrs: [] };

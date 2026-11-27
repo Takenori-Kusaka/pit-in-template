@@ -42,7 +42,7 @@ import { evaluate, visibleQuestions } from '../vendor/tailoring-engine.mjs';
 import { g3UnmetCondition, g3UnmetEntry } from '../gate/config.mjs';
 import { readPolicy, discouragedPairings, discouragedText, discouragedUnrecorded } from '../gate/org-assurance.mjs';
 import { enforcementComplete, CHANGE_TYPE_ENFORCEMENT, REWORK_BASELINE_METHODS } from '../gate/config.mjs';
-import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers, WINDOW_MONTHS } from '../gate/autonomy.mjs';
+import { DETECTION_UNVERIFIED, safetyPartStop, autonomyCap, capRefusal, levelRank, l3ScopeIds, capFromAnswers } from '../gate/autonomy.mjs';
 import { minSampleOf, definedValue } from '../gate/detection-values.mjs';
 const minSampleText = (config) => (minSampleOf(config) === null ? '最小標本数は未定義(検知は働かない)' : `最小標本数 ${minSampleOf(config)} 件`);
 import { provisionalLicenseProblems } from '../gate/license-allowlist.mjs';
@@ -2563,14 +2563,17 @@ export function diffConfig(before, after, opts = {}) {
         }
       }
       for (const [id, r] of a) if (!b.has(id)) push(`判断記録の要否の規則 ${id}: 追加(${(r.paths ?? []).join(', ')})`, 0, 1, null);
-      // 観測の窓(第5章 5.4.6)。長くするのは緩める向き(検知が遅れ、0% の継続が起こりにくくなる)。短くするのは強める向き(記録だけを課し、拒否しない)
+      // 観測の窓(第5章 5.4.6)。向きは付けない(長くしても短くしても、緩める向きの決定者の絞り込みに掛けない)。
+      // 決定した者と理由の記録は入口の検査が保つ(AI の名義は拒む)。定めていない前の値は名目の値で比べず「定めていない」と出す
       {
-        const wb = before.observationWindow?.months ?? WINDOW_MONTHS;
-        const wa = after.observationWindow?.months ?? WINDOW_MONTHS;
-        if (wb !== wa) push(`観測の窓(差し戻し率・手戻り率の評価の期間): ${wb}か月 → ${wa}か月`, -wb, -wa, M);
+        const wb = before.observationWindow?.months ?? null;
+        const wa = after.observationWindow?.months ?? null;
+        const wt = (w) => (w === null ? '定めていない' : `${w}か月`);
+        if (wb !== wa) push(`観測の窓(差し戻し率・手戻り率の評価の期間): ${wt(wb)} → ${wt(wa)}`, 0, 0, M);
       }
       // 手戻り率の基準値(第5章 5.4.6)。上げる・新しく置くのは緩める向き(新しく置くと、未設定による停止が解ける。ADR-0129 の判定不能の停止と同じ理由。ADR-0158)、
-      // 下げる・外すのは強める向き(外すと未設定になり、登録した変更種別を止める)。未設定は最も強い(止める)。過去の変化点の向きの記録は書き換えない
+      // 下げる・外すのは強める向き(外すと未設定になり、手戻り率の検知が働かなくなる。止めずに、委任した種類の当月の全件を事後に確かめる)。
+      // 向きの並びでは未設定を最も強い側に置く。過去の変化点の向きの記録は書き換えない
       {
         const bb = before.reworkBaseline?.percent ?? null;
         const ba = after.reworkBaseline?.percent ?? null;

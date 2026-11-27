@@ -261,7 +261,7 @@ export function autonomyState(config, records) {
   const out = {
     asOf,
     cap,
-    window: { ...(asOf ? observationWindowInfo(config, monthStart(asOf)) : { months: WINDOW_MONTHS, longer: false }), pending: asOf ? observationWindowPending(config, monthStart(asOf)) : null, minSample: minSampleOf(config) },
+    window: { ...(asOf ? observationWindowInfo(config, monthStart(asOf)) : { months: WINDOW_MONTHS, longer: false }), pending: asOf ? observationWindowPending(config, monthStart(asOf)) : null, minSample: minSampleOf(config, asOf ? monthStart(asOf) : null) },
     reworkUncounted: REWORK_UNCOUNTED,
     otherLevel: 'L1',
     types: [],
@@ -479,7 +479,7 @@ export function autonomyState(config, records) {
       rework.noPriorWindow = rework.baselineMethod === 'measured' && isRealDay(rework.baselineAt) ? !priorWindowExists(config, rr, String(rework.baselineAt)) : false;
       rework.pendingBaseline = pendingBaselineOf(config, monthStart(asOf));
       if (rework.state === '判定不能') {
-        gap(`手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。緩める向きの決定者の記名と理由)`);
+        gap(`手戻り率の窓(${rework.from}〜${rework.to})の母数が ${rework.n} 件で、最小標本数 ${MIN} 件に満たない(判定不能。適用の条件の欠落として止める)。両方の窓が判定可能になった評価の日に、判定を待たずに戻る。母数が貯まらないなら観測の窓を長くする(種別 settings。決定した者の記名と理由)`);
       }
       // 基準値が未設定のときは止めない。手戻り率の検知は働かず、当月の全件を事後に確かめる(基準値は採用者が定める)
       if (registeredAt) {
@@ -526,7 +526,7 @@ export function autonomyState(config, records) {
   }
   out.warnings = [...byText.values()];
   out.strictIncident = strictIncident;
-  out.undefinedValues = undefinedValues(config);
+  out.undefinedValues = undefinedValues(config, asOf ? monthStart(asOf) : null);
   return out;
 }
 
@@ -636,11 +636,11 @@ function ratioText(c) {
  * 探す範囲は、手戻り率の記録の最も古い日の月から R の月まで。種別の範囲の規則(changeInType)は現在のものを読む(後から変えると判定が変わりうる)
  */
 export function priorWindowExists(config, rr, recordedAt) {
-  const MIN = minSampleOf(config);
   const days = [...(rr?.trailers ?? []).map((c) => c.date), ...(rr?.plan ?? []).map((p) => p.date), ...(rr?.plain ?? []).map((c) => c.date)].filter(isRealDay).map(String).sort();
   if (!days.length) return false;
   const ids = (config.delegation?.changeTypes ?? []).map((t) => String(t?.id ?? '')).filter(Boolean);
   for (let m = monthStart(days[0]); m <= recordedAt; m = addMonths(m, 1)) {
+    const MIN = minSampleOf(config, m); // その評価の日に効いていた最小標本数(評価の日より後の記録を当てない)
     for (const id of ids) if (MIN !== null && reworkCount(config, id, rr, m, observationWindowAt(config, m)).n >= MIN) return true;
   }
   return false;

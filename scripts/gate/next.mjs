@@ -1232,7 +1232,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
     for (const n of autonomyNotes(config)) result.notes.push(n);
   } else if (config.configured !== false) {
     // 委任を使わない構成(安全重要度 CL1 以上・規制業を含む)でも、定めていない値と働いていない検知の名は黙って外さない
-    for (const n of undefinedValueNotes(config)) result.notes.push(n);
+    for (const n of undefinedValueNotes(config, `${String(today).slice(0, 7)}-01`)) result.notes.push(n);
   }
   // 能力依存の定数の再評価待ち(#295 / ADR-0058 決定6)。段階は止めない(注記)。値は自動で変えない
   if (config.configured !== false) {
@@ -1486,12 +1486,12 @@ function seatText(config, roleId) {
   return `${role?.name ?? seat?.name ?? roleId}の席の責任者 ${seat?.accountable ? personName(config, seat.accountable) : '(未記入)'}`;
 }
 
-/** 登録した変更種別ごとの AI自律レベルの注記(第5章 5.4.6)。委任の判定(check-delegation)と同じ導出を使う */
-/** 定めていない値の注記の行(委任の有無に依らず出す)。無ければ空 */
-export function undefinedValueNotes(config) {
-  return warningLines({ warnings: [], undefinedValues: undefinedValues(config) });
+/** 定めていない値の注記の行(委任の有無に依らず出す)。day は評価の日(当月1日)で、これより後の記録を当てない。無ければ空 */
+export function undefinedValueNotes(config, day = null) {
+  return warningLines({ warnings: [], undefinedValues: undefinedValues(config, day) });
 }
 
+/** 登録した変更種別ごとの AI自律レベルの注記(第5章 5.4.6)。委任の判定(check-delegation)と同じ導出を使う */
 function autonomyNotes(config) {
   const out = [];
   try {
