@@ -527,6 +527,14 @@ rewindBase();
     ['未完了の語: C の #define XXX は出さない', mkInc('src/a.c', ['#define XXX 1']) === 0],
     ['未完了の語: JS の this.#XXX は出さない', mkInc('src/a.js', ['this.#XXX = 1;']) === 0],
     ['未完了の語: py の文字列の中の # は注釈ではない', mkInc('src/a.py', ['s = "# TODO"']) === 0],
+    // Y-1: 行頭が * の中間行は注釈。式の継続行の * は検証を取りこぼさない
+    ['空のテスト: JSDoc 形式の注釈の中の expect だけは出す', mkNo('a.test.js', ["it('a', () => {", '  /**', '   * expect(f()).toBe(1)', '   */', '});']) === 1],
+    ['空のテスト: 式の継続行の * は検証を取りこぼさない', mkNo('a.test.js', ["it('a', () => {", '  expect(f()', '    * 2).toBe(2);', '});']) === 0],
+    ['未完了の語: JSDoc の中間行の not implemented は出さない', mkInc('src/a.js', ['/**', ' * throw new Error("not implemented")', ' */']) === 0],
+    // Y-2: 同じ行で閉じるブロック注釈の後ろはコードとして読む
+    ['未完了の語: /* c */ の後ろの throw は出す', mkInc('src/a.js', ['x(); /* c */ throw new Error("not implemented")']) === 1],
+    ['空のテスト: /* c */ の後ろの expect は検証に数える', mkNo('a.test.js', ["it('a', () => {", '  /* setup */ expect(f()).toBe(1);', '});']) === 0],
+    ['未完了の語: 閉じない /* の後ろは注釈', mkInc('src/a.js', ['x(); /* TODO later']) === 1],
     // X-5: 注釈の中のアポストロフィが語を隠さない
     ['未完了の語: アポストロフィの後ろの TODO', mkInc('src/a.js', ["// don't TODO isn't"]) === 1],
   ];
@@ -544,6 +552,12 @@ rewindBase();
   const okMany = found.length === 25 && shown === 25;
   if (!okMany) failures++;
   console.log(`${okMany ? 'ok  ' : 'NG  '} 未完了の語: 25 件を全件出す(${shown} 行)`);
+  // Y-4: ジョブの要約で省くときは、省いた件数と全件の所在を出す
+  n++;
+  const md2 = renderG6Material({ weakening: { newTestFiles: [], strictErrors: [], notes: [], expectation: { section: null, rows: [], unlisted: [] }, skips: [], xfails: [], removedAssertions: [], pairs: [], noAssertionTests: [], incompleteMarks: found, limit: '' }, testOnly: null }, { incompleteMax: 10, omittedIn: '`evidence/x.md`' });
+  const okOmit = md2.split('\n').filter((l) => /src\/big\.js:\d+/.test(l)).length === 10 && /省いた件数: 15 件.*evidence\/x\.md/.test(md2);
+  if (!okOmit) failures++;
+  console.log(`${okOmit ? 'ok  ' : 'NG  '} 未完了の語: 要約で省くときは件数と所在を出す`);
 }
 
 // 期待値の改めの根拠(PR 本文の `## 期待値の改め`。合否に使わない)

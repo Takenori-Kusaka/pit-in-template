@@ -2605,13 +2605,14 @@ export const TEST_ONLY_LIMIT = '検出の限界: 同じ PR で製品とテスト
  */
 export const INCOMPLETE_LIMIT =
   '検出の限界: 列挙した語(行注釈の中の TODO・FIXME・XXX と、NotImplementedError・NotImplementedException・todo!・unimplemented!・panic("not implemented")・throw new Error("not implemented") 相当)だけを、' +
-  '製品のコードの拡張子の追加行から拾う。行注釈の書式は拡張子で決める(// と /* と行頭の * は js・ts・go・rs・java・kt・php・cs・c 系など、# は py・rb・sh・ps1・ex・php、-- は sql・lua、<!-- は vue・svelte。' +
-  '複数行のブロック注釈の * の無い中間行と、文字列の中は読まない)。文書・生成物・vendor・ロックファイルは読まない。列挙の外の語、空の本体・pass だけの本体・固定値を返すだけの本体、既存の行にある語、' +
+  '製品のコードの拡張子の追加行から拾う。注釈の書式は拡張子で決める(// と /* と行頭の * は js・ts・go・rs・java・kt・php・cs・c 系など、# は py・rb・sh・ps1・ex・exs・php、-- は sql、<!-- は vue・svelte)。' +
+  '行頭が * の行は注釈の中間行として読み、* の無い中間行と、文字列の中は読まない。同じ行で閉じるブロック注釈の後ろはコードとして読む。' +
+  '文字列は引用符(\' " `)の対だけで読み、正規表現の中の //・Rust の寿命の注記・lua の長い文字列・sh の ${#…} は読み分けない(偽陽性・見逃しになりうる)。文書・生成物・vendor・ロックファイルは読まない。列挙の外の語、空の本体・pass だけの本体・固定値を返すだけの本体、既存の行にある語、' +
   '同じ PR で削除した行と同じ本文の追加行(移動・整形)は出ない。抽象の基底の未実装の例外や、負債台帳に記録済みの語も出る(偽陽性)。0 件は未完了が無いことを示さない';
 /** 検証の語を1つも持たない追加のテストのファイルの検出の限界の定型の文(#454。0 件でも出す)。第1文は R-3 で定めた文 */
 export const NO_ASSERTION_LIMIT =
   '検出の限界: ファイル単位の近似である。同じファイルに1つでも検証の語があれば、他の空のテストは出ない。0件は中身があることを示さない。' +
-  'テストのパス(.claude/guard.json の testPatterns)の外のファイルは対象外である。検証の語は列挙した語の照合で、題の文字列・宣言の名前・行注釈の中の語は数えない(注釈の書式は拡張子で決める。複数行のブロック注釈の * の無い中間行は読めず、検証に数える)。' +
+  'テストのパス(.claude/guard.json の testPatterns)の外のファイルは対象外である。検証の語は列挙した語の照合で、題の文字列・宣言の名前・行注釈の中の語は数えない(注釈の書式は拡張子で決める。行頭が * の行は注釈の中間行として数えず、式の継続行の * の後ろの語も数えない。* の無い中間行は読めず、検証に数える。同じ行で閉じるブロック注釈の後ろはコードとして読む。文字列は引用符の対だけで読み、正規表現の中の //・Rust の寿命の注記は読み分けない)。' +
   '追加行だけを読むので、既存の部分にある検証や、検証を外へ委ねるヘルパの呼び出し・枠組み固有の検証は、一覧の判断を誤らせる(偽陽性・見逃し)。弱いアサーション・決め打ちは見ない';
 
 /** 製品のコードから外すパス(文書・生成物・vendor・ロックファイル) */
@@ -2627,12 +2628,12 @@ const INCOMPLETE_THROW = [
 const TEST_DEFINITION = [/\b(?:it|test)(?:\.\w+)*\s*\(/, /^\s*(?:async\s+)?def\s+test_\w*\s*\(/, /^\s*func\s+Test\w*\s*\(/, /@Test\b/, /#\[(?:\w+::)?test\b/];
 const normLine = (t) => String(t).replace(/\s+/g, ' ').trim();
 
-/** 行注釈の部分を返す(無ければ null)。文字列の中身は先に除く */
 /**
  * 1行を コード部分と行注釈の部分に分ける(#454)。注釈の書式は拡張子で決める:
  * `//`・`/*` = js/ts 系・go・rs・java・kt・php・cs・swift・scala・c/c++・dart・vue・svelte、`#` = py・rb・sh・ps1・ex・exs・php、
  * `--` = sql・lua、`<!--` = vue・svelte。拡張子が分からないときは // と /* と #。C の #define・JS の this.#x・Rust の #[ は注釈に数えない。
- * 文字列(引用符の中)は読み飛ばす。閉じない引用符は文字として進む(注釈の中の don't が語を隠さない)
+ * 文字列(引用符の中)は読み飛ばす。閉じない引用符は文字として進む(注釈の中の don't が語を隠さない)。
+ * 同じ行で閉じるブロック注釈(開始と終了の記号が1行に収まるもの)は注釈だけを除き、その後ろをコードとして読む。行頭が * の行は注釈の中間行として全体を注釈に数える(code は空)
  */
 export function splitComment(text, file) {
   const ext = (/\.(\w+)$/.exec(String(file ?? ''))?.[1] ?? '').toLowerCase();
@@ -2644,21 +2645,29 @@ export function splitComment(text, file) {
   if (/^(?:sql|lua)$/.test(ext)) starts.push('--', '/*');
   if (/^(?:vue|svelte)$/.test(ext)) starts.push('<!--');
   const t = String(text ?? '');
+  if ((slash || !known) && /^\s*\*/.test(t)) return { code: '', comment: t };
+  let code = '';
   let i = 0;
   while (i < t.length) {
     const c = t[i];
     if (c === "'" || c === '"' || c === '`') {
       let j = i + 1;
       while (j < t.length && t[j] !== c) j += t[j] === '\\' ? 2 : 1;
-      if (j < t.length) { i = j + 1; continue; }
+      if (j < t.length) { code += t.slice(i, j + 1); i = j + 1; continue; }
+      code += c;
       i++;
       continue;
     }
     const st = starts.find((x) => t.startsWith(x, i));
-    if (st) return { code: t.slice(0, i), comment: t.slice(i + st.length) };
+    if (st === '/*') {
+      const end = t.indexOf('*/', i + 2);
+      if (end >= 0) { i = end + 2; code += ' '; continue; }
+    }
+    if (st) return { code, comment: t.slice(i + st.length) };
+    code += c;
     i++;
   }
-  return { code: t, comment: (slash || !known) && /^\s*\*/.test(t) ? t : null };
+  return { code, comment: null };
 }
 
 /**
@@ -3054,7 +3063,7 @@ export function renderSpecChanges(changes) {
 }
 
 /** G-6 の材料(機械の検出の一覧)を Markdown にする。既存のテストの変更(IMPL-0203)に、検出の一覧を足したもの。合否には使わない */
-export function renderG6Material(r) {
+export function renderG6Material(r, opts = {}) {
   const L = [renderTestChanges(r.testChanges ?? []), ''];
   L.push(...renderSpecChanges(r.specChanges ?? []));
   const w = r.weakening;
@@ -3084,7 +3093,9 @@ export function renderG6Material(r) {
     L.push('### 製品のコードの追加行の未完了の語(G-6 の必須の確認事項。合否には使わない。リスク区分に依らず出す)', '');
     const im = w.incompleteMarks ?? [];
     L.push(`- 追加行の未完了の語: ${im.length} 件`);
-    for (const m of im) L.push(`  - \`${esc(m.file)}:${m.line}\` ${esc(m.word)}: \`${esc(m.text)}\``);
+    const shownIm = opts.incompleteMax && im.length > opts.incompleteMax ? im.slice(0, opts.incompleteMax) : im;
+    if (shownIm.length < im.length) L.push(`  - 省いた件数: ${im.length - shownIm.length} 件(ジョブの要約の大きさの上限のため。全件は ${opts.omittedIn ?? '--report のファイル'} にある)`);
+    for (const m of shownIm) L.push(`  - \`${esc(m.file)}:${m.line}\` ${esc(m.word)}: \`${esc(m.text)}\``);
     L.push('', `> ${w.incompleteLimit ?? INCOMPLETE_LIMIT}`, '');
   }
   if (r.testOnly) {
@@ -3119,7 +3130,10 @@ export function renderG6Material(r) {
   return L.join('\n').trimEnd();
 }
 
-function renderReport(r) {
+/** ジョブの要約(GITHUB_STEP_SUMMARY)の上限(1 MiB)の手前の目安 */
+const SUMMARY_LIMIT_BYTES = 900 * 1024;
+
+function renderReport(r, opts = {}) {
   const L = ['## G-5 PR の検査(check-pr)', ''];
   L.push(`- 失敗: ${r.errors.length} 件`);
   L.push(`- リスク区分: ${r.riskClass ?? '未記入'}`);
@@ -3131,7 +3145,7 @@ function renderReport(r) {
     if (r.size.test?.files) L.push(`- テスト・fixture・snapshot(別集計): ${r.size.test.lines} 行 / ${r.size.test.files} ファイル`);
     if (r.size.excluded.length) L.push(`- 算定から除いたもの: ${r.size.excluded.slice(0, 10).join(', ')}${r.size.excluded.length > 10 ? ` ほか ${r.size.excluded.length - 10} 件` : ''}`);
   }
-  L.push('', renderG6Material(r));
+  L.push('', renderG6Material(r, opts));
   return L.join('\n');
 }
 
@@ -3235,7 +3249,11 @@ if (isMain) {
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
     fs.writeFileSync(out, report + '\n');
   }
-  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + '\n');
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    // ジョブの要約は 1 ステップ 1 MiB が上限。超えるときは未完了の語の一覧を省き、省いた件数と全件のファイルの所在を出す(黙って切らない)
+    const summary = out && Buffer.byteLength(report) > SUMMARY_LIMIT_BYTES ? renderReport(r, { incompleteMax: 200, omittedIn: `\`${out}\`` }) : report;
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+  }
   if (argv.includes('--comment')) {
     // PR のコメントは閲覧の便宜。正本は既定ブランチのコードで計算するジョブ(gate-g5-base)の要約
     const why = upsertComment(renderG6Material(r), pr.number);
