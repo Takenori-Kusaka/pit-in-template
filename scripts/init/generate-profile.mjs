@@ -3800,14 +3800,6 @@ export function renderProfileMd(config, result) {
     }
   }
 
-  // G-6 が省略・未達の構成: 独立した人の確認が無いことを、PROCESS-PROFILE の読み手へ開示する
-  if (!g6Active(config)) {
-    L.push('## G-6 を経ない変更');
-    L.push('');
-    L.push('この構成では G-6 が省略・未達です。G-6 を経ない変更には、独立した人の確認が無いことになります。PR の自己チェックは、確かめた証拠に数えません。');
-    L.push('');
-  }
-
   // --- 代償措置つきの逸脱(未達の直下に置く。下位の節へ送らない) ---
   const gateDeviations = (config.deviations ?? []).filter((d) => d.gate);
   const seatDevs = (config.deviations ?? []).filter((d) => !d.gate);
@@ -3834,6 +3826,14 @@ export function renderProfileMd(config, result) {
       );
       L.push('');
     }
+  }
+
+  // G-6 が省略・未達の構成: 独立した人の確認が無いことを、PROCESS-PROFILE の読み手へ開示する
+  if (!g6Active(config)) {
+    L.push('## G-6 が省略・未達の構成での人の確認');
+    L.push('');
+    L.push('この構成では G-6 が省略・未達です。G-6 を経ない変更には、独立した人の確認が無いことになります。PR の自己チェックは、確かめた証拠に数えません。');
+    L.push('');
   }
 
   // --- 成立しない兼務禁止(列挙に無い離脱。1〜2名の体制。本標準は条件と代償措置を定めない) ---

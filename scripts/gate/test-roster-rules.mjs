@@ -380,9 +380,9 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(第3章 3.
     check(`構成: G-6 が${tag}なら、出荷判定者の役割カードに dev-done の受信箱と開示の注記が出る`, /受信箱: `state:dev-done`/.test(card) && /G-6 が省略・未達/.test(card), card);
     check(`構成: G-6 が${tag}なら、役割カードに「独立した人の確認が無い」の開示が出る`, /独立した人の確認が無い/.test(card), card);
     const profileMd = quiet(() => renderProfileMd(c, evaluate(KB, c.answers ?? {})));
-    check(`構成: G-6 が${tag}なら、PROCESS-PROFILE.md に「G-6 を経ない変更」の開示が出る`, /## G-6 を経ない変更/.test(profileMd) && /独立した人の確認が無い/.test(profileMd));
+    check(`構成: G-6 が${tag}なら、PROCESS-PROFILE.md に「G-6 が省略・未達の構成での人の確認」の開示が出る`, /## G-6 が省略・未達の構成での人の確認/.test(profileMd) && /独立した人の確認が無い/.test(profileMd));
   }
-  check('構成: G-6 が有効なら、PROCESS-PROFILE.md に「G-6 を経ない変更」の節が出ない', !/## G-6 を経ない変更/.test(quiet(() => renderProfileMd(g6on, evaluate(KB, g6on.answers ?? {})))));
+  check('構成: G-6 が有効なら、PROCESS-PROFILE.md に「G-6 が省略・未達の構成での人の確認」の節が出ない', !/## G-6 が省略・未達の構成での人の確認/.test(quiet(() => renderProfileMd(g6on, evaluate(KB, g6on.answers ?? {})))));
 }
 
 // ---------------------------------------------------------------- 回答と人数の食い違い(#312。IMPL-0300)
