@@ -64,6 +64,9 @@ function workspace({ answers = {}, mutate = null } = {}) {
   git('config', 'core.autocrlf', 'false');
   git('config', 'gc.auto', '0');
   git('config', 'maintenance.auto', 'false');
+  // 統合のコミットには committer の名義が要る。名義を設定していない環境(CI)でも動くよう、試験の場所にだけ置く(各コミットの名義は commit が環境変数で渡す)
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.com');
   git('add', '-A');
   execFileSync('git', ['-c', 'user.name=名簿 乙', '-c', 'user.email=acc1@example.com', 'commit', '-q', '-m', 'chore: fixture'], { cwd: dir });
   // by: WHO のキー。date は作成者・コミッタの日付(記録の前後の判定には使わないことを、日付を逆にして確かめる)
@@ -183,8 +186,7 @@ const g6File = (x) => `docs/gates/g6-${x.slice(0, 7)}.md`;
   w.commit('docs: side', '', { 'docs/side.md': '# side\n' }, '丁');
   w.git('checkout', '-q', 'main');
   w.commit('docs: main', '', { 'docs/main.md': '# main\n' }, '丁');
-  // 統合には committer の名義が要る。名義を設定していない環境(CI)でも動くよう、この操作にだけ渡す
-  w.git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'merge', '-q', '--no-commit', '--no-ff', 'side');
+  w.git('merge', '-q', '--no-commit', '--no-ff', 'side');
   w.commit('merge: side', '', { 'docs/gates/g7-v1.0.0.md': g7 }, '丁');
   const r = w.run();
   check('G-7 の記録のコミットを引けないときは、足した G-6 の記録を数えない(履歴から読めない)', gapOf(r.out, x).length === 1 && /履歴から読めない/.test(r.out), gapOf(r.out, x).join('\n') || r.out.slice(-600));
