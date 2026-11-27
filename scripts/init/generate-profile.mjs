@@ -3800,6 +3800,14 @@ export function renderProfileMd(config, result) {
     }
   }
 
+  // G-6 が省略・未達の構成: 独立した人の確認が無いことを、PROCESS-PROFILE の読み手へ開示する
+  if (!g6Active(config)) {
+    L.push('## G-6 を経ない変更');
+    L.push('');
+    L.push('この構成では G-6 が省略・未達です。G-6 を経ない変更には、独立した人の確認が無いことになります。PR の自己チェックは、確かめた証拠に数えません。');
+    L.push('');
+  }
+
   // --- 代償措置つきの逸脱(未達の直下に置く。下位の節へ送らない) ---
   const gateDeviations = (config.deviations ?? []).filter((d) => d.gate);
   const seatDevs = (config.deviations ?? []).filter((d) => !d.gate);
@@ -4690,7 +4698,7 @@ export function renderRoleCard(config, roleId) {
     L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ') || '—'}`);
     L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ') || '—'}`);
     if (mb.withoutG6) {
-      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第3章 3.5.5)。G-6 を経ない変更には、独立した人の確認が無い。PR の自己チェックは、確かめた証拠に数えない');
+      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第3章 3.5.5)。G-6 を経ない変更には、独立した人の確認が無いことになります。PR の自己チェックは、確かめた証拠に数えません');
     }
     L.push('');
     if (r.gatesUnmet.length && !r.gatesOwned.length) {
@@ -4937,20 +4945,22 @@ if (isMain) {
       if (!isObject(sbp)) reject('seatsByPerson は、人(名簿の氏名または id)をキーに、席(ロール ID)の配列を値にしたオブジェクトで書きます');
       const expanded = {};
       const conflicts = [];
+      // 同じ人を id と氏名で書き分けても食い違いにしない。比べる前に、名簿で人のキーへ正規化する
+      const keyOf = (ref) => personKey({ people: existing?.people ?? [] }, ref) ?? String(ref);
       for (const [person, roles] of Object.entries(sbp)) {
         if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string')) {
           conflicts.push(`seatsByPerson.${person} は、席(ロール ID)の文字列の配列で書きます`);
           continue;
         }
         for (const r of roles) {
-          if (expanded[r] !== undefined && expanded[r] !== person) conflicts.push(`席 ${r} が seatsByPerson の複数の人(${expanded[r]} / ${person})に書かれています`);
+          if (expanded[r] !== undefined && keyOf(expanded[r]) !== keyOf(person)) conflicts.push(`席 ${r} が seatsByPerson の複数の人(${expanded[r]} / ${person})に書かれています`);
           else expanded[r] = person;
         }
       }
       const seatInputs = isObject(change.seats) ? change.seats : {};
       for (const [r, person] of Object.entries(expanded)) {
         const direct = isObject(seatInputs[r]) ? seatInputs[r].accountable : undefined;
-        if (direct !== undefined && direct !== person) {
+        if (direct !== undefined && keyOf(direct) !== keyOf(person)) {
           conflicts.push(`席 ${r} の責任者が、seatsByPerson(${person})と seats.${r}.accountable(${direct})で食い違います`);
         }
       }

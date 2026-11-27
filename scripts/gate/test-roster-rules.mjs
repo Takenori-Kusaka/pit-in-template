@@ -25,10 +25,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, allowedDeciders, answersRosterNotices, answersRosterProblems, behaviorSummaryKey, confirmerOnRoster, rosterProblems, confirmedAccounts, accountConfirmationProblems, aiAccountCheck, approvalBinding, aiNameBlocked, nameConfirmationProblems, nameConfirmationNotices, nameConfirmationState, nameOverrideDetails, nameOverrides, parseGhVersion, versionBelow, unboundCauseText } from './config.mjs';
-import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
+import { buildConfig, deciderProblems, seatSeparationFindings, MAILBOX, mailboxFor, devDoneReceiver, renderRoleCard, renderProfileMd, seatPairingNotes, renderD0Section, d0SectionProblems, d0LegacyOnlySections, D0_ROSTER_COLUMNS } from '../init/generate-profile.mjs';
 import { headcountProblems, deviationCategory, deviationCategoryProblems, enforcedApprovalFindings, RULE_APPROVER_SEAT } from './config.mjs';
 import { diffConfig as diffConfigOf, coverageOriginNote, relaxationNotices, pendingTightenings } from '../init/generate-profile.mjs';
 import { ESCALATION, renderEscalation } from '../init/generate-profile.mjs';
+import { evaluate } from '../vendor/tailoring-engine.mjs';
+const KB = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts/vendor/tailoring-kb.json'), 'utf8'));
 import { discouragedPairings, discouragedUnrecorded, discouragedText, deviationTagHits } from './org-assurance.mjs';
 
 let failures = 0;
@@ -376,7 +378,11 @@ check('qm-blocked は独立レビュアと出荷判定者が付ける(第3章 3.
     check(`構成: G-6 が${tag}なら、開発者は ready-to-merge を付けない`, !mb['dev-verifier'].hands.includes('state:ready-to-merge'));
     const card = renderRoleCard(c, 'qa-gatekeeper') ?? '';
     check(`構成: G-6 が${tag}なら、出荷判定者の役割カードに dev-done の受信箱と開示の注記が出る`, /受信箱: `state:dev-done`/.test(card) && /G-6 が省略・未達/.test(card), card);
+    check(`構成: G-6 が${tag}なら、役割カードに「独立した人の確認が無い」の開示が出る`, /独立した人の確認が無い/.test(card), card);
+    const profileMd = quiet(() => renderProfileMd(c, evaluate(KB, c.answers ?? {})));
+    check(`構成: G-6 が${tag}なら、PROCESS-PROFILE.md に「G-6 を経ない変更」の開示が出る`, /## G-6 を経ない変更/.test(profileMd) && /独立した人の確認が無い/.test(profileMd));
   }
+  check('構成: G-6 が有効なら、PROCESS-PROFILE.md に「G-6 を経ない変更」の節が出ない', !/## G-6 を経ない変更/.test(quiet(() => renderProfileMd(g6on, evaluate(KB, g6on.answers ?? {})))));
 }
 
 // ---------------------------------------------------------------- 回答と人数の食い違い(#312。IMPL-0300)

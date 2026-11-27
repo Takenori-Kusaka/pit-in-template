@@ -884,6 +884,46 @@ export function outsourcingReceiverNote(config, slaText) {
 }
 
 /**
+ * 機能の残りのタスクから、実装の段(実装中・実装前・不明)を 1 つ返す。取り込み済みでない作業が残るときに使う。
+ * 状態が「完了」なのに取り込みの記録が無いタスク(不明)は、段の判定から外し、detail として併記する(同じ機能のほかのタスクの進みを隠さない)。
+ * remaining は取り込まれていないタスク({ id, deps, state })、done は取り込み済みの「機能/タスク」の集合、branches はローカルのブランチ名
+ */
+export function taskProgressStep({ f, tasks, remaining, done, branches, config }) {
+  const unknownTasks = unknownDoneTasks(remaining);
+  const unknownReason = `計画の状態は「完了」だが、既定ブランチにトレーラ Spec: ${f} / Task-N を持つコミットが無い。トレーラ無しで取り込まれたと見える。取り込みのコミットにトレーラが無いか、状態の記入が誤りかを人が確かめる`;
+  // 「不明」のタスクは段の判定から外し、同じ機能のほかのタスクの進みを隠さない。不明は detail として併記する
+  const pending = remaining.filter((t) => !unknownTasks.includes(t));
+  if (unknownTasks.length && !pending.length) {
+    return {
+      stage: `取り込みの状態が不明(${unknownTasks.map((t) => t.id).join(', ')})`,
+      kind: 'undetermined',
+      reason: unknownReason,
+    };
+  }
+  const withUnknown = (step) => (unknownTasks.length ? { ...step, detail: [step.detail, `取り込みの状態が不明(${unknownTasks.map((t) => t.id).join(', ')}): ${unknownReason}`].filter(Boolean).join('。') } : step);
+  const inProgress = pending.filter((t) => branches.some((b) => taskBranchMatches(b, f, t.id)));
+  if (inProgress.length) {
+    const t = inProgress[0];
+    return withUnknown({
+      stage: `実装中(${t.id})`,
+      ...cmd(`/implement ${f} ${t.id}`, `ブランチ feature/${f}-${t.id.toLowerCase()} があり、既定ブランチにこのタスクのコミットがまだない。PR とレビューの状態は見ていない`),
+      read: '.claude/skills/implement/SKILL.md',
+      roles: [
+        { role: 'dev-verifier', action: `/implement で ${t.id} を続け、Draft PR を出す` },
+        ...(isGateActive(config, 'g6')
+          ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})。判定記録の後に \`state:ready-to-merge\` を付ける` }]
+          : [{ role: 'qa-gatekeeper', action: 'PR が `state:dev-done` になったら受ける(この構成では G-6 が省略・未達)。PR に G-6 の省略・未達を開示したうえで扱い、`state:ready-to-merge` は使わない(第3章 3.5.5)' }]),
+      ],
+    });
+  }
+  const ready = pending.find((t) => t.deps.every((d) => done.has(`${f}/${d}`)));
+  if (!ready) {
+    return withUnknown({ stage: '実装', kind: 'undetermined', reason: `残りのタスク(${pending.map((t) => t.id).join(', ')})の依存が取り込まれていない。依存の記載を人が確かめる` });
+  }
+  return withUnknown({ stage: `実装前(${ready.id})`, ...cmd(`/implement ${f} ${ready.id}`, `${remaining.length} / ${tasks.length} タスクが未取り込み。依存が揃った最初のタスク`), read: '.claude/skills/implement/SKILL.md' });
+}
+
+/**
  * fetch: 記録用ブランチが手元に無いときに origin から 1 回 fetch するか。network: 写しの PR 本文を gh api で補うか。
  * --brief(セッションの開始時)と --offline では、どちらも行わない
  */
@@ -1333,37 +1373,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
       });
       continue;
     }
-    const unknownTasks = unknownDoneTasks(remaining);
-    if (unknownTasks.length) {
-      F({
-        stage: `取り込みの状態が不明(${unknownTasks.map((t) => t.id).join(', ')})`,
-        kind: 'undetermined',
-        reason: `計画の状態は「完了」だが、既定ブランチにトレーラ Spec: ${f} / Task-N を持つコミットが無い。トレーラ無しで取り込まれたと見える。取り込みのコミットにトレーラが無いか、状態の記入が誤りかを人が確かめる`,
-      });
-      continue;
-    }
-    const inProgress = remaining.filter((t) => branches.some((b) => taskBranchMatches(b, f, t.id)));
-    if (inProgress.length) {
-      const t = inProgress[0];
-      F({
-        stage: `実装中(${t.id})`,
-        ...cmd(`/implement ${f} ${t.id}`, `ブランチ feature/${f}-${t.id.toLowerCase()} があり、既定ブランチにこのタスクのコミットがまだない。PR とレビューの状態は見ていない`),
-        read: '.claude/skills/implement/SKILL.md',
-        roles: [
-          { role: 'dev-verifier', action: `/implement で ${t.id} を続け、Draft PR を出す` },
-          ...(isGateActive(config, 'g6')
-            ? [{ role: 'independent-reviewer', action: `PR が \`state:dev-done\` になったら G-6 を判定する(/human-verify で材料を集める${(config.review?.reviewerCount ?? 1) >= 2 ? `。承認者 ${config.review.reviewerCount} 名。各自が自分の挙動要約を書く` : ''}${config.review?.recordFormat === 'audit' ? '。判定記録は監査対応書式' : ''})。判定記録の後に \`state:ready-to-merge\` を付ける` }]
-            : [{ role: 'qa-gatekeeper', action: 'PR が `state:dev-done` になったら受ける(この構成では G-6 が省略・未達)。PR に G-6 の省略・未達を開示したうえで扱い、`state:ready-to-merge` は使わない(第3章 3.5.5)' }]),
-        ],
-      });
-      continue;
-    }
-    const ready = remaining.find((t) => t.deps.every((d) => done.has(`${f}/${d}`)));
-    if (!ready) {
-      F({ stage: '実装', kind: 'undetermined', reason: `残りのタスク(${remaining.map((t) => t.id).join(', ')})の依存が取り込まれていない。依存の記載を人が確かめる` });
-      continue;
-    }
-    F({ stage: `実装前(${ready.id})`, ...cmd(`/implement ${f} ${ready.id}`, `${remaining.length} / ${tasks.length} タスクが未取り込み。依存が揃った最初のタスク`), read: '.claude/skills/implement/SKILL.md' });
+    F(taskProgressStep({ f, tasks, remaining, done, branches, config }));
   }
 
   // --- 出荷 ---

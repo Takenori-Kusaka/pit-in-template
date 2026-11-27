@@ -111,6 +111,8 @@ try {
   );
   const clash = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver'] }, seats: { 'biz-approver': { accountable: X.name } } }, ['--dry-run']);
   check('人ごとの席の列挙: 席ごとの入力と食い違うときは拒否する', !clash.ok && /食い違います/.test(clash.out), clash.out);
+  const sameById = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver'] }, seats: { 'biz-approver': { accountable: A.id } } }, ['--dry-run']);
+  check('人ごとの席の列挙: 同じ人を id と氏名で書き分けても、食い違いとして拒否しない', !/食い違います/.test(sameById.out), sameById.out);
   const dup = byPerson({ kind: 'accountable', seatsByPerson: { [A.name]: ['biz-approver'], [X.name]: ['biz-approver'] } }, ['--dry-run']);
   check('人ごとの席の列挙: 同じ席を複数の人に書くと拒否する', !dup.ok && /複数の人/.test(dup.out), dup.out);
   const wrongKind = byPerson({ kind: 'mode', seatsByPerson: { [A.name]: ['biz-approver'] } }, ['--dry-run']);

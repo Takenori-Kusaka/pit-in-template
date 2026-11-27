@@ -12,7 +12,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
 import { criterionNumbers, readPlanMappings, readPlanTargets, unmappedCriteria, countClarifications, readClarifications } from './verification-trace.mjs';
-import { clarificationStep, withG4Material, taskBranchMatches, unknownDoneTasks } from './next.mjs';
+import { clarificationStep, withG4Material, taskBranchMatches, unknownDoneTasks, taskProgressStep } from './next.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -214,6 +214,24 @@ check(
   '不明: 状態が「完了」で取り込みの記録が無いタスクだけを不明とする(未着手・着手・やり直しは対象外)',
   JSON.stringify(unknownDoneTasks([{ id: 'Task-1', state: '完了' }, { id: 'Task-2', state: '未着手' }, { id: 'Task-3', state: '着手' }, { id: 'Task-4', state: 'やり直し' }, { id: 'Task-5', state: '' }]).map((t) => t.id)) === '["Task-1"]'
 );
+
+// 「不明」のタスクがあっても、同じ機能のほかのタスクの進み(実装中・実装前)を隠さない。不明は detail として併記する
+{
+  const t = (id, state, deps = []) => ({ id, state, deps });
+  const base = { f: 'F-001', tasks: [t('Task-1', '完了'), t('Task-2', '未着手', ['Task-1']), t('Task-3', '未着手')], done: new Set(), config: {} };
+  const inProgress = taskProgressStep({ ...base, remaining: base.tasks, branches: ['feature/F-001-task-3'] });
+  check(
+    '不明の併記: 不明のタスクがあっても、ブランチのあるタスクを「実装中」と出し、不明を detail へ併記する',
+    /^実装中\(Task-3\)/.test(inProgress.stage) && /取り込みの状態が不明\(Task-1\)/.test(inProgress.detail ?? ''),
+    JSON.stringify(inProgress)
+  );
+  const ready = taskProgressStep({ ...base, remaining: base.tasks, branches: [] });
+  check('不明の併記: ブランチが無ければ、依存の揃ったタスクを「実装前」と出し、不明を detail へ併記する', /^実装前\(Task-3\)/.test(ready.stage) && /Task-1/.test(ready.detail ?? ''), JSON.stringify(ready));
+  const onlyUnknown = taskProgressStep({ ...base, tasks: [t('Task-1', '完了')], remaining: [t('Task-1', '完了')], branches: [] });
+  check('不明の併記: 残りが不明のタスクだけなら、従来どおり「取り込みの状態が不明」の段を出す', /^取り込みの状態が不明\(Task-1\)/.test(onlyUnknown.stage) && onlyUnknown.kind === 'undetermined', JSON.stringify(onlyUnknown));
+  const none = taskProgressStep({ ...base, tasks: [t('Task-1', '未着手')], remaining: [t('Task-1', '未着手')], branches: [] });
+  check('不明の併記: 不明が無ければ detail を足さない', /^実装前\(Task-1\)/.test(none.stage) && none.detail === undefined, JSON.stringify(none));
+}
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 console.log(`\n${checks - failures} / ${checks} 件一致`);
