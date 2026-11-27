@@ -325,7 +325,7 @@ jobs:
             printf -- '- 証跡の一式の写し: `%s/`(%s ファイル。digest の一覧 manifest.json は置き場の中の自己整合を示すだけで、ワークフローが出した一式であることは示さない。リポジトリの外へ引き渡すときは、この一覧を照合に使える。写しは保管期間の充足を示さない)\n\n' "$bundle" "$bundle_files"
             printf '承認するのは、この PR を開いた人以外の人。承認は転記の確認であり判定ではない。承認者は verify の結果(複製が記録用ブランチと一致すること)を確かめる(標準 第4章「判定記録を基底ブランチへ入れる操作」)。この PR を開いた人の操作で gate-g5 と ship-evidence の verify が起動する。\n\n'
             printf '## 検証方法と結果\n\n- verify ジョブが同じ集約を再実行し、複製が `%s` と一致することを検査する(人は結果を読む)\n\n' "$RECORDS_BRANCH"
-            printf '## AI 関与範囲\n\n- 生成: なし(ワークフローの機械の複製)\n- 人の確認: 出荷判定者\n\n'
+            printf '## AI 関与範囲\n\n- 正本はコミットのトレーラ Co-Authored-By・Agent-Run です(この欄への導出は未実装。ワークフローの機械の複製)\n\n'
             printf '## 作成を指示した者\n\n@%s(ship-evidence を起動した人。機械の複製であり、この PR を開いた人以外の人が転記の確認として承認する)\n\n' "${{ github.actor }}"
             printf '## リスク区分\n\nR3\n\n'
             printf '<!-- ship-evidence from=%s to=%s out=%s -->\n' "${from}" "${to}" "$out"

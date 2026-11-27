@@ -4681,7 +4681,7 @@ export function renderRoleCard(config, roleId) {
     L.push(`- 受信箱: ${mb.inbox.map((s) => `\`${s}\``).join(' ') || '—'}`);
     L.push(`- 引き渡しに使うラベル: ${mb.hands.map((s) => `\`${s}\``).join(' ') || '—'}`);
     if (mb.withoutG6) {
-      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第3章 3.5.5)');
+      L.push('- 注記: この構成では G-6 が省略・未達のため、`state:dev-done` をこの席が受けます。PR に G-6 の省略・未達を開示したうえで扱い(取り込みが出荷を起動する構成では G-7 の判定記録の後にマージ)、`state:ready-to-merge` は使いません(第3章 3.5.5)。G-6 を経ない変更には、独立した人の確認が無い。PR の自己チェックは、確かめた証拠に数えない');
     }
     L.push('');
     if (r.gatesUnmet.length && !r.gatesOwned.length) {
