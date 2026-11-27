@@ -740,12 +740,33 @@ function criteriaCount(text) {
   return m[1].split(/\r?\n/).filter((l) => /^\|\s*\d+\s*\|[^|]*\|\s*[^|\s][^|]*\|/.test(l)).length;
 }
 
+/**
+ * ブランチ名が、機能 ID とタスク ID を指すか。後ろが区切り(行末か英数字以外)のものだけを当てる(task-1 が task-10 に当たらない)
+ */
+export function taskBranchMatches(branch, feature, taskId) {
+  const head = `feature/${feature.toLowerCase()}-${taskId.toLowerCase()}`;
+  const lb = String(branch).toLowerCase();
+  return lb.startsWith(head) && !/[a-z0-9]/.test(lb.charAt(head.length));
+}
+
+/**
+ * 計画の状態の列が「完了」なのに、既定ブランチにトレーラ Spec: を持つコミットが無いタスク(渡すのは未取り込みのタスクだけ)。
+ * トレーラ無しで取り込まれたと見える。検出できるのは、状態の列に「完了」が書かれている場合だけ(書かれていなければ、未取り込みと区別できない)
+ */
+export function unknownDoneTasks(remainingTasks) {
+  return remainingTasks.filter((t) => t.state === '完了');
+}
+
 /** plan.md の「タスク」の表から、タスクの ID と依存を読む */
 function planTasks(text) {
   const tasks = [];
   for (const l of text.split(/\r?\n/)) {
     const m = l.match(/^\|\s*(Task-\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|/);
-    if (m) tasks.push({ id: m[1], deps: (m[5].match(/Task-\d+/g) ?? []) });
+    if (m) {
+      // 状態の列(最後の升)。導出に使うのは、人が「完了」と書いたのに取り込みの記録が無い食い違いを「不明」と出すときだけ
+      const cells = l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+      tasks.push({ id: m[1], deps: (m[5].match(/Task-\d+/g) ?? []), state: cells.length >= 7 ? cells[cells.length - 1] : '' });
+    }
   }
   return tasks;
 }
@@ -1022,7 +1043,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
         stage: '前提の台帳なし',
         ...cmd(
           'cp templates/10-assumption-ledger.md docs/assumptions.md',
-          '全ゲート共通の通過条件(関係する前提の充足状態の記録)の入力。6行の観測した事象を、補助ファイルの「観測の手がかり」から書く。充足状態の確定と受容の決裁は人が行う'
+          '全ゲート共通の通過条件(関係する前提の充足状態の記録)の入力。様式は6行の観測日と観測した事象を、出所つきの初期値(起案。立ち上げの時点)で起こしてある。観測の期間ができたら補助ファイルの「観測の手がかり」から書き換える。充足状態の確定と受容の決裁は人が行う'
         ),
         read: READ.artifact('10-assumption-ledger'),
       }
@@ -1312,7 +1333,16 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
       });
       continue;
     }
-    const inProgress = remaining.filter((t) => branches.some((b) => b.toLowerCase().startsWith(`feature/${f.toLowerCase()}-${t.id.toLowerCase()}`)));
+    const unknownTasks = unknownDoneTasks(remaining);
+    if (unknownTasks.length) {
+      F({
+        stage: `取り込みの状態が不明(${unknownTasks.map((t) => t.id).join(', ')})`,
+        kind: 'undetermined',
+        reason: `計画の状態は「完了」だが、既定ブランチにトレーラ Spec: ${f} / Task-N を持つコミットが無い。トレーラ無しで取り込まれたと見える。取り込みのコミットにトレーラが無いか、状態の記入が誤りかを人が確かめる`,
+      });
+      continue;
+    }
+    const inProgress = remaining.filter((t) => branches.some((b) => taskBranchMatches(b, f, t.id)));
     if (inProgress.length) {
       const t = inProgress[0];
       F({

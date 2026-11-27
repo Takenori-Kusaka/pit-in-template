@@ -12,7 +12,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './config.mjs';
 import { criterionNumbers, readPlanMappings, readPlanTargets, unmappedCriteria, countClarifications, readClarifications } from './verification-trace.mjs';
-import { clarificationStep, withG4Material } from './next.mjs';
+import { clarificationStep, withG4Material, taskBranchMatches, unknownDoneTasks } from './next.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -205,6 +205,15 @@ check('区切りの前後の空白(F-001 / AC-2)を1つの識別子に読む', J
     JSON.stringify(w)
   );
 }
+
+// タスクの状態の導出(様式 07。人が書くのは「やり直し」だけ。「着手」は /pit がブランチから、「完了」は既定ブランチのトレーラから出す)
+check('ブランチ名: task-1 は feature/F-001-task-1 と feature/F-001-task-1-retry に当たる', taskBranchMatches('feature/F-001-task-1', 'F-001', 'Task-1') && taskBranchMatches('feature/F-001-task-1-retry', 'F-001', 'Task-1'));
+check('ブランチ名: task-1 は task-10 に当たらない(前方一致の誤り)', !taskBranchMatches('feature/F-001-task-10', 'F-001', 'Task-1') && taskBranchMatches('feature/F-001-task-10', 'F-001', 'Task-10'));
+check('ブランチ名: 別の機能は当たらない', !taskBranchMatches('feature/F-002-task-1', 'F-001', 'Task-1'));
+check(
+  '不明: 状態が「完了」で取り込みの記録が無いタスクだけを不明とする(未着手・着手・やり直しは対象外)',
+  JSON.stringify(unknownDoneTasks([{ id: 'Task-1', state: '完了' }, { id: 'Task-2', state: '未着手' }, { id: 'Task-3', state: '着手' }, { id: 'Task-4', state: 'やり直し' }, { id: 'Task-5', state: '' }]).map((t) => t.id)) === '["Task-1"]'
+);
 
 for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 console.log(`\n${checks - failures} / ${checks} 件一致`);
