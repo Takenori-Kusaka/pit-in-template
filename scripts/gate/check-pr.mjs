@@ -1385,41 +1385,97 @@ export const PRE_READ_ROWS = {
   core: 'コア機能・確約範囲のパス',
   'core-undeclared': 'コア機能のパスが未宣言(コア機能に触れるかを確かめられない)',
   decision: '判断記録の要否の規則のパス',
-  control: '統制の設定・エージェントへの指示のファイル',
+  control: '統制の設定(プロセスの構成のファイルを含む)・エージェントへの指示のファイル',
   spec: '機能仕様(specs/**)',
   dependency: '依存の宣言・ロックファイル・.gitmodules',
-  'test-weakened': '基底にあるテストの削除・名前の変更・行の削除',
+  'test-weakened': '基底にあるテストの削除・名前の変更・アサーションの行の削除',
   'task-dependency': '依存するタスクが基底ブランチへ取り込まれていない',
+  unevaluated: '範囲の判定に要る入力を読めない(範囲の外かを確かめられない)',
 };
 
 /**
- * 取り込みが本番への反映を直接起動する構成の検出(構文)。既定ブランチへの push を契機に動き、`environment:` を持つジョブがある
- * workflow を見つける。条件を満たすかどうかは構文だけで決める(ブランチの絞り込み・条件式は読まず、起動する側へ倒す)。
- * workflows の外の配備(別のリポジトリ・外部の仕組み)は見えない。workflows: [{ path, text }]。戻り値は該当する workflow のパス
+ * 取り込みが本番への反映を直接起動する構成の検出(構文)。配備の環境(`environment:`)を指定したジョブを持つ workflow は、
+ * 起動の契機が人の手動の起動(workflow_dispatch)だけ、または PR の検査(pull_request 系)だけであるときを除き、起動する側へ倒す
+ * (push・workflow_run・release・schedule・読めない契機を含む)。push などで動く workflow が再利用の workflow を呼ぶジョブ(ジョブの uses:)を
+ * 持つときは、呼ばれる側がリポジトリの中にあって読め、配備の環境が無いと確かめられる場合を除き、起動する側へ倒す。
+ * ブランチの絞り込み・条件式は読まない。拾えない形: 配備の環境を指定せずに秘密情報で配備する workflow、workflows の外の配備(別のリポジトリ・外部の仕組み)。
+ * workflows: [{ path, text }]。戻り値は該当する workflow のパス
  */
 export function deployOnPushFindings(workflows) {
   const out = [];
-  for (const w of workflows ?? []) {
-    const text = String(w?.text ?? '').replace(/\r\n/g, '\n');
-    if (!/^[ \t]*environment[ \t]*:/m.test(text)) continue;
-    if (triggersOnPush(text)) out.push(w.path);
+  const list = (workflows ?? []).map((w) => ({ path: w?.path, text: String(w?.text ?? '').replace(/\r\n/g, '\n') }));
+  const byPath = new Map(list.map((w) => [w.path, w]));
+  const hasEnvironment = (text) => /^[ \t]*environment[ \t]*:/m.test(text);
+  for (const w of list) {
+    if (!workflowFires(w.text)) continue;
+    if (hasEnvironment(w.text)) {
+      out.push(w.path);
+      continue;
+    }
+    // 再利用の workflow を呼ぶジョブ。呼ばれる側が、リポジトリの中にあり、読め、配備の環境が無く、さらに別の workflow を呼ばないと確かめられなければ倒す
+    const calls = reusableCallsOf(w.text);
+    const unverified = calls.some((c) => {
+      const local = /^\.\/(\.github\/workflows\/[^/]+\.ya?ml)$/.exec(c);
+      const callee = local ? byPath.get(local[1]) : null;
+      return !callee || hasEnvironment(callee.text) || reusableCallsOf(callee.text).length > 0;
+    });
+    if (unverified) out.push(w.path);
   }
   return out;
 }
-function triggersOnPush(text) {
+/** ジョブの uses:(再利用の workflow の呼び出し)の値。ステップの uses:(actions/checkout@v4 など)は含まない */
+function reusableCallsOf(text) {
+  const out = [];
+  for (const l of text.split('\n')) {
+    const m = /^[ \t]*uses[ \t]*:[ \t]*['"]?([^\s'"#]+)/.exec(l);
+    if (m && /\.github\/workflows\/[^@\s]+\.ya?ml/.test(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+/** 起動の契機の一覧(on: の直下の名)。読めなければ null */
+function triggerEventsOf(text) {
   const lines = text.split('\n');
   const i = lines.findIndex((l) => /^(on|"on"|'on')[ \t]*:/.test(l));
-  // 起動の契機を読めないときは、起動する側へ倒す
-  if (i < 0) return true;
+  if (i < 0) return null;
+  // 1 行の書き方(`push`、`[push, pull_request]`、`{ push: { branches: [main] } }`)は、波括弧・角括弧の深さ 1 までの名を読む
+  const flowNames = (s) => {
+    const names = [];
+    let depth = 0;
+    const re = /[{}[\]]|['"]?([A-Za-z_][A-Za-z0-9_-]*)['"]?/g;
+    for (let m = re.exec(s); m; m = re.exec(s)) {
+      if (m[0] === '{' || m[0] === '[') depth++;
+      else if (m[0] === '}' || m[0] === ']') depth--;
+      else if (depth <= 1) names.push(m[1]);
+    }
+    return names;
+  };
   const rest = lines[i].replace(/^(on|"on"|'on')[ \t]*:/, '').replace(/#.*$/, '').trim();
-  if (rest) return /\bpush\b/.test(rest);
+  if (rest) return flowNames(rest);
+  const names = [];
+  let childIndent = null;
   for (let j = i + 1; j < lines.length; j++) {
     const l = lines[j];
     if (!l.trim() || /^[ \t]*#/.test(l)) continue;
-    if (!/^[ \t]/.test(l)) break;
-    if (/^[ \t]+push[ \t]*:/.test(l) || /^[ \t]+-[ \t]*push[ \t]*(#.*)?$/.test(l)) return true;
+    const indent = /^[ \t]*/.exec(l)[0].length;
+    if (indent === 0 && !/^-/.test(l)) break;
+    if (childIndent === null) childIndent = indent;
+    if (indent !== childIndent) continue;
+    const body = l.replace(/#.*$/, '').trim().replace(/^-[ \t]*/, '');
+    if (/^[{[]/.test(body)) names.push(...flowNames(body));
+    else {
+      const m = /^['"]?([A-Za-z_][A-Za-z0-9_-]*)['"]?[ \t]*(:|$)/.exec(body);
+      if (m) names.push(m[1]);
+    }
   }
-  return false;
+  return names;
+}
+/** 起動する側か。人の手動の起動だけ、または PR の検査だけのときを除き、読めない契機も含めて真 */
+function workflowFires(text) {
+  const events = triggerEventsOf(text);
+  if (!events || !events.length) return true;
+  if (events.every((e) => e === 'workflow_dispatch')) return false;
+  if (events.every((e) => /^pull_request/.test(e))) return false;
+  return true;
 }
 /** ある版の .github/workflows の一覧から、取り込みが本番を直接起動する workflow を探す。tracked は追跡中のファイル、read(path) は内容 */
 export function deployWorkflowsOf(tracked, read) {
@@ -1475,7 +1531,8 @@ export function preReadRangeOf(config, facts) {
   else if (core.hit) add('core', core.files);
   const dr = decisionRuleHits(config?.decisionRules?.rules, facts.changes ?? files.map((f) => ({ path: f, kind: 'modify' })), facts.tracked ?? null);
   if (dr.hits.length) add('decision', dr.hits.flatMap((h) => h.files));
-  const control = files.filter((f) => matchAny(CONTROL_FILES, f) || matchAnyCI(INSTRUCTION_ASSET_FILES, f));
+  // プロセスの構成のファイルは、鍵を問わず統制の設定に数える(範囲の宣言・名簿・回答を、範囲の外の変更として書き換えさせない)
+  const control = files.filter((f) => matchAny(CONTROL_FILES, f) || matchAnyCI(INSTRUCTION_ASSET_FILES, f) || f === 'process.config.json');
   if (control.length) add('control', control);
   const specs = files.filter((f) => /^specs\//.test(f));
   if (specs.length) add('spec', specs);
@@ -1483,6 +1540,8 @@ export function preReadRangeOf(config, facts) {
   if (deps.length) add('dependency', deps);
   if (facts.testWeakened?.length) add('test-weakened', facts.testWeakened);
   if (facts.unmergedDeps?.length) add('task-dependency', facts.unmergedDeps);
+  // 判定の入力を読めなかったときは、範囲の外へ倒さず、範囲の中へ倒す(読めなかった入力を files へ並べる)
+  if (facts.unreadable?.length) add('unevaluated', facts.unreadable);
   const deploy = facts.deploy ?? [];
   return { preRead: hits.length > 0 || deploy.length > 0, hits, deploy, notEvaluated: facts.notEvaluated ?? [] };
 }
@@ -2290,10 +2349,19 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     if (approvalByPreRead(rangeConfig)) {
       const changedFiles = all.flatMap((e) => (e.from ? [e.path, e.from] : [e.path]));
       const notEvaluated = [];
+      // 読めなかった入力。範囲の外へ倒さず、範囲の中へ倒す
+      const unreadable = [];
+      const cannot = (why) => {
+        unreadable.push(why);
+        notEvaluated.push(`${why}ため、範囲の外かを確かめられず、範囲の中として扱う`);
+      };
       // 取り込みが本番を直接起動する構成: 既定ブランチの workflows を構文で調べる。見つければ取り込む前に読む側へ倒す
-      const deploy = deployWorkflowsOf(trackedFiles(root, policyPoint) ?? [], (f) => atPolicy(f));
+      const policyTracked = trackedFiles(root, policyPoint);
+      if (policyTracked === null) cannot('既定ブランチの追跡ファイルを読めない(配備の workflow を調べられない)');
+      const deploy = deployWorkflowsOf(policyTracked ?? [], (f) => atPolicy(f));
       // テストの削除・名前の変更・アサーションの行の削除(基底にあるテスト)
       const guardPatterns = (json(atBase('.claude/guard.json')) ?? json(atHead('.claude/guard.json')) ?? {}).testPatterns;
+      if (!Array.isArray(guardPatterns) || !guardPatterns.length) cannot('テストのパターン(.claude/guard.json の testPatterns)が無い(基底にあるテストの削除を調べられない)');
       const isTestFile = (f) => (Array.isArray(guardPatterns) ? guardPatterns : []).some((g) => matchGlob(g, f));
       const testWeakened = [];
       for (const e of all) {
@@ -2305,7 +2373,12 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
           continue;
         }
         if (!e.removed) continue;
-        const diff = git(['diff', '-U0', '-M', mergeBase, HEADREF, '--', from, e.path]) ?? '';
+        const diffText = git(['diff', '-U0', '-M', mergeBase, HEADREF, '--', from, e.path]);
+        if (diffText === null) {
+          cannot(`テストの差分を読めない(${e.path})`);
+          continue;
+        }
+        const diff = diffText;
         if (diff.split('\n').some((l) => l.startsWith('-') && !l.startsWith('---') && isAssertionLine(l.slice(1)))) testWeakened.push(e.path);
       }
       // 依存するタスクが基底ブランチへ取り込まれていない(トレーラ Spec の無い変更は照らさない)
@@ -2314,12 +2387,18 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       if (specsOfPr.length) {
         const log = git(['log', policyRef, '--format=%B%x00']);
         if (log === null) notEvaluated.push('依存するタスクの取り込みを照らせなかった(既定ブランチのコミットを読めない)');
-        else unmergedDeps = unmergedDependencies({ specs: specsOfPr, planOf: (f) => atPolicy(`specs/${f}/plan.md`), done: doneTaskKeysOf(log.split('\0')) });
+        else {
+          for (const s of specsOfPr) if (!atPolicy(`specs/${s.feature}/plan.md`)) cannot(`実装計画(specs/${s.feature}/plan.md)を既定ブランチから読めない(依存するタスクを調べられない)`);
+          unmergedDeps = unmergedDependencies({ specs: specsOfPr, planOf: (f) => atPolicy(`specs/${f}/plan.md`), done: doneTaskKeysOf(log.split('\0')) });
+        }
       } else notEvaluated.push('依存するタスクの取り込みを照らしていない(トレーラ Spec の無い変更)');
+      const headTracked = trackedFiles(root, HEADREF);
+      if (headTracked === null) cannot('変更後の追跡ファイルを読めない(コア機能のパスを照らせない)');
       preReadRange = preReadRangeOf(rangeConfig, {
         files: changedFiles,
         changes,
-        tracked: trackedFiles(root, HEADREF),
+        unreadable,
+        tracked: headTracked,
         risk,
         floor: floorResult.floor,
         testWeakened,

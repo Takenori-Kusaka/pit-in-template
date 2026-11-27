@@ -96,6 +96,49 @@ const s2Cfg = (over = {}) => ({
   check('検出しない: 手動の起動だけ', wf(BLOCK.replace('push:\n    branches: [main]', 'workflow_dispatch:')).length === 0);
   check('起動の契機を読めない workflow は、起動する側へ倒す(検出する)', wf('jobs:\n  d:\n    environment: prod\n').length === 1);
   check('workflow が無ければ検出しない', deployOnPushFindings([]).length === 0);
+  // 見逃していた形(起動する側へ倒す)
+  const JOB = 'jobs:\n  d:\n    runs-on: ubuntu-latest\n    environment: production\n    steps: []\n';
+  check('検出する: workflow_run(CI の完了で配備する形)', wf(`on:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]\n${JOB}`).length === 1);
+  check('検出する: release', wf(`on:\n  release:\n    types: [published]\n${JOB}`).length === 1);
+  check('検出する: schedule', wf(`on:\n  schedule:\n    - cron: '0 0 * * *'\n${JOB}`).length === 1);
+  check('検出する: 1 行の書き方の workflow_run・release・schedule', ['workflow_run', 'release', 'schedule'].every((e) => wf(`on: ${e}\n${JOB}`).length === 1));
+  check('検出する: 波括弧の書き方({ push: { branches: [main] } })と、リストの書き方の release', wf(`on: { push: { branches: [main] } }\n${JOB}`).length === 1 && wf(`on:\n- release\n${JOB}`).length === 1);
+  check('検出する: 手動の起動と push の組(手動だけではない)', wf(`on:\n  workflow_dispatch:\n  push:\n    branches: [main]\n${JOB}`).length === 1);
+  check('検出する: 手動の起動と pull_request の組(どちらか一方だけではない。起動する側へ倒す)', wf(`on: [workflow_dispatch, pull_request]\n${JOB}`).length === 1);
+  check('検出する: on: の後の注釈と引用符つきの on', wf(`"on": # 契機\n  push:\n${JOB}`).length === 1);
+  check('検出しない: pull_request_target だけ・pull_request の細かい指定・pull_request_review', ['on: pull_request_target', 'on:\n  pull_request:\n    branches: [main]\n    types: [opened]', 'on: [pull_request, pull_request_review]'].every((o) => wf(`${o}\n${JOB}`).length === 0));
+  check('検出しない: 手動の起動だけ(波括弧の書き方・ブロックの書き方)', wf(`on: { workflow_dispatch: {} }\n${JOB}`).length === 0 && wf(`on:\n  workflow_dispatch:\n    inputs:\n      x:\n        required: false\n${JOB}`).length === 0);
+  // 再利用の workflow を呼ぶジョブ
+  const caller = (uses, on = 'on:\n  push:\n    branches: [main]') => `${on}\njobs:\n  call:\n    uses: ${uses}\n`;
+  const calleeOk = { path: '.github/workflows/reuse.yml', text: 'on: workflow_call\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n' };
+  const calleeEnv = { path: '.github/workflows/reuse.yml', text: `on: workflow_call\n${JOB}` };
+  const calleeNested = { path: '.github/workflows/reuse.yml', text: 'on: workflow_call\njobs:\n  x:\n    uses: ./.github/workflows/other.yml\n' };
+  const callerW = (uses, on) => ({ path: '.github/workflows/main.yml', text: caller(uses, on) });
+  check('検出する: push の workflow が、読めない(リポジトリの外の)再利用の workflow を呼ぶ', deployOnPushFindings([callerW('org/shared/.github/workflows/deploy.yml@v1')]).length === 1);
+  check('検出する: push の workflow が、リポジトリの中に無い再利用の workflow を呼ぶ(読めない)', deployOnPushFindings([callerW('./.github/workflows/missing.yml')]).length === 1);
+  check('検出する: 呼ばれる側が配備の環境を持つ(呼ぶ側も、呼ばれる側も)', deployOnPushFindings([callerW('./.github/workflows/reuse.yml'), calleeEnv]).sort().join() === '.github/workflows/main.yml,.github/workflows/reuse.yml');
+  check('検出する: 呼ばれる側が、さらに別の workflow を呼ぶ(確かめきれない)', deployOnPushFindings([callerW('./.github/workflows/reuse.yml'), calleeNested]).includes('.github/workflows/main.yml'));
+  check('検出する: workflow_run で動く workflow が、読めない再利用の workflow を呼ぶ', deployOnPushFindings([callerW('org/shared/.github/workflows/deploy.yml@v1', 'on:\n  workflow_run:\n    workflows: [ci]')]).length === 1);
+  check('検出しない: 呼ばれる側がリポジトリの中にあり、読め、配備の環境が無い', deployOnPushFindings([callerW('./.github/workflows/reuse.yml'), calleeOk]).length === 0);
+  check('検出しない: pull_request だけで動く workflow が再利用の workflow を呼ぶ', deployOnPushFindings([callerW('org/shared/.github/workflows/deploy.yml@v1', 'on: pull_request')]).length === 0);
+  check('検出しない: ステップの uses(actions/checkout など)は再利用の呼び出しに数えない', wf('on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: x\n        uses: actions/setup-node@v4\n').length === 0);
+  // 拾えない形(集約の限界の行に書く)
+  check('拾えない形(開示済み): 配備の環境を指定せずに秘密情報で配備する push の workflow は検出しない', wf('on: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh\n        env:\n          TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n').length === 0);
+}
+
+// ---------------------------------------------------------------- 構成の判定の入力(事業ステージの値、プロセスの構成のファイル、読めない入力)
+{
+  const cfgWith = (phase) => s2Cfg({ answers: { 'q-biz-phase': phase, 'q-criticality': 'cl0', 'q-quality': 'quality-standard' } });
+  check('使う構成: 事業ステージは growth・stable だけ。未知の値(foo・S1・S2・大文字)は緩めない側(偽)', ['growth', 'stable'].every((p) => approvalByPreRead(cfgWith(p)) === true) && ['foo', 'S1', 'S2', 'Growth', '', null, 0].every((p) => approvalByPreRead(cfgWith(p)) === false));
+  const cfg = s2Cfg();
+  const tracked = ['src/core/pay.js', 'src/ui/page.js'];
+  const rng = (files, over = {}) => preReadRangeOf(cfg, { files, changes: files.map((p) => ({ path: p, kind: 'modify' })), tracked, risk: 'R2', floor: 'R3', ...over });
+  check('当たる: プロセスの構成のファイル(process.config.json)は、鍵を問わず統制の設定の行に当たる', (() => { const r = rng(['process.config.json']); return r.preRead && r.hits.some((h) => h.id === 'control' && h.files.includes('process.config.json')); })());
+  check('範囲の外: 構成のファイルでない同名の別のパス(sub/process.config.json.bak)は当たらない', rng(['sub/process.config.json.bak']).preRead === false);
+  const unread = rng(['src/ui/page.js'], { unreadable: ['実装計画を読めない'] });
+  check('当たる: 判定の入力を読めなかったとき(範囲の外へ倒さず、範囲の中へ倒す)', unread.preRead === true && unread.hits.some((h) => h.id === 'unevaluated' && h.files.includes('実装計画を読めない')), JSON.stringify(unread));
+  check('範囲の外: 読めなかった入力が無ければ、範囲の外のまま', rng(['src/ui/page.js'], { unreadable: [] }).preRead === false);
+  check('範囲の行の見出しは、検出するものに合わせる(アサーションの行の削除。スキップへの書き換えは含めない)', /アサーションの行の削除/.test(rng(['t.js'], { testWeakened: ['t.js'] }).hits[0].label) && !/名前の変更・行の削除/.test(rng(['t.js'], { testWeakened: ['t.js'] }).hits[0].label));
 }
 
 // ---------------------------------------------------------------- 範囲の各行の当たりと外れ
@@ -208,7 +251,7 @@ const s2Cfg = (over = {}) => ({
     ['R1', edits.ui, { risk: 'R1', confirm: '佐藤 花子' }, /リスク区分が R1/],
     ['コア機能', edits.core, {}, /コア機能・確約範囲のパス/],
     ['判断記録の要否の規則', edits.api, {}, /判断記録の要否の規則のパス/],
-    ['統制の設定', edits.control, {}, /統制の設定・エージェントへの指示/],
+    ['統制の設定', edits.control, {}, /統制の設定\(プロセスの構成のファイルを含む\)・エージェントへの指示/],
     ['仕様', edits.spec, {}, /機能仕様/],
     ['依存の宣言', edits.dep, {}, /依存の宣言・ロックファイル/],
     ['テストの削除', edits.delTest, {}, /基底にあるテストの削除/],
@@ -245,6 +288,48 @@ const s2Cfg = (over = {}) => ({
   check('取り込みが本番を直接起動する構成: R2 の確定者の記名は、取り込む前に求める', depConfirm.errors.some((m) => /リスク区分の確定者/.test(m)) || depConfirm.preReadRange?.preRead === true, JSON.stringify(depConfirm.errors));
   const noDeploy = run(s2Cfg(), edits.ui, { baseEdit: () => fs.rmSync(path.join(T, '.github/workflows/deploy.yml'), { force: true }) });
   check('配備の workflow を外せば、範囲の外へ戻る', !hasErr(noDeploy, ERR) && noDeploy.approvers.required === 0, JSON.stringify(noDeploy.errors));
+  // 起動の契機が workflow_run・release・schedule の配備の workflow、読めない再利用の workflow を呼ぶ push の workflow も、取り込む前に読む側へ倒す
+  const wfOf = (on, tail) => () => w('.github/workflows/deploy.yml', `name: deploy\n${on}\njobs:\n${tail}`);
+  const ENVJOB = '  deploy:\n    runs-on: ubuntu-latest\n    environment: production\n    steps: []\n';
+  for (const [label, on, tail] of [
+    ['workflow_run', 'on:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]', ENVJOB],
+    ['release', 'on:\n  release:\n    types: [published]', ENVJOB],
+    ['schedule', "on:\n  schedule:\n    - cron: '0 0 * * *'", ENVJOB],
+    ['読めない再利用の workflow を呼ぶ push', 'on:\n  push:\n    branches: [main]', '  call:\n    uses: org/shared/.github/workflows/deploy.yml@v1\n'],
+  ]) {
+    const r = run(s2Cfg(), edits.ui, { baseEdit: wfOf(on, tail) });
+    check(`取り込みが本番を起動しうる構成(${label}): 範囲の外の変更にも承認を求める(落ちる)`, hasErr(r, ERR) && r.approvers.required === 1 && r.preReadRange?.deploy?.length === 1, JSON.stringify([r.errors, r.preReadRange?.deploy]));
+  }
+  const manual = run(s2Cfg(), edits.ui, { baseEdit: wfOf('on: workflow_dispatch', ENVJOB) });
+  check('手動の起動だけの配備の workflow は、範囲の外のまま(承認を求めない)', !hasErr(manual, ERR) && manual.approvers.required === 0, JSON.stringify(manual.errors));
+  run(s2Cfg(), edits.ui, { baseEdit: () => fs.rmSync(path.join(T, '.github/workflows/deploy.yml'), { force: true }) });
+
+  // プロセスの構成のファイルを書き換える変更は、鍵を問わず範囲の中(範囲の宣言・判断記録の規則・名簿・回答を、承認なしで書き換えさせない)
+  const cfgEdit = (mutate) => () => {
+    const c = JSON.parse(JSON.stringify(s2Cfg()));
+    mutate(c);
+    w('process.config.json', c);
+  };
+  for (const [label, mutate] of [
+    ['範囲の宣言(delegation.protectedPaths)を狭める', (c) => { c.delegation.protectedPaths = ['src/nothing/**']; }],
+    ['判断記録の規則(decisionRules.rules)を空にする', (c) => { c.decisionRules.rules = []; }],
+    ['名簿(people)へ人を足す', (c) => { c.people.push({ id: 'p9', name: '架空 人', accounts: [{ login: 'ghost', id: 2999 }] }); }],
+    ['回答(answers.q-criticality)を書き換える', (c) => { c.answers['q-criticality'] = 'cl0 '; }],
+    ['設定していなかった鍵(label)を足す', (c) => { c.label = 'x'; }],
+  ]) {
+    const bad = run(s2Cfg(), cfgEdit(mutate));
+    check(`範囲の中(プロセスの構成のファイル: ${label}): 承認が無ければ落ちる。統制の設定の行に当たる`, hasErr(bad, ERR) && bad.approvers.required === 1 && bad.preReadRange?.hits.some((h) => h.id === 'control' && h.files.includes('process.config.json')), JSON.stringify([bad.errors, bad.preReadRange?.hits]));
+  }
+
+  // 読めない入力は、範囲の外へ倒さず、範囲の中へ倒し、照らせなかった旨を出す
+  const noPatterns = run(s2Cfg(), edits.ui, { baseEdit: () => w('.claude/guard.json', {}) });
+  check('範囲の中(テストのパターンが無い構成): 基底にあるテストを調べられないため、範囲の中へ倒し、旨を出す', hasErr(noPatterns, ERR) && noPatterns.preReadRange?.hits.some((h) => h.id === 'unevaluated') && noPatterns.approvers.byRange.notEvaluated.some((m) => /testPatterns/.test(m) && /範囲の中として扱う/.test(m)), JSON.stringify([noPatterns.errors, noPatterns.preReadRange]));
+  const delNoPatterns = run(s2Cfg(), edits.delTest);
+  check('テストのパターンが無い構成で、基底にあるテストを消す PR は、範囲の中(承認が要る)', hasErr(delNoPatterns, ERR), JSON.stringify(delNoPatterns.errors));
+  const noPlan = run(s2Cfg(), edits.ui, { baseEdit: () => w('.claude/guard.json', { testPatterns: ['test/**'] }), spec: 'Spec: F-009 / Task-1' });
+  check('範囲の中(実装計画を読めない): トレーラ Spec の指す機能の plan.md が無ければ、範囲の中へ倒し、旨を出す', hasErr(noPlan, ERR) && noPlan.preReadRange?.hits.some((h) => h.id === 'unevaluated' && /specs\/F-009\/plan\.md/.test(h.files.join())), JSON.stringify([noPlan.errors, noPlan.preReadRange]));
+  const okPatterns = run(s2Cfg(), edits.ui);
+  check('テストのパターンがあり、計画も読めるなら、範囲の外のまま(読めない入力の倒しは、読めたときに出ない)', !hasErr(okPatterns, ERR) && !okPatterns.preReadRange?.hits.some((h) => h.id === 'unevaluated'), JSON.stringify([okPatterns.errors, okPatterns.preReadRange]));
 
   // この形を使わない構成: 現行のまま(全 PR の承認の要求)
   const noUse = [
@@ -271,7 +356,8 @@ if (process.platform === 'win32') {
     'q-quality': 'quality-standard', 'q-criticality': 'cl0', 'q-dev-form': 'inhouse', 'q-existing-gates': 'gates-none', 'q-ai-constraint': 'ai-free',
     'q-team-size': 'size-3-9', 'q-biz-phase': 'growth', 'q-external-reviewer': 'reviewer-yes',
   };
-  const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [`acc${i}`] }));
+  // acc3 だけ数値の識別子を持つ(承認のレビューを独立した確認として数える場面に使う)
+  const PEOPLE = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, name: `名簿 ${'甲乙丙丁戊'[i]}`, accounts: [i === 3 ? { login: 'acc3', id: 903 } : `acc${i}`] }));
   const SEATS = Object.entries({ 'value-owner': 'p0', 'tech-lead': 'p4', 'dev-verifier': 'p1', 'independent-reviewer': 'p2', 'qa-gatekeeper': 'p3', 'biz-approver': 'p4' }).map(([role, accountable]) => ({ role, accountable }));
   const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-fake-gh-deferred-'));
   fs.writeFileSync(
@@ -316,12 +402,13 @@ if (process.platform === 'win32') {
       if (s.workflow) put('.github/workflows/deploy.yml', 'name: deploy\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: production\n    steps: []\n');
       put(s.file, `export const v = ${++seq};\n`);
       g('add', '-A');
-      g('commit', '-q', '-m', `feat: ${s.file} を変える\n\nRisk: ${s.risk ?? 'R2'}\nVerification: node --check を実行して通過`);
+      g('commit', '-q', '-m', `feat: ${s.file} を変える\n\nRisk: ${s.risk ?? 'R2'}\nVerification: node --check を実行して通過${s.spec ? `\nSpec: ${s.spec}` : ''}`);
       const sha = g('rev-parse', 'HEAD');
       if (s.pr) {
         shas[s.pr] = sha;
-        map[`repos/${R}/commits/${sha}/pulls`] = [{ number: s.pr, merged_at: '2026-11-05T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${s.pr}` }, user: { login: 'acc1', id: null } }];
-        map[`repos/${R}/pulls/${s.pr}/reviews`] = [];
+        map[`repos/${R}/commits/${sha}/pulls`] = [{ number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', merge_commit_sha: sha, head: { sha: `head-${s.pr}` }, user: { login: 'acc1', id: null } }];
+        map[`repos/${R}/pulls/${s.pr}/reviews`] = (s.reviews ?? []).map((r, i) => ({ id: 9000 + s.pr * 10 + i, state: 'APPROVED', commit_id: `head-${s.pr}`, author_association: 'MEMBER', user: { login: r.login, id: r.id, type: 'User' }, body: r.body ?? '挙動要約: 差分を読み、分岐を自分で確かめた', submitted_at: r.at }));
+        map[`repos/${R}/pulls/${s.pr}`] = { number: s.pr, merged_at: s.mergedAt ?? '2026-11-05T00:00:00Z', user: { login: 'acc1', id: null } };
         map[`repos/${R}/pulls/${s.pr}/commits`] = [{ author: { login: 'acc1', id: null } }];
         map[`pr/${s.pr}`] = {
           number: s.pr, title: `feat: ${s.file} を変える`, author: { login: 'acc1' }, reviews: [], statusCheckRollup: [], labels: [], createdAt: '2026-11-05T00:00:00Z',
@@ -373,6 +460,23 @@ if (process.platform === 'win32') {
     const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1, workflow: true }, { file: 'src/ui/d.js', pr: 2 }]);
     check('取り込みが本番を直接起動する workflow を足した後の PR は、範囲の内として識別する(足した PR の親の版にはまだ無い)', h.pr(1)?.deferredReview?.preRead === true || h.pr(1)?.deferredReview?.hits?.some((x) => x.id === 'control'), JSON.stringify(h.pr(1)?.deferredReview));
     check('取り込みが本番を直接起動する workflow が親の版にある PR は、範囲の外にしない', h.pr(2)?.deferredReview?.preRead === true && h.pr(2).deferredReview.deploy.length === 1, JSON.stringify(h.pr(2)?.deferredReview));
+  }
+  {
+    // 出荷の前の確認は、判定記録の様式で残す。取り込んだ後(マージの時刻より後)に付けた承認レビューは、独立した確認に数えない。
+    // 対照: 取り込む前に付けた同じ承認レビューは数える(試験の前提の確認)
+    const before = { login: 'acc3', id: 903, at: '2026-11-04T12:00:00Z' };
+    const after = { login: 'acc3', id: 903, at: '2026-11-06T12:00:00Z' };
+    const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1, reviews: [before] }, { file: 'src/ui/d.js', pr: 2, reviews: [after] }]);
+    check('前提の対照: 取り込む前に付けた別の人の承認レビューは、独立した確認に数える(欠落にしない)', h.prGap(1) === null && h.pr(1)?.g6?.independentHuman === true, `${dbg(h)}\n${JSON.stringify(h.pr(1)?.g6?.independent)}`);
+    check('取り込んだ後に付けた承認レビューだけの PR は、出荷の前の確認が済んでいない欠落に数える(承認レビューでは残せない)', h.prGap(2) !== null && h.pr(2)?.g6?.independentHuman === false, `${dbg(h)}\n${JSON.stringify(h.pr(2)?.g6?.independent)}`);
+  }
+  {
+    // 積み重なりの前後は、時刻の書き方(Z と +09:00)に依らず時刻で比べる。仕様のトレーラの無い件数を出す
+    const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1, mergedAt: '2026-11-05T09:00:00+09:00' }, { file: 'src/ui/b.js', pr: 2, mergedAt: '2026-11-05T00:30:00Z', spec: 'F-001 / Task-1' }, { file: 'src/ui/d.js', pr: 3 }]);
+    const line = (re) => h.report.split('\n').find((l) => re.test(l)) ?? '';
+    check('積み重なり: 書き方が違う時刻(+09:00 と Z)でも、後に取り込んだ変更を時刻で数える(文字列の比較では 0 件になる形)', /同じファイルを触って取り込まれた変更 1 件/.test(line(/^- 出荷の前の確認が済んでいない変更/)), line(/^- 出荷の前の確認が済んでいない変更/));
+    check('保証の開示に、範囲の外の変更のうち仕様のトレーラが無い件数を出す(トレーラのある PR は数えない)', /依存するタスクの取り込みを照らしていない変更: 2 件/.test(line(/^- 範囲の外の変更のうち、仕様のトレーラ/)), line(/^- 範囲の外の変更のうち、仕様のトレーラ/));
+    check('集計の限界の行に、拾わない形(スキップへの書き換え・テストの設定による除外・環境を指定しない配備・workflows の外の配備)を書く', ['スキップへの書き換え', 'テストの設定', '配備の環境を指定せずに秘密情報で配備する', 'workflows の外の配備'].every((s) => line(/^- この集計の限界/).includes(s)), line(/^- この集計の限界/));
   }
   {
     // この形を使わない構成: 範囲の外の識別をしない(現行どおり全変更を欠落に数える)

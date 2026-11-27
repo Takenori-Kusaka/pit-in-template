@@ -1271,7 +1271,8 @@ export function deferredReviewLines(d) {
     `- 出荷の前の確認を例外承認で出した変更: ${d.excepted} 件(${share}。常態になると、実質は読まずに出す形になる。機械は止めない)`,
     `- 出荷の前の確認を済ませた確認者ごとの件数: ${d.byReviewer.length ? d.byReviewer.map((r) => `${r.name} ${r.n} 件`).join(' / ') : '該当なし'}(特定の確認者への偏りは、人が見る。比率の閾値は置かない)`,
     `- 範囲の外の R2 のうち、区分の確定者の記名が無い変更: ${d.confirmerMissing.length} 件${list(d.confirmerMissing)}(出荷判定までに要る。記録の欠落に数える)`,
-    '- この集計の限界: テストの削除と依存するタスクの取り込みは取り込む前の検査(gate-g5-base)が照らし、集計は照らし直していない。取り込みが本番を直接起動する構成は workflows の構文だけを調べ、workflows の外の配備は検出しない。読んだ中身の質は機械で確かめない',
+    `- 範囲の外の変更のうち、仕様のトレーラ(Spec: F-NNN)が無く、依存するタスクの取り込みを照らしていない変更: ${d.noSpecTrailer ?? 0} 件(取り込む前の検査も、トレーラが無い変更では依存するタスクを照らさない。件数だけを出し、止めない)`,
+    '- この集計の限界: テストの削除と依存するタスクの取り込みは取り込む前の検査(gate-g5-base)が照らし、集計は照らし直していない。テストの削除として検出するのは、基底にあるテストの削除・名前の変更・アサーションの行の削除だけで、スキップへの書き換えとテストの設定(除外の設定)による除外は拾わない。取り込みが本番を直接起動する構成は workflows の構文だけを調べ、配備の環境を指定せずに秘密情報で配備する workflow と、workflows の外の配備(別のリポジトリ・外部の仕組み)は検出しない。読んだ中身の質は機械で確かめない',
   ];
 }
 
@@ -2745,6 +2746,8 @@ if (isMain) {
         reviewerSummarySource: independent.counted ? independent.summarySource : null,
       },
       commits: own.map((h) => h.slice(0, 8)),
+      // 本文の末尾の段落に仕様のトレーラ(Spec: F-NNN)を持つコミットがあるか(出荷の前の確認の投影で、依存するタスクを照らせなかった件数に使う)
+      hasSpecTrailer: own.some((h) => (specOf.get(h)?.specs ?? []).length > 0),
       // 効力を持つ記録の帰属(#380)。対象の PR の上のレビュー、PR の先頭、作成者
       material: {
         reviews,
@@ -4380,7 +4383,9 @@ if (isMain) {
     // 取り込みの時刻は、PR の記録の mergedAt。無ければマージのコミットの日時
     const mergedAtOf = (p) => p.mergedAt ?? (git(['log', '-1', '--format=%cI', p.mergeCommitFull]) || null);
     const ages = pending.map((p) => { const at = mergedAtOf(p); return at ? Math.floor((Date.parse(exceptionDay) - Date.parse(String(at).slice(0, 10))) / dayMs) : null; }).filter((n) => n !== null && Number.isFinite(n));
-    const stacked = form.filter((q) => pending.some((u) => u.number !== q.number && mergedAtOf(u) && mergedAtOf(q) && mergedAtOf(q) > mergedAtOf(u) && q.deferredReview.files.some((f) => u.deferredReview.files.includes(f))));
+    // 時刻の前後は、書き方(Z・+09:00)に依らず時刻として比べる
+    const mergedMs = (p) => Date.parse(String(mergedAtOf(p) ?? ''));
+    const stacked = form.filter((q) => pending.some((u) => u.number !== q.number && Number.isFinite(mergedMs(u)) && Number.isFinite(mergedMs(q)) && mergedMs(q) > mergedMs(u) && q.deferredReview.files.some((f) => u.deferredReview.files.includes(f))));
     const byReviewer = new Map();
     for (const p of outside.filter((x) => x.g6.independent.counted)) for (const n of p.g6.independent.by ?? []) byReviewer.set(n, (byReviewer.get(n) ?? 0) + 1);
     return {
@@ -4392,6 +4397,8 @@ if (isMain) {
       pendingLabels: pending.map((p) => `#${p.number}`),
       oldestDays: ages.length ? Math.max(...ages) : null,
       stacked: stacked.length,
+      // 範囲の外の変更のうち、仕様のトレーラが無く、依存するタスクの取り込みを照らしていない変更の件数
+      noSpecTrailer: outside.filter((p) => !p.hasSpecTrailer).length,
       excepted: outside.filter((p) => p.exceptionRecords?.length).length,
       confirmerMissing: outside.filter((p) => p.deferredConfirmation && !p.deferredConfirmation.confirmed).map((p) => `#${p.number}`),
       deployDetected: form.filter((p) => p.deferredReview.deploy.length).length,

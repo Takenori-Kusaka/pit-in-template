@@ -2662,7 +2662,8 @@ export function approvalByPreRead(config) {
   if (config?.review?.requiredApprovals !== 0) return false;
   const a = config?.answers ?? {};
   const phase = a['q-biz-phase'];
-  if (!phase || phase === 'poc' || phase === 'mvp') return false;
+  // S2 に当たる値(グロース・安定運用。生成の側の値の一覧と同じ)だけ。未記入・S0・S1・未知の値は緩めない側(偽)
+  if (phase !== 'growth' && phase !== 'stable') return false;
   if (a['q-criticality'] !== 'cl0' || a['q-quality'] !== 'quality-standard') return false;
   // 委任の規則を登録している構成は使わない(登録した種類の変更は事後の確認が既に働き、形骸化の検知で止めた種類の範囲を範囲に足す判定をまだ持たない。緩めない側)
   if (Array.isArray(config?.delegation?.rules) && config.delegation.rules.length > 0) return false;
