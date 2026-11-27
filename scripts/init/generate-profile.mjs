@@ -3191,7 +3191,11 @@ function windowEffectiveFrom(recordedAt) {
   return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]), 1)).toISOString().slice(0, 10) : null;
 }
 /** 窓の言い方。既定のままなら「直近N か月の窓」。長くしてあるときは、日付に依らない形で書く(生成区間を日付で変えない) */
-const windowPhrase = (config) => (windowChange(config) === null ? `直近${WINDOW_MONTHS}か月の窓` : '直近、評価の日に効く観測の窓');
+const windowPhrase = (config) => {
+  if (windowChange(config) !== null) return '直近、評価の日に効く観測の窓';
+  const last = (config?.observationWindow?.history ?? []).filter((e) => Number.isInteger(e?.months)).at(-1);
+  return last ? `直近${last.months}か月の窓` : '直近の観測の窓(定めていない。検知は働かない)';
+};
 /**
  * 構成の最新の値(履歴の最後)と、その1つ前の値(前の記録が無ければ既定)。どちらかが既定より長いときだけ返す。
  * 最新の値は記録した日の翌月1日の評価から効き、それより前の評価は前の値で数える。長くする向きでも短くする向きでも同じ形(日付に依らない)
@@ -3200,8 +3204,9 @@ function windowChange(config) {
   const h = (config?.observationWindow?.history ?? []).filter((e) => Number.isInteger(e?.months));
   const last = h.at(-1);
   if (!last) return null;
-  const prev = h.length > 1 ? h.at(-2).months : WINDOW_MONTHS;
-  if (last.months <= WINDOW_MONTHS && prev <= WINDOW_MONTHS) return null;
+  if (h.length < 2) return null;
+  const prev = h.at(-2).months;
+  if (last.months === prev) return null;
   return { last, prev };
 }
 /** 窓の値を変えた構成だけ、最新の値・効く評価の日・前の値を書き分ける(観測の窓の常時の開示。IMPL-0516) */
@@ -3210,7 +3215,7 @@ function windowDeciderText(config) {
   if (ch === null) return '';
   const { last, prev } = ch;
   const from = windowEffectiveFrom(last.recordedAt);
-  return `(既定 ${WINDOW_MONTHS}か月。構成の最新の値は ${last.months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値(${prev}か月)で数える。決定: ${last.decidedBy ?? '記録なし'}、記録した日 ${last.recordedAt ?? '記録なし'})`;
+  return `(構成の最新の値は ${last.months}か月で、${from ?? '記録なし'} の評価から効く。それより前の評価は前の値(${prev}か月)で数える。決定: ${last.decidedBy ?? '記録なし'}、記録した日 ${last.recordedAt ?? '記録なし'})`;
 }
 
 export function renderAutonomyTable(config, blank = false, { q1 = null } = {}) {
@@ -4192,8 +4197,8 @@ export function renderProfileMd(config, result) {
     L.push('');
     L.push(
       `AI自律レベルは、委任の登録から導きます。登録した変更種別は L3、それ以外は L1 です(変更のリスク区分が R1・R2 の変更は、種別が L3 でも委任で進みません。条件2)。**このテンプレートは L2 を支えません**(上限: ${autonomyCap(config).level})。` +
-        '登録した変更種別は、委任を判定するたびに記録から止まります(AI 起因・原因を特定できない Sev1・Sev2、コア機能の理解保持者数1名以下、差し戻し率0%の観測の窓の長さの継続(既定' + WINDOW_MONTHS + 'か月)、差し戻し率の窓の判定不能。標準 第5章 5.4.6)。' +
-        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りない・記録を読めないときは、適用の条件の欠落として登録した変更種別を止め、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
+        '登録した変更種別は、委任を判定するたびに記録から止まります(コア機能の理解保持者数1名以下、差し戻し率0%の観測の窓の長さの継続(窓は採用者が定める値)。安全重要度 CL1 以上・規制業・未記入の案件では、AI 起因・原因を特定できない Sev1・Sev2 も止めます。それ以外の案件では、この事故の定めは警告として出し、止めません。標準 第5章 5.4.6)。' +
+        '現在の停止は `/pit` の注記と保証の開示の項目3 に出ます。手戻り率は、トレーラの取り込みの2回以上と実装計画の履歴の「やり直し」から算出し、基準値(構成の reworkBaseline。既定値なし)を超えると止めます。基準値が未設定・標本が足りないときは、止めずに、当月の全件を事後に確かめ、働いていない検知の名を出します。記録を読めないときは、登録した変更種別を止め、その旨を出します。計画表に書かれない不採用の後の再作成は数えていません(採用者の手段で補います)。'
     );
     L.push('');
     L.push(`**${MERGE_PATH_NOTE_POLITE}`);
@@ -5528,15 +5533,15 @@ if (isMain) {
         }
       }
     }
-    // 観測の窓(標準 第5章 5.4.6。process-compass #349)。{ "months": <整数。下限 2> }。最小標本数の欄は持たない(下げられない・上げる必要の実証が無い)。
-    // 値を変えるときは、向きを問わず決定した者の記名(AI の名義でない)と理由(変化点の decidedBy・reason)を要する。長くするのは緩める向き
+    // 観測の窓(標準 第5章 5.4.6。process-compass #349)。{ "months": <整数。下限 1> }。最小標本数の欄は持たない(下げられない・上げる必要の実証が無い)。
+    // 値を変えるときは、向きを問わず決定した者の記名(AI の名義でない)と理由(変化点の decidedBy・reason)を要する。長くしても短くしても同じ
     if (S.observationWindow !== undefined) {
       const W = S.observationWindow;
-      if (!isObject(W)) bad.push('settings.observationWindow は { "months": <整数。2 以上> } で書きます');
+      if (!isObject(W)) bad.push('settings.observationWindow は { "months": <整数。1 以上> } で書きます');
       else {
         const extra = Object.keys(W).filter((k) => k !== 'months');
         if (extra.length) bad.push(`settings.observationWindow に書けない欄があります(${extra.join(', ')})。書けるのは months だけです。最小標本数は settings.detection.minSample に書きます`);
-        if (!Number.isInteger(W.months) || W.months < WINDOW_MONTHS) bad.push(`settings.observationWindow.months は ${WINDOW_MONTHS} 以上の整数で書きます(下限は第5章 5.4.6 の既定の ${WINDOW_MONTHS}か月。許されるのは長くすることだけです)`);
+        if (!Number.isInteger(W.months) || W.months < 1) bad.push('settings.observationWindow.months は 1 以上の整数で書きます(月で数える構造の下限です。長くすることも短くすることも、決定した者と理由を記録して受け付けます)');
         else if (W.months !== (prior?.observationWindow?.months ?? null)) {
           if (!(typeof change?.decidedBy === 'string' && change.decidedBy.trim() && typeof change?.reason === 'string' && change.reason.trim())) {
             bad.push('観測の窓の値を変えるには、決定した者(decidedBy。記名の自然人)と理由(reason)を書きます。向き(長くする・短くする)を問わず要ります');

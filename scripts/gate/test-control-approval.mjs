@@ -330,6 +330,7 @@ const hasErr = (r, re) => r.errors.some((e) => re.test(e));
   check('承認をコア機能のパスで掛ける構成の判定: S1 の構成だけが真', approvalByCorePaths(baseCfg()) === true);
   check('S2(範囲を限らない・必須の承認数 1)は偽', approvalByCorePaths(baseCfg({ gates: { g6: { state: 'required', params: {} } }, review: { requiredApprovals: 1, reviewerCount: 1 } })) === false);
   check('必須の承認数が 1 の構成は、範囲が core-only でも偽(現行どおり全 PR に承認数を強制する)', approvalByCorePaths(baseCfg({ review: { requiredApprovals: 1, reviewerCount: 1 } })) === false);
+  check('安全重要度が未記入の構成は偽(CL0 とみなさない。緩めない側)', (() => { const c = baseCfg(); delete c.answers['q-criticality']; return approvalByCorePaths(c) === false; })());
   check('CL1 以上は偽', ['cl1', 'cl2', 'cl3'].every((c) => approvalByCorePaths(baseCfg({ answers: { 'q-criticality': c, 'q-quality': 'quality-standard' } })) === false));
   check('規制業・承認者 2 名は偽', approvalByCorePaths(baseCfg({ answers: { 'q-criticality': 'cl0', 'q-quality': 'quality-regulated' } })) === false && approvalByCorePaths(baseCfg({ review: { requiredApprovals: 0, reviewerCount: 2 } })) === false);
   check('G-6 が未達・簡略の構成は偽', approvalByCorePaths(baseCfg({ gates: { g6: { state: 'unmet', params: { scope: 'core-only' } } } })) === false);

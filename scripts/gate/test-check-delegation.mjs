@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT, changeTypeProblems, observationWindowAt, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
+import { ROOT, changeTypeProblems, observationWindowAt, observationWindowInfo, observationWindowProblems, reworkBaselineAt, reworkBaselineProblems } from './config.mjs';
 import { judgeDelegatedMerge } from './delegation.mjs';
 import { derivePostHoc, requiredCount } from './post-hoc-confirmation.mjs';
 import { minSampleOf, detectionValueProblems, undefinedValues } from './detection-values.mjs';
@@ -419,19 +419,19 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       cfg.observationWindow = { months: history.at(-1).months, history };
       return cfg;
     };
-    const h4 = (recordedAt) => [{ months: 4, recordedAt, decidedBy: '山田 太郎', reason: '件数が少ない種別のため' }];
+    const h4 = (recordedAt) => [{ months: 2, recordedAt: '2026-01-01', decidedBy: '鈴木 一郎', reason: '初回の決定' }, { months: 4, recordedAt, decidedBy: '山田 太郎', reason: '件数が少ない種別のため' }];
     const c0 = base().config;
-    check('観測の窓: 欄の無い構成は既定の 2 か月', observationWindowAt(c0, '2026-10-01') === 2 && observationWindowAt({}, '2026-10-01') === 2);
+    check('観測の窓: 欄の無い構成は未定義(名目の 2 か月を返すが、定めていないと読める)', observationWindowAt(c0, '2026-10-01') === 2 && observationWindowAt({}, '2026-10-01') === 2 && observationWindowInfo({}, '2026-10-01').defined === false && observationWindowInfo(c0, '2026-10-01').defined === true);
     // D-0 の生成区間(renderAutonomyTable は日付を取らない。履歴の固定の値だけで決まる)。process-compass #349 突合2巡目 高-1・中-1・低-3。
     // 「効く評価の日」の表示は正規表現の \d 落ちで常に「記録なし」と出ていた。停止の残りは本ファイルの IMPL-0516:ng の場面が覆う
     {
       const entry = (months, recordedAt) => ({ months, recordedAt, decidedBy: '山田 太郎', reason: 'x' });
       const tbl = (history) => renderAutonomyTable(withWindow(base().config, history), false, { q1: false }).join('\n');
-      const tLong = tbl([entry(4, '2026-10-10')]);
+      const tLong = tbl([entry(2, '2026-01-01'), entry(4, '2026-10-10')]);
       check('D-0 の窓(長くした): 最新の値 4か月・2026-11-01 の評価から・前の値 2か月・記録した日を出す', /最新の値は 4か月で、2026-11-01 の評価から効く/.test(tLong) && /前の値\(2か月\)で数える/.test(tLong) && /記録した日 2026-10-10/.test(tLong) && !/記録なし/.test(tLong));
       const tShort = tbl([entry(4, '2026-09-01'), entry(2, '2026-10-10')]);
       check('D-0 の窓(短くした): 効いている長い値(4か月)と、次に効く短い値(2か月)・効く評価の日(2026-11-01)を出す', /最新の値は 2か月で、2026-11-01 の評価から効く/.test(tShort) && /前の値\(4か月\)で数える/.test(tShort) && /直近、評価の日に効く観測の窓/.test(tShort) && !/毎月、直近2か月の窓/.test(tShort));
-      check('D-0 の窓(年をまたぐ): 12 月に記録した値は翌年 1 月 1 日の評価から効く', /2027-01-01 の評価から効く/.test(tbl([entry(3, '2026-12-20')])));
+      check('D-0 の窓(年をまたぐ): 12 月に記録した値は翌年 1 月 1 日の評価から効く', /2027-01-01 の評価から効く/.test(tbl([entry(2, '2026-01-01'), entry(3, '2026-12-20')])));
       const tDef = renderAutonomyTable(base().config, false, { q1: false }).join('\n');
       check('D-0 の窓(既定): 窓の変更の開示は出さず、「直近2か月の窓」と書く', /毎月、直近2か月の窓\(/.test(tDef) && !/評価から効く/.test(tDef));
       check('D-0 の手戻り率の欄: 差し戻し率と共通の観測の窓であることを書く', /毎月、[^|]*\(差し戻し率と共通の観測の窓/.test(tLong.split('\n').find((l) => l.includes('表示文言')).split('|')[5] ?? ''));
@@ -441,7 +441,7 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
       '観測の窓: 記録した日より後の評価の日から当てる(同じ日は前の値。前の評価の日へ遡らない)',
       observationWindowAt(c4, '2026-10-10') === 2 && observationWindowAt(c4, '2026-10-11') === 4 && observationWindowAt(c4, '2026-10-01') === 2
     );
-    check('観測の窓: 下限・記名・理由・日付の順・最後の値の一致を検査する', observationWindowProblems(c4).length === 0 && observationWindowProblems({ observationWindow: { months: 1, history: [] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', reason: 'x' }] } }).some((p) => /decidedBy/.test(p)) && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', decidedBy: 'Claude', reason: 'x' }] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 5, history: h4('2026-10-10') } }).some((p) => /一致しない/.test(p)) && observationWindowProblems({ observationWindow: { months: 3, history: [...h4('2026-10-10'), { months: 3, recordedAt: '2026-09-01', decidedBy: '山田 太郎', reason: 'x' }] } }).some((p) => /日付の順/.test(p)));
+    check('観測の窓: 下限 1(月で数える構造の下限)。長くすることも短くすることも、決定した者と理由の記録つきで受ける・記名・理由・日付の順・最後の値の一致を検査する', observationWindowProblems(c4).length === 0 && observationWindowProblems({ observationWindow: { months: 0, history: [{ months: 0, recordedAt: '2026-10-10', decidedBy: '山田 太郎', reason: 'x' }] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 1, history: [{ months: 1, recordedAt: '2026-10-10', decidedBy: '山田 太郎', reason: 'x' }] } }).length === 0 && observationWindowProblems({ observationWindow: { months: 3, history: [{ months: 4, recordedAt: '2026-09-10', decidedBy: '山田 太郎', reason: 'x' }, { months: 3, recordedAt: '2026-10-10', decidedBy: '山田 太郎', reason: 'y' }] } }).length === 0 && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', reason: 'x' }] } }).some((p) => /decidedBy/.test(p)) && observationWindowProblems({ observationWindow: { months: 4, history: [{ months: 4, recordedAt: '2026-10-10', decidedBy: 'Claude', reason: 'x' }] } }).length > 0 && observationWindowProblems({ observationWindow: { months: 5, history: h4('2026-10-10') } }).some((p) => /一致しない/.test(p)) && observationWindowProblems({ observationWindow: { months: 3, history: [...h4('2026-10-10'), { months: 3, recordedAt: '2026-09-01', decidedBy: '山田 太郎', reason: 'x' }] } }).some((p) => /日付の順/.test(p)));
     // IMPL-0516:ng(違反の入力: 窓を長くした日より前の評価の日。前の値(2)が効き、過去の 0% の停止が残る)
     const zz = base();
     zz.records.rejections = [];
@@ -474,17 +474,20 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
     jf.records.asOf = '2026-10-05';
     const after4 = autonomyState(jf.config, jf.records).types[0];
     check('観測の窓: 判定不能の停止が、次の評価の日(2026-10-01)から新しい窓(4 か月)で判定可能になると解ける', before4.rejection.state === '判定不能' && after4.rejection.state !== '判定不能' && after4.rejection.n >= 30 && after4.rejection.months === 4 && !/次の評価の日/.test(after4.rejection.windowText), `${before4.rejection.n} -> ${after4.rejection.n} ${after4.rejection.state}`);
-    // 表示: 窓の長さを常に出し、既定より長いときは決定した者と日付を併記する
+    // 表示: 窓の長さを常に出す。定めているときは決定した者と日付を併記し、定めていないときは「定めていない」と出す
     const textDef = rejectionText(autonomyState(base().config, base().records).types[0]);
+    const ub = base();
+    delete ub.config.observationWindow;
+    const textUndef = rejectionText(autonomyState(ub.config, ub.records).types[0]);
     const textLong = rejectionText(zys.types[0]);
-    check('観測の窓: 長さを常に出し、既定より長いときは決定した者と日付を併記する', /観測の窓 2か月\(既定\)/.test(textDef) && /観測の窓 4か月\(既定 2か月より長い。決定: 山田 太郎、記録した日 2026-09-01\)/.test(textLong), `${textDef} | ${textLong}`);
+    check('観測の窓: 長さを常に出し、定めているときは決定した者と日付を併記する。定めていないときは「(既定)」と書かず定めていないと出す', /観測の窓 定めていない/.test(textUndef) && !/既定/.test(textUndef) && /観測の窓 2か月\(決定: 鈴木 一郎/.test(textDef) && /観測の窓 4か月\(決定: 山田 太郎、記録した日 2026-09-01\)/.test(textLong), `${textDef} | ${textLong}`);
     check('観測の窓: 次の一手の注記にも窓の長さを出す', autonomyNoteLines(zys).join('\n').includes('観測の窓 4か月'));
     // 履歴を読めないときも、窓の長さと決定した者を出す
     const noh = base();
     withWindow(noh.config, h4('2026-09-01'));
     noh.records.history = { available: false, reason: '試験' };
     const nohT = rejectionText(autonomyState(noh.config, noh.records).types[0]);
-    check('観測の窓: 履歴を読めないときも、窓の長さと決定した者を出す', /判定できない\(履歴を読めない\)/.test(nohT) && /観測の窓 4か月\(既定 2か月より長い。決定: 山田 太郎/.test(nohT), nohT);
+    check('観測の窓: 履歴を読めないときも、窓の長さと決定した者を出す', /判定できない\(履歴を読めない\)/.test(nohT) && /観測の窓 4か月\(決定: 山田 太郎/.test(nohT), nohT);
   }
   // 宣言行の無い CHANGES_REQUESTED(process-compass #350)。判定記録ではないため分子に数えず、件数だけを表示する
   {
@@ -1382,7 +1385,16 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   gNone.records.defects = { present: false, rows: [] };
   const g4 = st(gNone);
   check('事故の警告: 一般の案件では、欠陥の台帳が無くても止めず、「事故の警告は働いていない」と警告する', g4.types[0].level === 'L3' && g4.warnings.some((w) => /事故の警告は働いていない/.test(w.text)), JSON.stringify(g4.types[0].stops));
-  check('事故の警告: AI 起因でないと分かれば(解決)、警告は消える', st(general({ ...aiRow, aiCause: 'なし' })).warnings.length === 0);
+  check('事故の警告: AI 起因でないと分かれば、警告は出ない', st(general({ ...aiRow, aiCause: 'なし' })).warnings.length === 0);
+  // 警告が消えるのは、台帳の行の状態が「解決済み」になったとき。登録し直しでは消えない(警告は事故の状態に付く)
+  check('事故の警告: 行の状態が「解決済み」なら警告は消え、未解決なら出る(状態の列で読む)', st(general({ ...aiRow, status: '解決済み' })).warnings.length === 0 && st(general({ ...aiRow, status: '未解決' })).warnings.length === 1 && st(general({ ...unknownRow, status: '解決済み' })).warnings.length === 0);
+  const gRe = general(aiRow);
+  gRe.config.delegation.changeTypes[0].registeredAt = '2026-10-10';
+  check('事故の警告: 未解決のまま事故の日より後に登録し直しても、警告は消えない', st(gRe).warnings.length === 1 && st(gRe).types[0].level === 'L3');
+  const rows = parseDefectRows(['| ID | 重大度(Sev1 / Sev2 / Sev3) | 状態(未解決 / 解決済み) | 発生日 | AI 起因(あり / なし / 特定できない) |', '| --- | --- | --- | --- | --- |', '| BUG-1 | Sev1 | 解決済み | 2026-10-05 | あり |', '| BUG-2 | Sev1 | 未解決 | 2026-10-05 | あり |'].join('\n'));
+  check('欠陥の台帳: 「状態」の列を読む。列が無い旧い台帳は未解決として読む', rows[0].status === '解決済み' && rows[1].status === '未解決' && parseDefectRows(['| ID | 重大度 | AI 起因 |', '| --- | --- | --- |', '| BUG-3 | Sev1 | あり |'].join('\n'))[0].status === '未解決');
+  // 線の内側(CL1 以上・規制業)は、状態を見ず現行のまま止める
+  check('事故の停止: 線の内側は、状態が「解決済み」でも現行のまま止める', kindsOf(st(cl1({ ...aiRow, status: '解決済み' })).types[0]).includes('downgrade'));
   check('事故の警告: Sev3 は警告しない', st(general(sev('Sev3', 'あり', '2026-10-05'))).warnings.length === 0);
   check('事故の警告: 組織の外へ渡す形は事故の ID を出さず件数だけにする', warningLines(g1, { external: true }).every((t) => !/BUG-9/.test(t)) && /1 件/.test(warningLines(g1, { external: true })[0]) && warningLines(g1).some((t) => /BUG-9/.test(t)));
   check('事故の警告: 次の一手の注記と保証の開示は同じ文を使う(警告の行がある)', autonomyNoteLines(g1).some((t) => /警告:/.test(t) && /BUG-9/.test(t)));
@@ -1419,6 +1431,11 @@ check('ワークフロー: 履歴の全体を取得する(差し戻し率の窓�
   const hist = base();
   hist.config.detection = { minSample: { history: [{ value: 30, recordedAt: '2026-01-01', decidedBy: '鈴木 一郎', reason: '試験' }] } };
   check('値(履歴つきの欄): 履歴の最新の整数を読み、構成の検査は問題なし', minSampleOf(hist.config) === 30 && detectionValueProblems(hist.config).length === 0 && st(hist).types[0].rejection.state !== '未定義');
+  {
+    const hv = (e) => ({ detection: { minSample: { history: [{ value: 5, recordedAt: '2026-01-01', decidedBy: '山田 太郎', reason: 'x', ...e }] } } });
+    check('値(履歴の検査): AI の名義の記名・記録した日の欠落を拒む。整数だけの形は通す', detectionValueProblems(hv({ decidedBy: 'Claude' })).length > 0 && detectionValueProblems(hv({ recordedAt: undefined })).length > 0 && detectionValueProblems(hv({})).length === 0 && detectionValueProblems({ detection: { minSample: 30 } }).length === 0);
+    check('値(履歴の効力): AI の名義・記録した日の無い記録は効かせない。評価の日より後に記録した値は、その日の評価に当てない', minSampleOf(hv({ decidedBy: 'Claude' })) === null && minSampleOf(hv({ recordedAt: undefined })) === null && minSampleOf(hv({}), '2026-02-01') === 5 && minSampleOf(hv({ recordedAt: '2099-01-01' }), '2026-02-01') === null && minSampleOf({ detection: { minSample: 30 } }, '2026-02-01') === 30);
+  }
   check('値(欄の検査): 欄に直接 null・0・記名の無い履歴は拒む', detectionValueProblems({ detection: { minSample: null } }).length === 1 && detectionValueProblems({ detection: { minSample: 0 } }).length === 1 && detectionValueProblems({ detection: { minSample: { history: [{ value: 5, recordedAt: '2026-01-01' }] } } }).length === 2 && detectionValueProblems({ reviewQueue: { loadLimit: 3 } }).length === 0);
   check('値(抜き取りの件数): 定義が無ければ、月の定めは当月の全件(一律の 5 件を置かない)', requiredCount(8, { perMonth: null }) === 8 && requiredCount(8, { perMonth: 5 }) === 5 && requiredCount(3, { perMonth: 5 }) === 3);
   const noCap = base();

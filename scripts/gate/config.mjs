@@ -2645,7 +2645,8 @@ export function reviewersRequiredOf(config) {
 export function approvalByCorePaths(config) {
   if (config?.gates?.g6?.state !== 'required' || config?.gates?.g6?.params?.scope !== 'core-only') return false;
   if (config?.review?.requiredApprovals !== 0) return false;
-  if (['cl1', 'cl2', 'cl3'].includes(config?.answers?.['q-criticality']) || config?.answers?.['q-quality'] === 'quality-regulated') return false;
+  // 緩めるのは、安全重要度が CL0 と記入されているときだけ。未記入は CL0 とみなさない(緩めない側)
+  if (config?.answers?.['q-criticality'] !== 'cl0' || config?.answers?.['q-quality'] === 'quality-regulated') return false;
   return Math.max(1, Number(config?.review?.reviewerCount ?? 1) || 1) < 2;
 }
 /** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
@@ -3009,32 +3010,34 @@ export function isRealDay(v) {
 
 // ---------------------------------------------------------------- 観測の窓(第5章 5.4.6。process-compass #349)
 
-/** 観測の窓(月)の既定。第5章 5.4.6 の「2か月継続」(EV-0146)。構成に欄が無いときの値であり、下限でもある */
+/** 観測の窓(月)の名目の値。定めていないとき、表示と取得の長さにだけ使う。既定ではなく、下限でもない(検知は働かない) */
 export const OBSERVATION_WINDOW_DEFAULT = 2;
+/** 観測の窓の下限(月で数える構造上の下限。値の下限ではない) */
+export const OBSERVATION_WINDOW_MIN = 1;
 
 /**
  * 評価の日 day に効く観測の窓(月)。構成の observationWindow.history のうち、記録した日(recordedAt)が評価の日より前の
- * 最後の値。同じ日に記録した値は、その日の評価には効かない(前の値)。遡って当てない。履歴が無ければ既定(2)。
+ * 最後の値。同じ日に記録した値は、その日の評価には効かない(前の値)。遡って当てない。履歴が無ければ未定義で、名目の値(2)を返す(検知は働かない)。
  * 構成の形: observationWindow = { months, history: [{ months, recordedAt, decidedBy, reason }] }。最小標本数の欄は持たない
  */
 export function observationWindowAt(config, day) {
   const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
   let months = OBSERVATION_WINDOW_DEFAULT;
   for (const e of h) {
-    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) months = e.months;
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_MIN && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) months = e.months;
   }
   return months;
 }
 
-/** 評価の日 day に効く観測の窓の値と、その値を記録した者・日(既定のままなら null)。表示に使う */
+/** 評価の日 day に効く観測の窓の値と、その値を記録した者・日(定めていないなら null)。表示に使う */
 export function observationWindowInfo(config, day) {
   const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
   let entry = null;
   for (const e of h) {
-    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) entry = e;
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_MIN && isRealDay(e.recordedAt) && String(e.recordedAt) < String(day)) entry = e;
   }
   const months = entry ? entry.months : OBSERVATION_WINDOW_DEFAULT;
-  return { months, longer: months > OBSERVATION_WINDOW_DEFAULT, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
+  return { months, defined: entry !== null, decidedBy: entry?.decidedBy ?? null, recordedAt: entry?.recordedAt ?? null, reason: entry?.reason ?? null };
 }
 
 /**
@@ -3045,7 +3048,7 @@ export function observationWindowPending(config, day) {
   const h = Array.isArray(config?.observationWindow?.history) ? config.observationWindow.history : [];
   let entry = null;
   for (const e of h) {
-    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_DEFAULT && isRealDay(e.recordedAt) && String(e.recordedAt) >= String(day)) entry = e;
+    if (Number.isInteger(e?.months) && e.months >= OBSERVATION_WINDOW_MIN && isRealDay(e.recordedAt) && String(e.recordedAt) >= String(day)) entry = e;
   }
   if (!entry) return null;
   const [y, mo] = String(entry.recordedAt).split('-').map(Number);
@@ -3053,29 +3056,30 @@ export function observationWindowPending(config, day) {
 }
 
 /**
- * 観測の窓の長さの文。常に出す。既定より長いときは、決定した者と日付を併記する。
+ * 観測の窓の長さの文。常に出す。定めているときは、決定した者と日付を併記する。定めていないときは、定めていないと出す。
  * pending(observationWindowPending の値)があるときは、まだ効いていない新しい値を「次の評価の日から」で併記する
  */
 export function windowLengthText(info, pending = null) {
-  const now = info.longer
-    ? `観測の窓 ${info.months}か月(既定 ${OBSERVATION_WINDOW_DEFAULT}か月より長い。決定: ${info.decidedBy ?? '記録なし'}、記録した日 ${info.recordedAt ?? '記録なし'})`
-    : `観測の窓 ${info.months}か月(既定)`;
+  const defined = info.defined ?? (info.recordedAt != null || info.decidedBy != null);
+  const now = defined
+    ? `観測の窓 ${info.months}か月(決定: ${info.decidedBy ?? '記録なし'}、記録した日 ${info.recordedAt ?? '記録なし'})`
+    : `観測の窓 定めていない(名目の ${info.months}か月で表示。差し戻し率 0% の継続の検知と手戻り率の検知は働いていない)`;
   return pending
     ? `${now}。次の評価の日(${pending.from})から ${pending.months}か月(決定: ${pending.decidedBy ?? '記録なし'}、記録した日 ${pending.recordedAt})`
     : now;
 }
 
 /**
- * 観測の窓の欄の検査。整数・下限 2・記名と理由・日付の順・最後の値と months の一致。
- * 欄が無い構成は問題なし(既定の 2)。AI を示す語を含む名義の記名は受け付けない
+ * 観測の窓の欄の検査。整数・下限 1・記名と理由・日付の順・最後の値と months の一致。向きは問わない(長くも短くもできる。決定した者と理由を残す)。
+ * 欄が無い構成は問題なし(未定義)。AI を示す語を含む名義の記名は受け付けない
  */
 export function observationWindowProblems(config) {
   const w = config?.observationWindow;
   if (w === undefined || w === null) return [];
   const out = [];
   if (typeof w !== 'object' || Array.isArray(w)) return ['observationWindow はオブジェクトで書く'];
-  const okMonths = (v) => Number.isInteger(v) && v >= OBSERVATION_WINDOW_DEFAULT;
-  if (!okMonths(w.months)) out.push(`months は ${OBSERVATION_WINDOW_DEFAULT} 以上の整数で書く(下限は第5章 5.4.6 の既定。許されるのは長くすることだけ)`);
+  const okMonths = (v) => Number.isInteger(v) && v >= OBSERVATION_WINDOW_MIN;
+  if (!okMonths(w.months)) out.push(`months は ${OBSERVATION_WINDOW_MIN} 以上の整数で書く(月で数える構造の下限)`);
   const h = w.history;
   if (!Array.isArray(h)) {
     out.push('history(値・記録した日・決定した者・理由の履歴)を配列で書く');
@@ -3083,7 +3087,7 @@ export function observationWindowProblems(config) {
   }
   let prev = null;
   h.forEach((e, i) => {
-    if (!okMonths(e?.months)) out.push(`history[${i}].months は ${OBSERVATION_WINDOW_DEFAULT} 以上の整数で書く`);
+    if (!okMonths(e?.months)) out.push(`history[${i}].months は ${OBSERVATION_WINDOW_MIN} 以上の整数で書く`);
     if (!isRealDay(e?.recordedAt)) out.push(`history[${i}].recordedAt は実在する日付(YYYY-MM-DD)で書く`);
     else if (prev !== null && String(e.recordedAt) < prev) out.push(`history[${i}].recordedAt が前の記録より前の日付である(日付の順に並べる)`);
     if (isRealDay(e?.recordedAt)) prev = String(e.recordedAt);
@@ -3091,7 +3095,7 @@ export function observationWindowProblems(config) {
     else if (aiNameReason(e.decidedBy, { account: true })) out.push(`history[${i}].decidedBy "${e.decidedBy}" は ${aiNameReason(e.decidedBy, { account: true })}。観測の窓の決定は人が記名する`);
     if (typeof e?.reason !== 'string' || !e.reason.trim()) out.push(`history[${i}].reason(理由)が無い`);
   });
-  const last = h.length ? h[h.length - 1]?.months : OBSERVATION_WINDOW_DEFAULT;
+  const last = h.length ? h[h.length - 1]?.months : null;
   if (okMonths(w.months) && w.months !== last) out.push(`months(${w.months})が履歴の最後の値(${last ?? '無し'})と一致しない。値は履歴を経ずに変えられない`);
   return out;
 }

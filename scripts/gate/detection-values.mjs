@@ -6,27 +6,40 @@
 // 値の欄の形(最小標本数・同時保有の上限): 整数(1 以上)、または { history: [{ value, recordedAt, decidedBy, reason }] }。
 // 履歴の最新の value が null のときは「外した記録」であり、未定義と同じ扱いにする。欄に直接 null は書かない(同じ状態を 2 形で書かせない)
 
+import { aiNameReason, isRealDay } from './config.mjs';
+
 const isPosInt = (v) => Number.isInteger(v) && v >= 1;
 
-/** 値の欄(整数、または履歴つきのオブジェクト)から、いま効く値を返す。未定義なら null */
-export function definedValue(field) {
+/**
+ * 値の欄(整数、または履歴つきのオブジェクト)から、効く値を返す。未定義なら null。
+ * 履歴は観測の窓と同じ型で読む: 記録した日(recordedAt)が実在する日付で、決定した者が AI の名義でない記録だけを効かせる。
+ * day(評価の日)を渡したときは、記録した日が day より前の記録だけを当てる(遡って当てない)。整数だけの形は、常に効く
+ */
+export function definedValue(field, day = null) {
   if (isPosInt(field)) return field;
   const h = field && typeof field === 'object' && !Array.isArray(field) && Array.isArray(field.history) ? field.history : null;
   if (!h || !h.length) return null;
-  const v = h[h.length - 1]?.value;
+  let v = null;
+  for (const e of h) {
+    if (!(e?.value === null || isPosInt(e?.value))) continue;
+    if (!isRealDay(e?.recordedAt)) continue;
+    if (typeof e?.decidedBy !== 'string' || !e.decidedBy.trim() || aiNameReason(e.decidedBy, { account: true })) continue;
+    if (day !== null && !(String(e.recordedAt) < String(day))) continue;
+    v = e.value;
+  }
   return isPosInt(v) ? v : null;
 }
 
 /** 最小標本数(窓の中の変更の件数)。未定義なら null */
-export const minSampleOf = (config) => definedValue(config?.detection?.minSample);
+export const minSampleOf = (config, day = null) => definedValue(config?.detection?.minSample, day);
 
 /** 同時保有の上限(1人あたりの未応答の指名の件数)。未定義なら null */
-export const loadLimitOf = (config) => definedValue(config?.reviewQueue?.loadLimit);
+export const loadLimitOf = (config, day = null) => definedValue(config?.reviewQueue?.loadLimit, day);
 
 /** 観測の窓が定義されているか(構成の observationWindow の履歴に、整数の months がある) */
-export function observationWindowDefined(config) {
+export function observationWindowDefined(config, day = null) {
   const h = config?.observationWindow?.history;
-  return Array.isArray(h) && h.some((e) => Number.isInteger(e?.months) && e.months >= 1);
+  return Array.isArray(h) && h.some((e) => Number.isInteger(e?.months) && e.months >= 1 && isRealDay(e?.recordedAt) && !(typeof e?.decidedBy === 'string' && aiNameReason(e.decidedBy, { account: true })) && (day === null || String(e.recordedAt) < String(day)));
 }
 
 /** 事後の抜き取りの件数(月ごと)。未定義なら null(当月の全件を事後に確かめる) */
@@ -73,9 +86,14 @@ export function detectionValueProblems(config) {
     if (field === null) return out.push(`${name} に直接 null は書かない(外すときは履歴の最後に value: null を、記名と理由とともに足す)`);
     if (isPosInt(field)) return;
     if (typeof field !== 'object' || Array.isArray(field) || !Array.isArray(field.history)) return out.push(`${name} は 1 以上の整数か、history(値・記録した日・決定した者・理由)を持つオブジェクトで書く`);
+    let prev = null;
     field.history.forEach((e, i) => {
       if (!(e?.value === null || isPosInt(e?.value))) out.push(`${name}.history[${i}].value は 1 以上の整数か null(外した記録)で書く`);
+      if (!isRealDay(e?.recordedAt)) out.push(`${name}.history[${i}].recordedAt は実在する日付(YYYY-MM-DD)で書く`);
+      else if (prev !== null && String(e.recordedAt) < prev) out.push(`${name}.history[${i}].recordedAt が前の記録より前の日付である(日付の順に並べる)`);
+      if (isRealDay(e?.recordedAt)) prev = String(e.recordedAt);
       if (typeof e?.decidedBy !== 'string' || !e.decidedBy.trim()) out.push(`${name}.history[${i}].decidedBy(決定した者の記名)が無い`);
+      else if (aiNameReason(e.decidedBy, { account: true })) out.push(`${name}.history[${i}].decidedBy "${e.decidedBy}" は ${aiNameReason(e.decidedBy, { account: true })}。値の決定は人が記名する`);
       if (typeof e?.reason !== 'string' || !e.reason.trim()) out.push(`${name}.history[${i}].reason(理由)が無い`);
     });
   };

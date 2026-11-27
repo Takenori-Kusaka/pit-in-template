@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRecords, recordsFromCopy, gateRecordFromText, featureOfPr, passed, recordIssues, recordRoute, g6Status, pickupCheck, renderPickup, PICKUP_EXIT } from './next.mjs';
+import { undefinedValueNotes } from './next.mjs';
 import { doneConditionSource, flowSection, doneTasksOf, specOutsideLastParagraph, doneTasks, outsideSpecNote, coreRemediationNotes } from './next.mjs';
 import { specTrailersOf } from './autonomy.mjs';
 import { DEFAULT_DONE_CONDITION } from './brief-estimates.mjs';
@@ -520,6 +521,10 @@ ${r.out}`);
   check('IMPL-0645:ok コア機能の記載が無ければ案内しない', coreRemediationNotes([], ledger).length === 0);
 }
 console.log('');
+// 定めていない値の注記は、委任の変更種別を持たない構成(安全重要度 CL1 以上・規制業を含む)でも出す
+check('定めていない値: 委任を使わない構成でも、/pit の注記に、働いていない検知の名を出す', (() => { const l = undefinedValueNotes({ answers: { 'q-criticality': 'cl1' }, delegation: { changeTypes: [] } }); return l.length === 1 && /同時保有の上限/.test(l[0]) && /観測の窓/.test(l[0]); })());
+check('定めていない値: 値を定めていれば出さない', undefinedValueNotes({ observationWindow: { history: [{ months: 2, recordedAt: '2026-01-01', decidedBy: '山田 太郎', reason: 'x' }] }, detection: { minSample: 10 }, reviewQueue: { loadLimit: 3 } }).length === 0);
+
 if (failures) {
   console.log(`next.mjs の判定記録の読み取りの試験: ${failures} 件が期待と一致しません`);
   process.exit(1);

@@ -53,7 +53,8 @@ import { correctionGapNote } from './adoption-trial.mjs';
 import { samplingOverdueNote, quarterOf as sampleQuarterOf } from './content-sampling.mjs';
 import { countClarifications, unmappedCriteria } from './verification-trace.mjs';
 import { recalibrationState, recalibrationNote } from './recalibration.mjs';
-import { autonomyState, readAutonomyRecords, autonomyNoteLines, specTrailersOf, specTaskOfLine } from './autonomy.mjs';
+import { autonomyState, readAutonomyRecords, autonomyNoteLines, warningLines, specTrailersOf, specTaskOfLine } from './autonomy.mjs';
+import { undefinedValues } from './detection-values.mjs';
 import { lastParagraph } from './check-pr.mjs';
 import { retiredDetectionTypes, valueOwnerAgreementState, observationWindowAt } from './config.mjs';
 import { mailboxFor, renderRoleCard, renderClauseScopes, renderEscalation, seatPairingNotes, d0LegacyOnlySections, pendingTightenings } from '../init/generate-profile.mjs';
@@ -1229,6 +1230,9 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
   // 判定不能を「異常なし」と出さない。窓ごとに受信箱へ渡さない(注記に留める)
   if (config.configured !== false && (config.delegation?.changeTypes ?? []).length) {
     for (const n of autonomyNotes(config)) result.notes.push(n);
+  } else if (config.configured !== false) {
+    // 委任を使わない構成(安全重要度 CL1 以上・規制業を含む)でも、定めていない値と働いていない検知の名は黙って外さない
+    for (const n of undefinedValueNotes(config)) result.notes.push(n);
   }
   // 能力依存の定数の再評価待ち(#295 / ADR-0058 決定6)。段階は止めない(注記)。値は自動で変えない
   if (config.configured !== false) {
@@ -1483,6 +1487,11 @@ function seatText(config, roleId) {
 }
 
 /** 登録した変更種別ごとの AI自律レベルの注記(第5章 5.4.6)。委任の判定(check-delegation)と同じ導出を使う */
+/** 定めていない値の注記の行(委任の有無に依らず出す)。無ければ空 */
+export function undefinedValueNotes(config) {
+  return warningLines({ warnings: [], undefinedValues: undefinedValues(config) });
+}
+
 function autonomyNotes(config) {
   const out = [];
   try {

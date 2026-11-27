@@ -14,21 +14,20 @@
 //     - コア機能の理解保持者数が1名以下(運用引き継ぎ文書の節2)。運用引き継ぎ文書の履歴から1名以下だった時点を導き、
 //       2名以上へ回復した日より後の登録日で戻る。履歴を読めない(浅い取得等)場合は、判定できないものとして止める
 //   第2区分(期間ごとに集計する)
-//     - 差し戻し率: 毎月、直近の観測の窓(構成の observationWindow。既定2か月・下限2。評価の日に効く値を当て、遡らない)で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
+//     - 差し戻し率: 毎月、直近の観測の窓(構成の observationWindow。採用者が定める値で、既定を置かない。評価の日に効く値を当て、遡らない。定めていなければ検知は働かず、当月の全件を事後に確かめる)で評価する。母数は既定ブランチの履歴のうち種別の規則の範囲に入る変更、
 //       分子は判定基準の番号を引いた G-6 の差し戻しの判定記録。判定記録は様式(docs/gates/・記録用ブランチの records/gates/)と、
 //       レビューを媒体とした判定(記録用ブランチの records/reviews/ と基底ブランチの docs/records/reviews/ の写しの宣言行)の両方を読む。
 //       宣言行(G-6: 差し戻し / 基準 N)の無い承認レビューは判定記録ではなく、分子に数えない(CHANGES_REQUESTED だけのものを含む)。
 //       数えていない件数(宣言行の無い CHANGES_REQUESTED)は、窓ごと・種別ごとに表示する。記録用ブランチを読めないときは「読めない」と出す
-//       最小標本数(30件)以上で0件の評価は、
+//       最小標本数(採用者が定める値。定めていなければ検知は働かない)以上で0件の評価は、
 //       評価の日より後の登録日まで種別を止める。最新の窓が最小標本数に満たない場合は判定不能とし、
-//       判定可能な窓が得られるまで止める(適用の条件の欠落。判定を待たずに戻る)
+//       止めずに、当月の全件を事後に確かめる(事後の確認の記録を読めないときは止める)
 //     - 手戻り率: 毎月、差し戻し率と同じ評価の日・同じ窓で評価する。母数は窓の中に、登録した種別の範囲に入る取り込みの変更を持つタスク
 //       (トレーラ Spec: F-NNN / Task-N)。分子はそのうち、(1) 既定ブランチの第1親の履歴に同じタスクを指すトレーラの取り込みが2つ以上ある、
 //       (2) 実装計画(specs/*/plan.md)の履歴のいずれかの版で状態が「やり直し」だった、のどちらかに当たるもの(和。重複は1つに数える)。
 //       基準値は構成の reworkBaseline(既定値なし。効力日は観測の窓と同じ)。評価の日 m では prevDay(m) 以前の記録だけで数える。
-//       最小標本数(30件)以上で比が基準値を超えた評価は、評価の日より後の登録日まで種別を止める。窓の母数が最小標本数に満たない(判定不能)・
-//       評価の日に効く基準値が無い(未設定)・手戻り率の記録を読めない(浅い取得を含む)ときも、適用の条件の欠落として種別を止める(ADR-0158)。
-//       判定を待たずに戻る(両方の窓が判定可能になった評価の日 / 基準値を記録した日より後の評価の日)。計画表に書かれない不採用の後の再作成は数えていない旨を、常に表示する
+//       最小標本数(採用者が定める値)以上で比が基準値を超えた評価は、評価の日より後の登録日まで種別を止める。窓の母数が最小標本数に満たない(判定不能)・
+//       評価の日に効く基準値が無い(未設定)ときは、止めずに、当月の全件を事後に確かめる。手戻り率の記録を読めない(浅い取得を含む)ときは止める。計画表に書かれない不採用の後の再作成は数えていない旨を、常に表示する
 //   登録日(registeredAt)の無い種別は、判定できないものとして止める。上限が L3 未満の構成では、すべての種別を止める
 //
 // 純粋な関数(autonomyState)と、記録を読む関数(readAutonomyRecords)を分ける。委任の判定(delegation.mjs)は
@@ -272,9 +271,9 @@ export function autonomyState(config, records) {
     // 事故の警告(第5章 5.4.6。一般の案件で、止める側から外したもの)。種別ごとの警告は types[].warnings にも出す
     warnings: [],
   };
-  const MIN = minSampleOf(config);
+  const MIN = minSampleOf(config, asOf ? monthStart(asOf) : null);
   // 最小標本数と観測の窓の両方を採用者が定めているときだけ、窓を使う検知(差し戻し率 0% の継続・手戻り率)が働く
-  const detectionOff = MIN === null || !observationWindowDefined(config);
+  const detectionOff = MIN === null || !observationWindowDefined(config, asOf ? monthStart(asOf) : null);
   // 安全重要度 CL1 以上、または規制業の案件では、事故の後の停止・引き下げを現行のまま行う(5.5.4 の委任の適用の条件1 と同じ読み)
   const strictIncident = safetyOrRegulated(config);
   const unmetMin = (n) => MIN !== null && n < MIN;
@@ -347,6 +346,8 @@ export function autonomyState(config, records) {
         if (isRealDay(d.date) && !notAfter(d.date)) continue;
         const cause = String(d.aiCause ?? '').trim();
         if (cause === 'なし') continue;
+        // 一般の案件の警告は事故の状態に付く。状態が「解決済み」の行には出さない。CL1 以上・規制業の停止は状態を見ない(現行のまま)
+        if (!strictIncident && d.status === '解決済み') continue;
         const ai = cause === 'あり';
         const phaseNote = d.phase === '運用' ? '' : '。検出の時点が空欄のため、運用の事象として数える';
         const label = `${d.id || '(ID なし)'} ${d.severity}(AI 起因: ${cause || '空欄'}${phaseNote})`;
@@ -357,7 +358,8 @@ export function autonomyState(config, records) {
           incident('cause-unknown', `${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因を特定できていない。特定できない事象を AI 起因でないものとして扱わない。原因を特定するまで止める${unregDText}`, `重大な事故 ${label}${isRealDay(d.date) ? `が ${d.date} に発生し、` : '。'}原因をまだ特定できていない。止めていない。原因の特定を進め、同じ所の変更を取り込む前に人が読む形へ戻すかを決める${unregDText}`);
         } else if (!isRealDay(d.date)) {
           incident('downgrade', `${label}。発生日が無く、登録の判定との前後を確かめられない${unregDText}`, `AI が原因の重大な事故 ${label}の発生日が台帳に無く、事故の後に入った変更を数えられない。止めていない。発生日を台帳へ記入する${unregDText}`);
-        } else if (!(registeredAt && registeredAt > d.date)) {
+        } else if (!strictIncident || !(registeredAt && registeredAt > d.date)) {
+          // 一般の案件では、登録し直しで警告は消えない(警告は事故の状態に付く。登録の状態に付かない)
           incident('downgrade', `${label}が ${d.date} に発生した。事象の日より後の登録の判定まで止める${unregDText}`, `AI が原因の重大な事故 ${label}が ${d.date} に発生した。止めていない。この事故の後に、${incidentCountText(changes, d, id, config, approvedPrs)}。同じ所の変更を取り込む前に人が読む形へ戻すかを決める(委任の範囲を狭める・協働へ下げる・保護するパスへ足す)${unregDText}`);
         }
       }
@@ -781,6 +783,7 @@ export function parseDefectRows(text) {
   const iDate = col(/発生日/);
   const iTypes = col(/変更種別/);
   const iPhase = col(/検出の時点/);
+  const iStatus = col(/^状態/);
   const rows = [];
   for (let i = start + 1; i < lines.length && lines[i].trimStart().startsWith('|'); i++) {
     const l = lines[i].trim();
@@ -794,6 +797,8 @@ export function parseDefectRows(text) {
       severity: sev ? `Sev${sev[1]}` : null,
       date: iDate >= 0 ? (nfkc(r[iDate]).match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null) : null,
       // 「あり」「なし」「特定できない」のいずれか。それ以外の記入(空欄を含む)は「特定できない」と同じく扱う
+      // 状態の列(未解決 / 解決済み)。列の無い旧い台帳と、それ以外の記入は未解決として扱う(警告が出る側)
+      status: iStatus >= 0 && /^解決済み?$/.test(nfkc(r[iStatus])) ? '解決済み' : '未解決',
       aiCause: /^あり$/.test(ai) ? 'あり' : /^なし$/.test(ai) ? 'なし' : /特定できない/.test(ai) ? '特定できない' : '',
       changeTypes: iTypes >= 0 ? typesOf(r[iTypes]) : null,
       // 検出の時点(出荷前 / 運用)。空欄と列の無い旧い台帳は ''(運用として数え、その旨を表示する)
