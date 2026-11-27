@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "dd5a62817888fcd291796812c5fe9a34272e300c",
+    "commit": "66d40b2671f7503c0ff1467c5532ece06616b8e6",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1839,6 +1839,12 @@
       "range": "委任を適用した R3 の変更。体制の規模によらない",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#事後監査の手続適用-委任を適用した-r3-の変更体制の規模によらない"
+    },
+    {
+      "title": "人が触る場所",
+      "range": "安全重要度 CL0・標準品質以上・確認者を置ける体制。規制業を除く",
+      "unit": "per-project",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#人が触る場所適用-安全重要度-cl0標準品質以上確認者を置ける体制規制業を除く"
     },
     {
       "title": "S0 の省略が成立する前提",
