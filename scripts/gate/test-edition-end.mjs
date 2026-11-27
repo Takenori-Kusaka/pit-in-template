@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ROOT, claimStatus, statementFactsLine, classifyDeviations, findInitCommit, initRecordProblem, sealChangeLog, standardEdition, configDigest } from './config.mjs';
-import { buildConfig, renderProcessRules, renderProfileMd } from '../init/generate-profile.mjs';
+import { buildConfig, renderProcessRules, renderProfileMd, applyD0Sections, d0OptionalSectionProblems } from '../init/generate-profile.mjs';
 import { copyTemplateTree } from './template-copy.mjs';
 
 const SKIP = new Set(['.git', 'node_modules', 'evidence', 'coverage', 'graft']);
@@ -288,6 +288,17 @@ const base = build({ 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer
   const pitOk = w.node('scripts/gate/next.mjs');
   // IMPL-0311:ok(適合の入力: 欄を記入した D-0)
   check('D-0 の従う本標準の版の欄を記入すれば、/pit は注記しない', pitOk.ok !== false && !/従う本標準の版」が/.test(pitOk.out), pitOk.out.slice(0, 1500));
+  // 従う本標準の版の行は、構成の standard.edition から生成する区間(層1 の版の行は人が書く。生成区間の外)
+  const tpl = fs.readFileSync(path.join(w.dir, 'templates/00-d0-governance.md'), 'utf8');
+  const cfgNow = w.readJson('process.config.json');
+  const gen = applyD0Sections(tpl, { ...cfgNow, standard: { ...(cfgNow.standard ?? {}), edition: '第1版' } }).text;
+  check('D-0 の従う本標準の版は、構成の版から生成区間へ書かれる', /^- 従う本標準の版: 第1版\s*$/m.test(gen), gen.slice(0, 1200));
+  check('層1 の版の行は生成区間の外に残り、生成で書き換わらない', /^- 品質保証の方針と受容の基準\(テンプレ11\)の版: <.*>\s*$/m.test(gen));
+  const mismatch = d0OptionalSectionProblems(gen, { ...cfgNow, standard: { ...(cfgNow.standard ?? {}), edition: '第2版' } });
+  check('生成区間の版が構成と違えば、問題として出す', mismatch.problems.some((m) => /従う本標準の版/.test(m)), JSON.stringify(mismatch));
+  const legacy = tpl.replace(/<!-- generated:d0-edition (start|end) -->\s*\n/g, '');
+  const legacyRes = d0OptionalSectionProblems(legacy, cfgNow);
+  check('目印の無い旧い D-0 は、失敗にせず注意の対象(missing)にとどめる', legacyRes.missing.includes('edition') && !legacyRes.problems.some((m) => /従う本標準の版/.test(m)), JSON.stringify(legacyRes));
   w.done();
 }
 

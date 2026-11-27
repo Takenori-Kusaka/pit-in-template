@@ -109,7 +109,13 @@ else for (const p of generated) warn(`${p}(旧い構成のため注意にとど�
 // 目印があって構成と一致しない体制図は、ほかの生成区間と同じ扱い
 {
   const opt = d0OptionalSectionProblems(text, config);
-  if (opt.missing.length) {
+  if (opt.missing.includes('edition')) {
+    warn(
+      'D-0 冒頭の「従う本標準の版」に生成区間の目印(<!-- generated:d0-edition start --> / end)がありません(旧い様式)。' +
+        'templates/00-d0-governance.md の冒頭から目印の行を写し、`node scripts/init/generate-profile.mjs --answers process.config.json` で区間を書き込むと、版は構成から生成されます。目印が無いあいだは、人が書いた行を読みます'
+    );
+  }
+  if (opt.missing.includes('competence')) {
     warn(
       'D-0 の節9 に「席の責任者本人の力量の確認」の生成区間の目印(<!-- generated:d0-competence start --> / end)がありません(第6巡より前の様式)。' +
         'templates/00-d0-governance.md の節9 から目印の行を写し、`node scripts/init/generate-profile.mjs --answers process.config.json` で区間を書き込んでください。' +

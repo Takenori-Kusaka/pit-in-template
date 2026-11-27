@@ -23,7 +23,14 @@ frontmatter が埋まっていない、または `next_review` を過ぎてい�
 | 3 | 境界を超えたときの通知先と応答期限が書かれている | 境界の超過が上位へ届かないまま蓄積する |
 
 - 品質保証の方針と受容の基準(テンプレ11)の版: <`docs/quality-assurance-policy.md` の版と記名日。記名が無い組織は「層1 なし」と書く>
-- 従う本標準の版: <第N版(発行日)。発行した版が無い間は「作業中の版(未発行)」と書く。`process.config.json` の `standard.edition` と一致させる。切り替えは `/process-change`(種別 edition)で行う(標準 第1章 1.10.3)>
+
+<!-- generated:d0-edition start -->
+
+- 従う本標準の版: 作業中の版(未発行)
+
+<!-- generated:d0-edition end -->
+
+「従う本標準の版」は、構成(`process.config.json` の `standard.edition`)から生成します。手で書きません。切り替えは `/process-change`(種別 edition)で行います(標準 第1章 1.10.3)。層1 の版の行は、人が書きます。
 
 層1(テンプレ11)の版の更新は、この案件の体制の変化点に数えます。出荷判定の証跡の集約は、この行を保証の開示の項目7 へ出し、層1 の現行の版と違えば、その旨を出します。
 

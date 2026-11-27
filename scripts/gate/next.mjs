@@ -1032,7 +1032,7 @@ export function computeNext({ fetch = true, network = true, today = localDay(), 
     if (!line || !value || /^<.*>$/.test(value)) {
       result.notes.push(
         `D-0 冒頭の「従う本標準の版」が${line ? '空欄' : '無い'}。テーラリングの宣言の要求事項4(第8章)の欠けで、記録の欠落に当たる(段階は止めない)。` +
-          `構成の standard.edition(${config.standard?.edition ?? '作業中の版'})と同じ版を、人が書いて PR で入れる。欄が無い D-0 は templates/00-d0-governance.md の冒頭の行を写す`
+          `構成の standard.edition(${config.standard?.edition ?? '作業中の版'})と同じ版が、生成区間へ構成から書かれる。欄が無い D-0 は templates/00-d0-governance.md の冒頭の生成区間(目印と行)を写し、\`node scripts/init/generate-profile.mjs --answers process.config.json\` で書き込む`
       );
     }
   }

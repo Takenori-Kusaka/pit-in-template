@@ -3154,7 +3154,7 @@ export const D0_SECTIONS = ['seats', 'performers', 'history'];
  * 目印が無くても失敗にしない生成区間(#288 第6巡 R)。節9 の「席の責任者本人の力量の確認」の表。第6巡より前の様式で作った
  * D-0 には目印が無い。check-d0 は注意を出し、templates/00-d0-governance.md から目印を写すよう案内する(旧い D-0 を失敗させない)
  */
-export const D0_OPTIONAL_SECTIONS = ['competence'];
+export const D0_OPTIONAL_SECTIONS = ['competence', 'edition'];
 export const d0Marks = (key) => [`<!-- generated:d0-${key} start -->`, `<!-- generated:d0-${key} end -->`];
 /** 判断を担う席(第3章 3.4.3)。席の責任者本人の力量の確認を読む席 */
 export const JUDGE_SEAT_IDS = ['value-owner', 'tech-lead', 'independent-reviewer', 'qa-gatekeeper'];
@@ -3280,6 +3280,8 @@ export function performerAccountCell(config, s) {
 }
 
 export function renderD0Section(key, config, { legacy = false, before430 = false, before376 = false, q1 = null } = {}) {
+  // D-0 冒頭の「従う本標準の版」の1行。出所は構成の standard.edition(変わる契機は /process-change 種別 edition)。層1 の版の行は人が書く
+  if (key === 'edition') return `- 従う本標準の版: ${standardEdition(config) ?? WORKING_DRAFT}`;
   const L = [];
   const seats = config.configured === false ? buildSeats() : (config.seats ?? []);
   const blank = config.configured === false;
@@ -3602,7 +3604,14 @@ export function d0OptionalSectionProblems(text, config) {
     const b = text.indexOf(begin);
     const e = text.indexOf(end);
     if (b < 0 || e < 0 || e < b) out.missing.push(key);
-    else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { q1 }))) {
+    else if (key === 'edition') {
+      if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { q1 }))) {
+        out.problems.push(
+          'D-0 冒頭の「従う本標準の版」の生成区間が、構成(process.config.json の standard.edition)と一致しません。この区間は手で編集しません。' +
+            '版の切り替えは /process-change(種別 edition)で行い、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
+        );
+      }
+    } else if (norm(text.slice(b + begin.length, e)) !== norm(renderD0Section(key, config, { q1 }))) {
       out.problems.push(
         `D-0 の節9「席の責任者本人の力量の確認」の生成区間が、構成(process.config.json の seats[].competence)と一致しません。この区間は手で編集しません。` +
           '確認の記録は /process-change(種別 accountable の seats.<席>.competence)で構成へ書き、区間だけを戻すときは `node scripts/init/generate-profile.mjs --answers process.config.json` を使います'
