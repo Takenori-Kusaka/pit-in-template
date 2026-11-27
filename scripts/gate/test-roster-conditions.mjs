@@ -221,7 +221,8 @@ function workspace(config, extraFiles = {}) {
       `# ゲート判定記録\n\n| 項目 | 値 |\n| --- | --- |\n| ゲート | G-6 独立レビュー |\n| 対象 | コミット ${hash} |\n| 判定者 | ${judge} |\n| 判定日時 | 2026-11-12 10:00 |\n| 結果 | 通過 |\n| 変更のリスク区分 | R3 |\n${extraRows}\n## 挙動要約\n\n支払いの金額の丸めを、端数を切り捨てる挙動へ変えたことを差分で確かめた。\n`
     );
     git('add', '-A');
-    git('commit', '-q', '-m', `docs: G-6 の判定記録 ${hash}`);
+    // 判定記録は、判定者本人の名義のコミットで足す(記録を足したアカウントと判定者が対応づかない記録は数えない)
+    git('-c', `user.name=${judge}`, 'commit', '-q', '-m', `docs: G-6 の判定記録 ${hash}`);
     return hash;
   };
   // KEEP_WORKSPACE=1 のときは作業場所を残して所在を出す(失敗の調べ方)
@@ -389,7 +390,7 @@ const NOTICE_DAY = localDay();
   const base = cfg(ANS(), [A, B, C], BASE3);
   const R = { id: 'pay-1', cause: '7.9.1-2', person: C.name, paths: ['src/payments/**'], basis: 'docs/injection/2026-11.md', recordedBy: B.name };
   const mk = (r) => ({ ...base, changeLog: [...base.changeLog, { kind: 'notice', date: '2026-11-02', event: 'restriction', restriction: r, notice: { reasons: ['承認権限の一時制限(標準 第7章 7.9)の発動'] } }] });
-  const rowText = (rep) => rep.split(/\r?\n/).filter((l) => l.includes('承認権限の一時制限(第7章 7.9.2)')).join(' ');
+  const rowText = (rep) => rep.split(/\r?\n/).filter((l) => l.startsWith('| 承認権限の一時制限(第7章 7.9.2)')).join(' ');
   const w = workspace(mk(R));
   w.commitWithG6('src/payments/pay.js', A.name);
   const agg = w.aggregate();
