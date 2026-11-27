@@ -202,6 +202,34 @@ for (const size of ['size-3-9', 'size-10plus']) {
   }
 }
 
+// ---------------------------------------------------------------- 事業ステージ S1 の承認(コア機能のパスにだけ掛ける)
+{
+  const t = { 'q-team-size': 'size-3-9', 'q-external-reviewer': 'reviewer-yes', 'q-criticality': 'cl0' };
+  const s0 = build({ ...t, 'q-biz-phase': 'poc' });
+  const s1 = build({ ...t, 'q-biz-phase': 'mvp' });
+  const s1High = build({ ...t, 'q-biz-phase': 'mvp', 'q-quality': 'quality-high' });
+  const s1Reg = build({ ...t, 'q-biz-phase': 'mvp', 'q-quality': 'quality-regulated' });
+  const s1Cl1 = build({ ...t, 'q-biz-phase': 'mvp', 'q-criticality': 'cl1' });
+  const s2 = build({ ...t, 'q-biz-phase': 'growth' });
+  const rd = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, '.github/rulesets', `${name}.json`), 'utf8'));
+  const prp = (r) => r.rules.find((x) => x.type === 'pull_request').parameters;
+  check('S1(CL0・標準品質): ルールセットは team-core、必須の承認数は 0、承認者は 1 名', s1.ruleset === 'team-core' && s1.review.requiredApprovals === 0 && s1.review.reviewerCount === 1, JSON.stringify([s1.ruleset, s1.review]));
+  check('S1: 範囲は core-only のまま(集約の範囲の限定と一致)', s1.gates.g6.params?.scope === 'core-only');
+  check('S1・品質「高」: 必須の承認数は 0、コア機能の承認者は 2 名(規則データの値)', s1High.ruleset === 'team-core' && s1High.review.requiredApprovals === 0 && s1High.gates.g6.params?.coreReviewerCount === 2, JSON.stringify([s1High.ruleset, s1High.review, s1High.gates.g6.params]));
+  check('S1・規制業: 現行のまま(regulated・承認 2)', s1Reg.ruleset === 'regulated' && s1Reg.review.requiredApprovals === 2, JSON.stringify([s1Reg.ruleset, s1Reg.review]));
+  check('S1・CL1: 現行のまま(範囲を限らず、承認 1)', s1Cl1.ruleset !== 'team-core' && s1Cl1.review.requiredApprovals >= 1, JSON.stringify([s1Cl1.ruleset, s1Cl1.review]));
+  check('S2: 現行のまま(team・承認 1)', s2.ruleset === 'team' && s2.review.requiredApprovals === 1, JSON.stringify([s2.ruleset, s2.review]));
+  check('S0: 現行のまま(G-6 を省略し、承認を強制せず、team-core にもならない)', s0.gates.g6.state !== 'required' && s0.ruleset === null && s0.review.requiredApprovals === 0, JSON.stringify([s0.ruleset, s0.review]));
+  check('team-core.json: 承認 0。ほかの設定は team.json と同じ(必須チェックに gate-g5・gate-g5-base)', rd('team-core').name === 'team-core' && prp(rd('team-core')).required_approving_review_count === 0 && JSON.stringify({ ...prp(rd('team-core')), required_approving_review_count: 1 }) === JSON.stringify(prp(rd('team')))
+    && JSON.stringify(rd('team-core').rules.filter((x) => x.type !== 'pull_request')) === JSON.stringify(rd('team').rules.filter((x) => x.type !== 'pull_request')));
+  const f = enforcedApprovalFindings(s1, rd('team-core'));
+  check('S1: 強制する承認の数 0 は、構成の要求(0)を満たす(下回らない)', f.problems.length === 0 && f.enforced === 0 && f.required === 0, JSON.stringify(f));
+  const handCl1 = enforcedApprovalFindings({ ...s1, answers: { ...s1.answers, 'q-criticality': 'cl1' } }, rd('team-core'));
+  check('CL1 以上の構成に team-core を当てると、承認の数が下回る', handCl1.problems.length === 1, JSON.stringify(handCl1));
+  const f2 = enforcedApprovalFindings(s2, rd('team'));
+  check('S2: team の承認 1 は現行どおり満たす', f2.problems.length === 0 && f2.required === 1);
+}
+
 // ---------------------------------------------------------------- 同一の文の挙動要約
 {
   const k = behaviorSummaryKey;

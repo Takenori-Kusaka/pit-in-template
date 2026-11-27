@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { analyzePr, CONTROL_FILES, controlTouchedOf, controlTouchedBetween } from './check-pr.mjs';
+import { approvalByCorePaths } from './config.mjs';
 import { controlApprovalBacking } from './material-attribution.mjs';
 import { controlApprovalSummary, controlRuleBoundary, CONTROL_RULE_FILE } from './aggregate-evidence.mjs';
 
@@ -305,6 +306,124 @@ const hasErr = (r, re) => r.errors.some((e) => re.test(e));
   check('境: 取り込んだコミット以前は規定の前、後は規定の後(コミットの日付を偽っても後)', b.boundary === intro && b.beforeRule(before) === true && b.beforeRule(intro) === true && b.beforeRule(after) === false, JSON.stringify({ boundary: b.boundary }));
   check('境: 連鎖に無いコミットは規定の後に数える', b.beforeRule('0'.repeat(40)) === false);
   fs.rmSync(T2, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------- 承認をコア機能のパスにだけ掛ける構成(事業ステージ S1。標準 第8章 軸B)
+{
+  const SUM = (t) => `挙動要約: ${t}`;
+  const people3 = [...people, { id: 'p4', name: '高橋 次郎', accounts: [{ login: 'takahashi', id: 2004 }] }];
+  UID.takahashi = 2004;
+  const baseCfg = (over = {}) => ({
+    configured: true,
+    people: people3,
+    seats,
+    changeLog: [],
+    answers: { 'q-criticality': 'cl0', 'q-quality': 'quality-standard' },
+    gates: { g6: { state: 'required', params: { scope: 'core-only' } } },
+    review: { requiredApprovals: 0, reviewerCount: 1 },
+    delegation: { protectedPaths: ['src/core/**'] },
+    adapters: { stack: 'node' },
+    task: { maxChangedLines: 400, maxChangedFiles: 15 },
+    ...over,
+  });
+  // 構成の判定(承認をパスで掛けるのは、S1・CL0・標準以上の品質・承認者 1 名・必須の承認数 0 のときだけ)
+  check('承認をコア機能のパスで掛ける構成の判定: S1 の構成だけが真', approvalByCorePaths(baseCfg()) === true);
+  check('S2(範囲を限らない・必須の承認数 1)は偽', approvalByCorePaths(baseCfg({ gates: { g6: { state: 'required', params: {} } }, review: { requiredApprovals: 1, reviewerCount: 1 } })) === false);
+  check('必須の承認数が 1 の構成は、範囲が core-only でも偽(現行どおり全 PR に承認数を強制する)', approvalByCorePaths(baseCfg({ review: { requiredApprovals: 1, reviewerCount: 1 } })) === false);
+  check('CL1 以上は偽', ['cl1', 'cl2', 'cl3'].every((c) => approvalByCorePaths(baseCfg({ answers: { 'q-criticality': c, 'q-quality': 'quality-standard' } })) === false));
+  check('規制業・承認者 2 名は偽', approvalByCorePaths(baseCfg({ answers: { 'q-criticality': 'cl0', 'q-quality': 'quality-regulated' } })) === false && approvalByCorePaths(baseCfg({ review: { requiredApprovals: 0, reviewerCount: 2 } })) === false);
+  check('G-6 が未達・簡略の構成は偽', approvalByCorePaths(baseCfg({ gates: { g6: { state: 'unmet', params: { scope: 'core-only' } } } })) === false);
+
+  const T3 = fs.mkdtempSync(path.join(os.tmpdir(), 'pit-in-core-approval-'));
+  const g3 = (...args) => execFileSync('git', args, { cwd: T3, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const w3 = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(T3, rel)), { recursive: true });
+    fs.writeFileSync(path.join(T3, rel), typeof text === 'string' ? text : JSON.stringify(text, null, 2) + '\n');
+  };
+  g3('init', '-q', '-b', 'main');
+  g3('config', 'user.email', 't@example.com');
+  g3('config', 'user.name', 'tester');
+  g3('config', 'core.autocrlf', 'false');
+  w3('src/core/pay.js', 'export const pay = 1;\n');
+  w3('src/ui/page.js', 'export const page = 1;\n');
+  g3('add', '-A');
+  g3('commit', '-q', '-m', 'chore: base');
+  let k3 = 0;
+  /** 構成を既定ブランチへ置き直し、PR(src/core または src/ui を変える)を判定する */
+  function run(config, file, { reviews = [], base = true } = {}) {
+    g3('switch', '-q', 'main');
+    w3('process.config.json', config);
+    g3('add', '-A');
+    g3('commit', '-q', '--allow-empty', '-m', `config ${k3}`);
+    k3++;
+    g3('switch', '-q', '-C', `c-${k3}`, 'main');
+    w3(file, `export const v = ${k3};\n`);
+    g3('add', '-A');
+    g3('commit', '-q', '-m', `change ${k3}`);
+    const head = g3('rev-parse', 'HEAD').trim();
+    g3('switch', '-q', 'main');
+    const prIn = { number: 300 + k3, title: 'feat: x', body: BODY(), author: 'yamada', authorId: UID.yamada, reviews, head, hostingLookup: { prOfCommit: () => null } };
+    return analyzePr({ root: T3, base: 'main', pr: prIn, head: `refs/heads/c-${k3}`, requireControlApproval: base });
+  }
+  const CORE = 'src/core/pay.js';
+  const UI = 'src/ui/page.js';
+  const approve = (login, text) => ({ ...review(login, { body: SUM(text) }) });
+  const sato = approve('sato', '差分を読み、支払いの丸めの分岐を自分で確かめた');
+  const takahashi = approve('takahashi', '失効した決済の再試行の画面へ進むことを手元で確かめた');
+  const ERR = /コア機能に触れる変更の承認/;
+
+  const ui = run(baseCfg(), UI);
+  check('S1: コア機能に触れない PR は、承認が無くても、承認の検査では止まらない', !hasErr(ui, ERR), JSON.stringify(ui.errors));
+  check('S1: コア機能に触れない PR は、承認を求めない旨を出す', ui.notices.some((m) => /コア機能に触れない変更のため、取り込む前の承認は求めない/.test(m)), JSON.stringify(ui.notices));
+  const core0 = run(baseCfg(), CORE);
+  check('S1: コア機能に触れる PR は、承認が無ければ落ちる(承認の数は 1 名)', hasErr(core0, ERR) && /要求 1 名/.test(core0.errors.join()) && /gate-g5-base/.test(core0.errors.join()), JSON.stringify(core0.errors));
+  const core1 = run(baseCfg(), CORE, { reviews: [sato] });
+  check('S1: コア機能に触れる PR は、作成を指示した者と別の人の承認(挙動要約つき)があれば、承認の後の再実行で通る', !hasErr(core1, ERR), JSON.stringify(core1.errors));
+  const coreSelf = run(baseCfg(), CORE, { reviews: [approve('yamada', '自分の変更を自分で確かめた')] });
+  check('S1: コア機能に触れる PR は、作成を指示した者本人の承認では通らない', hasErr(coreSelf, ERR), JSON.stringify(coreSelf.errors));
+  const coreNoSummary = run(baseCfg(), CORE, { reviews: [review('sato', { body: 'LGTM' })] });
+  check('S1: コア機能に触れる PR は、挙動要約の無い承認では通らない', hasErr(coreNoSummary, ERR), JSON.stringify(coreNoSummary.errors));
+  const coreWithdrawn = run(baseCfg(), CORE, { reviews: [sato, review('sato', { state: 'CHANGES_REQUESTED', body: '基準 3 / 期限 2026-12-01' })] });
+  check('S1: 承認の後に同じ人が変更を要求したら、通らない', hasErr(coreWithdrawn, ERR), JSON.stringify(coreWithdrawn.errors));
+  const coreRule = run(baseCfg(), CORE, { base: false });
+  check('S1: PR の側で動く判定(--require-control-approval なし)は、承認を合否にしない(警告で出す)', !hasErr(coreRule, ERR) && coreRule.warnings.some((m) => /G-6 の承認者 0 名 \/ 要求 1 名/.test(m)), JSON.stringify([coreRule.errors, coreRule.warnings]));
+
+  // 未宣言のコア機能のパスは、全 PR に承認を求める側へ倒す
+  const undeclared = baseCfg();
+  delete undeclared.delegation;
+  const und = run(undeclared, UI);
+  check('S1: コア機能のパスが未宣言なら、コア機能に触れない PR にも承認を求める(落ちる)', hasErr(und, ERR) && /コア機能のパスが未宣言/.test(und.errors.join()), JSON.stringify(und.errors));
+  const und2 = run(undeclared, UI, { reviews: [sato] });
+  check('S1: コア機能のパスが未宣言でも、承認があれば通る', !hasErr(und2, ERR), JSON.stringify(und2.errors));
+  const nw = run(baseCfg({ delegation: { protectedPaths: ['nowhere/**'] } }), UI);
+  check('S1: 宣言したパスが追跡中のファイルに 1 件も当たらなければ、未宣言として全 PR に承認を求める', hasErr(nw, ERR), JSON.stringify(nw.errors));
+
+  // 品質「高」: コア機能の承認は 2 名
+  const high = baseCfg({ answers: { 'q-criticality': 'cl0', 'q-quality': 'quality-high' }, gates: { g6: { state: 'required', params: { scope: 'core-only', coreReviewerCount: 2 } } } });
+  const h1 = run(high, CORE, { reviews: [sato] });
+  check('S1・品質「高」: コア機能に触れる PR は、承認 1 名では落ちる(要求 2 名)', hasErr(h1, ERR) && /要求 2 名/.test(h1.errors.join()), JSON.stringify(h1.errors));
+  const h2 = run(high, CORE, { reviews: [sato, takahashi] });
+  check('S1・品質「高」: コア機能に触れる PR は、承認 2 名で通る', !hasErr(h2, ERR), JSON.stringify(h2.errors));
+  const h3 = run(high, UI);
+  check('S1・品質「高」: コア機能に触れない PR は、承認を求めない(要求 0 名)', !hasErr(h3, ERR) && h3.approvers.required === 0, JSON.stringify([h3.errors, h3.approvers]));
+  const hUnd = { ...high };
+  delete hUnd.delegation;
+  const h5 = run(hUnd, UI, { reviews: [sato] });
+  check('S1・品質「高」: パスが未宣言なら全 PR にコア機能の人数(2 名)を求める', hasErr(h5, ERR) && /要求 2 名/.test(h5.errors.join()), JSON.stringify(h5.errors));
+
+  // S2・CL1 以上・規制業は変えない(この規則を掛けない)
+  const s2 = baseCfg({ gates: { g6: { state: 'required', params: {} } }, review: { requiredApprovals: 1, reviewerCount: 1 } });
+  const s2r = run(s2, UI);
+  check('S2(範囲を限らない): コア機能に触れない PR にも承認の要求(1 名)は掛かったまま。この規則では落とさない', s2r.approvers.required === 1 && !hasErr(s2r, ERR) && s2r.warnings.some((m) => /要求 1 名/.test(m)), JSON.stringify([s2r.errors, s2r.warnings]));
+  const cl1 = baseCfg({ answers: { 'q-criticality': 'cl1', 'q-quality': 'quality-standard' }, gates: { g6: { state: 'required', params: {} } }, review: { requiredApprovals: 1, reviewerCount: 1 } });
+  const cl1r = run(cl1, UI);
+  check('CL1 以上: 全 PR の承認の要求(1 名)は現行どおり', cl1r.approvers.required === 1 && !hasErr(cl1r, ERR), JSON.stringify([cl1r.errors, cl1r.approvers]));
+  const cl1Hand = run(baseCfg({ answers: { 'q-criticality': 'cl1', 'q-quality': 'quality-standard' } }), UI);
+  check('CL1 以上: 必須の承認数 0 を手で書いても、この規則は掛からず全 PR の承認の要求(1 名)のまま', cl1Hand.approvers.required === 1 && !hasErr(cl1Hand, ERR), JSON.stringify(cl1Hand.approvers));
+  const reg = baseCfg({ answers: { 'q-criticality': 'cl0', 'q-quality': 'quality-regulated' }, review: { requiredApprovals: 2, reviewerCount: 2 } });
+  const regr = run(reg, UI);
+  check('規制業: 全 PR の承認の要求(2 名)は現行どおり', regr.approvers.required === 2 && !hasErr(regr, ERR), JSON.stringify(regr.approvers));
+  fs.rmSync(T3, { recursive: true, force: true });
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

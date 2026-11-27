@@ -399,7 +399,7 @@ if (process.env.PIT_IN_AI_REVIEW_SUBTEST !== '1') {
   }
 }
 
-for (const f of ['checks-only.json', 'team.json', 'safety.json', 'regulated.json']) {
+for (const f of ['checks-only.json', 'team.json', 'team-core.json', 'safety.json', 'regulated.json']) {
   const rs = JSON.parse(read(`.github/rulesets/${f}`));
   const names = (rs.rules ?? []).filter((r) => r.type === 'required_status_checks').flatMap((r) => r.parameters?.required_status_checks ?? []).map((c) => c.context);
   check(`ルールセットの雛形 ${f}: 必須チェックに gate-g5 と gate-g5-base がある`, names.includes('gate-g5') && names.includes('gate-g5-base'), JSON.stringify(names));

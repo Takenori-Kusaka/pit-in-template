@@ -215,6 +215,7 @@ CL0 で規制業でない案件(`delegation.allowed` を構成に書けるもの
 
 ```bash
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team.json          # ruleset が team の場合
+gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/team-core.json     # ruleset が team-core の場合(S1。承認はコア機能に触れる PR にだけ gate-g5-base が求める)
 gh api repos/{owner}/{repo}/rulesets --input .github/rulesets/checks-only.json   # ruleset が null の場合
 gh api -X PATCH repos/{owner}/{repo} -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=PR_BODY
 ```

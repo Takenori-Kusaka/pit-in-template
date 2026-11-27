@@ -192,6 +192,10 @@ check('固定のホスティング: 未知のコミットは null', fixedHosting
   // IMPL-0416:ng(違反と適合の対。標準の実装マーク。process-compass #314)
   check('ルールセット: bypass actor を足した形を出す', defaultBranchRulesetProblems({ ...base, bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' }] }).length === 1);
   check('ルールセット: 承認の件数を 0 にした形を出す', defaultBranchRulesetProblems({ ...base, rules: base.rules.map((r) => (r.type === 'pull_request' ? { ...r, parameters: { ...r.parameters, required_approving_review_count: 0 } } : r)) }).length === 1);
+  const core = JSON.parse(fs.readFileSync(path.join(dir, 'team-core.json'), 'utf8'));
+  check('ルールセット: team-core は承認の件数 0 でも、必須チェックに gate-g5-base があれば問題に数えない', !defaultBranchRulesetProblems(core).length);
+  check('ルールセット: team-core でも、必須チェックから gate-g5-base を外した形は出す', defaultBranchRulesetProblems({ ...core, rules: core.rules.map((r) => (r.type === 'required_status_checks' ? { ...r, parameters: { ...r.parameters, required_status_checks: [{ context: 'gate-g5' }] } } : r)) }).length === 1);
+  check('ルールセット: team-core 以外の名前で承認の件数 0 にした形は、gate-g5-base があっても出す', defaultBranchRulesetProblems({ ...core, name: 'team' }).length === 1);
   check('ルールセット: 既定ブランチを対象としないもの(records)は見ない', !defaultBranchRulesetProblems({ name: 'records', conditions: { ref_name: { include: ['refs/heads/records'] } }, bypass_actors: [{ actor_id: 1 }] }).length);
 }
 

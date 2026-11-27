@@ -788,15 +788,20 @@ export function sgRecordPath(e) {
  * 既定ブランチのルールセット(.github/rulesets/*.json)の、効力を持つ記録の統制を外す形(IMPL-0416)。
  * bypass actor を置かない(アクター単位で効き、パスを見ないため、効力を持つ記録の承認と帰属の確認も外れる)。
  * PR を課すルールセットで、承認の件数を 0 にしない(パス条件で足し戻す構成を既定にしない)。既定ブランチを対象としない
- * ルールセット(記録用ブランチ records など)は見ない
+ * ルールセット(記録用ブランチ records など)は見ない。
+ * 例外: ルールセット team-core(事業ステージ S1 でコア機能に限る構成)は承認の件数を 0 とする。承認は必須チェック gate-g5-base が、
+ * コア機能に触れる PR に必須にする(コア機能のパスが未宣言なら全 PR)。ただし gate-g5-base が必須チェックに無い team-core は、
+ * 承認を何も強制しないため問題に数える
  */
 export function defaultBranchRulesetProblems(ruleset) {
   const include = ruleset?.conditions?.ref_name?.include ?? [];
   if (!include.includes('~DEFAULT_BRANCH')) return [];
   const problems = [];
   if (Array.isArray(ruleset.bypass_actors) && ruleset.bypass_actors.length) problems.push(`${ruleset.name ?? '(名前なし)'}: bypass actor が ${ruleset.bypass_actors.length} 件ある`);
-  for (const r of Array.isArray(ruleset.rules) ? ruleset.rules : []) {
-    if (r?.type === 'pull_request' && r.parameters?.required_approving_review_count === 0) problems.push(`${ruleset.name ?? '(名前なし)'}: PR を課しながら承認の件数が 0`);
+  const rules = Array.isArray(ruleset.rules) ? ruleset.rules : [];
+  const baseJudgeRequired = rules.some((r) => r?.type === 'required_status_checks' && (r.parameters?.required_status_checks ?? []).some((c) => c?.context === 'gate-g5-base'));
+  for (const r of rules) {
+    if (r?.type === 'pull_request' && r.parameters?.required_approving_review_count === 0 && !(ruleset.name === 'team-core' && baseJudgeRequired)) problems.push(`${ruleset.name ?? '(名前なし)'}: PR を課しながら承認の件数が 0`);
   }
   return problems;
 }

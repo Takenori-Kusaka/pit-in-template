@@ -149,6 +149,7 @@ import {
   behaviorSummaryShortfall,
   behaviorSummaryKey,
   reviewersRequiredOf,
+  approvalByCorePaths,
   touchesCore,
   assuranceOf,
   sizeLimitsOf,
@@ -1382,9 +1383,14 @@ export function approverFindings(config, pr, files = null, tracked = null) {
   // パスが未宣言なら、コア機能かどうかを確かめられない(core.declared が偽)。黙って全変更の数で通さず、呼び出し側がその旨を出す
   const coreOf = counts.coreDeclared && counts.core > counts.all && Array.isArray(files) ? touchesCore(config, files, { tracked }) : null;
   const core = counts.coreDeclared && counts.core > counts.all ? { configured: counts.core, declared: Boolean(coreOf), hit: coreOf?.hit ?? null, files: coreOf?.files ?? [], paths: coreOf?.paths ?? [] } : null;
-  const required = core?.hit ? counts.core : counts.all;
-  if (!g6Active) return { applies: false, required, core };
-  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core };
+  // 承認をコア機能のパスで掛ける構成(事業ステージ S1。標準 第8章 軸B)は、コア機能に触れる PR だけが承認を要する。
+  // パスが未宣言(コア機能かを確かめられない)なら全 PR に求める。要求の数は、コア機能の数(品質「高」は 2 名)
+  const byPaths = approvalByCorePaths(config) && Array.isArray(files) ? { touches: touchesCore(config, files, { tracked }) } : null;
+  const byPathsRequired = byPaths ? (byPaths.touches === null || byPaths.touches.hit ? counts.core : 0) : null;
+  const required = byPaths ? byPathsRequired : core?.hit ? counts.core : counts.all;
+  const byPathsInfo = byPaths ? { declared: byPaths.touches !== null, hit: byPaths.touches?.hit ?? null, files: byPaths.touches?.files ?? [] } : null;
+  if (!g6Active) return { applies: false, required, core, byPaths: byPathsInfo };
+  if (!Array.isArray(pr.reviews)) return { applies: true, readable: false, required, core, byPaths: byPathsInfo };
   const instructorInfo = instructorTokensOf(config, pr.body, prAuthorRef(pr), pr.accountLookup ?? null);
   const instructors = instructorInfo.resolved;
   // レビュアは数値の識別子で区別する(識別子が読めなければログイン名)。ホスティングの (login, id) と名簿の (login, id) の
@@ -1468,6 +1474,7 @@ export function approverFindings(config, pr, files = null, tracked = null) {
     readable: true,
     required,
     core,
+    byPaths: byPathsInfo,
     counted: counted.length,
     approvers: counted.map((c) => c.name),
     sharedApprovals,
@@ -2329,22 +2336,46 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
           ? ''
           : `。**コア機能のパスが未宣言のため、この変更がコア機能(要求 ${a.core.configured} 名)に当たるかを確かめられない**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く)`
       : '';
+    // 承認をコア機能のパスにだけ掛ける構成(事業ステージ S1。標準 第8章 軸B)の、この PR の扱い
+    const bp = a.byPaths;
+    const pathText = bp
+      ? bp.declared
+        ? bp.hit
+          ? `。コア機能に触れる変更(当たったパス: ${bp.files.slice(0, 3).join(', ')}${bp.files.length > 3 ? ' ほか' : ''})のため、取り込む前の承認を求める(この構成はコア機能に触れる変更にだけ承認を求める)`
+          : '。コア機能に触れない変更のため、取り込む前の承認は求めない(この構成はコア機能に触れる変更にだけ承認を求める。承認の無い変更は出荷の判定で R1 なら例外承認を要する)'
+        : '。**コア機能のパスが未宣言のため、この変更がコア機能に触れるかを確かめられず、全 PR に承認を求める**(/process-change の種別 mode で delegation.protectedPaths を宣言するか、区分の下限の規則 riskFloor.rules のパスを置く)'
+      : '';
     // 名義を共有する人の承認の印(標準 第4章 G-6。IMPL-0423)。数えたうえで、担い手の操作でないことを確かめられない旨を出す
     const sharedText = a.sharedApprovals?.length
       ? `。名義を共有するアカウントの承認 ${a.sharedApprovals.length} 件(${a.sharedApprovals.map((x) => `${x.name} @${x.login}: ${x.with}と名義を共有`).join('、')}。` +
         '担い手の操作でないことを機械で確かめられないため、印を付けて数える。出荷の証跡の集約が保証の開示の項目1 に件数を出す。適合の主張の根拠に数えない)'
       : '';
-    if (!a.readable) {
+    if (bp && a.required === 0) {
+      result.notices.push(`G-6 の承認者 ${a.readable ? `${a.counted} 名` : '(レビューを読めない)'} / 要求 0 名${pathText}`);
+    } else if (!a.readable) {
       result.notices.push(
-        `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount${a.core?.hit ? ' / コア機能 coreReviewerCount' : ''})の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる${coreText}`
+        `G-6 の承認者の数: PR のレビューを読めない(PR_REVIEWS、または --pr の reviews が無い)。要求 ${a.required} 名(構成 review.reviewerCount${a.core?.hit ? ' / コア機能 coreReviewerCount' : ''})の承認は、この検査では確かめていない。ブランチ保護と出荷の証跡の集約で確かめる${coreText}${pathText}`
       );
     } else if (!a.enough) {
       result.warnings.push(
-        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}${sharedText}。` +
+        `G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(独立した人の確認に数えられる承認: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})${coreText}${pathText}${sharedText}。` +
           `マージの前に、名簿の別人が自分の挙動要約を付けて承認する。要求を満たさないまま取り込んだ変更は、出荷の証跡の集約が「独立した人の確認を経ていない」に数える(この検査は合否にしない)`
       );
     } else {
-      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}${sharedText}`);
+      result.notices.push(`G-6 の承認者 ${a.counted} 名 / 要求 ${a.required} 名${a.core?.hit ? '(コア機能)' : ''}(${a.approvers.join('、')})。要求を満たす${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''}${coreText}${pathText}${sharedText}`);
+    }
+    // 基底から読む判定(gate-g5-base)でだけ、コア機能に触れる PR(パスが未宣言なら全 PR)の承認を必須にする。ブランチ保護の必須の承認数は
+    // 0 のため、ここが承認を止める唯一の経路になる。pr-rules(PR の側で動く)では合否にしない(同じ PR で外せ、承認はレビューの前に走るため)。
+    // 承認の後に、このワークフローの最後の実行を再実行する。承認の取り下げでは再実行されない(出荷の証跡の集約が最後の状態で照らす)
+    if (requireControlApproval && policyConfigured && bp && a.required > 0 && (!a.readable || !a.enough)) {
+      result.errors.push(
+        `コア機能に触れる変更の承認: ${bp.declared ? 'コア機能のパスに触れる PR です' : 'コア機能のパスが未宣言のため、全 PR に承認を求めます'}。` +
+          `この構成(事業ステージ S1)は、コア機能に触れる変更にだけ、取り込む前に作成を指示した者と別の人の承認(${a.required} 名)を求め、ブランチ保護の必須の承認数は 0 です。` +
+          (a.readable
+            ? `独立した人の承認 ${a.counted} 名 / 要求 ${a.required} 名(承認に数えられる者: ${a.approvers.join('、') || 'なし'}${a.notCounted.length ? `。数えない承認: ${a.notCounted.join('、')}` : ''})。名簿の別の人が自分の挙動要約を付けて、PR の先頭のコミットに承認する`
+            : 'PR のレビューを読めないため、承認を確かめられません') +
+          '。承認の後に、このワークフロー(gate-g5-base)の最後の実行を再実行する(標準 第4章 G-6、第8章 軸B)'
+      );
     }
   }
   // ホスティングの (login, id) と名簿の (login, id) の食い違い(標準 第4章「アカウントと人の対応表」。process-compass #430 / IMPL-0426)。

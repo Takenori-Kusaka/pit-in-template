@@ -107,6 +107,7 @@ node scripts/gate/g5-local.mjs                       # PR の検査(pr-rules)も
 | 構成 | ルールセット | 強制するもの |
 | --- | --- | --- |
 | 独立レビュー(G-6)を適用する構成 | `team.json` / `safety.json` / `regulated.json` | 必須チェック gate-g5、承認、最後の push の後の承認。強制する承認の数は、構成の承認者の数(`review.reviewerCount`)と同じ(CL2 は 1 の `safety`、規制業と CL3 は 2 の `regulated`) |
+| 独立レビュー(G-6)の範囲をコア機能に限る構成(事業ステージ S1。安全重要度 CL0・承認者 1 名) | `team-core.json` | 必須チェック gate-g5・gate-g5-base、最後の push の後の承認。強制する承認の数は 0。コア機能のパスに触れる PR の承認(品質「高」は 2 名)は、gate-g5-base が必須にする(コア機能のパスが未宣言なら全 PR)。承認の後は gate-g5-base の最後の実行を再実行する |
 | それ以外(1〜2名で確認者がいない構成など) | `checks-only.json` | 必須チェック gate-g5 だけ。承認は強制しない |
 
 ```bash

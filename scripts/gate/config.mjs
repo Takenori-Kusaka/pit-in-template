@@ -1557,7 +1557,8 @@ export function enforcedApprovalFindings(config, ruleset) {
   const enforced = pr ? Number(pr.parameters?.required_approving_review_count ?? 0) || 0 : null;
   // 下回るかは、承認の要求と承認者の数の大きいほうと比べる(手で書いた構成で requiredApprovals < reviewerCount の穴を塞ぐ。#318 突合 X-6)
   const counted = config?.review?.reviewerCount ?? Math.max(1, config?.review?.requiredApprovals ?? 1);
-  const required = Math.max(1, config?.review?.requiredApprovals ?? 1, config?.review?.reviewerCount ?? 0);
+  // コア機能のパスで承認を掛ける構成は、ブランチ保護が承認の数を強制しない(承認は gate-g5-base が、コア機能に触れる PR にだけ必須にする)
+  const required = approvalByCorePaths(config) ? 0 : Math.max(1, config?.review?.requiredApprovals ?? 1, config?.review?.reviewerCount ?? 0);
   const problems = [];
   const notes = [];
   if (enforced === null) return { enforced, required, counted, problems, notes };
@@ -2634,6 +2635,18 @@ export function reviewersRequiredOf(config) {
   const coreParam = Number(config?.gates?.g6?.params?.coreReviewerCount);
   const core = Number.isFinite(coreParam) && coreParam > 0 ? Math.max(all, coreParam) : all;
   return { all, core, coreDeclared: Number.isFinite(coreParam) && coreParam > 0, coreParam: Number.isFinite(coreParam) ? coreParam : null };
+}
+/**
+ * 承認の強制を、ブランチ保護の人数ではなく、コア機能のパスで掛ける構成か(事業ステージ S1 で G-6 の範囲をコア機能に限る構成。
+ * 標準 第8章 軸B)。構成の review.requiredApprovals が 0 で、G-6 が適用・範囲が core-only・承認者が 1 名・安全重要度が CL0・
+ * 規制業でないときだけ真。真のとき、ブランチ保護は承認の数を強制せず(必須チェックと PR 経由だけ)、コア機能に触れる PR の承認は
+ * 基底から読む判定(gate-g5-base)が必須にする。どれかを欠く構成(S0・S2・CL1 以上・規制業・承認者 2 名)は偽で、現行のまま
+ */
+export function approvalByCorePaths(config) {
+  if (config?.gates?.g6?.state !== 'required' || config?.gates?.g6?.params?.scope !== 'core-only') return false;
+  if (config?.review?.requiredApprovals !== 0) return false;
+  if (['cl1', 'cl2', 'cl3'].includes(config?.answers?.['q-criticality']) || config?.answers?.['q-quality'] === 'quality-regulated') return false;
+  return Math.max(1, Number(config?.review?.reviewerCount ?? 1) || 1) < 2;
 }
 /** 変更したファイルがコア機能のパスに当たるか。未宣言なら null(判定できない) */
 export function touchesCore(config, files, { tracked = null } = {}) {

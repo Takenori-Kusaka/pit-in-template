@@ -59,7 +59,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
+import { ROOT, loadConfig, approvalByCorePaths, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 import { parseCorrections, DEFECT_FILE, CORRECTION_HEADING } from './enforcement-inventory.mjs';
@@ -1600,7 +1600,9 @@ function envCheck() {
     fail(`確認した者 "${by}" は AI の名義です。実環境で確かめた人の氏名を書きます`);
     return 1;
   }
-  const want = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+  // コア機能のパスで承認を掛ける構成(ルールセット team-core)は、ブランチ保護の承認数を 0 とする(承認は gate-g5-base が掛ける)
+  const reviewers = Math.max(1, Number(config.review?.reviewerCount ?? config.review?.requiredApprovals ?? 1) || 1);
+  const want = approvalByCorePaths(config) ? 0 : reviewers;
   const ruleset = config.ruleset ?? null;
   const g6Active = ['required', 'simplified'].includes(config.gates?.g6?.state);
   const ownerReview = ruleset === 'regulated' || ruleset === 'safety';
@@ -1973,7 +1975,7 @@ function envCheck() {
     repoUrl,
     branch,
     commit: git(['rev-parse', 'HEAD']),
-    config: { reviewerCount: want, ruleset, g6: config.gates?.g6?.state ?? null },
+    config: { reviewerCount: reviewers, ruleset, g6: config.gates?.g6?.state ?? null },
     items,
     findings,
     performerAccount,
