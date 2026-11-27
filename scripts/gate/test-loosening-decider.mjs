@@ -157,14 +157,14 @@ try {
   // IMPL-0390:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('判断記録の要否の規則: 同じ変化点を、D-0 表1 の決定者の記名なら受け付ける', dropOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).decisionRules === undefined, dropOk.out);
 
-  // 観測の窓(標準 第5章 5.4.6。process-compass #349)。種別 settings の observationWindow。整数・下限 2・最小標本数の欄は持たない。
-  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する。長くするのは緩める向き
+  // 観測の窓(標準 第5章 5.4.6。process-compass #349)。種別 settings の observationWindow。整数・下限 1・最小標本数の欄は持たない。
+  // 値を変えるのは、向きを問わず決定した者の記名と理由を要する
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: rules dropped');
   const cfgText = () => fs.readFileSync(cfgPath, 'utf8');
   const w0 = cfgText();
-  const w1 = settings({ summary: '窓', settings: { observationWindow: { months: 1 } }, decidedBy: A.name, reason: '試験' });
-  check('観測の窓: 下限 2 を下回る値(1)を拒否し、構成を書き換えない', !w1.ok && /observationWindow.months/.test(w1.out) && cfgText() === w0, w1.out);
+  const w1 = settings({ summary: '窓', settings: { observationWindow: { months: 0 } }, decidedBy: A.name, reason: '試験' });
+  check('観測の窓: 下限 1 を下回る値(0)を拒否し、構成を書き換えない', !w1.ok && /observationWindow.months/.test(w1.out) && cfgText() === w0, w1.out);
   const w25 = settings({ summary: '窓', settings: { observationWindow: { months: 2.5 } }, decidedBy: A.name, reason: '試験' });
   check('観測の窓: 整数でない値(2.5)を拒否する', !w25.ok && /observationWindow.months/.test(w25.out) && cfgText() === w0, w25.out);
   const wMin = settings({ summary: '窓', settings: { observationWindow: { months: 4, minSample: 10 } }, decidedBy: A.name, reason: '試験' });

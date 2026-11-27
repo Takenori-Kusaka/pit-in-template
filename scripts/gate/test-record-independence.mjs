@@ -95,6 +95,7 @@ const g6File = (x) => `docs/gates/g6-${x.slice(0, 7)}.md`;
   w.commit('docs: g6', '', { [g6File(x)]: g6(x.slice(0, 8), '名簿 丙') }, '丙', '2026-12-01T10:00:00+09:00');
   w.commit('docs: g7', '', { 'docs/gates/g7-v1.0.0.md': g7 }, '丁', '2026-11-10T10:00:00+09:00');
   const r = w.run();
+  // IMPL-1068:ok(適合の入力: 出荷判定の記録より前に、判定者本人が足した G-6 の判定記録は、独立した人の確認に数える)
   check('G-7 の前に足した記録は数える(コミットの日付が G-7 より後でも、履歴の前後で照らす)', gapOf(r.out, x).length === 0, gapOf(r.out, x).join('\n') || r.out.slice(-600));
   check('署名の無い構成: 足し手を作成者の名義で照らしたことと、その名義が書き手の設定で偽れることを保証の開示に出す', /作成者の名義は書き手が設定できるため、署名の無い構成の一致は他人の名義を使った書き込みを防がない/.test(r.report) && /署名者 0 件 \/ 作成者の名義 1 件/.test(r.report), r.report.split('\n').filter((l) => /足したコミット/.test(l)).join('\n') || 'no row');
   w.done();
@@ -106,6 +107,7 @@ const g6File = (x) => `docs/gates/g6-${x.slice(0, 7)}.md`;
   w.commit('docs: g7', '', { 'docs/gates/g7-v1.0.0.md': g7 }, '丁', '2026-11-10T10:00:00+09:00');
   w.commit('docs: g6 after shipment', '', { [g6File(x)]: g6(x.slice(0, 8), '名簿 丙') }, '丙', '2026-11-02T10:00:00+09:00');
   const r = w.run();
+  // IMPL-1068:ng(違反の入力: 出荷判定の記録より後に足した G-6 の判定記録は、独立した人の確認に数えない)
   check('G-7 の後に足した記録は数えない(日付が G-7 より前でも)', gapOf(r.out, x).length === 1 && /出荷判定\(G-7\)の記録 docs\/gates\/g7-v1\.0\.0\.md より後に足されている/.test(r.out), gapOf(r.out, x).join('\n') || r.out.slice(-600));
   w.done();
 }
