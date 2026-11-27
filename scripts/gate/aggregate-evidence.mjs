@@ -1266,7 +1266,7 @@ export function deferredReviewLines(d) {
   const list = (a) => (a.length ? `(${a.slice(0, 8).join(', ')}${a.length > 8 ? ' ほか' : ''})` : '');
   const share = d.outside ? `範囲の外の変更 ${d.outside} 件のうち ${Math.round((d.excepted / d.outside) * 100)}%` : '範囲の外の変更なし';
   return [
-    `- 出荷の前の確認(取り込む前に人が読む範囲の外で、承認を待たずに取り込んだ変更): ${d.outside} 件 / 取り込む前に人が読んだ範囲の変更 ${d.readBeforeMerge} 件(取り込みが本番を直接起動する構成を検出した PR ${d.deployDetected} 件を含む)`,
+    `- 出荷の前の確認(取り込む前に人が読む範囲の外で、承認を待たずに取り込んだ変更): ${d.outside} 件 / 取り込む前に人が読む範囲の変更 ${d.readBeforeMerge} 件(取り込みが本番を直接起動する構成を検出した PR ${d.deployDetected} 件を含む)`,
     `- 出荷の前の確認が済んでいない変更(独立した人の確認も例外承認の記録も対応づかない。出荷判定までに全件を読む。止める値は置かない): ${d.pending} 件${list(d.pendingLabels)}。最も古い変更の取り込みからの経過 ${d.oldestDays === null ? '該当なし' : `${d.oldestDays} 日`}。未確認の変更の後に、同じファイルを触って取り込まれた変更 ${d.stacked} 件(積み重なり。未確認の変更が差し戻されたときの作り直しの量)`,
     `- 出荷の前の確認を例外承認で出した変更: ${d.excepted} 件(${share}。常態になると、実質は読まずに出す形になる。機械は止めない)`,
     `- 出荷の前の確認を済ませた確認者ごとの件数: ${d.byReviewer.length ? d.byReviewer.map((r) => `${r.name} ${r.n} 件`).join(' / ') : '該当なし'}(特定の確認者への偏りは、人が見る。比率の閾値は置かない)`,
@@ -4377,8 +4377,10 @@ if (isMain) {
     const outside = form.filter((p) => !p.deferredReview.preRead);
     const pending = outside.filter((p) => !p.g6.independent.counted && !p.exceptionRecords?.length);
     const dayMs = 86400000;
-    const ages = pending.map((p) => (p.mergedAt ? Math.floor((Date.parse(exceptionDay) - Date.parse(String(p.mergedAt).slice(0, 10))) / dayMs) : null)).filter((n) => n !== null && Number.isFinite(n));
-    const stacked = form.filter((q) => pending.some((u) => u.number !== q.number && u.mergedAt && q.mergedAt && q.mergedAt > u.mergedAt && q.deferredReview.files.some((f) => u.deferredReview.files.includes(f))));
+    // 取り込みの時刻は、PR の記録の mergedAt。無ければマージのコミットの日時
+    const mergedAtOf = (p) => p.mergedAt ?? (git(['log', '-1', '--format=%cI', p.mergeCommitFull]) || null);
+    const ages = pending.map((p) => { const at = mergedAtOf(p); return at ? Math.floor((Date.parse(exceptionDay) - Date.parse(String(at).slice(0, 10))) / dayMs) : null; }).filter((n) => n !== null && Number.isFinite(n));
+    const stacked = form.filter((q) => pending.some((u) => u.number !== q.number && mergedAtOf(u) && mergedAtOf(q) && mergedAtOf(q) > mergedAtOf(u) && q.deferredReview.files.some((f) => u.deferredReview.files.includes(f))));
     const byReviewer = new Map();
     for (const p of outside.filter((x) => x.g6.independent.counted)) for (const n of p.g6.independent.by ?? []) byReviewer.set(n, (byReviewer.get(n) ?? 0) + 1);
     return {
