@@ -124,7 +124,10 @@ const s2Cfg = (over = {}) => ({
   check('検出しない: ステップの uses(actions/checkout など)は再利用の呼び出しに数えない', wf('on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: x\n        uses: actions/setup-node@v4\n').length === 0);
   // テンプレート自身の委任のマージのジョブの環境(delegated-merge)は、本番への反映ではないため数えない。それ以外の環境・読めない書き方は数える
   const mergeEnv = (env) => `on:\n  workflow_run:\n    workflows: [gate-g5]\njobs:\n  merge:\n    runs-on: ubuntu-latest\n    ${env}\n    steps: []\n`;
-  check('検出しない: workflow_run で動き、環境が delegated-merge だけの workflow(マージのトークンを置く環境)', wf(mergeEnv('environment: delegated-merge')).length === 0 && wf(mergeEnv("environment: 'delegated-merge' # マージ")).length === 0);
+  const delegationWf = (text) => deployOnPushFindings([{ path: '.github/workflows/delegation.yml', text }]);
+  check('検出しない: 委任のマージのワークフロー(delegation.yml)が workflow_run で動き、環境が delegated-merge だけ(マージのトークンを置く環境)', delegationWf(mergeEnv('environment: delegated-merge')).length === 0 && delegationWf(mergeEnv("environment: 'delegated-merge' # マージ")).length === 0);
+  check('検出する: 委任のマージのワークフロー以外が、同じ名の環境 delegated-merge を使う(名だけでは外さない)', wf(mergeEnv('environment: delegated-merge')).length === 1);
+  check('検出する: 委任のマージのワークフローでも、環境がほかの名なら数える', delegationWf(mergeEnv('environment: production')).length === 1);
   check('検出する: 環境が delegated-merge 以外・式・オブジェクトの書き方(読めない値は配備の環境として数える)', ['environment: production', 'environment: ${{ inputs.env }}', 'environment:\n      name: delegated-merge'].every((e) => wf(mergeEnv(e)).length === 1));
   // 拾えない形(集約の限界の行に書く)
   check('拾えない形(開示済み): 配備の環境を指定せずに秘密情報で配備する push の workflow は検出しない', wf('on: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh\n        env:\n          TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n').length === 0);
