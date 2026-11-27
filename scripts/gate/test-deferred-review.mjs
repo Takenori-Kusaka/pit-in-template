@@ -85,10 +85,12 @@ const s2Cfg = (over = {}) => ({
 {
   const wf = (text) => deployOnPushFindings([{ path: '.github/workflows/w.yml', text }]);
   const BLOCK = 'name: d\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: production\n    steps: []\n';
+  // IMPL-1071:ng(違反の入力: push で動き、配備の環境を宣言するジョブを持つ workflow は、取り込みが本番を直接起動する構成として検出し、範囲の外にしない)
   check('検出する: push で動き、environment を持つジョブがある(ブロックの書き方)', wf(BLOCK).length === 1);
   check('検出する: on: push(1 行の書き方)', wf('on: push\njobs:\n  d:\n    environment: staging\n').length === 1);
   check('検出する: on: [push, pull_request](配列の書き方)', wf('on: [push, pull_request]\njobs:\n  d:\n    environment:\n      name: prod\n').length === 1);
   check('検出する: on: の下の - push(リストの書き方)', wf('on:\n  - pull_request\n  - push\njobs:\n  d:\n    environment: prod\n').length === 1);
+  // IMPL-1071:ok(適合の入力: pull_request だけで動く workflow は、配備の環境を宣言していても、取り込みが本番を直接起動する構成に数えない)
   check('検出しない: pull_request だけで動く(environment があっても)', wf(BLOCK.replace('push:\n    branches: [main]', 'pull_request:')).length === 0);
   check('検出しない: push で動くが environment を持つジョブが無い', wf(BLOCK.replace('    environment: production\n', '')).length === 0);
   check('検出しない: 手動の起動だけ', wf(BLOCK.replace('push:\n    branches: [main]', 'workflow_dispatch:')).length === 0);
@@ -190,6 +192,7 @@ const s2Cfg = (over = {}) => ({
 
   // 範囲の外
   const out = run(s2Cfg(), edits.ui);
+  // IMPL-1069:ok(適合の入力: 範囲の外の R2 は、承認が無くても承認の検査で落ちず、確定者の記名も取り込む前には求めない)
   check('範囲の外の R2: 承認が無くても、承認の検査で落ちない(承認の要求は 0 名)', !hasErr(out, ERR) && out.approvers.required === 0 && out.preReadRange?.preRead === false, JSON.stringify([out.errors, out.approvers?.byRange]));
   check('範囲の外の R2: 取り込む前の承認を求めない旨と、出荷判定までに読む旨を出す', out.notices.some((m) => /取り込む前に人が読む範囲の外の変更のため、取り込む前の承認は求めない/.test(m) && /出荷判定までに/.test(m)), JSON.stringify(out.notices));
   check('範囲の外の R2: 確定者の記名が無くても、区分の確定者の検査で落とさない(出荷判定までに求める旨を出す)', !out.errors.some((m) => /リスク区分の確定者/.test(m)) && out.notices.some((m) => /リスク区分の確定者/.test(m) && /出荷判定\(G-7\)までに/.test(m)), JSON.stringify([out.errors, out.notices]));
@@ -220,6 +223,7 @@ const s2Cfg = (over = {}) => ({
   const addTest = run(s2Cfg(), edits.addTest);
   check('範囲の外: テストの追加は範囲に当たらない(削除・行の削除だけが当たる)', !hasErr(addTest, ERR), JSON.stringify(addTest.errors));
   const selfOnly = run(s2Cfg(), edits.core, { reviews: [approve('yamada', '自分の変更を自分で確かめた')] });
+  // IMPL-1069:ng(違反の入力: 範囲の中の変更が、作成を指示した者本人の承認だけでは通らない)
   check('範囲の中: 作成を指示した者本人の承認では通らない', hasErr(selfOnly, ERR), JSON.stringify(selfOnly.errors));
   const r1NoConfirm = run(s2Cfg(), edits.ui, { risk: 'R1', reviews: [sato] });
   check('範囲の中の R1: 確定者の記名は、取り込む前にも求める(R1 は範囲に入る)', r1NoConfirm.errors.some((m) => /リスク区分の確定者/.test(m)), JSON.stringify(r1NoConfirm.errors));
@@ -348,8 +352,10 @@ if (process.platform === 'win32') {
   {
     const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1 }, { file: 'src/ui/d.js', pr: 2, confirm: '名簿 丙' }, { file: 'src/core/a.js', pr: 3 }, { file: 'src/ui/b.js', pr: 4, risk: 'R1', confirm: '名簿 丙' }, { file: 'src/misc/c.js' }]);
     check('集約の前提: 最後まで走り、PR を対応づける', Boolean(h.ev) && [1, 2, 3, 4].every((i) => Boolean(h.pr(i))), h.out.slice(-1500));
+    // IMPL-1070:ok(適合の入力: 範囲の外の PR は、トレーラ Delegated: を使わず、パスと区分から範囲の外として識別する)
     check('範囲の外の PR は、範囲の外として識別する', h.pr(1)?.deferredReview?.applies === true && h.pr(1).deferredReview.preRead === false, JSON.stringify(h.pr(1)?.deferredReview));
     check('範囲の外の PR が承認を経ていなければ、出荷の前の確認が済んでいない欠落に数える(範囲の外である旨を添える)', /取り込む前に人が読む範囲の外の変更/.test(h.prGap(1) ?? '') && /出荷の前の確認が済んでいない/.test(h.prGap(1) ?? ''), dbg(h));
+    // IMPL-1070:ng(違反の入力: 範囲の外の R2 に区分の確定者の記名が無い変更は、記録の欠落に数える)
     check('範囲の外の R2 に確定者の記名が無ければ、記録の欠落に数える', h.confirmGap(1) !== null, dbg(h));
     check('範囲の外の R2 に、作成を指示した者以外の名簿の人の確定者の記名があれば、記名の欠落に数えない', h.confirmGap(2) === null && h.prGap(2) !== null, dbg(h));
     check('コア機能に当たる PR は、取り込む前に人が読む範囲の変更として識別する(確定者の欠落には数えない)', h.pr(3)?.deferredReview?.preRead === true && /取り込む前に人が読む範囲の変更: コア機能・確約範囲のパス/.test(h.prGap(3) ?? '') && h.confirmGap(3) === null, dbg(h));
