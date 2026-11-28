@@ -231,8 +231,48 @@ const rowOf = (w, id) => {
   w.commit('chore: tool', 'Risk: R3', { 'tools/b.js': 'export const b = 1;\n' });
   w.run();
   const row = rowOf(w, 'internal-tools');
+  // 変更ごとに数える: 下げた後の変更は外した件数に、下げる変更(親の版が CL1)は当てなかった件数に入る。全体を「当てていない」と表示しない
   // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
-  check('作業上の選択を読む対象から外す規則: 変更の親の版が安全重要度 CL1 以上なら、HEAD が CL0 でも当てていない旨を出す', Boolean(row) && /当てていない/.test(row.why), JSON.stringify(row));
+  check('作業上の選択を読む対象から外す規則: 範囲の途中で CL1 から CL0 へ下げた構成では、親の版が CL1 の変更を当てなかった件数に、下げた後の変更を外した件数に数える', Boolean(row) && /外した 1 件 \/ 出荷の範囲の変更 3 件/.test(row.why) && /CL1 以上・規制業のため当てなかった 1 件/.test(row.why) && !/当てていない/.test(row.state), JSON.stringify(row));
+  w.done();
+}
+{
+  // 範囲の途中で CL0 から CL1 へ上げた構成: 上げる前の変更は外した件数に、上げた後の変更は当てなかった件数に入る。
+  // 親の版が無い最初のコミットだけは、HEAD の構成(CL1)で読む既存の扱いのため、当てなかった件数に入る(2 件の内訳)
+  const w = workspace('growth', CHOICE);
+  w.commit('chore: tool', 'Risk: R3', { 'tools/a.js': 'export const a = 1;\n' });
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.answers['q-criticality'] = 'cl1';
+  w.commit('chore: raise', 'Risk: R2', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n' });
+  w.commit('chore: tool after', 'Risk: R3', { 'tools/c.js': 'export const c = 1;\n' });
+  w.run();
+  const row = rowOf(w, 'internal-tools');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 範囲の途中で CL0 から CL1 へ上げた構成では、上げる前の変更を外した件数に、上げた後の変更を当てなかった件数に数える', Boolean(row) && /外した 1 件 \/ 出荷の範囲の変更 4 件/.test(row.why) && /CL1 以上・規制業のため当てなかった 2 件/.test(row.why) && !/当てていない/.test(row.state), JSON.stringify(row));
+  w.done();
+}
+{
+  // プロセス構成のファイルに1つでも触れる変更は、同じ変更の中のほかのファイルを含め、全体に規則を当てない
+  const w = workspace('growth', CHOICE);
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.task = { ...(cfg.task ?? {}), maxChangedLines: 401 };
+  w.commit('chore: config and tool', 'Risk: R3', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n', 'tools/a.js': 'export const a = 1;\n' });
+  w.run();
+  const row = rowOf(w, 'internal-tools');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: プロセス構成のファイルと規則のパスのファイルを同時に変えた変更は、外した件数に数えない', Boolean(row) && /外した 0 件 \/ 出荷の範囲の変更 2 件/.test(row.why), JSON.stringify(row));
+  w.done();
+}
+{
+  // 規則(**)の理由を直す正規の形(構成とプロファイルを同時に変える)も、外した件数に数えない
+  const w = workspace('growth', { choiceReviewExclusions: { rules: [{ id: 'all', paths: ['**'], why: '全体' }] } });
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.choiceReviewExclusions.rules[0].why = '全体(理由を直した)';
+  w.commit('chore: rule why with profile', 'Risk: R2', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n', 'PROCESS-PROFILE.md': '# プロファイル(試験)\n' });
+  w.run();
+  const row = rowOf(w, 'all');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 規則の理由を構成とプロファイルで同時に直した変更は、外した件数に数えない', Boolean(row) && /外した 0 件 \/ 出荷の範囲の変更 2 件/.test(row.why), JSON.stringify(row));
   w.done();
 }
 {

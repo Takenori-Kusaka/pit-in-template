@@ -882,6 +882,16 @@ scenario('作業上の選択を読む対象から外す規則: 規則のファ�
   write('process.config.json', cfg);
 }, (r) => (r.notices.some((x) => /当たる変更である/.test(x)) ? ['規則のファイルの変更を規則に当てている'] : []));
 rewindBase();
+// プロセス構成のファイルに1つでも触れる変更は、同じ変更の中の規則のパスのファイルを含め、全体に規則を当てない
+// IMPL-1081:ng(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: プロセス構成のファイルと規則のパスのファイルを同時に変える変更は、全体に規則を当てない', { body: R2_BODY }, () => {
+  withChoiceRules(TOOLS_RULE);
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions.rules[0].why = '内部ツール(理由を直した)';
+  write('process.config.json', cfg);
+  write('tools/x.js', lines(21));
+}, (r) => (r.notices.some((x) => /当たる変更である/.test(x)) ? ['構成のファイルに触れる変更の全体を規則に当てている'] : []));
+rewindBase();
 
 scenario('判断記録の要否: 規則のパスが追跡中のファイルに1件も当たらなければ未宣言として出す', {}, () => {
   withDecisionRules([{ id: 'typo', paths: ['src/apii/**'], why: '誤記' }]);

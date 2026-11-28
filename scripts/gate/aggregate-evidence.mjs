@@ -2020,17 +2020,18 @@ if (isMain) {
   /**
    * 記録された作業上の選択を確定の場で読む対象から外す規則(構成の choiceReviewExclusions。標準 第5章 5.5.1)の当たり。
    * 規則は変更の親の版の構成から読む。区分の下限の規則で R1 に当たる変更・R1 と記載された変更には当てない。
-   * 変更の親の版か HEAD の構成が安全重要度 CL1 以上・規制業なら、規則を置いても外さない(当てていない)。
+   * 変更の親の版の構成が安全重要度 CL1 以上・規制業なら、その変更には規則を当てない(変更ごとに、その変更の基底の構成で決める。当てなかった変更として数える)。
+   * プロセス構成のファイルに触れる変更には、その変更の全体に規則を当てない。
    * 返り値: { rules(親の版の規則の id)、hits(当たった規則の id)、r1Skipped(R1 のため当てなかった規則の id)、notApplied(CL1 以上・規制業のため当てなかった) }
    */
   function choiceReviewOf(before, changes, riskClass) {
     const rules = (Array.isArray(before?.choiceReviewExclusions?.rules) ? before.choiceReviewExclusions.rules : []).map((r) => r?.id).filter(Boolean);
     const regulated = (c) => c?.answers?.['q-quality'] === 'quality-regulated';
-    const notApplied = cl1Of(config) || cl1Of(before) || regulated(config) || regulated(before);
+    const notApplied = cl1Of(before) || regulated(before);
     const r1 = riskClass === 'R1' || riskFloorOf(before?.riskFloor?.rules, changes).floor === 'R1';
-    // プロセス構成のファイル(規則そのもの)に触れる変更は、規則に当てない(外した件数にも数えない)
-    const matchable = changes.filter((c) => c.path !== 'process.config.json' && c.from !== 'process.config.json');
-    const matched = rules.length ? decisionRuleHits(before.choiceReviewExclusions.rules, matchable).hits.map((h) => h.id) : [];
+    // プロセス構成のファイル(規則そのもの)に1つでも触れる変更は、その変更の全体に規則を当てない(外した件数にも数えない)
+    const touchesConfig = changes.some((c) => c.path === 'process.config.json' || c.from === 'process.config.json');
+    const matched = rules.length && !touchesConfig ? decisionRuleHits(before.choiceReviewExclusions.rules, changes).hits.map((h) => h.id) : [];
     return { rules, hits: notApplied || r1 ? [] : matched, r1Skipped: r1 && !notApplied ? matched : [], notApplied: notApplied && rules.length > 0 };
   }
   const recordCommits = new Map();
@@ -4752,7 +4753,9 @@ if (isMain) {
     const ids = [...new Set([...headRules.map((r) => r?.id), ...items.flatMap((i) => i.rules)].filter(Boolean))];
     if (ids.length) {
       const total = items.length;
-      const noApply = cl1Of(config) || config?.answers?.['q-quality'] === 'quality-regulated' || items.some((i) => i.notApplied);
+      // 変更ごとに、その変更の基底の構成で数える。規則のある変更のすべてが CL1 以上・規制業で当てなかったときだけ、全体を「当てていない」と表示する
+      const withRules = items.filter((i) => i.rules.length);
+      const noApply = withRules.length > 0 && withRules.every((i) => i.notApplied);
       const whyOf = (id) => {
         const r = headRules.find((x) => x?.id === id);
         return r ? `(パス ${(r.paths ?? []).join('・')}${r.kinds?.length ? ` / 変更の種類 ${r.kinds.join('・')}` : ''}。理由: ${r.why ?? '記載なし'})` : '(現在の構成には無い規則)';
@@ -4761,7 +4764,9 @@ if (isMain) {
         if (noApply) return `${id}: 当てていない(安全重要度 CL1 以上・規制業の案件では、規則を置いても外さない)${detail(id)}`;
         const own = items.filter((i) => i.rules.includes(id));
         const r1 = own.filter((i) => i.r1Skipped.includes(id)).length;
-        return `${id}: 外した ${own.filter((i) => i.hits.includes(id)).length} 件 / 出荷の範囲の変更 ${total} 件(うち R1 のため当てなかった ${r1} 件)${detail(id)}`;
+        const skipped = own.filter((i) => i.notApplied).length;
+        const skippedText = skipped ? ` / 変更の親の版が安全重要度 CL1 以上・規制業のため当てなかった ${skipped} 件` : '';
+        return `${id}: 外した ${own.filter((i) => i.hits.includes(id)).length} 件 / 出荷の範囲の変更 ${total} 件(うち R1 のため当てなかった ${r1} 件)${skippedText}${detail(id)}`;
       });
       const rows = rowsWith(whyOf);
       // 組織の外へ渡す形には、規則の id と件数だけを出す(パスと理由は自由記述を含むため、内側の開示にだけ置く)

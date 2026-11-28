@@ -2445,11 +2445,12 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
   }
   result.riskFloor = { floor: floorResult.floor, hits: floorResult.hits, rules: (rulesConfig.riskFloor?.rules ?? []).length };
   // 記録された作業上の選択と理由を読む対象から外す規則(第5章 5.5.1)の当たりを、確定の場の人へ知らせる。基底ブランチの構成の規則だけを読む。
-  // 知らせは合否を変えない。規則が無ければ何も出さない。プロセス構成のファイルに触れる変更は規則に当てない
+  // 知らせは合否を変えない。規則が無ければ何も出さない。プロセス構成のファイルに1つでも触れる変更は、その変更の全体に規則を当てない
   if (baseConfigured && Array.isArray(baseConfig.choiceReviewExclusions?.rules) && baseConfig.choiceReviewExclusions.rules.length) {
     const rules = baseConfig.choiceReviewExclusions.rules;
-    const matchable = changes.filter((c) => c.path !== 'process.config.json' && c.from !== 'process.config.json');
-    const matched = decisionRuleHits(rules, matchable).hits.map((h) => h.id);
+    // プロセス構成のファイルに1つでも触れる変更は、その変更の全体に規則を当てない
+    const touchesConfig = changes.some((c) => c.path === 'process.config.json' || c.from === 'process.config.json');
+    const matched = touchesConfig ? [] : decisionRuleHits(rules, changes).hits.map((h) => h.id);
     const cl1 = (c) => ['cl1', 'cl2', 'cl3'].includes(c?.answers?.['q-criticality']);
     const regulated = (c) => c?.answers?.['q-quality'] === 'quality-regulated';
     const reasons = [];
