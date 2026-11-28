@@ -486,12 +486,12 @@ if (a['q-criticality'] === 'cl3' && !config.shipBlocked && (config.review?.revie
 
 if (config.aiReview?.canApprove) {
   problems.push(
-    'aiReview.canApprove を true にできません。AI の確認は検出の層であり、承認として扱わない規定によります(第5章 5.5.4)'
+    'aiReview.canApprove を true にできません。AI を承認者にしない規定によります。AI の確認は、承認ではなく検出の層です(第5章 5.5.4)'
   );
 }
 if (config.aiReview?.requiredCheck) {
   problems.push(
-    'aiReview.requiredCheck を true にできません。AI の判定を合否条件にすると自動化バイアスを招きます'
+    'aiReview.requiredCheck を true にできません。既定の構成では、AI のレビューを必須の検査にしません。合否条件にすると自動化バイアスを招くためです'
   );
 }
 
