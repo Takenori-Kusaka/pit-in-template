@@ -174,6 +174,10 @@ try {
     !xBadShape.ok && /choiceReviewExclusions\.rules\[0\]\.paths/.test(xBadShape.out) && /choiceReviewExclusions\.rules\[0\]\.kinds/.test(xBadShape.out) && /choiceReviewExclusions\.rules\[0\]\.why/.test(xBadShape.out),
     xBadShape.out
   );
+  const xBeforeDup = fs.readFileSync(cfgPath, 'utf8');
+  const xDup = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule, { ...xRule, paths: ['docs/**'] }] } }, decidedBy: A.name, reason: '試験' });
+  // IMPL-1080:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: id が重複した規則を拒否し、構成を書き換えない', !xDup.ok && /choiceReviewExclusions.rules の id "tools" が重複しています/.test(xDup.out) && fs.readFileSync(cfgPath, 'utf8') === xBeforeDup, xDup.out);
   const xBefore = fs.readFileSync(cfgPath, 'utf8');
   const xAdd = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule] } } });
   // IMPL-1080:ng(違反と適合の対。標準の実装マーク)
@@ -181,6 +185,9 @@ try {
   const xAddOk = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule] } }, decidedBy: A.name, reason: '試験' });
   // IMPL-1080:ok(違反と適合の対。標準の実装マーク)
   check('作業上の選択を読む対象から外す規則: 同じ変化点を、D-0 表1 の決定者の記名と理由なら受け付け、構成に残る', xAddOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions?.rules?.[0]?.id === 'tools', xAddOk.out);
+  const profileText = () => fs.readFileSync(path.join(dir, 'PROCESS-PROFILE.md'), 'utf8');
+  // IMPL-1080:ok(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: PROCESS-PROFILE.md に規則の id・パス・理由を表示する', /## 記録された作業上の選択を読む対象から外す規則/.test(profileText()) && profileText().split('\n').some((l) => /^[|] tools [|] `tools[/][*][*]` [|] 全種類 [|] 内部ツール [|]$/.test(l)), profileText().split('\n').filter((l) => /tools|読む対象/.test(l)).join('\n'));
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: choice rule');
   const xKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 290 } } });
@@ -197,6 +204,7 @@ try {
   check('作業上の選択を読む対象から外す規則: 変更の種類の絞りを外す変化点(広げる向き)は、記名と理由が無ければ拒否する', !xBroaden.ok && /変更の種類 \["modify"\] → null/.test(xBroaden.out), xBroaden.out);
   const xDrop = settings({ summary: '規則を消す', settings: { choiceReviewExclusions: null } });
   check('作業上の選択を読む対象から外す規則: 規則を削る変化点(強める向き)は、記名なしで受け付ける', xDrop.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions === undefined, xDrop.out);
+  check('作業上の選択を読む対象から外す規則: 規則を消した構成の PROCESS-PROFILE.md には、この節を足さない', !/読む対象から外す規則/.test(profileText()), profileText().split('\n').filter((l) => /読む対象/.test(l)).join('\n'));
 
   // 観測の窓(標準 第5章 5.4.6。process-compass #349)。種別 settings の observationWindow。整数・下限 1・最小標本数の欄は持たない。
   // 値を変えるのは、向きを問わず決定した者の記名と理由を要する

@@ -2028,7 +2028,9 @@ if (isMain) {
     const regulated = (c) => c?.answers?.['q-quality'] === 'quality-regulated';
     const notApplied = cl1Of(config) || cl1Of(before) || regulated(config) || regulated(before);
     const r1 = riskClass === 'R1' || riskFloorOf(before?.riskFloor?.rules, changes).floor === 'R1';
-    const matched = rules.length ? decisionRuleHits(before.choiceReviewExclusions.rules, changes).hits.map((h) => h.id) : [];
+    // プロセス構成のファイル(規則そのもの)に触れる変更は、規則に当てない(外した件数にも数えない)
+    const matchable = changes.filter((c) => c.path !== 'process.config.json' && c.from !== 'process.config.json');
+    const matched = rules.length ? decisionRuleHits(before.choiceReviewExclusions.rules, matchable).hits.map((h) => h.id) : [];
     return { rules, hits: notApplied || r1 ? [] : matched, r1Skipped: r1 && !notApplied ? matched : [], notApplied: notApplied && rules.length > 0 };
   }
   const recordCommits = new Map();
@@ -3570,6 +3572,19 @@ if (isMain) {
         }, { list: [], skip: 0 }).list;
       const RANK = { R3: 1, R2: 2, R1: 3 };
       const floor = riskFloorOf(before.riskFloor?.rules, changes);
+      // 記録された作業上の選択を読む対象から外す規則(choiceReviewExclusions)を変えるコミットの下限は R2(第5章 5.5.1。PR の検査と同じ線)
+      if (changes.some((c) => c.path === 'process.config.json' || c.from === 'process.config.json')) {
+        let afterCfg = null;
+        try {
+          afterCfg = JSON.parse(git(['show', `${d.hash}:process.config.json`]));
+        } catch {
+          afterCfg = null;
+        }
+        if (afterCfg && JSON.stringify(before?.choiceReviewExclusions ?? null) !== JSON.stringify(afterCfg.choiceReviewExclusions ?? null)) {
+          floor.hits.push({ id: 'choiceReviewExclusions の変更', floor: 'R2', files: ['process.config.json'] });
+          if (RANK.R2 > RANK[floor.floor]) floor.floor = 'R2';
+        }
+      }
       d.riskFloor = floor.floor;
       d.choiceReview = choiceReviewOf(before, changes, d.riskClass);
       if (d.riskClass && RANK[d.riskClass] < RANK[floor.floor]) {
@@ -4742,16 +4757,20 @@ if (isMain) {
         const r = headRules.find((x) => x?.id === id);
         return r ? `(パス ${(r.paths ?? []).join('・')}${r.kinds?.length ? ` / 変更の種類 ${r.kinds.join('・')}` : ''}。理由: ${r.why ?? '記載なし'})` : '(現在の構成には無い規則)';
       };
-      const rows = ids.map((id) => {
-        if (noApply) return `${id}: 当てていない(安全重要度 CL1 以上・規制業の案件では、規則を置いても外さない)${whyOf(id)}`;
+      const rowsWith = (detail) => ids.map((id) => {
+        if (noApply) return `${id}: 当てていない(安全重要度 CL1 以上・規制業の案件では、規則を置いても外さない)${detail(id)}`;
         const own = items.filter((i) => i.rules.includes(id));
         const r1 = own.filter((i) => i.r1Skipped.includes(id)).length;
-        return `${id}: 外した ${own.filter((i) => i.hits.includes(id)).length} 件 / 出荷の範囲の変更 ${total} 件(うち R1 のため当てなかった ${r1} 件)${whyOf(id)}`;
+        return `${id}: 外した ${own.filter((i) => i.hits.includes(id)).length} 件 / 出荷の範囲の変更 ${total} 件(うち R1 のため当てなかった ${r1} 件)${detail(id)}`;
       });
+      const rows = rowsWith(whyOf);
+      // 組織の外へ渡す形には、規則の id と件数だけを出す(パスと理由は自由記述を含むため、内側の開示にだけ置く)
+      const rowsExternal = rowsWith(() => '');
       tailoring.push({
         label: '記録された作業上の選択と理由を確定の場で読む対象から外す規則',
         state: noApply ? '当てていない(安全重要度 CL1 以上・規制業)' : `規則 ${ids.length} 件(出荷の範囲の変更 ${total} 件)`,
         why: [...rows, '外した変更では、記録された選択の誤りが確定の場で見つかる機会を失う。件数は範囲を示す開示で、出荷を止める理由にも記載の欠落にも数えない'],
+        whyExternal: [...rowsExternal, '規則のパスと理由は組織の内側の開示にある'],
       });
     }
   }
@@ -7011,7 +7030,7 @@ if (isMain) {
       R.push('| --- | --- | --- |');
       for (const t of A.tailoring) {
         // 強制層の一時緩和の理由は自由記述である。組織の外へ渡す形では出さない
-        const why = external && t.label === '強制層の書き込み遮断' ? ['理由は組織の内側の開示にある'] : t.why;
+        const why = external && t.label === '強制層の書き込み遮断' ? ['理由は組織の内側の開示にある'] : external && t.whyExternal ? t.whyExternal : t.why;
         R.push(`| ${t.label} | ${t.state} | ${why.join(' / ') || '**理由の記録なし**'} |`);
       }
     } else {

@@ -2444,7 +2444,25 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     }
   }
   result.riskFloor = { floor: floorResult.floor, hits: floorResult.hits, rules: (rulesConfig.riskFloor?.rules ?? []).length };
-  if (risk && RISK_RANK[risk] < RISK_RANK[floorResult.floor]) {
+  // 記録された作業上の選択と理由を読む対象から外す規則(第5章 5.5.1)の当たりを、確定の場の人へ知らせる。基底ブランチの構成の規則だけを読む。
+  // 知らせは合否を変えない。規則が無ければ何も出さない。プロセス構成のファイルに触れる変更は規則に当てない
+  if (baseConfigured && Array.isArray(baseConfig.choiceReviewExclusions?.rules) && baseConfig.choiceReviewExclusions.rules.length) {
+    const rules = baseConfig.choiceReviewExclusions.rules;
+    const matchable = changes.filter((c) => c.path !== 'process.config.json' && c.from !== 'process.config.json');
+    const matched = decisionRuleHits(rules, matchable).hits.map((h) => h.id);
+    const cl1 = (c) => ['cl1', 'cl2', 'cl3'].includes(c?.answers?.['q-criticality']);
+    const regulated = (c) => c?.answers?.['q-quality'] === 'quality-regulated';
+    const reasons = [];
+    if (risk === 'R1' || floorResult.floor === 'R1') reasons.push('R1 の変更');
+    if (cl1(baseConfig) || cl1(headConfig)) reasons.push('安全重要度 CL1 以上');
+    if (regulated(baseConfig) || regulated(headConfig)) reasons.push('規制業');
+    if (reasons.length) {
+      result.notices.push(`作業上の選択を読む対象から外す規則(${rules.map((r) => r?.id).filter(Boolean).join(', ')})は、この変更に当てていない(${reasons.join('・')})。記録された作業上の選択と理由も、確定の場で読む対象である(第5章 5.5.1)`);
+    } else if (matched.length) {
+      result.notices.push(`作業上の選択を読む対象から外す規則に当たる変更である(当たった規則: ${matched.join(', ')})。記録された作業上の選択と理由は、確定の場で読む対象から外れる。独立レビューの基準・依存の確認・判断記録は外れない。この知らせは合否を変えない(第5章 5.5.1)`);
+    }
+  }
+  if (risk &&RISK_RANK[risk] < RISK_RANK[floorResult.floor]) {
     const why = floorResult.hits.filter((h) => RISK_RANK[h.floor] > RISK_RANK[risk]).map((h) => `${h.id}(下限 ${h.floor}${h.why ? `。${h.why}` : ''}: ${h.files.slice(0, 3).join(', ')}${h.files.length > 3 ? ' ほか' : ''})`);
     result.errors.push(
       `区分の下限: 記載された区分 ${risk} は、変更の対象から導いた下限 ${floorResult.floor} より低い。当たった規則: ${why.join(' / ')}。区分を ${floorResult.floor} 以上へ改める(下限より高い区分は妨げない。第3章 3.8.1 の要求事項2)。規則の網羅は主張しない`

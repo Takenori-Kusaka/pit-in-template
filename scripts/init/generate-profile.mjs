@@ -3974,6 +3974,24 @@ export function renderProfileMd(config, result) {
   L.push('ゲート名は標準の該当節へのリンクです。**構成の根拠は標準にあります**。');
   L.push('');
 
+  // --- 記録された作業上の選択を読む対象から外す規則(標準 第5章 5.5.1)。規則が無い構成では何も足さない ---
+  {
+    const xr = Array.isArray(config.choiceReviewExclusions?.rules) ? config.choiceReviewExclusions.rules : [];
+    if (xr.length) {
+      L.push('## 記録された作業上の選択を読む対象から外す規則');
+      L.push('');
+      L.push('次の規則に当たる変更では、記録された作業上の選択と理由が、確定の場で読む対象から外れます。独立レビューの基準・依存の確認・判断記録は外れません。規則は、安全重要度 CL1 以上・規制業の案件と、R1 の変更には当たりません。');
+      L.push('');
+      L.push('| 規則 | パス | 変更の種類 | 理由 |');
+      L.push('| --- | --- | --- | --- |');
+      for (const r of xr) {
+        const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+        L.push(`| ${cell(r.id)} | ${(Array.isArray(r.paths) ? r.paths : []).map((p) => `\`${cell(p)}\``).join(' ')} | ${Array.isArray(r.kinds) && r.kinds.length ? r.kinds.join('・') : '全種類'} | ${cell(r.why)} |`);
+      }
+      L.push('');
+    }
+  }
+
   // --- AI 生成箇所の追跡(CL1 以上・規制業。IMPL-0760・IMPL-0839) ---
   {
     const traceText = traceabilityText(config.answers);

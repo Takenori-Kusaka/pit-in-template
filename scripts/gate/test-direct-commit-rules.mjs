@@ -84,7 +84,7 @@ function workspace(phase, extra = {}, answers = {}) {
     return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, report };
   };
   const done = () => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  return { commit, run, done, read: (rel) => fs.readFileSync(path.join(dir, rel), 'utf8') };
+  return { commit, run, done, git, write, read: (rel) => fs.readFileSync(path.join(dir, rel), 'utf8') };
 }
 
 const linesOf = (out, id) => out.split('\n').filter((l) => l.includes(`コミット ${id}`));
@@ -187,6 +187,79 @@ const rowOf = (w, id) => {
   const r = w.run();
   const row = rowOf(w, 'internal-tools');
   check('作業上の選択を読む対象から外す規則: 規制業の案件でも外さず、当てていない旨を示す', Boolean(row) && /当てていない/.test(row.state) && !/外した [1-9]/.test(row.why), JSON.stringify(row) + r.out.slice(-300));
+  w.done();
+}
+
+// 規則の当たりの算出を、判定ごとに確かめる(判定を壊すと落ちる場面)
+{
+  // 規則の変更そのものは規則に当てない(規則 ** の下でも外した件数に入らない)。規則を変えるコミットの区分の下限は R2
+  const w = workspace('growth', { choiceReviewExclusions: { rules: [{ id: 'all', paths: ['**'], why: '全体' }] } });
+  w.commit('chore: tool', 'Risk: R3', { 'tools/a.js': 'export const a = 1;\n' });
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.choiceReviewExclusions.rules[0].why = '全体(理由を直した)';
+  const low = w.commit('chore: rule why', 'Risk: R3', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n' });
+  cfg.choiceReviewExclusions.rules[0].why = '全体(理由を直した 2)';
+  const fine = w.commit('chore: rule why again', 'Risk: R2', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n' });
+  const r = w.run();
+  const row = rowOf(w, 'all');
+  check('作業上の選択を読む対象から外す規則: 規則のファイルだけを変えた変更は、規則に当てない(外した件数に入れない)', Boolean(row) && /外した 1 件 \//.test(row.why), JSON.stringify(row));
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: PR を経ず規則だけを R3 で変えたコミットを、下限 R2 より低いとして欠落にする', linesOf(r.out, low).some((l) => /区分 R3 は、変更の対象から導いた下限 R2 より低い.*choiceReviewExclusions の変更/.test(l)), linesOf(r.out, low).join('\n') || r.out);
+  // IMPL-1082:ok(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 規則だけを R2 で変えたコミットには、下限の欠落を出さない', !linesOf(r.out, fine).some((l) => /下限/.test(l)), linesOf(r.out, fine).join('\n'));
+  w.done();
+}
+{
+  // 規則は変更の親の版(基底)の構成から読む。規則を足すコミットそのものは外さず、次の変更から外す
+  const w = workspace('growth');
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.choiceReviewExclusions = CHOICE.choiceReviewExclusions;
+  w.commit('chore: add rule and tool', 'Risk: R2', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n', 'tools/x.js': 'export const x = 1;\n' });
+  w.commit('chore: tool', 'Risk: R3', { 'tools/y.js': 'export const y = 1;\n' });
+  w.run();
+  const row = rowOf(w, 'internal-tools');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 規則を足すコミットそのものは外さず、基底の構成の規則を次の変更から当てる(HEAD の構成から読まない)', Boolean(row) && /外した 1 件 \//.test(row.why), JSON.stringify(row));
+  w.done();
+}
+{
+  // 変更ごとの安全重要度: 変更の親の版が CL1 以上なら、HEAD の構成が CL0 に下がっていても、その変更には当てない
+  const w = workspace('growth', CHOICE, { 'q-criticality': 'cl1' });
+  const cfg = JSON.parse(w.read('process.config.json'));
+  cfg.answers['q-criticality'] = 'cl0';
+  w.commit('chore: lower and tool', 'Risk: R2', { 'process.config.json': JSON.stringify(cfg, null, 2) + '\n', 'tools/a.js': 'export const a = 1;\n' });
+  w.commit('chore: tool', 'Risk: R3', { 'tools/b.js': 'export const b = 1;\n' });
+  w.run();
+  const row = rowOf(w, 'internal-tools');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 変更の親の版が安全重要度 CL1 以上なら、HEAD が CL0 でも当てていない旨を出す', Boolean(row) && /当てていない/.test(row.why), JSON.stringify(row));
+  w.done();
+}
+{
+  // 組織の外へ渡す開示には、規則の id と件数だけを出し、パスと理由(自由記述)を出さない。内側の開示には出す
+  const w = workspace('growth', { choiceReviewExclusions: { rules: [{ id: 'internal-tools', paths: ['tools/**'], why: '機微な理由の文' }] } });
+  w.commit('chore: tool', 'Risk: R3', { 'tools/a.js': 'export const a = 1;\n' });
+  const r = w.run();
+  const external = w.read('evidence/assurance-disclosure.external.md');
+  check('作業上の選択を読む対象から外す規則: 内側の開示には規則の理由を出す', /機微な理由の文/.test(r.report), r.report.split('\n').filter((l) => /読む対象/.test(l)).join('\n'));
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 組織の外へ渡す開示には、規則の id と件数だけを出し、理由とパスを出さない', /internal-tools: 外した 1 件/.test(external) && !/機微な理由の文/.test(external) && !/tools\/\*\*/.test(external), external.split('\n').filter((l) => /internal-tools|機微/.test(l)).join('\n'));
+  w.done();
+}
+{
+  // PR の経路(マージされた PR)でも、当たりと R1 の除外を数える。PR の区分は PR の本文(写し)から読む
+  const w = workspace('growth', CHOICE);
+  const copyOf = (n, mc, head, risk) =>
+    JSON.stringify({ repository: 'o/r', pr: n, title: 'x', body: `## リスク区分\n\n${risk}\n`, head_ref: 'feat', merge_commit_sha: mc, head_sha: head, author: { id: 11, login: 'acc1' }, merged_at: '2026-11-03T00:00:00Z', merged_by: { login: 'acc1' }, base: { ref: 'main' }, default_branch: 'main', copied_at: '2026-11-03T00:01:00Z', copied_by: 'record-copy workflow (GITHUB_TOKEN)', reviews: [], audit_log: 'x' }, null, 2) + '\n';
+  for (const [n, risk] of [[1, 'R3'], [2, 'R1']]) {
+    const h = w.commit(`chore: tool ${n} (#${n})`, 'Risk: R3', { [`tools/p${n}.js`]: `export const p = ${n};\n` });
+    const mc = w.git('rev-parse', 'HEAD').trim();
+    w.commit(`docs: copy ${n}`, 'Risk: R3', { [`docs/records/reviews/pr-${n}.json`]: copyOf(n, mc, h, risk) });
+  }
+  w.run();
+  const row = rowOf(w, 'internal-tools');
+  // IMPL-1082:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: PR の経路で、R3 の PR は外した 1 件、R1 の PR は当てなかった 1 件に数える', Boolean(row) && /外した 1 件 \/ 出荷の範囲の変更 3 件\(うち R1 のため当てなかった 1 件\)/.test(row.why), JSON.stringify(row));
   w.done();
 }
 

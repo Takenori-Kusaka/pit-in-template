@@ -845,6 +845,43 @@ scenario('作業上の選択を読む対象から外す規則: 規則に触れ�
   write('src/a.js', lines(21));
 }, passes((r) => (r.riskFloor?.hits.some((h) => h.id === 'choiceReviewExclusions の変更') ? ['規則を変えていないのに下限が出ている'] : [])));
 rewindBase();
+// 基底の規則に当たる変更を、確定の場の人へ知らせる(合否を変えない)。規則が無ければ何も出さない
+const CHOICE_NOTICE = /作業上の選択を読む対象から外す規則/;
+const noChoiceNotice = (r) => (r.notices.some((x) => CHOICE_NOTICE.test(x)) ? [`規則に関する知らせが出ている: ${JSON.stringify(r.notices.filter((x) => CHOICE_NOTICE.test(x)))}`] : []);
+// IMPL-1081:ng(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: 基底の規則に当たる変更に、当たった規則の id を知らせる(合否は変えない)', {}, () => {
+  withChoiceRules(TOOLS_RULE);
+  write('tools/x.js', lines(21));
+}, passes(noticedEarly(/作業上の選択を読む対象から外す規則に当たる変更である\(当たった規則: tools\)。記録された作業上の選択と理由は、確定の場で読む対象から外れる。独立レビューの基準・依存の確認・判断記録は外れない/)));
+rewindBase();
+// IMPL-1081:ok(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: 規則に当たらない変更には、知らせを出さない', {}, () => {
+  withChoiceRules(TOOLS_RULE);
+  write('src/a.js', lines(21));
+}, passes(noChoiceNotice));
+rewindBase();
+scenario('作業上の選択を読む対象から外す規則: 規則が無い構成では、当たる変更でも何も出さない', {}, () => write('tools/x.js', lines(21)), passes(noChoiceNotice));
+scenario('作業上の選択を読む対象から外す規則: R1 の変更は規則に当てず、「当てていない」と知らせる', { body: BODY('Spec: F-001 / Task-1', RISK('R1\n\n確定した者: 佐藤 花子')) }, () => {
+  withChoiceRules(TOOLS_RULE);
+  write('tools/x.js', lines(21));
+}, (r) => [...noticedEarly(/規則\(tools\)は、この変更に当てていない\(R1 の変更\)/)(r), ...(r.notices.some((x) => /当たる変更である/.test(x)) ? ['R1 の変更に「当たる」と知らせている'] : [])]);
+rewindBase();
+scenario('作業上の選択を読む対象から外す規則: 安全重要度 CL1 以上の構成では、当てていないと知らせる', {}, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.answers = { ...(cfg.answers ?? {}), 'q-criticality': 'cl1' };
+  cfg.choiceReviewExclusions = { rules: TOOLS_RULE };
+  write('process.config.json', cfg);
+  advanceBase('choice-rules-cl1');
+  write('tools/x.js', lines(21));
+}, (r) => [...noticedEarly(/規則\(tools\)は、この変更に当てていない\(安全重要度 CL1 以上\)/)(r), ...(r.notices.some((x) => /当たる変更である/.test(x)) ? ['CL1 の構成で「当たる」と知らせている'] : [])]);
+rewindBase();
+scenario('作業上の選択を読む対象から外す規則: 規則のファイル(プロセス構成)だけを変える変更は、規則(**)に当てない', { body: R2_BODY }, () => {
+  withChoiceRules([{ id: 'all', paths: ['**'], why: '全体' }]);
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions.rules[0].why = '全体(理由を直した)';
+  write('process.config.json', cfg);
+}, (r) => (r.notices.some((x) => /当たる変更である/.test(x)) ? ['規則のファイルの変更を規則に当てている'] : []));
+rewindBase();
 
 scenario('判断記録の要否: 規則のパスが追跡中のファイルに1件も当たらなければ未宣言として出す', {}, () => {
   withDecisionRules([{ id: 'typo', paths: ['src/apii/**'], why: '誤記' }]);
