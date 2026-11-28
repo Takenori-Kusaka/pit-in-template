@@ -157,6 +157,47 @@ try {
   // IMPL-0390:ok(違反と適合の対。標準の実装マーク。process-compass #314)
   check('判断記録の要否の規則: 同じ変化点を、D-0 表1 の決定者の記名なら受け付ける', dropOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).decisionRules === undefined, dropOk.out);
 
+  // 記録された作業上の選択を読む対象から外す規則(標準 第5章 5.5.1)。種別 settings の choiceReviewExclusions。
+  // 条件はパスと変更種別だけ。規則を置く・対象のパスを足す・変更の種類を広げるのは緩める向きで、D-0 表1 の決定者の記名と理由を要する
+  // (判断記録の要否の規則と向きが逆。削る・狭めるのは強める向きで、記名なしで受け付ける)
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: before choice rules');
+  const xRule = { id: 'tools', paths: ['tools/**'], why: '内部ツール' };
+  const xBadKey = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [{ ...xRule, dependedOn: true }] } } });
+  // IMPL-1080:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 記録の中身・担い手の申告を条件にする欄(未知の鍵)を拒否する', !xBadKey.ok && /choiceReviewExclusions\.rules\[0\] に書けない欄があります\(dependedOn\)/.test(xBadKey.out), xBadKey.out);
+  const xBadTop = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule], selfDeclared: true } } });
+  check('作業上の選択を読む対象から外す規則: 規則の並びの外の未知の鍵を拒否する', !xBadTop.ok && /choiceReviewExclusions に書けない欄があります\(selfDeclared\)/.test(xBadTop.out), xBadTop.out);
+  const xBadShape = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [{ id: 'tools', paths: 'tools/**', kinds: ['edit'] }] } } });
+  check(
+    '作業上の選択を読む対象から外す規則: 形の違う規則(paths が配列でない、kinds が列挙外、why が無い)を拒否する',
+    !xBadShape.ok && /choiceReviewExclusions\.rules\[0\]\.paths/.test(xBadShape.out) && /choiceReviewExclusions\.rules\[0\]\.kinds/.test(xBadShape.out) && /choiceReviewExclusions\.rules\[0\]\.why/.test(xBadShape.out),
+    xBadShape.out
+  );
+  const xBefore = fs.readFileSync(cfgPath, 'utf8');
+  const xAdd = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule] } } });
+  // IMPL-1080:ng(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 規則を置く変化点は、決定者の記名と理由が無ければ拒否する', !xAdd.ok && /記録された作業上の選択を読む対象から外す規則 tools: 追加/.test(xAdd.out) && fs.readFileSync(cfgPath, 'utf8') === xBefore, xAdd.out);
+  const xAddOk = settings({ summary: '規則を置く', settings: { choiceReviewExclusions: { rules: [xRule] } }, decidedBy: A.name, reason: '試験' });
+  // IMPL-1080:ok(違反と適合の対。標準の実装マーク)
+  check('作業上の選択を読む対象から外す規則: 同じ変化点を、D-0 表1 の決定者の記名と理由なら受け付け、構成に残る', xAddOk.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions?.rules?.[0]?.id === 'tools', xAddOk.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: choice rule');
+  const xKeep = settings({ summary: '値を変える', settings: { task: { maxChangedLines: 290 } } });
+  check('作業上の選択を読む対象から外す規則: ほかの設定の変化点で規則を失わない', xKeep.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions?.rules?.length === 1, xKeep.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: task again');
+  const xWiden = settings({ summary: '対象を足す', settings: { choiceReviewExclusions: { rules: [{ ...xRule, paths: ['tools/**', 'docs/**'] }] } } });
+  check('作業上の選択を読む対象から外す規則: 対象のパスを足す変化点は、記名と理由が無ければ拒否する', !xWiden.ok && /対象のパスを足す\(docs\/\*\*\)/.test(xWiden.out), xWiden.out);
+  const xNarrow = settings({ summary: '種類を絞る', settings: { choiceReviewExclusions: { rules: [{ ...xRule, kinds: ['modify'] }] } } });
+  check('作業上の選択を読む対象から外す規則: 変更の種類を絞る変化点(強める向き)は、記名なしで受け付ける', xNarrow.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions.rules[0].kinds?.[0] === 'modify', xNarrow.out);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: narrowed');
+  const xBroaden = settings({ summary: '種類の絞りを外す', settings: { choiceReviewExclusions: { rules: [xRule] } } });
+  check('作業上の選択を読む対象から外す規則: 変更の種類の絞りを外す変化点(広げる向き)は、記名と理由が無ければ拒否する', !xBroaden.ok && /変更の種類 \["modify"\] → null/.test(xBroaden.out), xBroaden.out);
+  const xDrop = settings({ summary: '規則を消す', settings: { choiceReviewExclusions: null } });
+  check('作業上の選択を読む対象から外す規則: 規則を削る変化点(強める向き)は、記名なしで受け付ける', xDrop.ok && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).choiceReviewExclusions === undefined, xDrop.out);
+
   // 観測の窓(標準 第5章 5.4.6。process-compass #349)。種別 settings の observationWindow。整数・下限 1・最小標本数の欄は持たない。
   // 値を変えるのは、向きを問わず決定した者の記名と理由を要する
   git('add', '-A');

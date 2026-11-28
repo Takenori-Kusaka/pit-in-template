@@ -806,6 +806,46 @@ scenario('判断記録の要否: 同じ PR で規則を書き換えても、基�
   write('src/api/handler.js', lines(5, 'h'));
 }, failsWith(/判断記録を要する変更です/, (r) => (has(r, /規則の変更を別の PR に分ける/) ? [] : ['規則と製品のコードの同時変更を失敗させていない']), (r) => (r.riskFloor?.hits.some((h) => h.id === 'decisionRules の変更' && h.floor === 'R2') ? [] : ['規則の変更の下限 R2 が出ていない'])));
 rewindBase();
+// ---------------------------------------------------------------- 記録された作業上の選択を読む対象から外す規則(第5章 5.5.1)
+// 規則を変える PR の下限は R2、規則と製品のコードは同じ PR で変えない。規則に当たるかの判定と件数は、出荷の証跡の集約が行う
+const TOOLS_RULE = [{ id: 'tools', paths: ['tools/**'], why: '内部ツール' }];
+const withChoiceRules = (rules) => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions = { rules };
+  write('process.config.json', cfg);
+  advanceBase('choice-rules');
+};
+const R2_BODY = BODY('Spec: F-001 / Task-1', RISK('R2\n\n確定した者: 佐藤 花子'));
+// IMPL-1081:ng(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: 規則を置く PR の下限は R2(R3 の記載は失敗)', {}, () => {
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions = { rules: TOOLS_RULE };
+  write('process.config.json', cfg);
+}, failsWith(/区分の下限: 記載された区分 R3 は、変更の対象から導いた下限 R2 より低い/, (r) => (r.riskFloor?.hits.some((h) => h.id === 'choiceReviewExclusions の変更' && h.floor === 'R2') ? [] : ['規則の変更の下限 R2 が出ていない'])));
+// IMPL-1081:ok(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: 規則を広げる PR は、区分 R2 の記載で下限を満たす(規則だけの変更は失敗しない)', { body: R2_BODY }, () => {
+  withChoiceRules(TOOLS_RULE);
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions.rules[0].paths.push('scripts/**');
+  write('process.config.json', cfg);
+}, (r) => (has(r, /作業上の選択を読む対象から外す規則: 規則/) ? ['規則だけの変更を失敗にしている'] : []));
+rewindBase();
+// 違反と適合の対
+// IMPL-1081:ng(違反と適合の対。標準の実装マーク)
+scenario('作業上の選択を読む対象から外す規則: 規則と製品のコードを同じ PR で変えたら失敗する', { body: R2_BODY }, () => {
+  withChoiceRules(TOOLS_RULE);
+  const cfg = JSON.parse(read('process.config.json'));
+  cfg.choiceReviewExclusions = { rules: [] };
+  write('process.config.json', cfg);
+  write('src/a.js', lines(21));
+}, failsWith(/作業上の選択を読む対象から外す規則: 規則\(process\.config\.json の choiceReviewExclusions\)と製品のコード/, (r) => (has(r, /規則の変更を別の PR に分ける/) ? [] : ['別の PR へ分ける指示が出ていない'])));
+rewindBase();
+scenario('作業上の選択を読む対象から外す規則: 規則に触れない PR は、規則があっても下限を上げない', {}, () => {
+  withChoiceRules(TOOLS_RULE);
+  write('src/a.js', lines(21));
+}, passes((r) => (r.riskFloor?.hits.some((h) => h.id === 'choiceReviewExclusions の変更') ? ['規則を変えていないのに下限が出ている'] : [])));
+rewindBase();
+
 scenario('判断記録の要否: 規則のパスが追跡中のファイルに1件も当たらなければ未宣言として出す', {}, () => {
   withDecisionRules([{ id: 'typo', paths: ['src/apii/**'], why: '誤記' }]);
   write('src/a.js', lines(21));

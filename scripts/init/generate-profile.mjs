@@ -2568,6 +2568,32 @@ export function diffConfig(before, after, opts = {}) {
         }
       }
       for (const [id, r] of a) if (!b.has(id)) push(`判断記録の要否の規則 ${id}: 追加(${(r.paths ?? []).join(', ')})`, 0, 1, null);
+      // 記録された作業上の選択を読む対象から外す規則(第5章 5.5.1)。向きは判断記録の要否の規則と逆: 規則を置く・対象のパスを足す・
+      // 変更の種類を広げる(絞りを外す)のは、確定の場で人が読む範囲を減らす緩める向き。削る・パスを外す・種類を絞るのは強める向き
+      {
+        const xOf = (c) => new Map((c.choiceReviewExclusions?.rules ?? []).map((r) => [r.id, r]));
+        const b = xOf(before);
+        const a = xOf(after);
+        const label = '記録された作業上の選択を読む対象から外す規則';
+        for (const [id, r] of b) {
+          const n = a.get(id);
+          if (!n) push(`${label} ${id}: 削除(${(r.paths ?? []).join(', ')})`, 0, 1, null);
+          else {
+            const removed = (r.paths ?? []).filter((g) => !(n.paths ?? []).includes(g));
+            const added = (n.paths ?? []).filter((g) => !(r.paths ?? []).includes(g));
+            if (removed.length) push(`${label} ${id}: 対象のパスを外す(${removed.join(', ')})`, 0, 1, null);
+            if (added.length) push(`${label} ${id}: 対象のパスを足す(${added.join(', ')})`, 1, 0, null);
+            const kb = JSON.stringify(r.kinds ?? null);
+            const ka = JSON.stringify(n.kinds ?? null);
+            if (kb !== ka) {
+              const widened = r.kinds && (!n.kinds || n.kinds.some((k) => !r.kinds.includes(k)));
+              const narrowed = n.kinds && (!r.kinds || r.kinds.some((k) => !n.kinds.includes(k)));
+              push(`${label} ${id}: 変更の種類 ${kb} → ${ka}`, widened ? 1 : 0, narrowed && !widened ? 1 : 0, null);
+            }
+          }
+        }
+        for (const [id, r] of a) if (!b.has(id)) push(`${label} ${id}: 追加(${(r.paths ?? []).join(', ')})`, 1, 0, null);
+      }
       // 観測の窓(第5章 5.4.6)。向きは付けない(長くしても短くしても、緩める向きの決定者の絞り込みに掛けない)。
       // 決定した者と理由の記録は入口の検査が保つ(AI の名義は拒む)。定めていない前の値は名目の値で比べず「定めていない」と出す
       {
@@ -5490,7 +5516,7 @@ if (isMain) {
   const S = change?.kind === 'settings' && isObject(change.settings) ? change.settings : {};
   {
     const bad = [];
-    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'dependencies', 'observationWindow', 'reworkBaseline', 'detection', 'reviewQueue'].includes(k));
+    const unknown = Object.keys(S).filter((k) => !['stack', 'projectId', 'profileName', 'ci', 'task', 'guard', 'platform', 'reviewSourcing', 'riskFloor', 'decisionRules', 'choiceReviewExclusions', 'dependencies', 'observationWindow', 'reworkBaseline', 'detection', 'reviewQueue'].includes(k));
     if (unknown.length) bad.push(`settings に書けない欄があります(${unknown.join(', ')})`);
     if (S.stack !== undefined && !fs.existsSync(path.join(ROOT, 'adapters', `${S.stack}.json`))) bad.push(`settings.stack "${S.stack}" に対応する adapters/${S.stack}.json がありません`);
     const posInt = (v) => Number.isInteger(v) && v > 0;
@@ -5527,6 +5553,31 @@ if (isMain) {
             bad.push(`settings.decisionRules.rules[${i}].kinds は "add" / "modify" / "delete" / "rename" の配列で書きます`);
           }
           if (typeof r?.why !== 'string' || !r.why.trim()) bad.push(`settings.decisionRules.rules[${i}].why(判断記録を要する理由)を書きます`);
+        }
+      }
+    }
+    // 記録された作業上の選択と理由を、確定の場で読む対象から外す規則(標準 第5章 5.5.1)。{ rules: [{ id, paths: [glob], kinds?, why }] }。
+    // 条件はパスと変更種別だけ。記録の中身・担い手の申告を条件にする欄は受け付けない(未知の欄は拒否する)
+    if (S.choiceReviewExclusions !== undefined && S.choiceReviewExclusions !== null) {
+      const X = S.choiceReviewExclusions;
+      if (!isObject(X) || !Array.isArray(X.rules)) bad.push('settings.choiceReviewExclusions は { "rules": [{ "id": "<ID>", "paths": ["<glob>"], "why": "<理由>" }] } で書きます。設定を消すときは null です');
+      else {
+        const unknownTop = Object.keys(X).filter((k) => k !== 'rules');
+        if (unknownTop.length) bad.push(`settings.choiceReviewExclusions に書けない欄があります(${unknownTop.join(', ')})。条件はパス(paths)と変更種別(kinds)だけです`);
+        const ids = new Set();
+        for (const [i, r] of X.rules.entries()) {
+          if (!isObject(r) || typeof r.id !== 'string' || !r.id.trim()) bad.push(`settings.choiceReviewExclusions.rules[${i}].id を書きます`);
+          else if (ids.has(r.id)) bad.push(`settings.choiceReviewExclusions.rules の id "${r.id}" が重複しています`);
+          else ids.add(r.id);
+          if (isObject(r)) {
+            const unknownKeys = Object.keys(r).filter((k) => !['id', 'paths', 'kinds', 'why'].includes(k));
+            if (unknownKeys.length) bad.push(`settings.choiceReviewExclusions.rules[${i}] に書けない欄があります(${unknownKeys.join(', ')})。条件はパス(paths)と変更種別(kinds)だけで、記録の中身や担い手の申告は条件にできません`);
+          }
+          if (!strList(r?.paths) || !r.paths.length) bad.push(`settings.choiceReviewExclusions.rules[${i}].paths はパスの glob の配列(1 件以上)で書きます`);
+          if (r?.kinds !== undefined && !(Array.isArray(r.kinds) && r.kinds.length && r.kinds.every((k) => ['add', 'modify', 'delete', 'rename'].includes(k)))) {
+            bad.push(`settings.choiceReviewExclusions.rules[${i}].kinds は "add" / "modify" / "delete" / "rename" の配列で書きます`);
+          }
+          if (typeof r?.why !== 'string' || !r.why.trim()) bad.push(`settings.choiceReviewExclusions.rules[${i}].why(読む対象から外す理由)を書きます`);
         }
       }
     }
@@ -5966,7 +6017,7 @@ if (isMain) {
     config.changeLog[0].preflight = preflightRecord(preflightResult, ROOT, config.changeLog[0].at ?? null);
   }
   // 区分の下限の規則と依存先の欄(種別 settings で書く)。再生成で失わない。null は設定を消す
-  for (const key of ['riskFloor', 'decisionRules', 'dependencies']) {
+  for (const key of ['riskFloor', 'decisionRules', 'choiceReviewExclusions', 'dependencies']) {
     const now = S[key] !== undefined ? S[key] : prior?.[key];
     if (now != null) config[key] = now;
     else delete config[key];

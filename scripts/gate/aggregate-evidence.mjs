@@ -1999,6 +1999,38 @@ if (isMain) {
     if (hitFiles.length) return full(null, { hit: true, files: hitFiles, atHead: atHead.hit, atParent: atParent.hit });
     return { limited: true, outOfScope: true, core: { hit: false, files: [] }, why: null };
   }
+  /** git の --name-status -z の出力を、変更の一覧(path・kind。名前の変更・複製は from)へ読む */
+  function parseNameStatus(out) {
+    const KIND = { A: 'add', M: 'modify', D: 'delete', R: 'rename', C: 'add', T: 'modify' };
+    return String(out ?? '')
+      .split('\0')
+      .reduce((acc, tok, i, arr) => {
+        if (!tok || !/^[AMDRCT]/.test(tok) || acc.skip > i) return acc;
+        const k = KIND[tok[0]] ?? 'modify';
+        if (k === 'rename' || tok[0] === 'C') {
+          acc.list.push({ path: arr[i + 2], from: tok[0] === 'R' ? arr[i + 1] : undefined, kind: k });
+          acc.skip = i + 3;
+        } else {
+          acc.list.push({ path: arr[i + 1], kind: k });
+          acc.skip = i + 2;
+        }
+        return acc;
+      }, { list: [], skip: 0 }).list;
+  }
+  /**
+   * 記録された作業上の選択を確定の場で読む対象から外す規則(構成の choiceReviewExclusions。標準 第5章 5.5.1)の当たり。
+   * 規則は変更の親の版の構成から読む。区分の下限の規則で R1 に当たる変更・R1 と記載された変更には当てない。
+   * 変更の親の版か HEAD の構成が安全重要度 CL1 以上・規制業なら、規則を置いても外さない(当てていない)。
+   * 返り値: { rules(親の版の規則の id)、hits(当たった規則の id)、r1Skipped(R1 のため当てなかった規則の id)、notApplied(CL1 以上・規制業のため当てなかった) }
+   */
+  function choiceReviewOf(before, changes, riskClass) {
+    const rules = (Array.isArray(before?.choiceReviewExclusions?.rules) ? before.choiceReviewExclusions.rules : []).map((r) => r?.id).filter(Boolean);
+    const regulated = (c) => c?.answers?.['q-quality'] === 'quality-regulated';
+    const notApplied = cl1Of(config) || cl1Of(before) || regulated(config) || regulated(before);
+    const r1 = riskClass === 'R1' || riskFloorOf(before?.riskFloor?.rules, changes).floor === 'R1';
+    const matched = rules.length ? decisionRuleHits(before.choiceReviewExclusions.rules, changes).hits.map((h) => h.id) : [];
+    return { rules, hits: notApplied || r1 ? [] : matched, r1Skipped: r1 && !notApplied ? matched : [], notApplied: notApplied && rules.length > 0 };
+  }
   const recordCommits = new Map();
   /** 判定記録のファイルを足したコミット(最初に追加したもの)。未コミットの記録は null */
   function recordCommitOf(file) {
@@ -2698,6 +2730,7 @@ if (isMain) {
       // G-6 の範囲(S1 のコア機能への限定)。outOfScope が真なら独立した人の確認の欠落に数えない。why は範囲を限らなかった理由(#435)
       // 判定に渡すファイルは名前の変更の元のパスを含める(--no-renames で消した側と足した側の両方を出す。コア機能のファイルを範囲の外の
       // パスへ移す変更を、移す前のパスで判定する。#435 の突合 X-1)
+      choiceReview: choiceReviewOf(configAt(`${hash}^1`), parseNameStatus(git(['diff', '--name-status', '-M', '-z', `${hash}^1`, hash])), riskClassOf(d?.body)),
       g6Scope: g6ScopeOf(hash, [...new Set([...prFiles, ...git(['diff', '--name-only', '--no-renames', `${hash}^1`, hash]).split('\n').filter(Boolean)])]),
       // 承認レビューの写し(所在・失効した承認・PR の記録との所見)。無ければ null
       copy: copyEntry
@@ -3538,6 +3571,7 @@ if (isMain) {
       const RANK = { R3: 1, R2: 2, R1: 3 };
       const floor = riskFloorOf(before.riskFloor?.rules, changes);
       d.riskFloor = floor.floor;
+      d.choiceReview = choiceReviewOf(before, changes, d.riskClass);
       if (d.riskClass && RANK[d.riskClass] < RANK[floor.floor]) {
         const why = floor.hits.filter((h) => RANK[h.floor] > RANK[d.riskClass]).map((h) => `${h.id}(下限 ${h.floor}: ${h.files.slice(0, 3).join(', ')})`);
         gaps.push(
@@ -3555,7 +3589,7 @@ if (isMain) {
           after = null;
         }
         const same = (key) => JSON.stringify(before?.[key] ?? null) === JSON.stringify(after?.[key] ?? null);
-        for (const [key, label, where] of [['riskFloor', '区分の下限の規則', '第3章 3.8.1 の要求事項6'], ['decisionRules', '判断記録の要否の規則', '第2章 2.6 の要求事項6']]) {
+        for (const [key, label, where] of [['riskFloor', '区分の下限の規則', '第3章 3.8.1 の要求事項6'], ['decisionRules', '判断記録の要否の規則', '第2章 2.6 の要求事項6'], ['choiceReviewExclusions', '記録された作業上の選択を読む対象から外す規則', '第5章 5.5.1']]) {
           if (after && !same(key)) {
             gaps.push(`コミット ${d.commit}: ${claimed}${label}(process.config.json の ${key})と製品のコード(${product.slice(0, 3).join(', ')})が同じコミットで変わっています(${where})。規則の変更は別のコミットに分けます`);
           }
@@ -4695,6 +4729,32 @@ if (isMain) {
         ? { label: g.label, state: g6ScopeStateText(), why: [...paramNotes(config, 'g6', 'scope'), ...G6_SCOPE_COUNTING] }
         : { label: g.label, state: `${STATE_TEXT[g.state] ?? `統合(${g.state})`}${key === 'g7' && g.state === 'simplified' ? g7Tail : ''}`, why: g.why ?? [] }
     );
+  // 記録された作業上の選択と理由を確定の場で読む対象から外す規則(第5章 5.5.1)。規則が無い構成では何も出さない(警告もしない)。
+  // 件数は開示で、出荷を止める理由にも記載の欠落にも数えない
+  {
+    const items = [...prs.map((p) => p.choiceReview), ...directProduct.map((d) => d.choiceReview)].filter(Boolean);
+    const headRules = Array.isArray(config.choiceReviewExclusions?.rules) ? config.choiceReviewExclusions.rules : [];
+    const ids = [...new Set([...headRules.map((r) => r?.id), ...items.flatMap((i) => i.rules)].filter(Boolean))];
+    if (ids.length) {
+      const total = items.length;
+      const noApply = cl1Of(config) || config?.answers?.['q-quality'] === 'quality-regulated' || items.some((i) => i.notApplied);
+      const whyOf = (id) => {
+        const r = headRules.find((x) => x?.id === id);
+        return r ? `(パス ${(r.paths ?? []).join('・')}${r.kinds?.length ? ` / 変更の種類 ${r.kinds.join('・')}` : ''}。理由: ${r.why ?? '記載なし'})` : '(現在の構成には無い規則)';
+      };
+      const rows = ids.map((id) => {
+        if (noApply) return `${id}: 当てていない(安全重要度 CL1 以上・規制業の案件では、規則を置いても外さない)${whyOf(id)}`;
+        const own = items.filter((i) => i.rules.includes(id));
+        const r1 = own.filter((i) => i.r1Skipped.includes(id)).length;
+        return `${id}: 外した ${own.filter((i) => i.hits.includes(id)).length} 件 / 出荷の範囲の変更 ${total} 件(うち R1 のため当てなかった ${r1} 件)${whyOf(id)}`;
+      });
+      tailoring.push({
+        label: '記録された作業上の選択と理由を確定の場で読む対象から外す規則',
+        state: noApply ? '当てていない(安全重要度 CL1 以上・規制業)' : `規則 ${ids.length} 件(出荷の範囲の変更 ${total} 件)`,
+        why: [...rows, '外した変更では、記録された選択の誤りが確定の場で見つかる機会を失う。件数は範囲を示す開示で、出荷を止める理由にも記載の欠落にも数えない'],
+      });
+    }
+  }
   if (deferredReview) {
     tailoring.push({ label: '出荷の前の確認(取り込む前に人が読む範囲の外の変更)', state: DEFERRED_STATE_TEXT, why: deferredReviewLines(deferredReview).map((l) => l.replace(/^- /, '')) });
   }

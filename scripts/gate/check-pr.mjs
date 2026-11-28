@@ -75,6 +75,8 @@
 //      PR の下限は R2 とし、decisionRules と製品のコードを同じ PR で変えたら失敗させる。G-3 の判定記録への到達は
 //      IMPL-0972 が確かめる(基底ブランチ・記録用ブランチの様式、または宣言行 G-3: 通過 を持つ名簿の人のレビュー)。
 //      判断記録の中身は確かめない
+//   7d. 記録された作業上の選択を読む対象から外す規則(標準 第5章 5.5.1): 構成の choiceReviewExclusions を変える PR の下限は R2 とし、
+//      choiceReviewExclusions と製品のコードを同じ PR で変えたら失敗させる(規則に当たるかの判定と件数は、出荷の証跡の集約が行う)
 //   6. 停止の申し立て(標準 第7章 7.11): 受信箱のラベル `state:stop-requested` が付いた PR(付けた履歴のある PR を
 //      含む)は、基底ブランチに成立した解除の記録(テンプレ4 のゲート欄「停止の申し立ての解除」)が無い限り失敗させる。
 //      解除は層1 の項目4 の権限者の記名と理由を要し、AI の名義を受け付けない。見解を退けた解除は上申先と日付を要する。
@@ -2427,6 +2429,17 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
     if (productCode.length) {
       result.errors.push(
         `判断記録の要否の規則: 規則(process.config.json の decisionRules)と製品のコード(${productCode.slice(0, 3).join(', ')}${productCode.length > 3 ? ' ほか' : ''})が同じ PR で変わっています。規則の変更を別の PR に分ける(第2章 2.6「判断記録の要否の規則」の要求事項6)`
+      );
+    }
+  }
+  // 記録された作業上の選択を読む対象から外す規則を変える変更も、下限は R2(第5章 5.5.1。規則と製品のコードは同じ PR で変えない)
+  const choiceExclusionsChanged = baseConfigured && canonicalJson(baseConfig.choiceReviewExclusions ?? null) !== canonicalJson(headConfig.choiceReviewExclusions ?? null);
+  if (choiceExclusionsChanged) {
+    floorResult.hits.push({ id: 'choiceReviewExclusions の変更', floor: 'R2', why: '記録された作業上の選択を読む対象から外す規則を変える変更の下限は R2(第5章 5.5.1)', files: ['process.config.json'] });
+    if (RISK_RANK.R2 > RISK_RANK[floorResult.floor]) floorResult.floor = 'R2';
+    if (productCode.length) {
+      result.errors.push(
+        `作業上の選択を読む対象から外す規則: 規則(process.config.json の choiceReviewExclusions)と製品のコード(${productCode.slice(0, 3).join(', ')}${productCode.length > 3 ? ' ほか' : ''})が同じ PR で変わっています。規則の変更を別の PR に分ける(第5章 5.5.1)`
       );
     }
   }
