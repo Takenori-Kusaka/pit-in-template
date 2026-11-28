@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "66d40b2671f7503c0ff1467c5532ece06616b8e6",
+    "commit": "20692c1962257c4436f7084504a863cd8735b885",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1719,6 +1719,12 @@
       "range": "CL0・R3 の変更",
       "unit": "per-change",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#委任の変更は判定の時点を事後へ移す適用-cl0r3-の変更"
+    },
+    {
+      "title": "出荷の前の確認",
+      "range": "事業ステージ S2・安全重要度 CL0・品質が標準で「高」と規制業を除く・承認者 1 名・取り込みが本番への反映を直接起動しない構成",
+      "unit": "per-project",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/gate-criteria/#出荷の前の確認適用-事業ステージ-s2安全重要度-cl0品質が標準で高と規制業を除く承認者-1-名取り込みが本番への反映を直接起動しない構成"
     },
     {
       "title": "未達のまま出荷する場合の例外承認",
