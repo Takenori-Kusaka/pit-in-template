@@ -1272,7 +1272,7 @@ export function deferredReviewLines(d) {
     `- 出荷の前の確認を済ませた確認者ごとの件数: ${d.byReviewer.length ? d.byReviewer.map((r) => `${r.name} ${r.n} 件`).join(' / ') : '該当なし'}(特定の確認者への偏りは、人が見る。比率の閾値は置かない)`,
     `- 範囲の外の R2 のうち、区分の確定者の記名が無い変更: ${d.confirmerMissing.length} 件${list(d.confirmerMissing)}(出荷判定までに要る。記録の欠落に数える)`,
     `- 範囲の外の変更のうち、仕様のトレーラ(Spec: F-NNN)が無く、依存するタスクの取り込みを照らしていない変更: ${d.noSpecTrailer ?? 0} 件(取り込む前の検査も、トレーラが無い変更では依存するタスクを照らさない。件数だけを出し、止めない)`,
-    '- この集計の限界: テストの削除と依存するタスクの取り込みは取り込む前の検査(gate-g5-base)が照らし、集計は照らし直していない。テストの削除として検出するのは、基底にあるテストの削除・名前の変更・アサーションの行の削除だけで、スキップへの書き換えとテストの設定(除外の設定)による除外は拾わない。取り込みが本番を直接起動する構成は workflows の構文だけを調べ、配備の環境を指定せずに秘密情報で配備する workflow と、workflows の外の配備(別のリポジトリ・外部の仕組み)は検出しない。読んだ中身の質は機械で確かめない',
+    '- この集計の限界: テストの削除と依存するタスクの取り込みは取り込む前の検査(gate-g5-base)が照らし、集計は照らし直していない。テストの削除として検出するのは、基底にあるテストの削除・名前の変更・アサーションの行の削除だけで、スキップへの書き換えとテストの設定(除外の設定)による除外は拾わない。取り込みが本番を直接起動する構成は workflows の構文だけを調べ、配備の環境を指定せずに秘密情報で配備する workflow と、workflows の外の配備(別のリポジトリ・外部の仕組み)は検出しない。委任のマージのワークフロー(delegation.yml)の環境 delegated-merge は、そのファイルの環境の指定が 1 行だけで、ほかのワークフローから呼ばれていないときに限り配備に数えない。このジョブ自身の書き換えは、取り込む前の承認を 1 回経た後は検出しない。読んだ中身の質は機械で確かめない',
   ];
 }
 
@@ -2653,7 +2653,8 @@ if (isMain) {
     const reviewsForConfirmation = Number.isFinite(formMergedMs)
       ? reviews.filter((r) => {
           const t = Date.parse(String(r?.submittedAt ?? r?.submitted_at ?? ''));
-          const late = String(r?.state ?? '').toUpperCase() === 'APPROVED' && Number.isFinite(t) && t > formMergedMs;
+          // 提出の時刻を読めない承認は、取り込む前かを確かめられないため、候補から外す
+          const late = String(r?.state ?? '').toUpperCase() === 'APPROVED' && (!Number.isFinite(t) || t > formMergedMs);
           if (late) lateApprovalsExcluded++;
           return !late;
         })
@@ -2793,9 +2794,16 @@ if (isMain) {
     const parentRev = `${p.mergeCommitFull}^1`;
     const before = configAt(parentRev);
     if (!before || !approvalByPreRead(before)) return { applies: false };
-    const parentTracked = trackedAt(parentRev) ?? [];
+    const parentTrackedRead = trackedAt(parentRev);
+    const changesRead = changeListBetween((args) => git(args, { strict: true }), parentRev, p.mergeCommitFull);
+    // 親の版の追跡ファイル・変更の一覧を読めないときは、範囲の外かを確かめられないため、範囲の内に識別し、照らせなかった旨を出す
+    if (!parentTrackedRead || !changesRead) {
+      const why = !parentTrackedRead ? '親の版の追跡ファイルを読めない' : '変更の一覧を読めない';
+      return { applies: true, preRead: true, hits: [{ id: 'unevaluated', label: PRE_READ_ROWS.unevaluated, files: [why] }], deploy: [], files: [], notEvaluated: [`${why}ため、範囲の外かを確かめられず、範囲の内として扱う`] };
+    }
+    const parentTracked = parentTrackedRead;
     const deploy = deployWorkflowsOf(parentTracked, (f) => git(['show', `${parentRev}:${f}`], { strict: true }) ?? '');
-    const changes = changeListBetween((args) => git(args, { strict: true }), parentRev, p.mergeCommitFull) ?? [];
+    const changes = changesRead;
     const files = [...new Set(changes.flatMap((c) => (c.from ? [c.path, c.from] : [c.path])))];
     const floor = riskFloorOf(before.riskFloor?.rules, changes).floor;
     // 範囲の求め方は、変更の親の版の構成と HEAD の版の構成の両方で行い、どちらかが当たれば範囲の内とする(後から狭めた宣言で範囲の外へ出さない)

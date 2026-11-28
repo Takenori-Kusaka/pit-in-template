@@ -1395,7 +1395,7 @@ export const PRE_READ_ROWS = {
 
 /**
  * 取り込みが本番への反映を直接起動する構成の検出(構文)。配備の環境(`environment:`)を指定したジョブを持つ workflow は、
- * 起動の契機が人の手動の起動(workflow_dispatch)だけ、または PR の検査(pull_request 系)だけであるときを除き、起動する側へ倒す
+ * 起動の契機が人の手動の起動(workflow_dispatch)だけ、または PR の検査(pull_request 系で、閉じた時に動かないもの)だけであるときを除き、起動する側へ倒す
  * (push・workflow_run・release・schedule・読めない契機を含む)。push などで動く workflow が再利用の workflow を呼ぶジョブ(ジョブの uses:)を
  * 持つときは、呼ばれる側がリポジトリの中にあって読め、配備の環境が無いと確かめられる場合を除き、起動する側へ倒す。
  * ブランチの絞り込み・条件式は読まない。拾えない形: 配備の環境を指定せずに秘密情報で配備する workflow、workflows の外の配備(別のリポジトリ・外部の仕組み)。
@@ -1408,13 +1408,19 @@ export function deployOnPushFindings(workflows) {
   // 配備の環境を指定したジョブがあるか。テンプレート自身の委任のマージのワークフロー(.github/workflows/delegation.yml)が使う環境
   // (delegated-merge。マージのトークンを置く環境で、本番への反映ではない)だけは数えない。ファイルと環境の名の両方が合うときに限る
   // (ほかのワークフローが同じ名の環境を使っても数える)。値を読めない書き方(オブジェクト・式)は、配備の環境として数える
-  const hasEnvironment = (text, file) =>
-    text.split('\n').some((l) => {
+  // 数えないのは、そのワークフローの中で配備の環境を指定する行が 1 つだけで、ほかのワークフローから再利用の workflow として呼ばれていないときに限る
+  // (同じファイルへ足した 2 つ目の環境のジョブ、呼び出しを足したワークフローは数える)
+  const DELEGATION = '.github/workflows/delegation.yml';
+  const calledByOthers = (file) => list.some((o) => o.path !== file && reusableCallsOf(o.text).some((c) => /(^|\/)\.github\/workflows\/delegation\.yml(@|$)/.test(c)));
+  const hasEnvironment = (text, file) => {
+    const values = [];
+    for (const l of text.split('\n')) {
       const m = /^[ \t]*environment[ \t]*:(.*)$/.exec(l);
-      if (!m) return false;
-      const value = m[1].replace(/#.*$/, '').trim().replace(/^['"]|['"]$/g, '');
-      return !(file === '.github/workflows/delegation.yml' && value === 'delegated-merge');
-    });
+      if (m) values.push(m[1].replace(/#.*$/, '').trim().replace(/^['"]|['"]$/g, ''));
+    }
+    if (!values.length) return false;
+    return !(file === DELEGATION && values.length === 1 && values[0] === 'delegated-merge' && !calledByOthers(file));
+  };
   for (const w of list) {
     if (!workflowFires(w.text)) continue;
     if (hasEnvironment(w.text, w.path)) {
@@ -1436,7 +1442,8 @@ export function deployOnPushFindings(workflows) {
 function reusableCallsOf(text) {
   const out = [];
   for (const l of text.split('\n')) {
-    const m = /^[ \t]*uses[ \t]*:[ \t]*['"]?([^\s'"#]+)/.exec(l);
+    // 行頭の uses:(ブロックの書き方)と、1 行の書き方({ uses: ... })の uses:
+    const m = /^[ \t]*uses[ \t]*:[ \t]*['"]?([^\s'"#]+)/.exec(l) ?? /[{,][ \t]*['"]?uses['"]?[ \t]*:[ \t]*['"]?([^\s'",}#]+)/.exec(l);
     if (m && /\.github\/workflows\/[^@\s]+\.ya?ml/.test(m[1])) out.push(m[1]);
   }
   return out;
@@ -1478,12 +1485,91 @@ function triggerEventsOf(text) {
   }
   return names;
 }
-/** 起動する側か。人の手動の起動だけ、または PR の検査だけのときを除き、読めない契機も含めて真 */
+/**
+ * pull_request・pull_request_target の動く場面の指定(types)。指定が無ければ undefined(既定の場面 = 開いた時・更新の時・開き直した時)、
+ * 読めたら場面の配列、指定があるのに読めなければ null
+ */
+function eventTypesOf(text, name) {
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => /^(on|"on"|'on')[ \t]*:/.test(l));
+  if (i < 0) return null;
+  const strip = (s) => s.replace(/#.*$/, '');
+  const listOf = (s) => s.split(',').map((x) => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  // 1 行の書き方({ types: [closed] } の中身)
+  const typesInFlow = (inner) => {
+    const m = /(?<![A-Za-z0-9_-])['"]?types['"]?[ \t]*:[ \t]*(\[[^\]]*\]|[^,}\s]+)/.exec(inner);
+    if (!m) return /types/.test(inner) ? null : undefined;
+    return m[1].startsWith('[') ? listOf(m[1].slice(1, -1)) : [m[1].replace(/^['"]|['"]$/g, '')];
+  };
+  const flowTypes = (flow) => {
+    const m = new RegExp(`(?<![A-Za-z0-9_-])['"]?${name}['"]?[ \\t]*:[ \\t]*\\{([^{}]*)\\}`).exec(flow);
+    return m ? typesInFlow(m[1]) : undefined;
+  };
+  const rest = strip(lines[i]).replace(/^(on|"on"|'on')[ \t]*:/, '').trim();
+  if (rest) return flowTypes(rest);
+  let childIndent = null;
+  for (let j = i + 1; j < lines.length; j++) {
+    const l = lines[j];
+    if (!l.trim() || /^[ \t]*#/.test(l)) continue;
+    const indent = /^[ \t]*/.exec(l)[0].length;
+    if (indent === 0 && !/^-/.test(l)) break;
+    if (childIndent === null) childIndent = indent;
+    if (indent !== childIndent) continue;
+    const body = strip(l).trim().replace(/^-[ \t]*/, '');
+    if (/^[{[]/.test(body)) {
+      const t = flowTypes(body);
+      if (t !== undefined) return t;
+      continue;
+    }
+    const m = new RegExp(`^['"]?${name}['"]?[ \\t]*:(.*)$`).exec(body);
+    if (!m) continue;
+    const tail = m[1].trim();
+    if (tail.startsWith('{')) return /\}$/.test(tail) ? typesInFlow(tail.slice(1, -1)) : null;
+    if (tail && tail !== '~' && tail !== 'null') return null;
+    // ブロックの書き方: 契機の下の types
+    let grand = null;
+    for (let k = j + 1; k < lines.length; k++) {
+      const c = lines[k];
+      if (!c.trim() || /^[ \t]*#/.test(c)) continue;
+      const ci = /^[ \t]*/.exec(c)[0].length;
+      if (ci <= childIndent) break;
+      if (grand === null) grand = ci;
+      if (ci !== grand) continue;
+      const tm = /^['"]?types['"]?[ \t]*:(.*)$/.exec(strip(c).trim());
+      if (!tm) continue;
+      const v = tm[1].trim();
+      if (v.startsWith('[')) return /\]$/.test(v) ? listOf(v.slice(1, -1)) : null;
+      if (v) return [v.replace(/^['"]|['"]$/g, '')];
+      const items = [];
+      for (let q = k + 1; q < lines.length; q++) {
+        const d = lines[q];
+        if (!d.trim() || /^[ \t]*#/.test(d)) continue;
+        const im = /^[ \t]*-[ \t]*(.+)$/.exec(strip(d));
+        if (!im) break;
+        items.push(im[1].trim().replace(/^['"]|['"]$/g, ''));
+      }
+      return items.length ? items : null;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+/**
+ * 起動する側か。人の手動の起動だけ、または PR の検査だけのときを除き、読めない契機も含めて真。
+ * pull_request・pull_request_target は、動く場面の指定を読めて、閉じた時(closed)を含まないときだけ PR の検査とする(閉じた時に動く配備は起動する側)
+ */
 function workflowFires(text) {
   const events = triggerEventsOf(text);
   if (!events || !events.length) return true;
   if (events.every((e) => e === 'workflow_dispatch')) return false;
-  if (events.every((e) => /^pull_request/.test(e))) return false;
+  if (events.every((e) => /^pull_request/.test(e))) {
+    for (const e of events) {
+      if (e !== 'pull_request' && e !== 'pull_request_target') continue;
+      const types = eventTypesOf(text, e);
+      if (types === null || (Array.isArray(types) && types.includes('closed'))) return true;
+    }
+    return false;
+  }
   return true;
 }
 /** ある版の .github/workflows の一覧から、取り込みが本番を直接起動する workflow を探す。tracked は追跡中のファイル、read(path) は内容 */
@@ -2395,7 +2481,7 @@ export function analyzePr({ root = ROOT, base, policyBase = null, pr = {}, head 
       const specsOfPr = result.spec?.specs ?? [];
       if (specsOfPr.length) {
         const log = git(['log', policyRef, '--format=%B%x00']);
-        if (log === null) notEvaluated.push('依存するタスクの取り込みを照らせなかった(既定ブランチのコミットを読めない)');
+        if (log === null) cannot('既定ブランチのコミットを読めない(依存するタスクを調べられない)');
         else {
           for (const s of specsOfPr) if (!atPolicy(`specs/${s.feature}/plan.md`)) cannot(`実装計画(specs/${s.feature}/plan.md)を既定ブランチから読めない(依存するタスクを調べられない)`);
           unmergedDeps = unmergedDependencies({ specs: specsOfPr, planOf: (f) => atPolicy(`specs/${f}/plan.md`), done: doneTaskKeysOf(log.split('\0')) });

@@ -129,6 +129,41 @@ const s2Cfg = (over = {}) => ({
   check('検出する: 委任のマージのワークフロー以外が、同じ名の環境 delegated-merge を使う(名だけでは外さない)', wf(mergeEnv('environment: delegated-merge')).length === 1);
   check('検出する: 委任のマージのワークフローでも、環境がほかの名なら数える', delegationWf(mergeEnv('environment: production')).length === 1);
   check('検出する: 環境が delegated-merge 以外・式・オブジェクトの書き方(読めない値は配備の環境として数える)', ['environment: production', 'environment: ${{ inputs.env }}', 'environment:\n      name: delegated-merge'].every((e) => wf(mergeEnv(e)).length === 1));
+  // PR を閉じた時に動く配備は、PR の検査ではない(起動する側)。動く場面の指定を読めて、閉じた時を含まないときだけ PR の検査
+  const closedWf = (on) => wf(`${on}\n${JOB}`).length === 1;
+  check('検出する: pull_request の types に closed(ブロックの書き方)', closedWf('on:\n  pull_request:\n    types: [closed]'));
+  check('検出する: pull_request の types に closed(複数の場面・リストの書き方)', closedWf('on:\n  pull_request:\n    types: [opened, closed]') && closedWf('on:\n  pull_request:\n    types:\n      - opened\n      - closed'));
+  check('検出する: pull_request_target の types に closed', closedWf('on:\n  pull_request_target:\n    types: [closed]'));
+  check('検出する: 1 行の書き方({ pull_request: { types: [closed] } })と、リストの中の波括弧', closedWf('on: { pull_request: { types: [closed] } }') && closedWf('on: { pull_request_target: { types: [closed] } }') && closedWf('on:\n  - { pull_request: { types: [closed] } }'));
+  check('検出する: 場面の指定を読めない(値が無い)', closedWf('on:\n  pull_request:\n    types:\n') && closedWf('on:\n  pull_request:\n    types:\n    branches: [main]'));
+  check('検出する: closed を含む指定と push の組・手動の起動と closed の組', closedWf('on:\n  push:\n  pull_request:\n    types: [closed]') && closedWf('on:\n  workflow_dispatch:\n  pull_request:\n    types: [closed]'));
+  check('検出しない: 閉じた時を含まない指定(ブロック・リスト・1 行の書き方)', !closedWf('on:\n  pull_request:\n    types: [opened, synchronize]') && !closedWf('on:\n  pull_request:\n    types:\n      - labeled') && !closedWf('on: { pull_request: { types: [opened] } }') && !closedWf('on: { pull_request_target: { types: [synchronize, reopened] } }'));
+  check('検出しない: 指定が無い(既定の場面は開いた時・更新の時・開き直した時)', !closedWf('on: pull_request') && !closedWf('on: [pull_request, pull_request_target]') && !closedWf('on:\n  pull_request:\n    branches: [main]') && !closedWf('on: { pull_request: { branches: [main] } }') && !closedWf('on:\n  pull_request:'));
+  check('検出しない: 閉じた時を含まない指定の pull_request と、既定の pull_request_target の組', !closedWf('on:\n  pull_request:\n    types: [opened]\n  pull_request_target:'));
+  // 再利用の workflow の呼び出し(1 行の書き方)
+  check('検出する: 1 行の書き方のジョブの uses(リポジトリの外の再利用の workflow)', deployOnPushFindings([{ path: '.github/workflows/main.yml', text: 'on: push\njobs:\n  call: { uses: org/x/.github/workflows/d.yml@v1 }\n' }]).length === 1);
+  check('検出する: 1 行の書き方のジョブの uses(呼ばれる側が配備の環境を持つ)', deployOnPushFindings([{ path: '.github/workflows/main.yml', text: 'on: push\njobs:\n  call: { uses: ./.github/workflows/reuse.yml }\n' }, calleeEnv]).includes('.github/workflows/main.yml'));
+  check('検出しない: 1 行の書き方のステップの uses は再利用の呼び出しに数えない', deployOnPushFindings([{ path: '.github/workflows/main.yml', text: 'on: push\njobs:\n  b:\n    steps:\n      - { uses: actions/checkout@v4 }\n' }]).length === 0);
+  // 委任のマージのワークフローの環境を数えない除外は、環境の指定が 1 行だけで、ほかのワークフローから呼ばれていないときに限る
+  const mergeFile = '.github/workflows/delegation.yml';
+  const twoEnv = `${mergeEnv('environment: delegated-merge')}  extra:\n    runs-on: ubuntu-latest\n    environment: delegated-merge\n    steps:\n      - run: ./deploy.sh\n`;
+  check('検出する: 委任のマージのワークフローへ 2 つ目の環境の指定を足す(同じ名でも数える)', delegationWf(twoEnv).length === 1);
+  const callerOfDelegation = (uses) => ({ path: '.github/workflows/main.yml', text: `on: push\njobs:\n  call:\n    uses: ${uses}\n` });
+  check('検出する: ほかのワークフローが委任のマージのワークフローを呼ぶ(ローカル・版つきの参照・1 行の書き方)', [
+    './.github/workflows/delegation.yml',
+    'org/repo/.github/workflows/delegation.yml@main',
+  ].every((u) => deployOnPushFindings([{ path: mergeFile, text: mergeEnv('environment: delegated-merge') }, callerOfDelegation(u)]).includes(mergeFile)) && deployOnPushFindings([{ path: mergeFile, text: mergeEnv('environment: delegated-merge') }, { path: '.github/workflows/main.yml', text: 'on: push\njobs:\n  call: { uses: ./.github/workflows/delegation.yml }\n' }]).includes(mergeFile));
+  check('検出しない: 委任のマージのワークフローを、ほかのワークフローが呼ばず、環境の指定が 1 行だけ', deployOnPushFindings([{ path: mergeFile, text: mergeEnv('environment: delegated-merge') }, { path: '.github/workflows/main.yml', text: 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: []\n' }]).length === 0);
+  {
+    const dir = new URL('../../.github/workflows/', import.meta.url);
+    const real = fs.readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).map((f) => ({ path: `.github/workflows/${f}`, text: fs.readFileSync(new URL(f, dir), 'utf8') }));
+    check('準拠テンプレートの実物の workflows には、起動する側の配備を検出しない(0 件)', real.length > 5 && deployOnPushFindings(real).length === 0, JSON.stringify(deployOnPushFindings(real)));
+  }
+  // 既定ブランチのコミットの一覧を読めないときは、ほかの読めない入力と同じく範囲の中へ倒す(読めない状況を作れないため、判定の組み立ての書き方で確かめる)
+  {
+    const src = fs.readFileSync(new URL('./check-pr.mjs', import.meta.url), 'utf8');
+    check('既定ブランチのコミットの一覧を読めないときは、範囲の中へ倒す入力に数える', src.includes("if (log === null) cannot('既定ブランチのコミットを読めない"));
+  }
   // 拾えない形(集約の限界の行に書く)
   check('拾えない形(開示済み): 配備の環境を指定せずに秘密情報で配備する push の workflow は検出しない', wf('on: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh\n        env:\n          TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n').length === 0);
 }
@@ -476,6 +511,13 @@ if (process.platform === 'win32') {
     const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1, reviews: [before] }, { file: 'src/ui/d.js', pr: 2, reviews: [after] }]);
     check('前提の対照: 取り込む前に付けた別の人の承認レビューは、独立した確認に数える(欠落にしない)', h.prGap(1) === null && h.pr(1)?.g6?.independentHuman === true, `${dbg(h)}\n${JSON.stringify(h.pr(1)?.g6?.independent)}`);
     check('取り込んだ後に付けた承認レビューだけの PR は、出荷の前の確認が済んでいない欠落に数える(承認レビューでは残せない)', h.prGap(2) !== null && h.pr(2)?.g6?.independentHuman === false, `${dbg(h)}\n${JSON.stringify(h.pr(2)?.g6?.independent)}`);
+  }
+  {
+    // 提出の時刻を読めない承認レビューは、取り込む前に付けたかを確かめられないため、独立した確認に数えない
+    const untimed = { login: 'acc3', id: 903, at: undefined };
+    const h = history(cfg, [{ file: 'src/ui/b.js', pr: 1, reviews: [untimed] }]);
+    check('提出の時刻の無い承認レビューだけの PR は、出荷の前の確認が済んでいない欠落に数える', h.prGap(1) !== null && h.pr(1)?.g6?.independentHuman === false, `${dbg(h)}
+${JSON.stringify(h.pr(1)?.g6?.independent)}`);
   }
   {
     // 積み重なりの前後は、時刻の書き方(Z と +09:00)に依らず時刻で比べる。仕様のトレーラの無い件数を出す
