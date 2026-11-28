@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "20692c1962257c4436f7084504a863cd8735b885",
+    "commit": "46f1dac010ef50494f9013c3e2190eeca0f00bde",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1761,6 +1761,12 @@
       "range": "5.5.4 で登録した変更種別",
       "unit": "other",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#登録した変更種別での停止適用-554-で登録した変更種別"
+    },
+    {
+      "title": "決め事を先に人へ上げる範囲",
+      "range": "安全重要度 CL1 以上の案件と規制業に該当する案件の変更、および R1 の変更",
+      "unit": "per-change",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/human-ai-boundary/#決め事を先に人へ上げる範囲適用-安全重要度-cl1-以上の案件と規制業に該当する案件の変更および-r1-の変更"
     },
     {
       "title": "5.5.4 委任の条件",
