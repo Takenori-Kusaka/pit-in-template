@@ -59,7 +59,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, loadConfig, approvalByPathsOrRange, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
+import { ROOT, loadConfig, approvalByPathsOrRange, approvalByPreRead, fail, notice, warn, isFilledValue, isRealDay, aiNameBlocked, configDigest, localDay, localIso, parseGhVersion, unboundCauseText, codeownersState, CODEOWNERS_PLACES, accountLoginOf, accountIdOf, performerAccountEnvFinding } from './config.mjs';
 import { readPolicy, continuityState, samePerson, POLICY_FILE, D0_FILE, ENV_CHECK_FILE, ENV_CHECK_ITEMS, ENV_CHECK_FINDINGS, FINDING_STATUS_LABEL, readEnvCheck, envEvidenceMissing, envEvidenceText, envStatusLabel, ENV_REASON_TEXT } from './org-assurance.mjs';
 import { isProductCode } from './check-pr.mjs';
 import { parseCorrections, DEFECT_FILE, CORRECTION_HEADING } from './enforcement-inventory.mjs';
@@ -589,7 +589,10 @@ function runScenes(config, { keep = false } = {}) {
   });
 
   scene(7, () => {
-    onBranch('pit-trial-s7', { 'docs/pit-trial-note.md': '場面7\n' }, 'docs: 場面7');
+    // 承認を取り込む前に人が読む範囲に掛ける構成では、範囲の外の R2 の確定者は取り込む前には求めない(出荷判定までに求める)。
+    // この場面は取り込む前に止まることを確かめるので、その構成では範囲の中のパス(仕様)に置く
+    const s7File = approvalByPreRead(config) ? 'specs/pit-trial-note.md' : 'docs/pit-trial-note.md';
+    onBranch('pit-trial-s7', { [s7File]: '場面7\n' }, 'docs: 場面7');
     const a = checkPr({ number: 9107, title: 'docs', body: body({ risk: 'R2' }), author: acct(A) ?? '', authorId: acctId(A) });
     const ok = a.code !== 0 && has(a.errors, 'リスク区分の確定者');
     if (!ok && has(a.notices, 'リスク区分の確定者')) return { result: '止まらなかった', detail: '作成を指示した者以外の人が名簿にいないため、確定していない区分として表示するだけ(1名体制の扱い)' };
