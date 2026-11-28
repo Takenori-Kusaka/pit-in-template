@@ -3,7 +3,7 @@
   "note": "自動生成。正本は process-compass の src/data/。手で編集しない",
   "source": {
     "repository": "https://github.com/Takenori-Kusaka/process-compass",
-    "commit": "46f1dac010ef50494f9013c3e2190eeca0f00bde",
+    "commit": "0eb117576a08d20bc0ffe853e40a55df3b1c606e",
     "edition": null,
     "editionIssuedAt": null,
     "basedOn": null
@@ -1848,15 +1848,33 @@
     },
     {
       "title": "事後監査の手続",
-      "range": "委任を適用した R3 の変更。体制の規模によらない",
+      "range": "委任を適用した R3 の変更と、AI のレビューで取り込む行の変更。体制の規模によらない",
       "unit": "per-change",
-      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#事後監査の手続適用-委任を適用した-r3-の変更体制の規模によらない"
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#事後監査の手続適用-委任を適用した-r3-の変更とai-のレビューで取り込む行の変更体制の規模によらない"
     },
     {
       "title": "人が触る場所",
       "range": "安全重要度 CL0・標準品質以上・確認者を置ける体制。規制業を除く",
       "unit": "per-project",
       "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#人が触る場所適用-安全重要度-cl0標準品質以上確認者を置ける体制規制業を除く"
+    },
+    {
+      "title": "AI のレビューで取り込む範囲を決める",
+      "range": "準備物に書いた行だけ。安全重要度 CL0・規制業でない案件",
+      "unit": "per-project",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#ai-のレビューで取り込む範囲を決める適用-準備物に書いた行だけ安全重要度-cl0規制業でない案件"
+    },
+    {
+      "title": "人の読みを置き換える行の前提",
+      "range": "今「前」「出荷前」が掛かる行で、人が必ず決める範囲の外",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#人の読みを置き換える行の前提適用-今前出荷前が掛かる行で人が必ず決める範囲の外"
+    },
+    {
+      "title": "取り込みの行の開示",
+      "range": "AI のレビューで取り込む行を書いたチーム",
+      "unit": "other",
+      "source": "https://takenori-kusaka.github.io/process-compass/phase4-process-design/tailoring-guide/#取り込みの行の開示適用-ai-のレビューで取り込む行を書いたチーム"
     },
     {
       "title": "S0 の省略が成立する前提",
